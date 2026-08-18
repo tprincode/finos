@@ -1,0 +1,14 @@
+[package]
+name = "ai-gateway"
+description = "Grok/xAI advisory adapter (ADR-0012). Never posts financial facts."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+application-core = { path = "../application-core" }
+async-trait.workspace = true
+financial-domain = { path = "../financial-domain" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true

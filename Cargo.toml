@@ -6,6 +6,8 @@ members = [
     "crates/storage-sqlite",
     "crates/import-engine",
     "crates/snapshot-service",
+    "crates/golden-harness",
+    "crates/ai-gateway",
 ]
 
 [workspace.package]
@@ -15,6 +17,14 @@ license = "UNLICENSED"
 repository = "https://github.com/EVTom/finos"
 
 [workspace.dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+tempfile = "3"
 thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4", "serde"] }

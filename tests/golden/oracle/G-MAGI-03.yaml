@@ -1,0 +1,35 @@
+# Proposed independent oracle. Not approved. Engine must not overwrite this file.
+
+scenario_id: G-MAGI-03
+status: approved
+approved_at: "2026-08-18"
+decision_state: OVER
+data_completeness: complete
+scale: 2
+applicable_threshold_minor: 8460000
+safety_reserve_minor: 500000
+before_ira:
+  actual_included_ytd_minor: 6000000
+  known_remaining_minor: 0
+  base_forecast_minor: 6000000
+  conservative_forecast_minor: 6000000
+  uncertain_amount_minor: 0
+  raw_headroom_minor: 2460000
+  protected_headroom_minor: 1960000
+  decision_state: SAFE
+after_ira:
+  actual_included_ytd_minor: 8500000
+  known_remaining_minor: 0
+  base_forecast_minor: 8500000
+  conservative_forecast_minor: 8500000
+  uncertain_amount_minor: 0
+  raw_headroom_minor: -40000
+  protected_headroom_minor: -540000
+  decision_state: OVER
+included: [G03-DIV-1, G03-IRA-1]
+excluded: []
+warnings: []
+trace:
+  - "before: taxable dividends 60000.00 → SAFE"
+  - "IRA distribution G03-IRA-1 adds 25000.00"
+  - "after actual 85000.00 >= threshold 84600.00 → OVER"

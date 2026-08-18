@@ -6,5 +6,8 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "scripts": {
+    "desktop": "npm start --workspace=@finos/desktop"
+  }
 }

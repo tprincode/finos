@@ -1,2 +1,12 @@
--- Migration seed data for Milestone 2 (canonical foundation).
--- SQL migrations will live under crates/storage-sqlite/migrations/.
+# Migration seed (Milestone 2)
+
+Synthetic fixture for the canonical foundation exit gate. Values are **not** MAGI oracles.
+
+- `fixture.yaml` — accounts, securities, and one import document with two candidates
+- `expected.yaml` — exact counts and `amount_minor` total after production-path load (stage → validate → approve → post)
+
+Load path: FinanceClient commands (`AccountRegister`, `SecurityRegister`, `ImportStage`, `ImportValidate`, `ImportApprove`, `ImportPost`). SQL is never loaded from the UI.
+
+```
+cargo test -p golden-harness seed_counts_and_totals_reconcile
+```

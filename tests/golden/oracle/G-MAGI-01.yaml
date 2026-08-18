@@ -1,0 +1,28 @@
+# Proposed independent oracle. Not approved. Engine must not overwrite this file.
+
+scenario_id: G-MAGI-01
+status: approved
+approved_at: "2026-08-18"
+decision_state: SAFE
+data_completeness: complete
+scale: 2
+applicable_threshold_minor: 8460000
+safety_reserve_minor: 500000
+actual_included_ytd_minor: 4000000
+known_remaining_minor: 1000000
+base_forecast_minor: 5000000
+conservative_forecast_minor: 5000000
+uncertain_amount_minor: 0
+raw_headroom_minor: 3460000
+protected_headroom_minor: 2960000
+included: [G01-DIV-1, G01-DIV-2]
+excluded: []
+warnings: []
+trace:
+  - "threshold = 21150.00 * 400% = 84600.00"
+  - "actual = 20000.00 + 20000.00 = 40000.00"
+  - "known remaining (declaration, not posted) = 10000.00"
+  - "base = conservative = 50000.00"
+  - "raw headroom = 84600.00 - 50000.00 = 34600.00"
+  - "protected headroom = 84600.00 - 50000.00 - 5000.00 = 29600.00"
+  - "SAFE: complete and protected headroom > 0"

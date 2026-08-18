@@ -23,6 +23,7 @@ workers/python-connectors/__pycache__/
 # Environment
 .env
 .env.*
+!.env.example
 
 # IDE / OS
 .vscode/

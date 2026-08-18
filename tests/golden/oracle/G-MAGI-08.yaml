@@ -1,0 +1,31 @@
+# Proposed independent oracle. Not approved. Engine must not overwrite this file.
+
+scenario_id: G-MAGI-08
+status: approved
+approved_at: "2026-08-18"
+decision_state: SAFE
+data_completeness: complete
+scale: 2
+applicable_threshold_minor: 8460000
+safety_reserve_minor: 500000
+before_plan:
+  actual_included_ytd_minor: 4000000
+  known_remaining_minor: 0
+  base_forecast_minor: 4000000
+  conservative_forecast_minor: 4000000
+  raw_headroom_minor: 4460000
+  protected_headroom_minor: 3960000
+after_plan:
+  actual_included_ytd_minor: 4000000
+  known_remaining_minor: 3000000
+  base_forecast_minor: 7000000
+  conservative_forecast_minor: 7000000
+  raw_headroom_minor: 1460000
+  protected_headroom_minor: 960000
+included: [G08-DIV-1]
+excluded: []
+warnings: []
+trace:
+  - "posted actual stays 40000.00 after plan/declaration"
+  - "known remaining rises 0 → 30000.00"
+  - "forecast changes; actual-to-date cash does not"

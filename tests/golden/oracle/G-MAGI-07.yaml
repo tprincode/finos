@@ -1,0 +1,25 @@
+# Proposed independent oracle. Not approved. Engine must not overwrite this file.
+
+scenario_id: G-MAGI-07
+status: approved
+approved_at: "2026-08-18"
+decision_state: SAFE
+data_completeness: complete
+scale: 2
+applicable_threshold_minor: 8460000
+safety_reserve_minor: 500000
+actual_included_ytd_minor: 3200000
+known_remaining_minor: 0
+base_forecast_minor: 3200000
+conservative_forecast_minor: 3200000
+uncertain_amount_minor: 0
+raw_headroom_minor: 5260000
+protected_headroom_minor: 4760000
+included: [G07-DIV-1, G07-GAIN-1]
+excluded: []
+source_transaction: G07-GAIN-1
+warnings: []
+trace:
+  - "dividend G07-DIV-1 20000.00 included"
+  - "realized gain G07-GAIN-1 12000.00 included"
+  - "trace must name G07-GAIN-1 as the gain source"

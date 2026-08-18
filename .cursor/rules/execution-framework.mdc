@@ -1,0 +1,26 @@
+---
+description: Keep finos milestone work moving step-by-step without waiting for “do the next step”
+alwaysApply: true
+---
+
+# Execution framework
+
+Read [docs/architecture/execution.md](docs/architecture/execution.md) at the start of implementation work. Follow the **Now** item until it is validated, then start **Next** in the same turn.
+
+## Loop (do not skip)
+
+1. Name the current step and its pass check.
+2. Do that step (code or the listed command).
+3. Run the pass check. If it fails, stop and fix — do not regenerate MAGI oracles.
+4. If it passes, immediately start the next numbered step. Do not wait for the user to say “continue” or re-attach the plan.
+
+## Stop only when
+
+- Owner must approve or change golden MAGI numbers (ADR-0013).
+- The step needs a Mac (M1 macOS gate) and this machine is Windows.
+- The next milestone is M6+ AI, Postgres, OIDC, or signed installers and the user has not unlocked it.
+- The user named a different item.
+
+## After a gate is green
+
+Update the **Now / Next** lines in `docs/architecture/execution.md`, then begin Next (thin first slice, itemized). Do not end the turn with only “say proceed.”

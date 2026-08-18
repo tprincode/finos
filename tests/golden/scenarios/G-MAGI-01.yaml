@@ -1,0 +1,41 @@
+scenario_id: G-MAGI-01
+scenario_version: "0.2.0-proposed"
+business_question: A complete conservative projection safely below the rule-derived threshold returns SAFE and shows raw and protected headroom.
+requirement_ids: [V1.1-§11.4-G-MAGI-01]
+as_of_date: "2026-12-31"
+coverage_year: 2026
+oracle: tests/golden/oracle/G-MAGI-01.yaml
+input_facts:
+  household:
+    size: 2
+    jurisdiction: US-contiguous-DC
+  accounts:
+    - { name: Taxable Brokerage, kind: taxable, coverage: complete }
+  activities:
+    - { id: G01-DIV-1, account: Taxable Brokerage, type: dividend, occurred_on: "2026-03-15", amount_minor: 2000000, scale: 2, magi: include, classification: taxable_dividend }
+    - { id: G01-DIV-2, account: Taxable Brokerage, type: dividend, occurred_on: "2026-09-15", amount_minor: 2000000, scale: 2, magi: include, classification: taxable_dividend }
+  declarations:
+    - { id: G01-DECL-1, type: dividend_declaration, declared_on: "2026-12-01", amount_minor: 1000000, scale: 2, magi: known_remaining, classification: taxable_dividend_declared }
+provenance:
+  completeness: complete
+  notes: All required 2026 accounts imported; no unresolved classifications.
+rule_set_id: marketplace-magi-2026-us-contiguous-hh2
+calculation_version: magi-2026.1-proposed
+expected_included: [G01-DIV-1, G01-DIV-2]
+expected_excluded: []
+expected_subtotals:
+  actual_included_ytd_minor: 4000000
+  known_remaining_minor: 1000000
+  base_forecast_minor: 5000000
+  conservative_forecast_minor: 5000000
+  raw_headroom_minor: 3460000
+  protected_headroom_minor: 2960000
+expected_range: {}
+expected_status: SAFE
+expected_warnings: []
+tolerance: exact
+precision_policy: fixed-scale
+approval:
+  status: approved
+  rationale: "Owner accepted proposed pack as written on 2026-08-18: household of 2, threshold $84,600, safety reserve $5,000, OVER when actual is at or above threshold."
+  approved_at: "2026-08-18"

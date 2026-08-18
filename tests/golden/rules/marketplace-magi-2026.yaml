@@ -1,0 +1,30 @@
+# Proposed 2026 Marketplace MAGI rule (awaiting owner approval).
+# Threshold is derived: 2025 HHS 2-person contiguous-US poverty guideline × 400%.
+# Do not hardcode the dollar result in application code; store these fields.
+
+rule_set_id: marketplace-magi-2026-us-contiguous-hh2
+coverage_year: 2026
+household_size: 2
+jurisdiction: US-contiguous-DC
+poverty_guideline_year: 2025
+poverty_guideline_minor: 2115000
+poverty_guideline_scale: 2
+percentage: 400
+threshold_minor: 8460000
+threshold_scale: 2
+# Proposed safety reserve for protected headroom. Change this if you want a different cushion.
+safety_reserve_minor: 500000
+safety_reserve_scale: 2
+source: "HHS 2025 poverty guideline $21,150 for a 2-person household in the contiguous United States or D.C., times 400% Marketplace percentage = $84,600"
+
+# Proposed decision procedure (cents, exact):
+# 1. incomplete / unapproved classification → INDETERMINATE (never SAFE)
+# 2. actual_included_ytd >= threshold → OVER
+# 3. conservative_forecast > threshold and actual < threshold → LIKELY_OVER
+# 4. protected_headroom <= 0 or uncertain_amount > 0, and actual < threshold → WATCH
+# 5. else complete and protected_headroom > 0 → SAFE
+#
+# base_forecast = actual_included_ytd + known_remaining
+# conservative_forecast = base_forecast + uncertain_amount
+# raw_headroom = threshold - base_forecast
+# protected_headroom = threshold - conservative_forecast - safety_reserve

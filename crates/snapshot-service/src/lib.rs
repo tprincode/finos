@@ -1,17 +1,8 @@
 //! Immutable snapshot lineage and controlled device handoff (ARCH-05, ADR-0007).
 
-use serde::{Deserialize, Serialize};
+mod catalog;
+mod hash;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SnapshotManifest {
-    pub database_id: uuid::Uuid,
-    pub snapshot_id: uuid::Uuid,
-    pub parent_snapshot_id: Option<uuid::Uuid>,
-    pub device_id: uuid::Uuid,
-    pub device_name: String,
-    pub schema_version: String,
-    pub calculation_version: String,
-    pub app_version: String,
-    pub database_hash: String,
-    pub evidence_manifest_hash: String,
-}
+pub use application_core::contracts::SnapshotIdentity as SnapshotManifest;
+pub use catalog::{CatalogError, PublishedHead, SnapshotCatalog};
+pub use hash::sha256_file;

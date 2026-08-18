@@ -1,0 +1,27 @@
+# Proposed independent oracle. Not approved. Engine must not overwrite this file.
+
+scenario_id: G-MAGI-05
+status: approved
+approved_at: "2026-08-18"
+decision_state: INDETERMINATE
+data_completeness: pending_review
+scale: 2
+applicable_threshold_minor: 8460000
+safety_reserve_minor: 500000
+actual_included_ytd_minor: 300000
+known_remaining_minor: 0
+uncertain_amount_minor: 1000000
+base_forecast_minor: 300000
+conservative_forecast_minor: 1300000
+raw_headroom_minor: 8160000
+protected_headroom_minor: 6660000
+range_low_minor: 300000
+range_high_minor: 1300000
+included: [G05-CAR-DIV]
+excluded: []
+warnings:
+  - "Classify G05-ROC-1 (ROC vs taxable dividend) before SAFE is allowed"
+trace:
+  - "car taxable dividend G05-CAR-DIV 3000.00 is included"
+  - "ROC G05-ROC-1 10000.00 is unresolved → uncertain, not coerced to zero"
+  - "INDETERMINATE; must not display SAFE"

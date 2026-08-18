@@ -1,0 +1,41 @@
+scenario_id: G-MAGI-10
+scenario_version: "0.2.0-proposed"
+business_question: Year-end values reconcile to the applicable tax forms; differences remain visible with evidence and approved adjustments.
+requirement_ids: [V1.1-§11.4-G-MAGI-10]
+as_of_date: "2026-12-31"
+coverage_year: 2026
+oracle: tests/golden/oracle/G-MAGI-10.yaml
+input_facts:
+  household:
+    size: 2
+    jurisdiction: US-contiguous-DC
+  accounts:
+    - { name: Taxable Brokerage, kind: taxable, coverage: complete }
+  activities:
+    - { id: G10-DIV-1, account: Taxable Brokerage, type: dividend, occurred_on: "2026-12-15", amount_minor: 5000000, scale: 2, magi: include, classification: taxable_dividend }
+    - { id: G10-GAIN-1, account: Taxable Brokerage, type: sell, occurred_on: "2026-12-20", amount_minor: 200000, scale: 2, magi: include, classification: realized_taxable_capital_gain }
+  tax_forms:
+    - { id: f1099-div, form: "1099-DIV", amount_minor: 5000000, scale: 2, evidence: tests/golden/fixtures/g10-1099div.txt }
+    - { id: f1099-b, form: "1099-B", amount_minor: 250000, scale: 2, evidence: tests/golden/fixtures/g10-1099b.txt }
+  adjustments:
+    - { id: G10-ADJ-1, amount_minor: -50000, scale: 2, reason: "timing difference vs 1099-B; owner-approved", status: approved, approved_at: "2026-08-18" }
+provenance:
+  completeness: complete
+rule_set_id: marketplace-magi-2026-us-contiguous-hh2
+calculation_version: magi-2026.1-proposed
+expected_included: [G10-DIV-1, G10-GAIN-1]
+expected_excluded: []
+expected_subtotals:
+  posted_magi_minor: 5200000
+  form_total_minor: 5250000
+  difference_minor: -50000
+  after_adjustment_minor: 5200000
+expected_range: {}
+expected_status: SAFE
+expected_warnings: []
+tolerance: exact
+precision_policy: fixed-scale
+approval:
+  status: approved
+  rationale: "Owner accepted proposed pack as written on 2026-08-18: household of 2, threshold $84,600, safety reserve $5,000, OVER when actual is at or above threshold."
+  approved_at: "2026-08-18"

@@ -1,0 +1,27 @@
+# Proposed independent oracle. Not approved. Engine must not overwrite this file.
+
+scenario_id: G-MAGI-06
+status: approved
+approved_at: "2026-08-18"
+decision_state: SAFE
+data_completeness: complete
+scale: 2
+applicable_threshold_minor: 8460000
+safety_reserve_minor: 500000
+actual_included_ytd_minor: 5000000
+known_remaining_minor: 0
+base_forecast_minor: 5000000
+conservative_forecast_minor: 5000000
+uncertain_amount_minor: 0
+raw_headroom_minor: 3460000
+protected_headroom_minor: 2960000
+magi_withhold_a_minor: 5000000
+magi_withhold_b_minor: 5000000
+tax_payment_a_minor: 800000
+tax_payment_b_minor: 1200000
+included: [G06-DIV-1]
+excluded: [withhold-a, withhold-b]
+warnings: []
+trace:
+  - "MAGI is 50000.00 under both withholding snapshots"
+  - "tax payment projection 8000.00 vs 12000.00 changes; MAGI does not"

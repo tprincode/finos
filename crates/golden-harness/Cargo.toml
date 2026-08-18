@@ -1,0 +1,23 @@
+[package]
+name = "golden-harness"
+description = "Golden Business Outcome Harness runner and architecture invariant tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+magi-gate = []
+
+[dependencies]
+application-core = { path = "../application-core" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+storage-sqlite = { path = "../storage-sqlite" }
+tempfile.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

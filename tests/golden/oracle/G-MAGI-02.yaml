@@ -1,0 +1,45 @@
+# Proposed independent oracle. Not approved. Engine must not overwrite this file.
+# Boundary uses integer cents. OVER when actual >= threshold.
+
+scenario_id: G-MAGI-02
+status: approved
+approved_at: "2026-08-18"
+decision_state: see-probes
+data_completeness: complete
+scale: 2
+applicable_threshold_minor: 8460000
+safety_reserve_minor: 500000
+probes:
+  - id: below
+    actual_included_ytd_minor: 8459999
+    known_remaining_minor: 0
+    base_forecast_minor: 8459999
+    conservative_forecast_minor: 8459999
+    uncertain_amount_minor: 0
+    raw_headroom_minor: 1
+    protected_headroom_minor: -499999
+    decision_state: WATCH
+    note: "one cent below threshold is not OVER; reserve makes protected headroom negative"
+  - id: at
+    actual_included_ytd_minor: 8460000
+    known_remaining_minor: 0
+    base_forecast_minor: 8460000
+    conservative_forecast_minor: 8460000
+    uncertain_amount_minor: 0
+    raw_headroom_minor: 0
+    protected_headroom_minor: -500000
+    decision_state: OVER
+    note: "actual equals threshold"
+  - id: above
+    actual_included_ytd_minor: 8460001
+    known_remaining_minor: 0
+    base_forecast_minor: 8460001
+    conservative_forecast_minor: 8460001
+    uncertain_amount_minor: 0
+    raw_headroom_minor: -1
+    protected_headroom_minor: -500001
+    decision_state: OVER
+    note: "one cent above threshold"
+warnings: []
+trace:
+  - "No half-cent amounts. Compare exact integer cents to 8460000."

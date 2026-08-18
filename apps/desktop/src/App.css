@@ -1,0 +1,69 @@
+:root {
+  font-family: Segoe UI, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  color: #0f0f0f;
+  background-color: #f6f6f6;
+}
+
+.container {
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 2rem 1.5rem;
+}
+
+.health {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  gap: 0.35rem 1rem;
+  text-align: left;
+}
+
+dt {
+  font-weight: 600;
+}
+
+dd {
+  margin: 0;
+}
+
+.blocked {
+  color: #b42318;
+  font-weight: 600;
+}
+
+.actions {
+  margin-top: 1.5rem;
+}
+
+.actions label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.actions input {
+  padding: 0.4rem 0.5rem;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+button {
+  padding: 0.4rem 0.75rem;
+}
+
+button:disabled {
+  opacity: 0.55;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f6f6f6;
+    background-color: #2f2f2f;
+  }
+}
