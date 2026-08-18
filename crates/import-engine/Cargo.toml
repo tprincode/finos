@@ -10,3 +10,4 @@ application-core = { path = "../application-core" }
 financial-domain = { path = "../financial-domain" }
 serde.workspace = true
 thiserror.workspace = true
+uuid.workspace = true

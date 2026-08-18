@@ -75,6 +75,7 @@ dependencies = [
  "financial-domain",
  "serde",
  "thiserror",
+ "uuid",
 ]
 
 [[package]]
