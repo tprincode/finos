@@ -1,0 +1,353 @@
+# Finance Management System
+# Target Architecture and Implementation Roadmap — V1.1
+Version | Status | Authority date
+1.1 | LOCKED TARGET — adds the Golden Business Outcome Harness; later changes require an approved ADR and version update | 2026-08-14
+
+Architecture decision  Build a local-first Windows/macOS desktop application using Tauri 2, React/TypeScript, Rust and SQLite. The same component boundaries and contracts must support a later centralized server deployment with PostgreSQL and multiple authenticated remote clients without rewriting the financial domain or user experience.
+
+# 1. Purpose and authority
+This document locks V1.1 of the target software architecture for the Finance Management System. It converts the completed cross-cutting and tab requirements into a deployable technical direction. It governs platform selection, component boundaries, data authority, device handoff, centralized expansion, business-outcome verification, implementation sequencing and architectural acceptance.
+The Finance Management System Build Package v2.0 remains the business and data-design baseline.
+V1.1 adds the Golden Business Outcome Harness as a required architecture component and preserves V1.0 as the preceding locked baseline.
+This document is the governing technical architecture unless superseded by a later approved version.
+The initial product is a single-owner, local-first desktop system with controlled handoff between computers.
+Centralized multi-client operation is an intentional deployment evolution supported by V1—not a speculative rewrite.
+Spreadsheet mechanics are evidence of business intent; they are not the target component boundaries.
+# 2. Locked architectural outcomes
+ID | Locked outcome | Implication
+ARCH-01 | Local write-first authority | The operational SQLite database resides in the application data directory on the active computer.
+ARCH-02 | Cross-platform desktop | The same application codebase produces signed Windows and macOS installations.
+ARCH-03 | Component architecture | Business components communicate through versioned interfaces and do not depend on each other’s database tables.
+ARCH-04 | Deployment-independent domain | Financial domain rules do not know whether persistence is SQLite, PostgreSQL, local IPC or a remote API.
+ARCH-05 | Safe computer handoff | Immutable snapshot lineage identifies which computer holds the newest verified state and blocks unsafe divergent writes.
+ARCH-06 | Centralized expansion | The architecture supports a future server-based deployment with multiple authenticated desktop and web clients.
+ARCH-07 | Accuracy and explainability | Financial calculations expose inputs, versions, evidence and reconciliation—not opaque automation.
+ARCH-08 | Progressive automation | Manual, paste/import and API adapters feed the same canonical validation and posting services.
+ARCH-09 | No autonomous financial action | No component may place trades or move money without a separately approved future authorization design.
+
+# 3. Target technology stack
+Layer | V1 selection | Role
+Desktop shell | Tauri 2 | Windows/macOS lifecycle, permissions, installers, signed updates and native integration.
+Presentation | React + TypeScript + Vite | Component-based UI, navigation, forms and interactive workflow.
+Design system | Radix primitives + governed design tokens | Accessible, consistent and polished interface without screen-specific styling drift.
+Tables / charts | TanStack Table + Apache ECharts | High-density financial tables and exact-value drillable visualizations.
+Application core | Rust | Use cases, validation, financial invariants, reconciliation, security and orchestration.
+Persistence | Repository interfaces + SQLx adapters | Prevents UI/domain coupling to a specific database.
+Local database | SQLite, local filesystem, WAL mode | Embedded operational system of record for desktop-local deployment.
+Central database | PostgreSQL when server deployment begins | Concurrent multi-client transactions, server authority and centralized administration.
+Financial precision | Fixed-scale integers and decimal domain types | No binary floating-point arithmetic for authoritative quantities, money, basis or rates.
+Evidence storage | Content-addressed attachment store | Broker exports, statements, tax evidence, hashes and provenance.
+Optional analytics | DuckDB read-only analytical projection | Larger trend and backtesting workloads without becoming another source of truth.
+Optional connectors | Packaged Python worker behind versioned jobs | Provider-specific retrieval, parsing and research when Python materially improves delivery.
+Source / delivery | GitHub + GitHub Actions | Code history, tests, Windows/macOS builds, signatures and controlled releases.
+
+Technology boundary  React never executes arbitrary SQL. Tauri IPC, HTTP APIs, SQLite and PostgreSQL are adapters around the same typed application commands and queries. Python connectors return candidate observations; they never post authoritative financial facts directly.
+
+# 4. Component architecture — confirmed capability
+The target explicitly supports a modular component architecture. V1 will be delivered as a modular monolith: one installable application with strongly separated components. This provides simpler deployment and transactions now while retaining the ability to move selected components behind server APIs later.
+## 4.1 Required architectural layers
+Layer | Responsibility | Dependency rule
+Presentation | Screens, navigation, forms, charts and user interaction. | Depends only on typed client/application contracts.
+Application services | Use cases, workflows, transactions, approvals and orchestration. | Coordinates domain components through ports; contains no UI logic.
+Financial domain | Entities, value objects, policies and deterministic calculations. | Depends on no database, Tauri, network, broker or AI framework.
+Ports / contracts | Repository, evidence, price, connector, identity, clock and notification interfaces. | Owned by the application/domain side, not by adapters.
+Adapters | SQLite, PostgreSQL, filesystem, HTTP, broker import, Python worker and AI provider implementations. | May depend inward on contracts; inward layers never depend outward on adapters.
+
+## 4.2 Component isolation requirements
+Each component owns its commands, queries, validation rules and repository interface.
+A component may reference another component only through an explicit application contract or published domain event.
+No component reads or writes another component’s tables directly.
+Cross-component updates use one application transaction locally or a server-side transaction/outbox pattern centrally.
+Every interface is versioned; adapters can be replaced without changing canonical business entities.
+Critical calculation tests run independently of the desktop shell, network and database engine.
+Shared utilities are limited to true platform capabilities; business logic is not hidden in a generic common module.
+Components remain deployable together until scale, security or organizational evidence justifies separation.
+## 4.3 Recommended bounded components
+Component group | Components | Authority / output
+Platform | Configuration, audit, approvals, exceptions, health, snapshot and restore | Governed configuration, operational evidence and recoverability.
+Registries | Account Registry, Security Master, Symbol History | Stable account/security identities and effective-dated aliases.
+Capture | Source Evidence, Import Staging, Connector Runtime | Immutable raw inputs, parser versions and validated candidates.
+Financial ledger | Investment Activity Ledger, Lot/Basis, Distribution Characterization | Independent events, explicit lots, dual basis, ROC and reconciliation.
+Market/dividend | Price Service, Dividend Intelligence, Calendar | Timestamped prices, declarations and canonical Saturday–Friday schedule.
+Planning | Calculator Plan, Income Plan, Cash Burndown | Versioned Plan, projections, actuals and account cash sufficiency.
+Reporting | Position Details, ROI, Trends, Dashboard | Reconciled views over canonical facts with formula/source drill-down.
+Decision support | Allocation, Shopping Cart, Backtesting, Tax Projection | Alternatives, allocation progress, historical evidence and governed warnings.
+AI advisory | AI Gateway and Analysis Run Registry | Bounded snapshots, provenance, recommendations and owner decisions only.
+
+# 5. Deployment profiles
+Profile | Data authority | Clients | Purpose
+A — Desktop Local (V1) | Local SQLite on active computer | One Tauri desktop session | Initial production deployment; offline-capable and simplest to operate.
+B — Controlled Device Handoff | One verified local SQLite head at a time | Windows and/or Mac used sequentially | Snapshot catalog identifies newest state and prevents silent branching.
+C — Desktop Connected | Central PostgreSQL through server API | Multiple Tauri desktop clients | Concurrent authenticated remote access with centralized authority.
+D — Web Connected | Central PostgreSQL through the same server API | Browser plus Tauri clients | Remote access without local installation while preserving shared business contracts.
+E — Hybrid / Offline Connected (future) | Central authority plus local cache/change journal | Intermittently connected clients | Only after explicit conflict, security and synchronization design is approved.
+
+Expansion guarantee  Profiles C and D are required architectural capabilities. Profile E is not implied by ordinary centralized access; concurrent offline editing is a separate complexity and must not be accidentally introduced.
+
+# 6. V1 local-first runtime architecture
+The React UI sends typed commands and queries through a FinanceClient interface.
+The desktop implementation routes FinanceClient calls through restricted Tauri IPC to Rust application services.
+Application services execute domain rules and repository operations inside explicit transactions.
+SQLite repositories persist canonical facts; the evidence store retains source files and hashes.
+Read models supply screens, tables and charts without making those views authoritative.
+The audit service records imports, approvals, corrections, calculations, automated actions and restores.
+The snapshot coordinator produces and verifies immutable recovery bundles and device manifests.
+## 6.1 Financial data rules
+Use fixed-scale integer storage for authoritative money, price, quantity and rate fields, with domain-specific scale documented in schema metadata.
+Transactions are independent immutable events. Corrections use linked reversals, replacements or new versions.
+The application never assumes FIFO. Lowest-cost-first may be recommended; owner selection and broker reconciliation are explicit.
+Actual price-paid performance basis and tax-adjusted basis remain separate.
+Only CRF may have legitimate zero-cost DRIP lots. Historical source accounts remain valid; future automatic CRF DRIP capture is enabled only for FI Roth.
+Declaration, approved Plan, projected income and actual cash remain separate states.
+Unknown or conflicting values create visible exceptions and are never silently converted to zero.
+# 7. Computer awareness and safe handoff
+Source code, financial data and supporting evidence use different currency mechanisms. GitHub determines the current code release; snapshot lineage determines the current financial database; content hashes determine evidence identity.
+Snapshot field | Purpose
+database_id | Identifies the logical Finance Management System dataset.
+snapshot_id / parent_snapshot_id | Creates an immutable ancestry chain rather than relying only on clock time.
+device_id / device_name | Identifies which computer created the state.
+change_sequence / last_event_at | Shows the data head represented by the snapshot.
+schema_version / calculation_version / app_version | Makes the state reproducible and upgrade-safe.
+database_hash / evidence_manifest_hash | Detects corruption, incomplete transport or unintended modification.
+validation_status / restore_test_status | Prevents an unverified backup from being treated as recoverable.
+
+## 7.1 Startup comparison behavior
+Relationship | Required behavior
+Local head equals published head | Open normally.
+Published head descends from local head | Another computer is newer; block ordinary writing until the newer state is restored or explicitly reviewed.
+Local head descends from published head | Local computer is newer; publish a verified snapshot after the next accepted change/checkpoint.
+Neither head descends from the other | Branch conflict; preserve both states and require explicit reconciliation or approved branch selection.
+Transport unavailable | Allow controlled offline work with visible unverified-handoff status; do not claim the computer is current.
+Snapshot/hash validation fails | Reject the candidate and retain the last verified recoverable state.
+
+The live SQLite database is never placed directly in OneDrive, iCloud Drive, Dropbox or a network share. The transport carries consistent backup bundles and manifests. Cloud synchronization provides awareness and transport, not the database locking mechanism.
+
+# 8. Centralized server and multiple remote clients
+Confirmed target capability  The system must support evolution into a centralized server-based financial operating system that accepts multiple concurrent remote client connections. V1 component boundaries, data contracts and repositories are required to preserve this option.
+
+## 8.1 Central deployment architecture
+Central layer | Recommended implementation | Responsibility
+Clients | Tauri desktop and React web client | Use the same FinanceClient command/query contract; no direct database access.
+Edge/API | TLS reverse proxy plus versioned HTTPS API | Authentication enforcement, request limits, API version routing and transport security.
+Application server | Rust service using the shared application/domain crates; Axum is the preferred HTTP adapter | Commands, queries, transactions, approvals, calculations and event publication.
+Identity | OIDC-compatible identity provider and role/permission policy | Authenticated users, sessions, device registration and least-privilege authorization.
+Operational database | PostgreSQL | Central authoritative transactions, optimistic concurrency and multi-client consistency.
+Evidence store | Encrypted S3-compatible object storage or governed filesystem service | Statements, imports, tax evidence, attachments, hashes and retention.
+Background work | Durable server job runner; PostgreSQL-backed queue initially | Imports, retrieval, reports, snapshots and AI tasks without introducing Kafka prematurely.
+Client updates | Server-Sent Events or WebSocket adapter where justified | Notify connected clients of posted changes; clients re-query authoritative read models.
+Observability | Structured logs, metrics, traces, health checks and owner-readable operations view | Diagnose imports, failures, performance, backup and security events.
+Recovery | PostgreSQL backup/PITR plus evidence backups and tested restore procedures | Central recovery that retains audit and version history.
+
+## 8.2 How V1 avoids a future rewrite
+V1 design choice | Central evolution
+FinanceClient interface in the React application | LocalTauriFinanceClient is replaced by RemoteHttpFinanceClient; screens and workflows remain.
+Application/domain crates independent of Tauri | The same crates run inside a server executable.
+Repository ports owned by the core | SQLite repositories are supplemented by PostgreSQL repositories.
+Versioned command/query DTOs | Tauri IPC DTOs become or generate versioned HTTP API contracts.
+Stable canonical IDs and immutable events | Records retain identity when migrated from local to central authority.
+Content-addressed evidence | Evidence migrates to object storage without changing transaction references.
+Audit and approval components | User/device identity is added without redesigning financial facts.
+Deterministic golden tests | The same business-rule suite validates both local and server deployments.
+
+## 8.3 Concurrency and consistency
+The centralized server is the only writer to PostgreSQL; clients submit commands rather than SQL.
+Commands carry record/version expectations. Conflicting updates return a visible concurrency exception instead of last-write-wins data loss.
+Multi-record financial changes execute within server-side database transactions.
+An outbox pattern publishes cross-component events only after the authoritative transaction commits.
+Read models may be cached, but every screen identifies freshness and can re-query authoritative results.
+Administrative, import, approve, restore and ordinary edit permissions remain distinct even for a small initial user population.
+Remote connectivity uses TLS; secrets and broker identifiers are excluded from logs, AI prompts and ordinary exports.
+## 8.4 Local-to-central migration stages
+Run a centralized technical proof using the existing application core and a PostgreSQL repository adapter.
+Add server identity, OIDC authentication, authorization and device/session records.
+Create a verified migration package from the latest local snapshot and import it into PostgreSQL.
+Reconcile counts, quantities, money, basis, evidence hashes, versions and audit history before authority changes.
+Switch the designated desktop client from LocalTauriFinanceClient to RemoteHttpFinanceClient.
+Run local and central systems read-only in parallel long enough to compare critical calculations and views.
+Record an explicit authority-cutover event; the local database becomes a recoverable export/cache, not an independent writer.
+Add additional desktop and web clients after transaction, permission, backup and concurrency acceptance tests pass.
+## 8.5 What is not required for V1
+No microservice fleet. Begin with a modular server application and extract only components that demonstrate independent scale or security needs.
+No Kubernetes requirement. A single governed server deployment is sufficient until operational evidence justifies orchestration.
+No Kafka or distributed event bus. Use database transactions and an outbox/job mechanism first.
+No live synchronization of SQLite files.
+No automatic conflict merge of financial transactions.
+No concurrent offline editing. If later required, design a dedicated change journal, conflict policy and security model.
+# 9. Application security and operational controls
+Control | Desktop-local | Centralized
+Secrets | Operating-system credential vault; never ordinary config/database fields. | Server secret manager plus client token storage in OS vault.
+Authentication | Owner/device session boundary and approval roles. | OIDC authentication, sessions, devices, roles and permissions.
+Database protection | Local filesystem permissions, full-disk encryption recommendation and encrypted backups. | Network isolation, TLS, database roles, encryption and audited administration.
+Updates | Signed desktop releases; verified migration before startup. | Signed clients plus versioned server deployment and backward-compatible API window.
+Evidence | Hashes, source metadata and controlled local retention. | Encrypted object storage, retention policy and access audit.
+Recovery | Immutable snapshots, integrity checks and test restore. | Database backups/PITR, object-store recovery and full-system restore testing.
+
+# 10. Repository and build structure
+Path | Responsibility
+apps/desktop | React/Tauri desktop application and LocalTauriFinanceClient adapter.
+apps/web (future) | React web client using RemoteHttpFinanceClient.
+services/server (future) | Central Rust application server and HTTP adapter.
+crates/financial-domain | Entities, values, calculations and policies with no framework dependencies.
+crates/application-core | Commands, queries, use cases, ports and orchestration.
+crates/storage-sqlite | Local repositories and migrations.
+crates/storage-postgres (future) | Central repositories and migrations.
+crates/import-engine | Source staging, mapping, validation, idempotency and reconciliation.
+crates/snapshot-service | Backup bundles, hashes, lineage, handoff and restore.
+packages/app-contracts | Generated/shared TypeScript command/query types.
+packages/ui-components | Governed design system and reusable financial UI components.
+workers/python-connectors | Optional provider-specific retrieval and analytical jobs.
+database/seed and tests/golden | Migration data, deterministic cases and cross-engine reconciliation fixtures.
+docs/architecture and docs/adr | Governing architecture, decisions, requirements and acceptance evidence.
+
+# 11. Golden Business Outcome Harness
+Required proof capability  The application must prove owner-level financial outcomes, not merely that individual functions returned values. The Golden Business Outcome Harness executes approved scenarios through the same application and financial-domain services used in production, compares every material intermediate and final result with independently approved expectations, and produces a human-readable evidence report.
+
+The harness is a release-control component shared by local desktop, centralized server, migration, restore and calculation-version validation. It establishes repeatable evidence for questions such as: Given everything known as of a stated date, what is projected Marketplace household MAGI, what headroom remains, how uncertain is the forecast, and which recorded facts and rules caused the answer?
+## 11.1 Proof boundary and decision states
+Harness must prove | Harness must not claim
+All captured facts were classified, included or excluded under an identified effective-dated rule. | That an unknown future dividend, distribution, gain, correction or tax characterization cannot occur.
+Approved assumptions, forecast ranges, safety reserve and data-completeness status are visible. | That a point forecast is a guarantee or professional tax advice.
+The same inputs, rule version and calculation version reproduce the same result. | That a green status is valid when required inputs are missing or unresolved.
+Every total drills down to source transactions, adjustments and classification rationale. | That a test passes merely because the UI displays the expected final number.
+
+Decision state | Required meaning
+SAFE | The conservative projection remains below the applicable threshold after the approved safety reserve, and required data is complete.
+WATCH | The base case remains below the threshold, but uncertainty, trend or protected headroom requires attention.
+LIKELY OVER | The conservative or most-supported projection exceeds the threshold even though the year is not final.
+OVER | Recorded actual-to-date qualifying income has exceeded the threshold.
+INDETERMINATE | Missing, conflicting or unapproved classifications prevent a defensible conclusion; the system must not substitute zero or display SAFE.
+
+## 11.2 Harness architecture and evidence contract
+Harness component | Required responsibility
+Golden scenario registry | Version-controlled, human-readable scenario files with stable IDs, requirement links, as-of date, rule version and owner approval.
+Production-path driver | Invokes the same commands, calculation services and domain policies used by the application; no duplicate test-only business formula.
+Independent expected oracle | Stores manually reviewed expected inclusions, exclusions, subtotals, range and final status; expected values are never regenerated by the code under test.
+Trace comparator | Compares inputs, classifications, intermediate subtotals, precision/rounding, output and warnings—not only the final number.
+Evidence reporter | Produces owner-readable pass/fail evidence with actual versus expected values, source/rule references, assumptions, unresolved items and build identity.
+Release gate | Blocks release, migration, restore or centralized cutover when a required golden case changes unexpectedly or required evidence is incomplete.
+
+Required scenario field | Purpose
+scenario_id / scenario_version | Stable identity and controlled evolution.
+business_question / requirement_ids | Links the test to the owner outcome and governing requirements.
+as_of_date / coverage_year | Prevents present-day rules or future events from contaminating historical cases.
+input_facts / provenance | Synthetic or approved snapshot facts with source identity and completeness status.
+rule_set_id / calculation_version | Identifies the effective-dated policy and executable logic.
+expected_included / expected_excluded | Makes classification decisions directly reviewable.
+expected_subtotals / expected_range | Validates the calculation path and uncertainty model.
+expected_status / expected_warnings | Validates the decision-support behavior.
+tolerance / precision_policy | Uses exact fixed-scale comparison unless a documented domain tolerance is required.
+approval / rationale / approved_at | Prevents silent golden-answer changes and records why the expectation is authoritative.
+
+## 11.3 Required test levels
+Level | Coverage | Examples
+L0 — Invariants | Rules that must always hold. | No unintended FIFO; no duplicate posting; canonical Saturday–Friday week; no silent unknown-to-zero conversion.
+L1 — Golden calculations | Deterministic business calculations independent of UI and infrastructure. | Marketplace MAGI, dividend projection, ROI components, basis, burndown, allocation and backtesting metrics.
+L2 — Component workflows | Commands and events across bounded components. | Import → stage → validate → approve → post → recalculate → audit.
+L3 — Owner journeys | End-to-end questions expressed in business language. | Will I cross the Marketplace threshold? Can planned income fund the forward cash horizon? What is the impact of an exit/replacement?
+L4 — Recovery and portability | Result preservation across operational changes. | Backup/restore, device handoff, schema migration, Windows/macOS and SQLite/PostgreSQL reconciliation.
+
+## 11.4 First locked golden pack — 2026 Marketplace MAGI
+The first golden pack will validate the Marketplace Premium Tax Credit risk question because it exercises transaction classification, tax treatment, rule versioning, forecasting, uncertainty, warnings, traceability and owner-level decision support. The working 2026 example for a tax family of two in the contiguous United States or D.C. is derived—not hardcoded—as 2025 HHS poverty guideline $21,150 × 400% = $84,600. The applicable coverage year, guideline year, household size, jurisdiction, percentage and authoritative source must be stored as effective-dated rule data and confirmed before use.
+Scenario ID | Required golden behavior
+G-MAGI-01 | A complete conservative projection safely below the rule-derived threshold returns SAFE and shows raw and protected headroom.
+G-MAGI-02 | Values immediately below, at and above the boundary produce deterministic boundary behavior with no rounding ambiguity.
+G-MAGI-03 | A taxable traditional IRA distribution increases projected household MAGI and can change the warning state.
+G-MAGI-04 | Qualified FI Roth distributions and internal Roth/HSA investment activity are excluded when the approved classification supports exclusion.
+G-MAGI-05 | Car taxable dividends are included; a distribution with unresolved ROC characterization produces an explicit range or INDETERMINATE state.
+G-MAGI-06 | Changing tax withholding changes tax-payment projections but does not reduce gross taxable income or Marketplace MAGI.
+G-MAGI-07 | A realized taxable capital gain is included and its source transaction remains traceable.
+G-MAGI-08 | A declaration or approved Plan change affects the remaining forecast but never rewrites actual-to-date cash.
+G-MAGI-09 | Missing transactions, incomplete account coverage or unapproved classifications prevent SAFE and identify the exact remediation required.
+G-MAGI-10 | Year-end values reconcile to the applicable tax forms; differences remain visible with evidence and approved adjustments.
+
+Required owner-facing output | Definition
+Applicable threshold | Effective-dated, source-linked rule result rather than a magic number.
+Actual included year to date | Posted qualifying facts through the stated as-of date.
+Known remaining / base forecast / conservative forecast | Separated future layers with assumptions and source quality.
+Uncertain amount | Explicit unresolved classification or amount range.
+Raw headroom / protected headroom | Threshold less projection, and threshold less conservative projection and approved safety reserve.
+Data completeness | Complete, incomplete or pending review with missing-source details.
+Decision state and warnings | SAFE, WATCH, LIKELY OVER, OVER or INDETERMINATE with explanation.
+Calculation trace | Drill-down from result to rule, category, transaction, evidence and version.
+
+## 11.5 Golden-answer governance and release policy
+Golden expectations are reviewed business evidence, not disposable snapshots. A failing test is investigated before any expected value is changed.
+No tool, AI process or application build may automatically approve or overwrite a golden expectation.
+A rule change creates a new effective-dated rule and scenario version; historical golden cases remain reproducible under their original rule version.
+Every pull request that changes financial entities, classification, calculation, import, forecast, precision, migration or restore behavior runs the affected golden packs.
+The evidence report records scenario version, rule version, calculation version, application build/commit, database adapter, platform, execution time and exact differences.
+The same mandatory cases must pass through the local and centralized deployment paths before PostgreSQL authority cutover or multi-client production release.
+Owner acceptance is required for the initial expected results and for any material business-meaning change.
+# 12. Delivery roadmap and release gates
+Milestone | Scope | Exit gate
+0 — Architecture control | Publish this V1.1, ADRs, component contracts, MVP boundary and golden-harness contract. | Every major choice and initial golden expectation has owner-approved rationale and traceability.
+1 — Platform proof | Windows/macOS shell, SQLite migration, device ID, snapshot, newer-device detection and restore. | Both platforms pass the same restore and handoff test.
+2 — Canonical foundation | Registries, evidence, import staging, ledger, audit, exceptions and canonical week. | Migration seed counts and critical totals reconcile exactly.
+3 — Dividend vertical slice | Fidelity/Schwab capture → validation → DividendActual → Income Plan/Dashboard/Trends. | One fact updates every actual view without re-entry; re-import is idempotent.
+4 — Lots and ROI | Dual basis, CRF policy, sales/options, explicit lot reconciliation and lifetime components. | No FIFO assumption; CRF tests and broker reconciliation pass.
+5 — Planning and tax | Calculator Plan, burndown, non-ROI events, ROC and Marketplace projection. | The locked Marketplace MAGI golden pack, state separation, tax categories and warning tests pass.
+6 — Decision intelligence | Allocation, Shopping Cart, backtesting, classification review and AI advisory. | Scenarios expose components, sources, assumptions and owner decisions.
+7 — Release hardening | Signed installers, update, accessibility, performance, backup and restore drills. | Owner acceptance matrix and recovery tests pass.
+8 — Centralization proof | Shared core on Rust server, PostgreSQL adapter and remote desktop client. | Local/central golden tests reconcile and concurrent-command controls pass.
+9 — Multi-client production | OIDC, web client, operations, central backup and controlled authority cutover. | Multiple authenticated clients operate against one audited authoritative server.
+
+# 13. Required architecture decision records
+ADR | Decision
+ADR-0001 | Tauri 2 desktop shell and React/TypeScript presentation.
+ADR-0002 | Rust deployment-independent application/domain core.
+ADR-0003 | SQLite local authority and PostgreSQL centralized authority.
+ADR-0004 | Fixed-scale authoritative financial arithmetic.
+ADR-0005 | Modular monolith component boundaries and dependency rules.
+ADR-0006 | FinanceClient local/remote abstraction and versioned contracts.
+ADR-0007 | Immutable snapshot lineage and controlled device handoff.
+ADR-0008 | Immutable transaction events plus relational current/read models.
+ADR-0009 | Evidence store, import idempotency and correction-not-erasure.
+ADR-0010 | Optional Python connector worker and restricted posting boundary.
+ADR-0011 | Central server, OIDC, optimistic concurrency and PostgreSQL migration path.
+ADR-0012 | AI advisory boundary, provenance and prohibition on authoritative mutation.
+ADR-0013 | Golden Business Outcome Harness, independent expected oracle, evidence contract and golden-answer approval governance.
+
+# 14. Architectural acceptance criteria
+ID | Acceptance criterion
+AC-ARCH-01 | The same React screen can operate through LocalTauriFinanceClient or RemoteHttpFinanceClient without embedding persistence logic.
+AC-ARCH-02 | The financial-domain test suite runs without Tauri, SQLite, PostgreSQL, network or UI dependencies.
+AC-ARCH-03 | SQLite and PostgreSQL repository adapters pass the same repository contract tests before central cutover.
+AC-ARCH-04 | Replacing a price, dividend, AI or broker adapter does not change canonical business entities.
+AC-ARCH-05 | No UI or component directly accesses tables owned by another component.
+AC-ARCH-06 | A newer verified snapshot from another computer is detected before ordinary local writing begins.
+AC-ARCH-07 | A divergent snapshot branch is preserved and blocked for explicit resolution; it is never silently merged.
+AC-ARCH-08 | A local dataset migrates to PostgreSQL with reconciled counts, quantities, money, basis, evidence hashes, versions and audit history.
+AC-ARCH-09 | Two authenticated clients can submit concurrent commands and receive deterministic success or visible concurrency conflicts.
+AC-ARCH-10 | Every centralized command records user, device, time, request/correlation ID, result and material change evidence.
+AC-ARCH-11 | Signed Windows and macOS releases pass migration, backup and restore tests before distribution.
+AC-ARCH-12 | No AI, import or connector adapter can bypass validation/approval to mutate authoritative financial facts.
+AC-ARCH-13 | Every required golden scenario executes through production application/domain services and compares approved intermediate and final results.
+AC-ARCH-14 | A required golden mismatch blocks release; expected results cannot be automatically regenerated or approved by the code under test or an AI process.
+AC-ARCH-15 | The Marketplace MAGI result shows the rule source/version, actual-to-date, forecast layers, uncertainty, completeness, headroom, warning state and full calculation trace.
+AC-ARCH-16 | Missing or unresolved Marketplace inputs return INDETERMINATE and never a misleading SAFE result.
+AC-ARCH-17 | Mandatory golden outcomes reconcile across restore, Windows/macOS, SQLite/PostgreSQL and local/remote execution before the related release gate passes.
+
+# 15. V1 status and controlled evolution
+V1.1 target locked  The system will begin as a local-first desktop application and is architecturally required to expand into a centralized server-based system with multiple remote clients. The Golden Business Outcome Harness is a required release-control component across both deployment models. Centralization changes deployment authority and adapters—not the financial domain, business components, golden business meaning or primary user workflows.
+
+A future change to the desktop framework, domain language, local database, central database, component boundaries, precision policy, device-handoff model or local/remote client contract requires an approved ADR and a new version of this target architecture. Ordinary implementation detail may evolve within these boundaries.
+# 16. Authoritative technical and rule references
+Tauri 2 architecture: https://v2.tauri.app/concept/architecture/
+Tauri SQL plugin and supported engines: https://v2.tauri.app/plugin/sql/
+Tauri external binaries / sidecars: https://v2.tauri.app/develop/sidecar/
+Tauri signed updater: https://v2.tauri.app/plugin/updater/
+Tauri GitHub build pipeline: https://v2.tauri.app/distribute/pipelines/github/
+React documentation: https://react.dev/
+SQLite appropriate uses: https://sqlite.org/whentouse.html
+SQLite WAL and network filesystem limitation: https://www.sqlite.org/wal.html
+SQLite consistent backup guidance: https://sqlite.org/howtocorrupt.html
+DuckDB documentation: https://duckdb.org/docs/current/
+IRS Premium Tax Credit questions and answers: https://www.irs.gov/affordable-care-act/individuals-and-families/questions-and-answers-on-the-premium-tax-credit
+IRS Publication 505 (2026): https://www.irs.gov/pub/irs-pdf/p505.pdf
+2025 HHS poverty guidelines — Federal Register: https://www.federalregister.gov/documents/2025/01/17/2025-01377/annual-update-of-the-hhs-poverty-guidelines
+HealthCare.gov Marketplace income guidance: https://www.healthcare.gov/income-and-household-information/income/
+
+PROJECT LOCK DISPOSITION — 15 August 2026
+Status: LOCKED TARGET ARCHITECTURE V1.1
+Accepted as the governing technical architecture for the Finance Management System. Tauri 2 + React/TypeScript + Rust + SQLite local-first; path to PostgreSQL multi-client; Golden Business Outcome Harness required; modular monolith; immutable snapshot device handoff. Later changes require an approved ADR and version update.
+Consistent with Build Package v2.0, Cross-Cutting BR-X baseline, and locked domain target architectures. Development tool: Cursor.
