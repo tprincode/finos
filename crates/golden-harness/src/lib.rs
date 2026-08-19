@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 mod magi_run;
 
-pub use magi_run::{compare_magi_pack, magi_pack_run};
+pub use magi_run::{compare_magi_pack, compare_magi_pack_postgres, magi_pack_run};
 
 pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -275,6 +275,7 @@ fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
         command_name: name.to_string(),
         correlation_id: Uuid::new_v4(),
         body_json: Some(body.to_string()),
+        expected_version: None,
     }
 }
 

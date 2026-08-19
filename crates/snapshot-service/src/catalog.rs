@@ -164,9 +164,9 @@ impl SnapshotCatalog {
         if let Some(parent) = dest_db.parent() {
             fs::create_dir_all(parent)?;
         }
-        remove_sqlite_sidecars(dest_db);
+        remove_sqlite_sidecars(dest_db)?;
         fs::copy(self.database_path(snapshot_id), dest_db)?;
-        remove_sqlite_sidecars(dest_db);
+        remove_sqlite_sidecars(dest_db)?;
         Ok(manifest)
     }
 
@@ -214,11 +214,20 @@ impl SnapshotCatalog {
     }
 }
 
-fn remove_sqlite_sidecars(db_path: &Path) {
-    let wal = sidecar(db_path, "-wal");
-    let shm = sidecar(db_path, "-shm");
-    let _ = fs::remove_file(wal);
-    let _ = fs::remove_file(shm);
+fn remove_sqlite_sidecars(db_path: &Path) -> Result<(), CatalogError> {
+    for suffix in ["-wal", "-shm"] {
+        let path = sidecar(db_path, suffix);
+        if path.exists() {
+            fs::remove_file(&path)?;
+        }
+        if path.exists() {
+            return Err(CatalogError::Unavailable(format!(
+                "could not remove sqlite sidecar {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn sidecar(db_path: &Path, suffix: &str) -> PathBuf {

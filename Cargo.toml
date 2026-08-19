@@ -4,10 +4,12 @@ members = [
     "crates/financial-domain",
     "crates/application-core",
     "crates/storage-sqlite",
+    "crates/storage-postgres",
     "crates/import-engine",
     "crates/snapshot-service",
     "crates/golden-harness",
     "crates/ai-gateway",
+    "services/server",
 ]
 
 [workspace.package]
@@ -26,5 +28,6 @@ sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+jsonwebtoken = "9"

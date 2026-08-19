@@ -25,13 +25,30 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "certificateThumbprint": "CEAAACA78BB136405A1496C2DD39EB0E8975D6E6",
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGNDQ1NzQyODY2MUY3OTYKUldTVzkyR0dRbGRFNzdVV3QxbXA0RkZ4SzRJWTlYc2JKR2hiV1kySjNmdGxCYm5Kem5FZ0dJMlcK",
+      "endpoints": [
+        "https://github.com/EVTom/finos/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

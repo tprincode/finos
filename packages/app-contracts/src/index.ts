@@ -12,6 +12,7 @@ export type CommandRequest = {
   commandName: string;
   correlationId: string;
   bodyJson?: string;
+  expectedVersion?: number;
 };
 
 export type QueryRequest = {
@@ -86,6 +87,7 @@ export type AccountRecord = {
   accountId: string;
   name: string;
   kind: string;
+  rowVersion?: number;
 };
 
 export type CanonicalWeek = {
@@ -182,6 +184,32 @@ export type BrokerLotReconcileGet = {
   quantityScale: number;
 };
 
+export type PositionDetailsGet = {
+  positions: Array<{
+    accountId: string;
+    accountName: string;
+    securityId: string;
+    symbol: string;
+    remainingQuantityMinor: number;
+    quantityScale: number;
+    remainingPerformanceMinor: number;
+    remainingTaxMinor: number;
+    lotCount: number;
+    scale: number;
+  }>;
+  openPerformanceMinor: number;
+  openTaxMinor: number;
+  scale: number;
+};
+
+export type TaxProjectionGet = {
+  sourceQuery: string;
+  decisionState: DecisionState;
+  actualIncludedYtd: Money;
+  applicableThreshold: Money;
+  dataCompleteness: DataCompleteness;
+};
+
 export type DecisionState =
   | "SAFE"
   | "WATCH"
@@ -236,6 +264,9 @@ export type AllocationGet = {
     targetMinor: number;
     scale: number;
   }>;
+  openPerformanceMinor: number;
+  openTaxMinor: number;
+  scale: number;
 };
 
 export type CartGet = {
@@ -275,4 +306,11 @@ export type AnalysisRunList = {
     model: string;
     status: string;
   }>;
+};
+
+/** Check-for-update status. Fail closed: never applied, never posted. */
+export type UpdaterCheckGet = {
+  applied: boolean;
+  posted: boolean;
+  status: string;
 };

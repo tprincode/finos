@@ -7,42 +7,55 @@ use crate::contracts::{
     AccountRecord, ActivityRecord, AuditRecord, BasisGetBody, BrokerLotReconcileBody,
     CanonicalWeekBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
     ExceptionRecord, ImportBatchRecord, ImportCandidate, IncomePlanBody, LotAssignmentRecord,
-    LotRecommendBody, LotRecord, MagiProjection, MagiTaxPaymentBody, ReconcileCounts, RoiBody,
+    LotRecommendBody, LotRecord,     MagiProjection, MagiTaxPaymentBody, ReconcileCounts, RoiBody,
     SecurityRecord, AllocationGetBody, AiRunListBody, AiRunRecord, BacktestGetBody, BurndownBody, CalculatorPlanBody, CartGetBody,
-    ClassificationReviewGetBody,
+    ClassificationReviewGetBody, PositionDetailsBody, TaxProjectionBody,
 };
 use crate::ports::platform::PlatformError;
 
+fn ni<T>() -> Result<T, PlatformError> {
+    Err(PlatformError::new(
+        "not_implemented",
+        "canonical adapter not attached",
+    ))
+}
+
 #[async_trait]
+#[allow(unused_variables)]
 pub trait Canonical: Send + Sync {
     async fn account_register(
         &self,
         name: String,
         kind: String,
-    ) -> Result<AccountRecord, PlatformError>;
+    ) -> Result<AccountRecord, PlatformError> { ni() }
     async fn account_update(
         &self,
         account_id: Uuid,
         name: Option<String>,
         kind: Option<String>,
-    ) -> Result<AccountRecord, PlatformError>;
-    async fn account_get(&self, account_id: Uuid) -> Result<AccountRecord, PlatformError>;
-    async fn account_list(&self) -> Result<Vec<AccountRecord>, PlatformError>;
+        expected_version: Option<i64>,
+    ) -> Result<AccountRecord, PlatformError> { ni() }
+    async fn snapshot_import_sqlite(
+        &self,
+        sqlite_path: String,
+    ) -> Result<ReconcileCounts, PlatformError> { ni() }
+    async fn account_get(&self, account_id: Uuid) -> Result<AccountRecord, PlatformError> { ni() }
+    async fn account_list(&self) -> Result<Vec<AccountRecord>, PlatformError> { ni() }
 
     async fn security_register(
         &self,
         symbol: String,
         name: String,
-    ) -> Result<SecurityRecord, PlatformError>;
-    async fn security_get(&self, security_id: Uuid) -> Result<SecurityRecord, PlatformError>;
-    async fn security_list(&self) -> Result<Vec<SecurityRecord>, PlatformError>;
+    ) -> Result<SecurityRecord, PlatformError> { ni() }
+    async fn security_get(&self, security_id: Uuid) -> Result<SecurityRecord, PlatformError> { ni() }
+    async fn security_list(&self) -> Result<Vec<SecurityRecord>, PlatformError> { ni() }
 
     async fn evidence_store(
         &self,
         filename: String,
         content: Vec<u8>,
-    ) -> Result<EvidenceRecord, PlatformError>;
-    async fn evidence_get(&self, evidence_id: Uuid) -> Result<EvidenceRecord, PlatformError>;
+    ) -> Result<EvidenceRecord, PlatformError> { ni() }
+    async fn evidence_get(&self, evidence_id: Uuid) -> Result<EvidenceRecord, PlatformError> { ni() }
 
     async fn import_stage(
         &self,
@@ -51,11 +64,11 @@ pub trait Canonical: Send + Sync {
         content: Vec<u8>,
         candidates: Vec<ImportCandidate>,
         default_account: Option<String>,
-    ) -> Result<ImportBatchRecord, PlatformError>;
-    async fn import_validate(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError>;
-    async fn import_approve(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError>;
-    async fn import_post(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError>;
-    async fn import_batch_get(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError>;
+    ) -> Result<ImportBatchRecord, PlatformError> { ni() }
+    async fn import_validate(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
+    async fn import_approve(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
+    async fn import_post(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
+    async fn import_batch_get(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
 
     async fn activity_post(
         &self,
@@ -68,25 +81,25 @@ pub trait Canonical: Send + Sync {
         corrects_activity_id: Option<Uuid>,
         import_batch_id: Option<Uuid>,
         idempotency_key: Option<String>,
-    ) -> Result<ActivityRecord, PlatformError>;
+    ) -> Result<ActivityRecord, PlatformError> { ni() }
     async fn activity_correct(
         &self,
         activity_id: Uuid,
         amount_minor: Option<i64>,
         scale: u8,
         occurred_on: String,
-    ) -> Result<ActivityRecord, PlatformError>;
-    async fn activity_get(&self, activity_id: Uuid) -> Result<ActivityRecord, PlatformError>;
-    async fn activity_list(&self) -> Result<Vec<ActivityRecord>, PlatformError>;
+    ) -> Result<ActivityRecord, PlatformError> { ni() }
+    async fn activity_get(&self, activity_id: Uuid) -> Result<ActivityRecord, PlatformError> { ni() }
+    async fn activity_list(&self) -> Result<Vec<ActivityRecord>, PlatformError> { ni() }
 
-    async fn audit_list(&self) -> Result<Vec<AuditRecord>, PlatformError>;
+    async fn audit_list(&self) -> Result<Vec<AuditRecord>, PlatformError> { ni() }
     async fn exception_acknowledge(
         &self,
         exception_id: Uuid,
-    ) -> Result<ExceptionRecord, PlatformError>;
-    async fn exception_list(&self) -> Result<Vec<ExceptionRecord>, PlatformError>;
-    async fn canonical_week_get(&self, as_of_date: String) -> Result<CanonicalWeekBody, PlatformError>;
-    async fn reconcile_counts(&self) -> Result<ReconcileCounts, PlatformError>;
+    ) -> Result<ExceptionRecord, PlatformError> { ni() }
+    async fn exception_list(&self) -> Result<Vec<ExceptionRecord>, PlatformError> { ni() }
+    async fn canonical_week_get(&self, as_of_date: String) -> Result<CanonicalWeekBody, PlatformError> { ni() }
+    async fn reconcile_counts(&self) -> Result<ReconcileCounts, PlatformError> { ni() }
 
     async fn dividend_declare(
         &self,
@@ -94,7 +107,7 @@ pub trait Canonical: Send + Sync {
         declared_on: String,
         amount_minor: i64,
         scale: u8,
-    ) -> Result<DividendDeclaration, PlatformError>;
+    ) -> Result<DividendDeclaration, PlatformError> { ni() }
     async fn dividend_actual_record(
         &self,
         account_id: Uuid,
@@ -103,14 +116,14 @@ pub trait Canonical: Send + Sync {
         amount_minor: Option<i64>,
         scale: u8,
         idempotency_key: Option<String>,
-    ) -> Result<DividendActual, PlatformError>;
-    async fn dividend_get(&self) -> Result<DividendGetBody, PlatformError>;
+    ) -> Result<DividendActual, PlatformError> { ni() }
+    async fn dividend_get(&self) -> Result<DividendGetBody, PlatformError> { ni() }
     async fn income_plan_update(
         &self,
         planned_minor: i64,
         scale: u8,
-    ) -> Result<IncomePlanBody, PlatformError>;
-    async fn income_plan_get(&self) -> Result<IncomePlanBody, PlatformError>;
+    ) -> Result<IncomePlanBody, PlatformError> { ni() }
+    async fn income_plan_get(&self) -> Result<IncomePlanBody, PlatformError> { ni() }
 
     async fn lot_open(
         &self,
@@ -124,26 +137,28 @@ pub trait Canonical: Send + Sync {
         tax_basis_minor: i64,
         scale: u8,
         opening_activity_id: Option<Uuid>,
-    ) -> Result<LotRecord, PlatformError>;
+    ) -> Result<LotRecord, PlatformError> { ni() }
     async fn lot_assign(
         &self,
         lot_id: Uuid,
         activity_id: Uuid,
         quantity_minor: i64,
         quantity_scale: u8,
-    ) -> Result<LotAssignmentRecord, PlatformError>;
-    async fn lot_get(&self, lot_id: Uuid) -> Result<LotRecord, PlatformError>;
-    async fn basis_get(&self) -> Result<BasisGetBody, PlatformError>;
-    async fn roi_get(&self) -> Result<RoiBody, PlatformError>;
-    async fn lot_recommend(&self, account_id: Uuid, security_id: Uuid) -> Result<LotRecommendBody, PlatformError>;
-    async fn broker_lot_reconcile(&self) -> Result<BrokerLotReconcileBody, PlatformError>;
+    ) -> Result<LotAssignmentRecord, PlatformError> { ni() }
+    async fn lot_get(&self, lot_id: Uuid) -> Result<LotRecord, PlatformError> { ni() }
+    async fn basis_get(&self) -> Result<BasisGetBody, PlatformError> { ni() }
+    async fn roi_get(&self) -> Result<RoiBody, PlatformError> { ni() }
+    async fn lot_recommend(&self, account_id: Uuid, security_id: Uuid) -> Result<LotRecommendBody, PlatformError> { ni() }
+    async fn broker_lot_reconcile(&self) -> Result<BrokerLotReconcileBody, PlatformError> { ni() }
+    async fn position_details_get(&self) -> Result<PositionDetailsBody, PlatformError> { ni() }
+    async fn tax_projection_get(&self) -> Result<TaxProjectionBody, PlatformError> { ni() }
 
     async fn magi_rule_set(
         &self,
         threshold_minor: i64,
         safety_reserve_minor: i64,
         scale: u8,
-    ) -> Result<MagiProjection, PlatformError>;
+    ) -> Result<MagiProjection, PlatformError> { ni() }
     async fn magi_fact_record(
         &self,
         source_id: String,
@@ -151,7 +166,7 @@ pub trait Canonical: Send + Sync {
         amount_minor: i64,
         scale: u8,
         category: String,
-    ) -> Result<MagiProjection, PlatformError>;
+    ) -> Result<MagiProjection, PlatformError> { ni() }
     async fn magi_coverage_set(
         &self,
         completeness: String,
@@ -159,9 +174,9 @@ pub trait Canonical: Send + Sync {
         withholding_minor: i64,
         form_total_minor: i64,
         warnings: Vec<String>,
-    ) -> Result<MagiProjection, PlatformError>;
-    async fn magi_projection_get(&self) -> Result<MagiProjection, PlatformError>;
-    async fn magi_tax_payment_get(&self) -> Result<MagiTaxPaymentBody, PlatformError>;
+    ) -> Result<MagiProjection, PlatformError> { ni() }
+    async fn magi_projection_get(&self) -> Result<MagiProjection, PlatformError> { ni() }
+    async fn magi_tax_payment_get(&self) -> Result<MagiTaxPaymentBody, PlatformError> { ni() }
     async fn magi_adjustment_record(
         &self,
         adjustment_id: String,
@@ -169,33 +184,33 @@ pub trait Canonical: Send + Sync {
         scale: u8,
         status: String,
         reason: String,
-    ) -> Result<MagiProjection, PlatformError>;
+    ) -> Result<MagiProjection, PlatformError> { ni() }
 
     async fn plan_approve(
         &self,
         remaining_minor: i64,
         scale: u8,
         approved_on: String,
-    ) -> Result<CalculatorPlanBody, PlatformError>;
-    async fn plan_get(&self) -> Result<CalculatorPlanBody, PlatformError>;
-    async fn burndown_get(&self) -> Result<BurndownBody, PlatformError>;
+    ) -> Result<CalculatorPlanBody, PlatformError> { ni() }
+    async fn plan_get(&self) -> Result<CalculatorPlanBody, PlatformError> { ni() }
+    async fn burndown_get(&self) -> Result<BurndownBody, PlatformError> { ni() }
 
     async fn allocation_target_set(
         &self,
         name: String,
         target_minor: i64,
         scale: u8,
-    ) -> Result<AllocationGetBody, PlatformError>;
-    async fn allocation_get(&self) -> Result<AllocationGetBody, PlatformError>;
+    ) -> Result<AllocationGetBody, PlatformError> { ni() }
+    async fn allocation_get(&self) -> Result<AllocationGetBody, PlatformError> { ni() }
 
     async fn cart_item_add(
         &self,
         symbol: String,
         quantity_minor: i64,
         quantity_scale: u8,
-    ) -> Result<CartGetBody, PlatformError>;
-    async fn cart_item_remove(&self, item_id: Uuid) -> Result<CartGetBody, PlatformError>;
-    async fn cart_get(&self) -> Result<CartGetBody, PlatformError>;
+    ) -> Result<CartGetBody, PlatformError> { ni() }
+    async fn cart_item_remove(&self, item_id: Uuid) -> Result<CartGetBody, PlatformError> { ni() }
+    async fn cart_get(&self) -> Result<CartGetBody, PlatformError> { ni() }
 
     async fn backtest_run(
         &self,
@@ -203,31 +218,24 @@ pub trait Canonical: Send + Sync {
         hypothetical_pnl_minor: i64,
         scale: u8,
         completed_at: String,
-    ) -> Result<BacktestGetBody, PlatformError>;
-    async fn backtest_get(&self) -> Result<BacktestGetBody, PlatformError>;
+    ) -> Result<BacktestGetBody, PlatformError> { ni() }
+    async fn backtest_get(&self) -> Result<BacktestGetBody, PlatformError> { ni() }
 
     async fn classification_review_record(
         &self,
         fact_key: String,
         classification: String,
         status: String,
-    ) -> Result<ClassificationReviewGetBody, PlatformError>;
-    async fn classification_review_get(&self) -> Result<ClassificationReviewGetBody, PlatformError>;
+    ) -> Result<ClassificationReviewGetBody, PlatformError> { ni() }
+    async fn classification_review_get(&self) -> Result<ClassificationReviewGetBody, PlatformError> { ni() }
 
-    async fn ai_analyze(&self, prompt: String) -> Result<AiRunRecord, PlatformError>;
-    async fn ai_run_get(&self, run_id: Uuid) -> Result<AiRunRecord, PlatformError>;
-    async fn analysis_run_list(&self) -> Result<AiRunListBody, PlatformError>;
+    async fn ai_analyze(&self, prompt: String) -> Result<AiRunRecord, PlatformError> { ni() }
+    async fn ai_run_get(&self, run_id: Uuid) -> Result<AiRunRecord, PlatformError> { ni() }
+    async fn analysis_run_list(&self) -> Result<AiRunListBody, PlatformError> { ni() }
 }
 
 /// Test double: every method returns not_implemented.
 pub struct UnimplementedCanonical;
-
-fn ni<T>() -> Result<T, PlatformError> {
-    Err(PlatformError::new(
-        "not_implemented",
-        "canonical adapter not attached",
-    ))
-}
 
 #[async_trait]
 impl Canonical for UnimplementedCanonical {
@@ -243,6 +251,7 @@ impl Canonical for UnimplementedCanonical {
         _account_id: Uuid,
         _name: Option<String>,
         _kind: Option<String>,
+        _expected_version: Option<i64>,
     ) -> Result<AccountRecord, PlatformError> {
         ni()
     }
@@ -421,6 +430,12 @@ impl Canonical for UnimplementedCanonical {
         ni()
     }
     async fn broker_lot_reconcile(&self) -> Result<BrokerLotReconcileBody, PlatformError> {
+        ni()
+    }
+    async fn position_details_get(&self) -> Result<PositionDetailsBody, PlatformError> {
+        ni()
+    }
+    async fn tax_projection_get(&self) -> Result<TaxProjectionBody, PlatformError> {
         ni()
     }
     async fn magi_rule_set(

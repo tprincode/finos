@@ -8,6 +8,9 @@
     "packages/*"
   ],
   "scripts": {
-    "desktop": "npm start --workspace=@finos/desktop"
+    "desktop": "npm start --workspace=@finos/desktop",
+    "desktop:build": "npm run tauri --workspace=@finos/desktop -- build",
+    "web": "npm run dev --workspace=@finos/web",
+    "web:check": "npm run build --workspace=@finos/web"
   }
 }

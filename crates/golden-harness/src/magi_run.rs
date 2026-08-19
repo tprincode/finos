@@ -3,15 +3,24 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::future::Future;
 use std::path::Path;
 
 use application_core::contracts::{
     CommandRequest, MagiProjection, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
 };
+use application_core::ports::canonical::Canonical;
+use application_core::ports::platform::Platform;
 use application_core::queries::{execute_command_on, execute_query_on};
 use serde::Deserialize;
+use storage_postgres::PostgresPlatform;
 use storage_sqlite::LocalPlatform;
 use uuid::Uuid;
+
+struct MagiSession<P> {
+    platform: P,
+    _hold: Option<tempfile::TempDir>,
+}
 
 use crate::{magi_pack_inventory, magi_pack_verdict, MagiPackVerdict};
 
@@ -210,6 +219,7 @@ fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
         command_name: name.to_string(),
         correlation_id: Uuid::new_v4(),
         body_json: Some(body.to_string()),
+        expected_version: None,
     }
 }
 
@@ -222,8 +232,8 @@ fn qry(name: &str) -> QueryRequest {
     }
 }
 
-async fn must_cmd(
-    platform: &LocalPlatform,
+async fn must_cmd<P: Platform + Canonical>(
+    platform: &P,
     name: &str,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -237,7 +247,7 @@ async fn must_cmd(
     serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).map_err(|e| e.to_string())
 }
 
-async fn projection(platform: &LocalPlatform) -> Result<MagiProjection, String> {
+async fn projection<P: Platform + Canonical>(platform: &P) -> Result<MagiProjection, String> {
     let result = execute_query_on(platform, platform, qry("MagiProjectionGet")).await;
     if !result.ok {
         return Err(format!(
@@ -248,7 +258,7 @@ async fn projection(platform: &LocalPlatform) -> Result<MagiProjection, String> 
     serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).map_err(|e| e.to_string())
 }
 
-async fn tax_payment(platform: &LocalPlatform) -> Result<i64, String> {
+async fn tax_payment<P: Platform + Canonical>(platform: &P) -> Result<i64, String> {
     let result = execute_query_on(platform, platform, qry("MagiTaxPaymentGet")).await;
     if !result.ok {
         return Err(format!(
@@ -263,15 +273,18 @@ async fn tax_payment(platform: &LocalPlatform) -> Result<i64, String> {
         .ok_or_else(|| "MagiTaxPaymentGet missing amountMinor".into())
 }
 
-async fn open_platform() -> Result<(LocalPlatform, tempfile::TempDir), String> {
+async fn sqlite_session() -> Result<MagiSession<LocalPlatform>, String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let platform = LocalPlatform::open(dir.path().join("app-data"))
         .await
         .map_err(|e| e.to_string())?;
-    Ok((platform, dir))
+    Ok(MagiSession {
+        platform,
+        _hold: Some(dir),
+    })
 }
 
-async fn set_rule(platform: &LocalPlatform, root: &Path) -> Result<(), String> {
+async fn set_rule<P: Platform + Canonical>(platform: &P, root: &Path) -> Result<(), String> {
     let rule: MagiRuleFile = serde_yaml::from_str(
         &fs::read_to_string(root.join("tests/golden/rules/marketplace-magi-2026.yaml"))
             .map_err(|e| e.to_string())?,
@@ -290,8 +303,8 @@ async fn set_rule(platform: &LocalPlatform, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn register_accounts(
-    platform: &LocalPlatform,
+async fn register_accounts<P: Platform + Canonical>(
+    platform: &P,
     accounts: &[NamedAccount],
 ) -> Result<HashMap<String, String>, String> {
     let mut ids = HashMap::new();
@@ -312,8 +325,8 @@ async fn register_accounts(
     Ok(ids)
 }
 
-async fn post_activity(
-    platform: &LocalPlatform,
+async fn post_activity<P: Platform + Canonical>(
+    platform: &P,
     accounts: &HashMap<String, String>,
     activity: &FactActivity,
 ) -> Result<(), String> {
@@ -336,7 +349,10 @@ async fn post_activity(
     Ok(())
 }
 
-async fn record_fact(platform: &LocalPlatform, activity: &FactActivity) -> Result<(), String> {
+async fn record_fact<P: Platform + Canonical>(
+    platform: &P,
+    activity: &FactActivity,
+) -> Result<(), String> {
     must_cmd(
         platform,
         "MagiFactRecord",
@@ -352,8 +368,8 @@ async fn record_fact(platform: &LocalPlatform, activity: &FactActivity) -> Resul
     Ok(())
 }
 
-async fn set_coverage(
-    platform: &LocalPlatform,
+async fn set_coverage<P: Platform + Canonical>(
+    platform: &P,
     completeness: &str,
     remaining_minor: i64,
     withholding_minor: i64,
@@ -572,17 +588,17 @@ fn form_total_from(scenario: &ScenarioFile) -> i64 {
         .sum()
 }
 
-async fn run_standard(
+async fn run_standard<P: Platform + Canonical>(
+    platform: &P,
     root: &Path,
     scenario: &ScenarioFile,
     oracle: &OracleFile,
 ) -> Result<Vec<String>, String> {
-    let (platform, _dir) = open_platform().await?;
-    set_rule(&platform, root).await?;
-    let accounts = register_accounts(&platform, &scenario.input_facts.accounts).await?;
+    set_rule(platform, root).await?;
+    let accounts = register_accounts(platform, &scenario.input_facts.accounts).await?;
     for activity in &scenario.input_facts.activities {
-        post_activity(&platform, &accounts, activity).await?;
-        record_fact(&platform, activity).await?;
+        post_activity(platform, &accounts, activity).await?;
+        record_fact(platform, activity).await?;
     }
     let form_total = form_total_from(scenario);
     let extra_warnings = if form_total != 0 {
@@ -591,7 +607,7 @@ async fn run_standard(
         scenario.expected_warnings.clone()
     };
     set_coverage(
-        &platform,
+        platform,
         &scenario.provenance.completeness,
         remaining_from(scenario),
         0,
@@ -601,7 +617,7 @@ async fn run_standard(
     .await?;
     for adj in &scenario.input_facts.adjustments {
         must_cmd(
-            &platform,
+            platform,
             "MagiAdjustmentRecord",
             serde_json::json!({
                 "adjustmentId": adj.id,
@@ -613,13 +629,23 @@ async fn run_standard(
         )
         .await?;
     }
-    let actual = projection(&platform).await?;
+    let actual = projection(platform).await?;
     let mut diffs = Vec::new();
     compare_money_fields(&actual, oracle, &mut diffs);
     Ok(diffs)
 }
 
-async fn run_g02(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> Result<Vec<String>, String> {
+async fn run_g02<P, F, Fut>(
+    open: &mut F,
+    root: &Path,
+    scenario: &ScenarioFile,
+    oracle: &OracleFile,
+) -> Result<Vec<String>, String>
+where
+    P: Platform + Canonical,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<MagiSession<P>, String>>,
+{
     let mut diffs = Vec::new();
     for probe in &oracle.probes {
         let fact = scenario
@@ -628,10 +654,11 @@ async fn run_g02(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
             .iter()
             .find(|p| p.id == probe.id)
             .ok_or_else(|| format!("missing probe {}", probe.id))?;
-        let (platform, _dir) = open_platform().await?;
-        set_rule(&platform, root).await?;
+        let session = open().await?;
+        let platform = &session.platform;
+        set_rule(platform, root).await?;
         must_cmd(
-            &platform,
+            platform,
             "MagiFactRecord",
             serde_json::json!({
                 "sourceId": fact.id,
@@ -642,8 +669,8 @@ async fn run_g02(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
             }),
         )
         .await?;
-        set_coverage(&platform, "complete", 0, 0, 0, &[]).await?;
-        let actual = projection(&platform).await?;
+        set_coverage(platform, "complete", 0, 0, 0, &[]).await?;
+        let actual = projection(platform).await?;
         eq_str(
             &format!("{}.decision", probe.id),
             &decision_str(&actual),
@@ -703,10 +730,14 @@ async fn run_g02(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
     Ok(diffs)
 }
 
-async fn run_g03(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> Result<Vec<String>, String> {
-    let (platform, _dir) = open_platform().await?;
-    set_rule(&platform, root).await?;
-    let accounts = register_accounts(&platform, &scenario.input_facts.accounts).await?;
+async fn run_g03<P: Platform + Canonical>(
+    platform: &P,
+    root: &Path,
+    scenario: &ScenarioFile,
+    oracle: &OracleFile,
+) -> Result<Vec<String>, String> {
+    set_rule(platform, root).await?;
+    let accounts = register_accounts(platform, &scenario.input_facts.accounts).await?;
     let div = scenario
         .input_facts
         .activities
@@ -719,13 +750,13 @@ async fn run_g03(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
         .iter()
         .find(|a| a.id == "G03-IRA-1")
         .ok_or_else(|| "missing G03-IRA-1".to_string())?;
-    post_activity(&platform, &accounts, div).await?;
-    record_fact(&platform, div).await?;
-    set_coverage(&platform, "complete", 0, 0, 0, &[]).await?;
-    let before = projection(&platform).await?;
-    post_activity(&platform, &accounts, ira).await?;
-    record_fact(&platform, ira).await?;
-    let after = projection(&platform).await?;
+    post_activity(platform, &accounts, div).await?;
+    record_fact(platform, div).await?;
+    set_coverage(platform, "complete", 0, 0, 0, &[]).await?;
+    let before = projection(platform).await?;
+    post_activity(platform, &accounts, ira).await?;
+    record_fact(platform, ira).await?;
+    let after = projection(platform).await?;
     let mut diffs = Vec::new();
     if let Some(exp) = &oracle.before_ira {
         compare_snap("before_ira", &before, exp, &mut diffs);
@@ -742,13 +773,17 @@ async fn run_g03(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
     Ok(diffs)
 }
 
-async fn run_g06(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> Result<Vec<String>, String> {
-    let (platform, _dir) = open_platform().await?;
-    set_rule(&platform, root).await?;
-    let accounts = register_accounts(&platform, &scenario.input_facts.accounts).await?;
+async fn run_g06<P: Platform + Canonical>(
+    platform: &P,
+    root: &Path,
+    scenario: &ScenarioFile,
+    oracle: &OracleFile,
+) -> Result<Vec<String>, String> {
+    set_rule(platform, root).await?;
+    let accounts = register_accounts(platform, &scenario.input_facts.accounts).await?;
     for activity in &scenario.input_facts.activities {
-        post_activity(&platform, &accounts, activity).await?;
-        record_fact(&platform, activity).await?;
+        post_activity(platform, &accounts, activity).await?;
+        record_fact(platform, activity).await?;
     }
     let a = scenario
         .input_facts
@@ -762,12 +797,12 @@ async fn run_g06(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
         .iter()
         .find(|w| w.id == "withhold-b")
         .ok_or_else(|| "missing withhold-b".to_string())?;
-    set_coverage(&platform, "complete", 0, a.federal_withheld_minor, 0, &[]).await?;
-    let magi_a = projection(&platform).await?;
-    let tax_a = tax_payment(&platform).await?;
-    set_coverage(&platform, "complete", 0, b.federal_withheld_minor, 0, &[]).await?;
-    let magi_b = projection(&platform).await?;
-    let tax_b = tax_payment(&platform).await?;
+    set_coverage(platform, "complete", 0, a.federal_withheld_minor, 0, &[]).await?;
+    let magi_a = projection(platform).await?;
+    let tax_a = tax_payment(platform).await?;
+    set_coverage(platform, "complete", 0, b.federal_withheld_minor, 0, &[]).await?;
+    let magi_b = projection(platform).await?;
+    let tax_b = tax_payment(platform).await?;
     let mut diffs = Vec::new();
     compare_money_fields(&magi_a, oracle, &mut diffs);
     if let Some(v) = oracle.magi_withhold_a_minor {
@@ -788,13 +823,17 @@ async fn run_g06(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
     Ok(diffs)
 }
 
-async fn run_g08(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> Result<Vec<String>, String> {
-    let (platform, _dir) = open_platform().await?;
-    set_rule(&platform, root).await?;
-    let accounts = register_accounts(&platform, &scenario.input_facts.accounts).await?;
+async fn run_g08<P: Platform + Canonical>(
+    platform: &P,
+    root: &Path,
+    scenario: &ScenarioFile,
+    oracle: &OracleFile,
+) -> Result<Vec<String>, String> {
+    set_rule(platform, root).await?;
+    let accounts = register_accounts(platform, &scenario.input_facts.accounts).await?;
     for activity in &scenario.input_facts.activities {
-        post_activity(&platform, &accounts, activity).await?;
-        record_fact(&platform, activity).await?;
+        post_activity(platform, &accounts, activity).await?;
+        record_fact(platform, activity).await?;
     }
     let before_plan = scenario
         .input_facts
@@ -809,7 +848,7 @@ async fn run_g08(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
         .find(|s| s.id == "after_plan")
         .ok_or_else(|| "missing after_plan".to_string())?;
     set_coverage(
-        &platform,
+        platform,
         "complete",
         before_plan.planned_remaining_minor,
         0,
@@ -817,9 +856,9 @@ async fn run_g08(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
         &[],
     )
     .await?;
-    let before = projection(&platform).await?;
+    let before = projection(platform).await?;
     set_coverage(
-        &platform,
+        platform,
         "complete",
         after_plan.planned_remaining_minor,
         0,
@@ -827,7 +866,7 @@ async fn run_g08(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
         &[],
     )
     .await?;
-    let after = projection(&platform).await?;
+    let after = projection(platform).await?;
     let mut diffs = Vec::new();
     if let Some(exp) = &oracle.before_plan {
         compare_snap("before_plan", &before, exp, &mut diffs);
@@ -842,27 +881,42 @@ async fn run_g08(root: &Path, scenario: &ScenarioFile, oracle: &OracleFile) -> R
     Ok(diffs)
 }
 
-async fn run_one(root: &Path, id: &str) -> Result<Vec<String>, String> {
+async fn run_one<P, F, Fut>(root: &Path, id: &str, open: &mut F) -> Result<Vec<String>, String>
+where
+    P: Platform + Canonical,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<MagiSession<P>, String>>,
+{
     let scenario = load_scenario(root, id)?;
     let oracle = load_oracle(root, id)?;
     match id {
-        "G-MAGI-02" => run_g02(root, &scenario, &oracle).await,
-        "G-MAGI-03" => run_g03(root, &scenario, &oracle).await,
-        "G-MAGI-06" => run_g06(root, &scenario, &oracle).await,
-        "G-MAGI-08" => run_g08(root, &scenario, &oracle).await,
-        _ => run_standard(root, &scenario, &oracle).await,
+        "G-MAGI-02" => run_g02(open, root, &scenario, &oracle).await,
+        other => {
+            let session = open().await?;
+            let platform = &session.platform;
+            match other {
+                "G-MAGI-03" => run_g03(platform, root, &scenario, &oracle).await,
+                "G-MAGI-06" => run_g06(platform, root, &scenario, &oracle).await,
+                "G-MAGI-08" => run_g08(platform, root, &scenario, &oracle).await,
+                _ => run_standard(platform, root, &scenario, &oracle).await,
+            }
+        }
     }
 }
 
-/// Compare every G-MAGI scenario on the production command path. Never writes oracles.
-pub async fn compare_magi_pack(root: &Path) -> Result<(), String> {
+async fn compare_magi_pack_with<P, F, Fut>(root: &Path, mut open: F) -> Result<(), String>
+where
+    P: Platform + Canonical,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<MagiSession<P>, String>>,
+{
     let inv = magi_pack_inventory(root)?;
     if !inv.all_scenarios_approved || !inv.all_oracles_approved {
         return Err("MAGI pack is not owner-approved".into());
     }
     let mut failed = Vec::new();
     for id in &inv.scenario_ids {
-        match run_one(root, id).await {
+        match run_one(root, id, &mut open).await {
             Ok(diffs) if diffs.is_empty() => {}
             Ok(diffs) => failed.push(format!("{id}: {}", diffs.join("; "))),
             Err(err) => failed.push(format!("{id}: {err}")),
@@ -873,6 +927,37 @@ pub async fn compare_magi_pack(root: &Path) -> Result<(), String> {
     } else {
         Err(failed.join("\n"))
     }
+}
+
+/// Compare every G-MAGI scenario on the SQLite production command path. Never writes oracles.
+pub async fn compare_magi_pack(root: &Path) -> Result<(), String> {
+    compare_magi_pack_with(root, sqlite_session).await
+}
+
+/// Same owner-approved MAGI oracles on PostgreSQL. Never writes oracles. Desktop stays SQLite.
+pub async fn compare_magi_pack_postgres(root: &Path, database_url: &str) -> Result<(), String> {
+    if !(database_url.starts_with("postgres://") || database_url.starts_with("postgresql://")) {
+        return Err(format!(
+            "DATABASE_URL must be PostgreSQL, not SQLite: {database_url}"
+        ));
+    }
+    let shared = PostgresPlatform::connect(database_url)
+        .await
+        .map_err(|e| format!("PostgreSQL connect failed (do not use SQLite): {e}"))?;
+    compare_magi_pack_with(root, || {
+        let platform = shared.clone();
+        async move {
+            platform
+                .reset_contract_tables()
+                .await
+                .map_err(|e| format!("PostgreSQL reset failed: {e}"))?;
+            Ok(MagiSession {
+                platform,
+                _hold: None,
+            })
+        }
+    })
+    .await
 }
 
 pub async fn magi_pack_run(root: &Path) -> MagiPackVerdict {

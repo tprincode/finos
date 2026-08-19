@@ -1,2 +1,19 @@
-# Future: central PostgreSQL repositories (ADR-0003, Milestone 8).
-# Not yet a workspace member until the adapter is implemented.
+[package]
+name = "storage-postgres"
+description = "PostgreSQL adapter for the same Canonical/Platform ports (M8 slice 1; not desktop authority)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+application-core = { path = "../application-core" }
+async-trait.workspace = true
+chrono.workspace = true
+financial-domain = { path = "../financial-domain" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "migrate", "macros"] }
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }

@@ -47,6 +47,7 @@ fn resolve_app_data_dir(preferred: PathBuf) -> PathBuf {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let preferred = app.path().app_local_data_dir()?;
             let dir = resolve_app_data_dir(preferred);

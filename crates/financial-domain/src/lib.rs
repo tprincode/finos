@@ -15,4 +15,7 @@ pub mod lot;
 pub mod magi;
 pub mod money;
 pub mod plan;
+pub mod position;
+pub mod tax_projection;
+pub mod updater;
 pub mod week;

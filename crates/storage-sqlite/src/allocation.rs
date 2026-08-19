@@ -54,5 +54,10 @@ pub async fn target_get(pool: &SqlitePool) -> Result<AllocationGetBody, Platform
             scale: row.try_get::<i64, _>("scale").map_err(|e| map_err(e.into()))? as u8,
         });
     }
-    Ok(AllocationGetBody { targets })
+    Ok(AllocationGetBody {
+        targets,
+        open_performance_minor: 0,
+        open_tax_minor: 0,
+        scale: 2,
+    })
 }

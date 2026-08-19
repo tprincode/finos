@@ -15,10 +15,13 @@ import {
   type BacktestGet,
   type ClassificationReviewGet,
   type AnalysisRunList,
+  type PositionDetailsGet,
+  type TaxProjectionGet,
   type RoiGet,
   type TrendsGet,
 } from "@finos/app-contracts";
 import { invoke } from "@tauri-apps/api/core";
+import { check } from "@tauri-apps/plugin-updater";
 import { LocalTauriFinanceClient } from "./financeClient";
 import "./App.css";
 
@@ -60,6 +63,8 @@ export default function App() {
   const [basis, setBasis] = useState<BasisGet | null>(null);
   const [roi, setRoi] = useState<RoiGet | null>(null);
   const [lotRecon, setLotRecon] = useState<BrokerLotReconcileGet | null>(null);
+  const [positions, setPositions] = useState<PositionDetailsGet | null>(null);
+  const [taxProjection, setTaxProjection] = useState<TaxProjectionGet | null>(null);
   const [magi, setMagi] = useState<MagiProjection | null>(null);
   const [calcPlan, setCalcPlan] = useState<PlanGet | null>(null);
   const [burndown, setBurndown] = useState<BurndownGet | null>(null);
@@ -68,6 +73,7 @@ export default function App() {
   const [backtest, setBacktest] = useState<BacktestGet | null>(null);
   const [classification, setClassification] = useState<ClassificationReviewGet | null>(null);
   const [aiRuns, setAiRuns] = useState<AnalysisRunList | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<string>("not checked");
 
   const refreshCanonical = useCallback(async () => {
     const [weekResult, accountResult, exceptionResult] = await Promise.all([
@@ -96,7 +102,7 @@ export default function App() {
         setExceptions([]);
       }
     }
-    const [batches, dividendResult, incomeResult, dashboardResult, trendsResult, basisResult, roiResult, reconResult, magiResult, planResult, burndownResult, allocationResult, cartResult, backtestResult, classificationResult, aiResult] =
+    const [batches, dividendResult, incomeResult, dashboardResult, trendsResult, basisResult, roiResult, reconResult, positionResult, magiResult, taxResult, planResult, burndownResult, allocationResult, cartResult, backtestResult, classificationResult, aiResult] =
       await Promise.all([
         client.executeQuery("ReconcileCountsGet"),
         client.executeQuery("DividendGet"),
@@ -106,7 +112,9 @@ export default function App() {
         client.executeQuery("BasisGet"),
         client.executeQuery("RoiGet"),
         client.executeQuery("BrokerLotReconcileGet"),
+        client.executeQuery("PositionDetailsGet"),
         client.executeQuery("MagiProjectionGet"),
+        client.executeQuery("TaxProjectionGet"),
         client.executeQuery("PlanGet"),
         client.executeQuery("BurndownGet"),
         client.executeQuery("AllocationGet"),
@@ -140,7 +148,9 @@ export default function App() {
     setBasis(parseView<BasisGet>(basisResult.bodyJson));
     setRoi(parseView<RoiGet>(roiResult.bodyJson));
     setLotRecon(parseView<BrokerLotReconcileGet>(reconResult.bodyJson));
+    setPositions(parseView<PositionDetailsGet>(positionResult.bodyJson));
     setMagi(parseView<MagiProjection>(magiResult.bodyJson));
+    setTaxProjection(parseView<TaxProjectionGet>(taxResult.bodyJson));
     setCalcPlan(parseView<PlanGet>(planResult.bodyJson));
     setBurndown(parseView<BurndownGet>(burndownResult.bodyJson));
     setAllocation(parseView<AllocationGet>(allocationResult.bodyJson));
@@ -238,10 +248,70 @@ export default function App() {
     }
   };
 
+  const importSampleFidelity = async () => {
+    setBusy(true);
+    setActionMessage(null);
+    try {
+      const csv =
+        "Run Date,Account,Action,Symbol,Security Description,Amount\n01/17/2026,Taxable Brokerage,DIVIDEND RECEIVED,CASH,USD Cash,500.00\n";
+      const staged = await client.executeCommand("ImportStage", {
+        sourceId: "ui-sample-fidelity-div",
+        filename: "fidelity-dividend.csv",
+        content: csv,
+        accountName: "Taxable Brokerage",
+      });
+      if (!staged.ok || !staged.bodyJson) {
+        setActionMessage(
+          `ImportStage failed: ${staged.errorCode ?? "error"} (register sample account first)`,
+        );
+        return;
+      }
+      const batchId = (JSON.parse(staged.bodyJson) as { batchId?: string }).batchId;
+      if (!batchId) {
+        setActionMessage("ImportStage failed: missing batchId");
+        return;
+      }
+      for (const name of ["ImportValidate", "ImportApprove", "ImportPost"] as const) {
+        const result = await client.executeCommand(name, { batchId });
+        if (!result.ok) {
+          setActionMessage(`${name} failed: ${result.errorCode ?? "error"}`);
+          return;
+        }
+      }
+      setActionMessage("ImportPost ok");
+      await refreshHandoff();
+      await refreshCanonical();
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkForUpdates = async () => {
+    setBusy(true);
+    setActionMessage(null);
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateStatus(`available ${update.version} (not applied)`);
+        setActionMessage(`Update ${update.version} available; not applied`);
+      } else {
+        setUpdateStatus("none");
+        setActionMessage("No update available");
+      }
+    } catch (err: unknown) {
+      setUpdateStatus("fail-closed");
+      setActionMessage(`Update check failed closed: ${String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const writesBlocked = handoff !== null && !handoff.writesAllowed;
 
   return (
-    <main className="container">
+    <main className="container" aria-label="finos">
       <h1>finos</h1>
       <p>Local-first finance desktop (Milestone 4)</p>
       {health === null ? (
@@ -302,6 +372,7 @@ export default function App() {
         <div className="buttons">
           <button
             type="button"
+            aria-label="Save device name"
             disabled={busy || writesBlocked}
             onClick={() => runCommand("ConfigSet", { deviceName })}
           >
@@ -309,6 +380,7 @@ export default function App() {
           </button>
           <button
             type="button"
+            aria-label="Create snapshot"
             disabled={busy}
             onClick={() => runCommand("SnapshotCreate")}
           >
@@ -316,6 +388,7 @@ export default function App() {
           </button>
           <button
             type="button"
+            aria-label="Restore published"
             disabled={busy}
             onClick={() => runCommand("SnapshotRestore")}
           >
@@ -323,6 +396,7 @@ export default function App() {
           </button>
           <button
             type="button"
+            aria-label="Acknowledge review"
             disabled={busy || handoff?.decision !== "block_until_restore"}
             onClick={() => runCommand("HandoffResolve", { action: "review" })}
           >
@@ -330,11 +404,20 @@ export default function App() {
           </button>
           <button
             type="button"
+            aria-label="Exit"
             onClick={() => {
               void invoke("app_exit");
             }}
           >
             Exit
+          </button>
+          <button
+            type="button"
+            aria-label="Check for updates"
+            disabled={busy}
+            onClick={() => void checkForUpdates()}
+          >
+            Check for updates
           </button>
         </div>
         {writesBlocked ? (
@@ -343,6 +426,7 @@ export default function App() {
           </p>
         ) : null}
         {actionMessage ? <p>{actionMessage}</p> : null}
+        <p>Update check: {updateStatus}. Missing releases fail closed and do not post.</p>
       </section>
 
       <section>
@@ -382,6 +466,7 @@ export default function App() {
         <div className="buttons">
           <button
             type="button"
+            aria-label="Register sample account"
             disabled={busy || writesBlocked}
             onClick={() =>
               runCommand("AccountRegister", {
@@ -391,6 +476,14 @@ export default function App() {
             }
           >
             Register sample account
+          </button>
+          <button
+            type="button"
+            aria-label="Import sample Fidelity dividend"
+            disabled={busy || writesBlocked}
+            onClick={() => void importSampleFidelity()}
+          >
+            Import sample Fidelity dividend
           </button>
         </div>
       </section>
@@ -433,6 +526,16 @@ export default function App() {
                 : `${lotRecon.unmatchedSells} unmatched`
               : "loading…"}
           </dd>
+          <dt>positions</dt>
+          <dd>
+            {positions
+              ? positions.positions.length === 0
+                ? "none"
+                : positions.positions
+                    .map((p) => `${p.symbol} × ${p.remainingQuantityMinor}`)
+                    .join(", ")
+              : "loading…"}
+          </dd>
         </dl>
       </section>
 
@@ -446,6 +549,12 @@ export default function App() {
           <dd>{magi ? magi.actualIncludedYtd.amountMinor : "—"}</dd>
           <dt>protected headroom</dt>
           <dd>{magi ? magi.protectedHeadroom.amountMinor : "—"}</dd>
+          <dt>TaxProjectionGet</dt>
+          <dd>
+            {taxProjection
+              ? `${taxProjection.decisionState} (from ${taxProjection.sourceQuery})`
+              : "not set"}
+          </dd>
         </dl>
       </section>
 
@@ -468,10 +577,17 @@ export default function App() {
 
       <section>
         <h2>Allocation</h2>
-        <p>Targets are decision support. They do not post cash or MAGI facts.</p>
+        <p>
+          Targets are decision support. Open performance and tax amounts are lot
+          cost basis, not market value. They do not post cash or MAGI facts.
+        </p>
         <dl className="health">
           <dt>targets</dt>
           <dd>{allocation ? allocation.targets.length : "—"}</dd>
+          <dt>open performance (basis)</dt>
+          <dd>{allocation ? allocation.openPerformanceMinor : "—"}</dd>
+          <dt>open tax (basis)</dt>
+          <dd>{allocation ? allocation.openTaxMinor : "—"}</dd>
         </dl>
       </section>
 

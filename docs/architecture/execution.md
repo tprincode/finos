@@ -1,11 +1,10 @@
 # Execution board
 
-Single place the agent reads so work proceeds step by step. Locked roadmap is V1.1 §12. Gate details stay in `m1-macos-gate.md` … `m6-gate.md`.
+Single place the agent reads so work proceeds step by step. Locked roadmap is V1.1 §12. Gate details stay in `m1-macos-gate.md` … `m9-gate.md`.
 
-**Now:** none — M6 Windows slices 1–5 are green (AI Gateway advisory-only)  
-**Next:** locked — name **unlock Postgres** / **OIDC** / **signed installers** to start those  
-**Parked:** M1 macOS restore/handoff (needs a Mac)  
-**Not started:** Postgres, OIDC, signed installers
+**Now:** parked until named (authority cutover; M1 macOS)  
+**Next:** none until the owner names a slice  
+**Parked:** SQLite→Postgres authority cutover (owner-gated after M9); M1 macOS restore/handoff (needs a Mac)
 
 ## Loop
 
@@ -15,26 +14,32 @@ Single place the agent reads so work proceeds step by step. Locked roadmap is V1
 4. If fail → stop and fix. Never regenerate MAGI oracles.
 5. When the slice’s last step passes → update Now/Next above and start the new Now.
 
-Stop only for golden-oracle owner approval, a Mac-only step on Windows, or a milestone the board marks **Not started**.
+Stop only for golden-oracle owner approval, a Mac-only step on Windows, or Postgres that cannot start (fix Postgres; do not substitute SQLite).
 
 ## Done (Windows)
 
 | Gate | Evidence |
 |------|----------|
-| M0–M4 | Root README checkboxes; `m2`–`m4` gate docs |
-| M5 MAGI pack | `cargo test -p golden-harness --features magi-gate` — `m5_magi_pack_must_pass` |
-| M5 G10-ADJ-1 | Oracle `G-MAGI-10.yaml`: 5200000 actual, SAFE, `warnings: []` |
-| M5 Plan/burndown | `cargo test -p golden-harness -- plan_approve_does_not_rewrite_dividend_actuals` |
-| M6 slice 1 Allocation | `cargo test -p golden-harness -- allocation`; schema 7 |
-| M6 slice 2 Shopping Cart | `cargo test -p golden-harness -- cart`; schema 8 |
-| M6 slice 3 Backtesting | `cargo test -p golden-harness -- backtest`; schema 9 |
-| M6 slice 4 Classification review | `cargo test -p golden-harness -- classification`; schema 10 |
-| M6 slice 5 AI Gateway | `cargo test -p golden-harness -- ai`; schema 11 |
+| M0–M7 | Signed NSIS trusted and installed on this PC |
+| Profile A depth 1–3 | PositionDetailsGet, TaxProjectionGet, sample Fidelity import |
 
-## Stopped here on purpose
+## Done this board
 
-Postgres, OIDC, and signed installers are **Not started**. Live Grok calls need `XAI_API_KEY` (or `GROK_API_KEY`) in the environment or a gitignored `.env`. Do not paste the key into chat. Tests use `StubAdvisory` and do not need a key.
+| Slice | Evidence |
+|-------|----------|
+| Phase 1 Allocation vs positions | `AllocationGet` composes `PositionDetailsGet`; 60.00% target; open performance 140000; DividendGet unchanged |
+| Phase 2 Signed updater | GitHub `latest.json` endpoint; minisign pubkey in config; private key gitignored; check-for-update does not post |
+| Phase 3 Postgres adapter | `storage-postgres` vs Docker `postgres:16`; dual-adapter cents; desktop stays SQLite |
+| MAGI pack on Postgres | G-MAGI-01–10 match the same owner-approved oracles on PostgreSQL; SQLite magi-gate still passes; no oracle writes |
+| M8 slice 3 Axum + remote client | `POST /v1/commands` and `/v1/queries`; contract cents; G-MAGI-01 over HTTP; App.tsx stays LocalTauri |
+| M8 slice 4 Concurrency | Two `AccountUpdate`s with the same `expectedVersion`; one `concurrency_conflict` |
+| M8 slice 5 Snapshot import | `SnapshotImport` reconciles counts, money, lots, MAGI; desktop stays SQLite writer |
+| M9 B1 OIDC + command audit | Bearer JWT test issuer; unauthenticated 401; two clients; `concurrency_conflict`; `command_audit` |
+| M9 B2 apps/web | `RemoteHttpFinanceClient`; Health/Dividend/MAGI; no UI SQL |
+| M9 B3 Postgres backup | Logical dump/restore; MAGI/contract cents still match |
+
+Desktop stays SQLite. Authority cutover stays parked until the owner names it. M1 macOS stays parked until a Mac is available.
 
 ## How you use this
 
-Keep working in this repo. The agent reads this file and continues **Now**. Name a different item only if you want to park M6.
+Keep working in this repo. The agent reads this file and continues **Now**.

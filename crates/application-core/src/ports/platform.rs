@@ -20,25 +20,49 @@ impl PlatformError {
     }
 }
 
+fn ni<T>() -> Result<T, PlatformError> {
+    Err(PlatformError::new(
+        "not_implemented",
+        "platform adapter not attached",
+    ))
+}
+
 /// Local platform operations used by FinanceClient dispatch.
 #[async_trait]
+#[allow(unused_variables)]
 pub trait Platform: Send + Sync {
-    async fn config_get(&self) -> Result<DeviceConfig, PlatformError>;
+    async fn config_get(&self) -> Result<DeviceConfig, PlatformError> {
+        ni()
+    }
     async fn config_set(
         &self,
         device_name: Option<String>,
-    ) -> Result<DeviceConfig, PlatformError>;
-    async fn snapshot_head_get(&self) -> Result<Option<SnapshotIdentity>, PlatformError>;
-    async fn handoff_status_get(&self) -> Result<HandoffStatusBody, PlatformError>;
-    async fn snapshot_create(&self) -> Result<SnapshotIdentity, PlatformError>;
+    ) -> Result<DeviceConfig, PlatformError> {
+        ni()
+    }
+    async fn snapshot_head_get(&self) -> Result<Option<SnapshotIdentity>, PlatformError> {
+        ni()
+    }
+    async fn handoff_status_get(&self) -> Result<HandoffStatusBody, PlatformError> {
+        ni()
+    }
+    async fn snapshot_create(&self) -> Result<SnapshotIdentity, PlatformError> {
+        ni()
+    }
     async fn snapshot_restore(
         &self,
         snapshot_id: Option<Uuid>,
-    ) -> Result<SnapshotIdentity, PlatformError>;
+    ) -> Result<SnapshotIdentity, PlatformError> {
+        ni()
+    }
     async fn handoff_resolve(
         &self,
         action: &str,
         snapshot_id: Option<Uuid>,
-    ) -> Result<HandoffStatusBody, PlatformError>;
-    async fn writes_allowed(&self) -> Result<bool, PlatformError>;
+    ) -> Result<HandoffStatusBody, PlatformError> {
+        ni()
+    }
+    async fn writes_allowed(&self) -> Result<bool, PlatformError> {
+        ni()
+    }
 }

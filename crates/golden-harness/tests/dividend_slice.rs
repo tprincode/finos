@@ -12,6 +12,7 @@ fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
         command_name: name.to_string(),
         correlation_id: Uuid::new_v4(),
         body_json: Some(body.to_string()),
+        expected_version: None,
     }
 }
 

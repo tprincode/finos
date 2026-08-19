@@ -16,7 +16,7 @@ Contract version: `1.0.0-draft` (`FINANCE_CLIENT_CONTRACT_VERSION`).
 | Approvals | `ApprovalDecide` | `ApprovalGet` | `ApprovalResolved` |
 | Exceptions | `ExceptionAcknowledge` | `ExceptionList` | `ExceptionRaised` |
 | Health | — | `HealthGet` | — |
-| Snapshot and restore | `SnapshotCreate`, `SnapshotRestore`, `HandoffResolve` | `SnapshotHeadGet`, `HandoffStatusGet` | `SnapshotPublished`, `HandoffBlocked` |
+| Snapshot and restore | `SnapshotCreate`, `SnapshotRestore`, `HandoffResolve`, `SnapshotImport` | `SnapshotHeadGet`, `HandoffStatusGet` | `SnapshotPublished`, `HandoffBlocked` |
 
 Does not touch tables of: Registries, Capture, Ledger, Market/dividend, Planning, Reporting.
 

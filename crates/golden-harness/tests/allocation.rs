@@ -11,6 +11,7 @@ fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
         command_name: name.to_string(),
         correlation_id: Uuid::new_v4(),
         body_json: Some(body.to_string()),
+        expected_version: None,
     }
 }
 
@@ -78,4 +79,98 @@ async fn allocation_target_does_not_post_dividend_facts() {
 
     let after = query_json(&platform, "DividendGet").await;
     assert_eq!(after["actualTotalMinor"].as_i64().unwrap(), 50_000);
+}
+
+#[tokio::test]
+async fn allocation_get_composes_open_lot_basis_without_posting() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let taxable = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Taxable Brokerage", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = taxable["accountId"].as_str().unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "AAPL", "name": "Apple"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+
+    must_ok(
+        &platform,
+        "DividendActualRecord",
+        serde_json::json!({
+            "accountId": account_id,
+            "occurredOn": "2026-06-15",
+            "amountMinor": 50_000,
+            "scale": 2,
+            "idempotencyKey": "alloc-pos-div"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": security_id,
+            "openedOn": "2026-01-05",
+            "origin": "purchase",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 100_000,
+            "taxBasisMinor": 80_000,
+            "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": security_id,
+            "openedOn": "2026-02-05",
+            "origin": "purchase",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 40_000,
+            "taxBasisMinor": 40_000,
+            "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "AllocationTargetSet",
+        serde_json::json!({"name": "equities", "targetMinor": 6_000, "scale": 2}),
+    )
+    .await;
+
+    let dividend_before = query_json(&platform, "DividendGet").await;
+    let basis_before = query_json(&platform, "BasisGet").await;
+    assert_eq!(dividend_before["actualTotalMinor"].as_i64().unwrap(), 50_000);
+    assert_eq!(basis_before["openPerformanceMinor"].as_i64().unwrap(), 140_000);
+
+    let got = query_json(&platform, "AllocationGet").await;
+    assert_eq!(got["targets"][0]["targetMinor"].as_i64().unwrap(), 6_000);
+    assert_eq!(got["openPerformanceMinor"].as_i64().unwrap(), 140_000);
+    assert_eq!(got["openTaxMinor"].as_i64().unwrap(), 120_000);
+
+    let dividend_after = query_json(&platform, "DividendGet").await;
+    let basis_after = query_json(&platform, "BasisGet").await;
+    assert_eq!(
+        dividend_after["actualTotalMinor"],
+        dividend_before["actualTotalMinor"]
+    );
+    assert_eq!(
+        basis_after["openPerformanceMinor"],
+        basis_before["openPerformanceMinor"]
+    );
 }

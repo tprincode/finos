@@ -21,6 +21,8 @@ pub struct CommandRequest {
     pub correlation_id: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +186,9 @@ pub struct AllocationTargetRecord {
 #[serde(rename_all = "camelCase")]
 pub struct AllocationGetBody {
     pub targets: Vec<AllocationTargetRecord>,
+    pub open_performance_minor: i64,
+    pub open_tax_minor: i64,
+    pub scale: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -249,12 +254,18 @@ pub struct AiRunListBody {
     pub runs: Vec<AiRunRecord>,
 }
 
+fn default_row_version() -> i64 {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountRecord {
     pub account_id: Uuid,
     pub name: String,
     pub kind: String,
+    #[serde(default = "default_row_version")]
+    pub row_version: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -480,8 +491,53 @@ pub struct BrokerLotReconcileBody {
     pub quantity_scale: u8,
 }
 
+/// Reporting rollup over open lots (ADR-0008). Not authoritative vs `lot`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionLineBody {
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub security_id: Uuid,
+    pub symbol: String,
+    pub remaining_quantity_minor: i64,
+    pub quantity_scale: u8,
+    pub remaining_performance_minor: i64,
+    pub remaining_tax_minor: i64,
+    pub lot_count: u64,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionDetailsBody {
+    pub positions: Vec<PositionLineBody>,
+    pub open_performance_minor: i64,
+    pub open_tax_minor: i64,
+    pub scale: u8,
+}
+
+/// Decision-support view over MAGI (ADR-0008). Not a posted MAGI fact.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaxProjectionBody {
+    pub source_query: String,
+    pub decision_state: DecisionState,
+    pub actual_included_ytd: Money,
+    pub applicable_threshold: Money,
+    pub data_completeness: DataCompleteness,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LotRecommendBody {
     pub lot_ids: Vec<Uuid>,
+}
+
+/// Check-for-update status. Fail closed: never applied, never posted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdaterCheckBody {
+    pub applied: bool,
+    pub posted: bool,
+    pub status: String,
 }

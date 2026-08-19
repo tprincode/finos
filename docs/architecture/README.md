@@ -13,7 +13,13 @@ Governing target architecture for the Finance Management System.
 | [m3-gate.md](m3-gate.md) | Dividend vertical slice: one actual updates Income Plan / Dashboard / Trends |
 | [m4-gate.md](m4-gate.md) | Lots and ROI: dual basis, CRF policy, explicit assignment, broker recon |
 | [m5-gate.md](m5-gate.md) | Marketplace MAGI pack: owner-approved oracles pass on the production path |
-| [m6-gate.md](m6-gate.md) | Decision intelligence slice 1: allocation targets do not post facts |
+| [m6-gate.md](m6-gate.md) | Decision intelligence: allocation, cart, backtest, classification, advisory AI |
+| [m7-gate.md](m7-gate.md) | Release hardening: recovery drill, signed NSIS, accessibility |
+| [m8-gate.md](m8-gate.md) | PostgreSQL adapter, MAGI pack, Axum, concurrency, snapshot import (desktop stays SQLite; no cutover) |
+| [m9-gate.md](m9-gate.md) | OIDC Bearer JWT, apps/web, Postgres dump/restore (desktop stays SQLite; cutover owner-gated) |
+| [profile-a-depth.md](profile-a-depth.md) | Profile A: PositionDetailsGet, TaxProjectionGet (still SQLite) |
+| [checkpoint-2026-08-19.md](checkpoint-2026-08-19.md) | Profile A architecture checkpoint: good / bad / next (morning 2026-08-19) |
+| [checkpoint-2026-08-19-rescore.md](checkpoint-2026-08-19-rescore.md) | Same-day rescore after updater + Docker Postgres adapter |
 | [execution.md](execution.md) | Step-by-step board: Now / Next / pass checks (agent must not wait) |
 
 ## Locked outcomes (summary)
@@ -26,5 +32,6 @@ Governing target architecture for the Finance Management System.
 - **Milestone 4 gate**: [m4-gate.md](m4-gate.md) — no FIFO; CRF tests and broker lot reconciliation.
 - **Milestone 5 gate**: [m5-gate.md](m5-gate.md) — owner-approved G-MAGI-01–10 pass through `MagiProjectionGet`.
 - **Execution board**: [execution.md](execution.md) — current Now item and the continue-on-pass loop.
+- **Checkpoint 2026-08-19**: [checkpoint-2026-08-19.md](checkpoint-2026-08-19.md) — Profile A good / bad / next; do not treat M8 as the default next step.
 
 See [../adr/](../adr/) for individual architecture decision records.

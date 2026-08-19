@@ -8,7 +8,7 @@ use application_core::contracts::{
     ExceptionRecord, ImportBatchRecord, ImportCandidate, IncomePlanBody, LotAssignmentRecord,
     LotRecommendBody, LotRecord, MagiProjection, MagiTaxPaymentBody, ReconcileCounts, RoiBody,
     SecurityRecord, AllocationGetBody, AiRunListBody, AiRunRecord, BacktestGetBody, BurndownBody, CalculatorPlanBody, CartGetBody,
-    ClassificationReviewGetBody,
+    ClassificationReviewGetBody, PositionDetailsBody, PositionLineBody, TaxProjectionBody,
 };
 use application_core::ports::canonical::Canonical;
 use application_core::ports::platform::PlatformError;
@@ -22,6 +22,7 @@ use financial_domain::lot::{
     require_explicit_lot, zero_cost_drip_allowed, LotCostView, LotOrigin,
 };
 use financial_domain::money::Money;
+use financial_domain::position::{rollup_open_positions, LotPositionInput};
 use financial_domain::week::week_containing;
 use import_engine::{detect_broker, document_key, parse_broker_csv, require_candidate_amount};
 use sha2::{Digest, Sha256};
@@ -106,6 +107,7 @@ fn account_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AccountRecord, Plat
             .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
         name: row.try_get("name").map_err(|e| map_err(e.into()))?,
         kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+        row_version: 1,
     })
 }
 
@@ -298,6 +300,7 @@ impl Canonical for LocalPlatform {
             account_id: Uuid::new_v4(),
             name,
             kind,
+            row_version: 1,
         };
         sqlx::query("INSERT INTO account (account_id, name, kind) VALUES (?, ?, ?)")
             .bind(record.account_id.to_string())
@@ -315,6 +318,7 @@ impl Canonical for LocalPlatform {
         account_id: Uuid,
         name: Option<String>,
         kind: Option<String>,
+        _expected_version: Option<i64>,
     ) -> Result<AccountRecord, PlatformError> {
         let mut current = self.account_get(account_id).await?;
         if let Some(name) = name {
@@ -1589,6 +1593,62 @@ impl Canonical for LocalPlatform {
     async fn analysis_run_list(&self) -> Result<AiRunListBody, PlatformError> {
         let pool = self.pool.read().await;
         crate::ai::run_list(&*pool).await
+    }
+
+    async fn position_details_get(&self) -> Result<PositionDetailsBody, PlatformError> {
+        let lots = self.lot_list().await?;
+        let inputs: Vec<LotPositionInput> = lots
+            .iter()
+            .map(|l| LotPositionInput {
+                account_id: l.account_id,
+                security_id: l.security_id,
+                remaining_quantity_minor: l.remaining_quantity_minor,
+                remaining_performance_minor: l.remaining_performance_minor,
+                remaining_tax_minor: l.remaining_tax_minor,
+                quantity_scale: l.quantity_scale,
+                scale: l.scale,
+            })
+            .collect();
+        let rolled = rollup_open_positions(&inputs);
+        let mut positions = Vec::with_capacity(rolled.len());
+        for line in rolled {
+            let account = self.account_get(line.account_id).await?;
+            let security = self.security_get(line.security_id).await?;
+            positions.push(PositionLineBody {
+                account_id: line.account_id,
+                account_name: account.name,
+                security_id: line.security_id,
+                symbol: security.symbol,
+                remaining_quantity_minor: line.remaining_quantity_minor,
+                quantity_scale: line.quantity_scale,
+                remaining_performance_minor: line.remaining_performance_minor,
+                remaining_tax_minor: line.remaining_tax_minor,
+                lot_count: line.lot_count,
+                scale: line.scale,
+            });
+        }
+        let open_performance_minor = positions
+            .iter()
+            .map(|p| p.remaining_performance_minor)
+            .sum();
+        let open_tax_minor = positions.iter().map(|p| p.remaining_tax_minor).sum();
+        Ok(PositionDetailsBody {
+            positions,
+            open_performance_minor,
+            open_tax_minor,
+            scale: 2,
+        })
+    }
+
+    async fn tax_projection_get(&self) -> Result<TaxProjectionBody, PlatformError> {
+        let magi = self.magi_projection_get().await?;
+        Ok(TaxProjectionBody {
+            source_query: "MagiProjectionGet".into(),
+            decision_state: magi.decision_state,
+            actual_included_ytd: magi.actual_included_ytd,
+            applicable_threshold: magi.applicable_threshold,
+            data_completeness: magi.data_completeness,
+        })
     }
 }
 

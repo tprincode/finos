@@ -12,6 +12,9 @@ target/
 # Tauri
 apps/desktop/src-tauri/target/
 
+# Tauri updater minisign private key (public key lives in tauri.conf.json only)
+apps/desktop/src-tauri/updater-keys/
+
 # Rust
 **/*.rs.bk
 

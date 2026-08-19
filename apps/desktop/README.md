@@ -22,7 +22,15 @@ Same command from `apps/desktop`: `npm start` (runs `tauri dev`).
 
 The window should show `HealthGet` `ok`, status `ok`, contract `1.0.0-draft`, and DividendGet / IncomePlanGet / DashboardGet / TrendsGet actual totals (same number after a posted dividend).
 
-Live `AiAnalyze` needs an xAI Grok key. Copy [`.env.example`](../../.env.example) to `.env` (gitignored) or `%LOCALAPPDATA%\finos\.env` and set `XAI_API_KEY`. Do not commit the key. Without it, `AiAnalyze` returns `missing_api_key`.
+**Build signed Windows installer** (long compile; uses `CurrentUser\My` thumbprint `CEAAACA78BB136405A1496C2DD39EB0E8975D6E6`):
+
+```
+npm run desktop:build
+```
+
+Output (gitignored `target/`): `src-tauri/target/release/bundle/nsis/finos_0.1.0_x64-setup.exe`. Self-signed `CN=finos`. On this PC the cert is in CurrentUser Root + TrustedPublisher; `Get-AuthenticodeSignature` is `Valid`. Installed to `%LOCALAPPDATA%\finos`.
+
+Updater uses a separate minisign keypair. Only the public key is in `src-tauri/tauri.conf.json`. The private key is in gitignored `src-tauri/updater-keys/` and must never be committed. Check for updates reports status only; a missing GitHub release fails closed and does not post ledger facts.
 
 ## Layout
 

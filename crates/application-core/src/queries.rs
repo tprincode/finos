@@ -5,8 +5,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::contracts::{
-    CommandRequest, CommandResult, DashboardBody, ImportCandidate, QueryRequest, QueryResult,
-    RoiBody, TrendPoint, TrendsBody, FINANCE_CLIENT_CONTRACT_VERSION,
+    AllocationGetBody, CommandRequest, CommandResult, DashboardBody, ImportCandidate, QueryRequest,
+    QueryResult, RoiBody, TrendPoint, TrendsBody, UpdaterCheckBody, FINANCE_CLIENT_CONTRACT_VERSION,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::{Platform, PlatformError};
@@ -17,6 +17,7 @@ const ORDINARY_WRITES: &[&str] = &[
     "ConfigSet",
     "AccountRegister",
     "AccountUpdate",
+    "SnapshotImport",
     "SecurityRegister",
     "EvidenceStore",
     "ImportStage",
@@ -130,6 +131,15 @@ fn health_body() -> String {
     format!("{{\"status\":\"ok\",\"contractVersion\":\"{FINANCE_CLIENT_CONTRACT_VERSION}\"}}")
 }
 
+fn updater_check_body() -> UpdaterCheckBody {
+    let check = financial_domain::updater::check_for_update();
+    UpdaterCheckBody {
+        applied: check.applied,
+        posted: check.posted,
+        status: check.status.to_string(),
+    }
+}
+
 fn query_ok(request: &QueryRequest, body_json: String) -> QueryResult {
     QueryResult {
         contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
@@ -188,6 +198,17 @@ async fn income_plan_view(
     Ok(plan)
 }
 
+async fn allocation_view(
+    canonical: &dyn Canonical,
+) -> Result<AllocationGetBody, PlatformError> {
+    let mut alloc = canonical.allocation_get().await?;
+    let pos = canonical.position_details_get().await?;
+    alloc.open_performance_minor = pos.open_performance_minor;
+    alloc.open_tax_minor = pos.open_tax_minor;
+    alloc.scale = pos.scale;
+    Ok(alloc)
+}
+
 async fn roi_view(canonical: &dyn Canonical, request: &QueryRequest) -> QueryResult {
     match (canonical.roi_get().await, canonical.dividend_get().await) {
         (Ok(mut roi), Ok(div)) => {
@@ -221,12 +242,15 @@ fn map_c<T: serde::Serialize>(
     }
 }
 
-/// Stateless dispatch used by library tests (HealthGet only; no SQLite/Tauri).
+/// Stateless dispatch used by library tests (HealthGet / UpdaterCheckGet; no SQLite/Tauri).
 pub fn execute_query(request: QueryRequest) -> QueryResult {
-    if request.query_name == HEALTH_QUERY {
-        query_ok(&request, health_body())
-    } else {
-        query_err(&request, "unknown_query")
+    match request.query_name.as_str() {
+        HEALTH_QUERY => query_ok(&request, health_body()),
+        "UpdaterCheckGet" => match to_json(&updater_check_body()) {
+            Ok(json) => query_ok(&request, json),
+            Err(_) => query_err(&request, "serialize_failed"),
+        },
+        _ => query_err(&request, "unknown_query"),
     }
 }
 
@@ -244,6 +268,7 @@ pub async fn execute_query_on(
     let json = parse_json(request.body_json.as_deref());
     match request.query_name.as_str() {
         HEALTH_QUERY => query_ok(&request, health_body()),
+        "UpdaterCheckGet" => map_q(&request, Ok::<UpdaterCheckBody, PlatformError>(updater_check_body())),
         "ConfigGet" => map_q(&request, platform.config_get().await),
         "SnapshotHeadGet" => map_q(&request, platform.snapshot_head_get().await),
         "HandoffStatusGet" => map_q(&request, platform.handoff_status_get().await),
@@ -326,11 +351,13 @@ pub async fn execute_query_on(
             _ => query_err(&request, "missing_account_or_security"),
         },
         "BrokerLotReconcileGet" => map_q(&request, canonical.broker_lot_reconcile().await),
+        "PositionDetailsGet" => map_q(&request, canonical.position_details_get().await),
+        "TaxProjectionGet" => map_q(&request, canonical.tax_projection_get().await),
         "MagiProjectionGet" => map_q(&request, canonical.magi_projection_get().await),
         "MagiTaxPaymentGet" => map_q(&request, canonical.magi_tax_payment_get().await),
         "PlanGet" => map_q(&request, canonical.plan_get().await),
         "BurndownGet" => map_q(&request, canonical.burndown_get().await),
-        "AllocationGet" => map_q(&request, canonical.allocation_get().await),
+        "AllocationGet" => map_q(&request, allocation_view(canonical).await),
         "CartGet" => map_q(&request, canonical.cart_get().await),
         "BacktestGet" => map_q(&request, canonical.backtest_get().await),
         "ClassificationReviewGet" => map_q(&request, canonical.classification_review_get().await),
@@ -378,11 +405,20 @@ pub async fn execute_command_on(
             Some(id) => map_c(
                 &request,
                 canonical
-                    .account_update(id, jstr(&json, "name"), jstr(&json, "kind"))
+                    .account_update(
+                        id,
+                        jstr(&json, "name"),
+                        jstr(&json, "kind"),
+                        request.expected_version,
+                    )
                     .await,
             ),
             None => command_err(&request, "missing_account_id"),
         },
+        "SnapshotImport" => {
+            let path = jstr(&json, "sqlitePath").unwrap_or_default();
+            map_c(&request, canonical.snapshot_import_sqlite(path).await)
+        }
         "SecurityRegister" => {
             let symbol = jstr(&json, "symbol").unwrap_or_default();
             let name = jstr(&json, "name").unwrap_or_else(|| symbol.clone());
@@ -585,16 +621,17 @@ pub async fn execute_command_on(
                 )
                 .await,
         ),
-        "AllocationTargetSet" => map_c(
-            &request,
-            canonical
-                .allocation_target_set(
-                    jstr(&json, "name").unwrap_or_default(),
-                    ji64(&json, "targetMinor").unwrap_or(0),
-                    ju8(&json, "scale", 2),
-                )
-                .await,
-        ),
+        "AllocationTargetSet" => match canonical
+            .allocation_target_set(
+                jstr(&json, "name").unwrap_or_default(),
+                ji64(&json, "targetMinor").unwrap_or(0),
+                ju8(&json, "scale", 2),
+            )
+            .await
+        {
+            Ok(_) => map_c(&request, allocation_view(canonical).await),
+            Err(err) => command_err(&request, &err.code),
+        },
         "CartItemAdd" => map_c(
             &request,
             canonical
@@ -666,6 +703,7 @@ mod tests {
             command_name: name.to_string(),
             correlation_id: Uuid::nil(),
             body_json,
+            expected_version: None,
         }
     }
 

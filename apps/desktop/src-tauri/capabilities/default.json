@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Capability for the main window: FinanceClient IPC only",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "updater:allow-check"]
 }

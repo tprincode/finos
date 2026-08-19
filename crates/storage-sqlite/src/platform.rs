@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use application_core::contracts::{
     DeviceConfig, HandoffDecision, HandoffStatusBody, SnapshotIdentity, APP_VERSION,
@@ -125,31 +126,42 @@ impl LocalPlatform {
         self.catalog
             .verify(snapshot_id)
             .map_err(|e| StorageError::Message(e.to_string()))?;
-        let pool = self.pool.read().await;
-        let local_device = get_or_create_device(&*pool).await?;
-        drop(pool);
+        let local_device = {
+            let pool = self.pool.read().await;
+            get_or_create_device(&*pool).await?
+        };
 
-        {
-            let mut pool = self.pool.write().await;
-            pool.close().await;
-            let mut restored = self
-                .catalog
-                .restore_to(snapshot_id, &self.db_path)
-                .map_err(|e| StorageError::Message(e.to_string()))?;
-            restored.restore_test_status = "passed".to_string();
-            let new_pool = store::connect(&self.db_path).await?;
-            write_device(
-                &new_pool,
-                local_device.device_id,
-                &local_device.device_name,
-                restored.database_id,
-            )
-            .await?;
-            set_local_head(&new_pool, &restored).await?;
-            set_review_ack(&new_pool, None).await?;
-            *pool = new_pool;
-            Ok(restored)
+        let mut pool = self.pool.write().await;
+        checkpoint(&*pool).await?;
+        pool.close().await;
+        let mut restored = None;
+        let mut last_err = String::new();
+        for _ in 0..25 {
+            match self.catalog.restore_to(snapshot_id, &self.db_path) {
+                Ok(identity) => {
+                    restored = Some(identity);
+                    break;
+                }
+                Err(err) => {
+                    last_err = err.to_string();
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                }
+            }
         }
+        let mut restored = restored.ok_or_else(|| StorageError::Message(last_err))?;
+        restored.restore_test_status = "passed".to_string();
+        let new_pool = store::connect(&self.db_path).await?;
+        write_device(
+            &new_pool,
+            local_device.device_id,
+            &local_device.device_name,
+            restored.database_id,
+        )
+        .await?;
+        set_local_head(&new_pool, &restored).await?;
+        set_review_ack(&new_pool, None).await?;
+        *pool = new_pool;
+        Ok(restored)
     }
 }
 
@@ -397,6 +409,7 @@ mod tests {
                 command_name: "ConfigSet".to_string(),
                 correlation_id: Uuid::nil(),
                 body_json: Some("{\"deviceName\":\"blocked\"}".to_string()),
+                expected_version: None,
             },
         )
         .await;
