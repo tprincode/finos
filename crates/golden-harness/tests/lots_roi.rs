@@ -219,20 +219,45 @@ async fn crf_policy_and_fi_roth_auto_capture() {
         serde_json::json!({"name": "FI Roth", "kind": "fi_roth"}),
     )
     .await;
-    let security = must_ok(
+    let vti = must_ok(
         &platform,
         "SecurityRegister",
-        serde_json::json!({"symbol": "VTI", "name": "Vanguard Total"}),
+        serde_json::json!({"symbol": "VTI", "name": "Vanguard Total", "crf": false}),
     )
     .await;
-    let security_id = security["securityId"].as_str().unwrap();
+    let vti_id = vti["securityId"].as_str().unwrap();
+    let qyld = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "QYLD", "name": "Global X Nasdaq 100 Covered Call", "crf": true}),
+    )
+    .await;
+    let qyld_id = qyld["securityId"].as_str().unwrap();
 
     must_err(
         &platform,
         "LotOpen",
         serde_json::json!({
             "accountId": taxable["accountId"],
-            "securityId": security_id,
+            "securityId": vti_id,
+            "openedOn": "2026-01-17",
+            "origin": "drip",
+            "quantityMinor": 1,
+            "quantityScale": 0,
+            "performanceBasisMinor": 0,
+            "taxBasisMinor": 0,
+            "scale": 2
+        }),
+        "zero_cost_drip_not_crf",
+    )
+    .await;
+
+    must_err(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": crf["accountId"],
+            "securityId": vti_id,
             "openedOn": "2026-01-17",
             "origin": "drip",
             "quantityMinor": 1,
@@ -249,8 +274,8 @@ async fn crf_policy_and_fi_roth_auto_capture() {
         &platform,
         "LotOpen",
         serde_json::json!({
-            "accountId": crf["accountId"],
-            "securityId": security_id,
+            "accountId": taxable["accountId"],
+            "securityId": qyld_id,
             "openedOn": "2026-01-17",
             "origin": "drip",
             "quantityMinor": 3,
@@ -273,7 +298,7 @@ async fn crf_policy_and_fi_roth_auto_capture() {
             "accountName": "FI Roth",
             "candidates": [{
                 "accountName": "FI Roth",
-                "symbol": "VTI",
+                "symbol": "QYLD",
                 "activityType": "drip",
                 "amountMinor": 0,
                 "scale": 2,

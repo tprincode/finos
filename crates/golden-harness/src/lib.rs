@@ -13,8 +13,14 @@ use storage_sqlite::LocalPlatform;
 use uuid::Uuid;
 
 mod magi_run;
+mod production_seed;
 
 pub use magi_run::{compare_magi_pack, compare_magi_pack_postgres, magi_pack_run};
+pub use production_seed::{
+    load_production_expected, load_production_seed_via_commands, production_seed_actual_counts,
+    production_seed_actual_totals, production_seed_plan_count, production_template_totals,
+    profile_a_app_dir, ProductionCounts, ProductionExpected, ProductionTotals,
+};
 
 pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

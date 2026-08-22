@@ -1,0 +1,23 @@
+# Financial PR — MAGI gate and seed (ADR-0013)
+#
+# Never skip magi-gate. Never rewrite owner-approved MAGI oracles.
+
+name: financial-pr
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  magi-and-seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: MAGI pack on the production path
+        run: cargo test -p golden-harness --features magi-gate -- magi_pack
+      - name: Synthetic M2 seed and production household counts
+        run: cargo test -p golden-harness -- seed_counts
+      - name: CRF lots policy
+        run: cargo test -p golden-harness --test lots_roi

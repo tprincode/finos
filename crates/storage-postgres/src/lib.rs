@@ -7,7 +7,7 @@ use std::str::FromStr;
 use application_core::contracts::{
     AccountRecord, ActivityRecord, DividendActual, DividendGetBody, LotRecord, MagiProjection,
     MagiTaxPaymentBody, PositionDetailsBody, PositionLineBody, ReconcileCounts, SecurityRecord,
-    APP_VERSION, CALCULATION_VERSION, SCHEMA_VERSION, DeviceConfig,
+    APP_VERSION, CALCULATION_VERSION, SCHEMA_VERSION, DeviceConfig, DistributionGetBody,
 };
 use application_core::ports::canonical::Canonical;
 use application_core::ports::platform::{Platform, PlatformError};
@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 mod import_snapshot;
 mod magi;
+mod distribution;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -53,6 +54,10 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::InsufficientLotQuantity => "insufficient_lot_quantity",
         DomainError::InvalidLotOrigin => "invalid_lot_origin",
         DomainError::ScaleMismatch => "scale_mismatch",
+        DomainError::PlanConfirmBlocked => "plan_confirm_blocked",
+        DomainError::IncompleteAnalysisRequired => "incomplete_analysis_required",
+        DomainError::MissingDeclarationSource => "missing_declaration_source",
+        DomainError::NonpositivePrice => "nonpositive_price",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -77,7 +82,8 @@ impl PostgresPlatform {
         sqlx::query(
             "TRUNCATE TABLE magi_adjustment, magi_fact, magi_coverage, magi_rule,
                             lot, dividend_actual, dividend_declaration, activity_event,
-                            audit_record, command_audit, security, account",
+                            audit_record, command_audit, security, account,
+                            distribution_characterization",
         )
         .execute(&self.pool)
         .await?;
@@ -244,6 +250,7 @@ fn security_from_row(row: &sqlx::postgres::PgRow) -> Result<SecurityRecord, Plat
         security_id: parse_uuid(row, "security_id")?,
         symbol: row.try_get("symbol").map_err(|e| map_err(e.into()))?,
         name: row.try_get("name").map_err(|e| map_err(e.into()))?,
+        crf: row.try_get::<i32, _>("crf").map_err(|e| map_err(e.into()))? != 0,
     })
 }
 
@@ -380,16 +387,19 @@ impl Canonical for PostgresPlatform {
         &self,
         symbol: String,
         name: String,
+        crf: bool,
     ) -> Result<SecurityRecord, PlatformError> {
         let record = SecurityRecord {
             security_id: Uuid::new_v4(),
             symbol,
             name,
+            crf,
         };
-        sqlx::query("INSERT INTO security (security_id, symbol, name) VALUES ($1, $2, $3)")
+        sqlx::query("INSERT INTO security (security_id, symbol, name, crf) VALUES ($1, $2, $3, $4)")
             .bind(record.security_id.to_string())
             .bind(&record.symbol)
             .bind(&record.name)
+            .bind(if record.crf { 1i32 } else { 0 })
             .execute(&self.pool)
             .await
             .map_err(|e| map_err(e.into()))?;
@@ -404,7 +414,7 @@ impl Canonical for PostgresPlatform {
     }
 
     async fn security_get(&self, security_id: Uuid) -> Result<SecurityRecord, PlatformError> {
-        let row = sqlx::query("SELECT security_id, symbol, name FROM security WHERE security_id = $1")
+        let row = sqlx::query("SELECT security_id, symbol, name, crf FROM security WHERE security_id = $1")
             .bind(security_id.to_string())
             .fetch_optional(&self.pool)
             .await
@@ -568,11 +578,12 @@ impl Canonical for PostgresPlatform {
         tax_basis_minor: i64,
         scale: u8,
         opening_activity_id: Option<Uuid>,
+        is_open: bool,
     ) -> Result<LotRecord, PlatformError> {
-        let account = self.account_get(account_id).await?;
+        let security = self.security_get(security_id).await?;
         let parsed_origin = LotOrigin::parse(&origin).map_err(domain_err)?;
         let spec = prepare_lot_open(
-            &account.kind,
+            security.crf,
             parsed_origin,
             quantity_minor,
             quantity_scale,
@@ -586,6 +597,13 @@ impl Canonical for PostgresPlatform {
             },
         )
         .map_err(domain_err)?;
+        let remaining_quantity = if is_open { spec.quantity_minor } else { 0 };
+        let remaining_performance = if is_open {
+            spec.basis.performance.amount_minor
+        } else {
+            0
+        };
+        let remaining_tax = if is_open { spec.basis.tax.amount_minor } else { 0 };
         let record = LotRecord {
             lot_id: Uuid::new_v4(),
             account_id,
@@ -593,12 +611,12 @@ impl Canonical for PostgresPlatform {
             opened_on,
             origin: spec.origin.as_str().to_string(),
             quantity_minor: spec.quantity_minor,
-            remaining_quantity_minor: spec.quantity_minor,
+            remaining_quantity_minor: remaining_quantity,
             quantity_scale: spec.quantity_scale,
             performance_basis_minor: spec.basis.performance.amount_minor,
             tax_basis_minor: spec.basis.tax.amount_minor,
-            remaining_performance_minor: spec.basis.performance.amount_minor,
-            remaining_tax_minor: spec.basis.tax.amount_minor,
+            remaining_performance_minor: remaining_performance,
+            remaining_tax_minor: remaining_tax,
             scale: spec.basis.performance.scale,
             crf_zero_cost: spec.crf_zero_cost,
             opening_activity_id,
@@ -780,5 +798,19 @@ impl Canonical for PostgresPlatform {
         sqlite_path: String,
     ) -> Result<ReconcileCounts, PlatformError> {
         import_snapshot::import_sqlite_snapshot(&self.pool, Path::new(&sqlite_path)).await
+    }
+
+    async fn distribution_characterize(
+        &self,
+        activity_id: Uuid,
+        category: String,
+        amount_minor: i64,
+        scale: u8,
+    ) -> Result<DistributionGetBody, PlatformError> {
+        distribution::characterize(&self.pool, activity_id, category, amount_minor, scale).await
+    }
+
+    async fn distribution_get(&self) -> Result<DistributionGetBody, PlatformError> {
+        distribution::distribution_get(&self.pool).await
     }
 }

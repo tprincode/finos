@@ -20,8 +20,26 @@ async fn finance_query(
 #[tauri::command]
 async fn finance_command(
     platform: State<'_, Arc<LocalPlatform>>,
-    request: CommandRequest,
+    mut request: CommandRequest,
 ) -> Result<CommandResult, String> {
+    if matches!(
+        request.command_name.as_str(),
+        "PriceQuoteRetrieve" | "DeclarationRetrieve" | "MarketRetrieve"
+    ) {
+        let name = request.command_name.clone();
+        let mut body: serde_json::Value = request
+            .body_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let filled = tauri::async_runtime::spawn_blocking(move || {
+            import_engine::enrich_retrieve_body(&name, &mut body);
+            body
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        request.body_json = Some(filled.to_string());
+    }
     Ok(execute_command_on(platform.inner().as_ref(), platform.inner().as_ref(), request).await)
 }
 

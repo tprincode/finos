@@ -102,15 +102,16 @@ async fn copy_accounts(pg: &PgPool, sqlite: &SqlitePool) -> Result<(), PlatformE
 }
 
 async fn copy_securities(pg: &PgPool, sqlite: &SqlitePool) -> Result<(), PlatformError> {
-    let rows = sqlx::query("SELECT security_id, symbol, name FROM security")
+    let rows = sqlx::query("SELECT security_id, symbol, name, crf FROM security")
         .fetch_all(sqlite)
         .await
         .map_err(|e| map_err(e.into()))?;
     for row in rows {
-        sqlx::query("INSERT INTO security (security_id, symbol, name) VALUES ($1, $2, $3)")
+        sqlx::query("INSERT INTO security (security_id, symbol, name, crf) VALUES ($1, $2, $3, $4)")
             .bind(row.try_get::<String, _>("security_id").map_err(|e| map_err(e.into()))?)
             .bind(row.try_get::<String, _>("symbol").map_err(|e| map_err(e.into()))?)
             .bind(row.try_get::<String, _>("name").map_err(|e| map_err(e.into()))?)
+            .bind(row.try_get::<i64, _>("crf").unwrap_or(0) as i32)
             .execute(pg)
             .await
             .map_err(|e| map_err(e.into()))?;

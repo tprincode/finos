@@ -11,6 +11,7 @@ magi-gate = []
 
 [dependencies]
 application-core = { path = "../application-core" }
+import-engine = { path = "../import-engine" }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -19,6 +20,11 @@ storage-postgres = { path = "../storage-postgres" }
 finos-server = { path = "../../services/server" }
 tempfile.workspace = true
 uuid.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "household-seed"
+path = "src/bin/household_seed.rs"
 
 [dev-dependencies]
 tempfile.workspace = true

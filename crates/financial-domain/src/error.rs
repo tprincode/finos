@@ -18,4 +18,12 @@ pub enum DomainError {
     InvalidLotOrigin,
     #[error("money scale mismatch between performance and tax basis")]
     ScaleMismatch,
+    #[error("plan confirm is blocked until at least one declaration observation exists")]
+    PlanConfirmBlocked,
+    #[error("incomplete analysis requires an explicit reason before plan confirm")]
+    IncompleteAnalysisRequired,
+    #[error("declaration source is required")]
+    MissingDeclarationSource,
+    #[error("price must be positive; zero is not a quote")]
+    NonpositivePrice,
 }

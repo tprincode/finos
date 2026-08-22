@@ -10,3 +10,5 @@ Load path: FinanceClient commands (`AccountRegister`, `SecurityRegister`, `Impor
 ```
 cargo test -p golden-harness seed_counts_and_totals_reconcile
 ```
+
+Household production templates live in `production/` and are gated by `production_seed_counts_reconcile`. Keep this synthetic fixture for the fast M2 test.

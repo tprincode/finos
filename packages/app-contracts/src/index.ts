@@ -139,6 +139,90 @@ export type IncomePlanGet = {
   scale: number;
 };
 
+export type IncomePlanWeekGet = {
+  asOfDate: string;
+  start: string;
+  end: string;
+  status: string;
+  lines: Array<{
+    accountName: string;
+    actualMinor: number;
+    plannedMinor: number;
+    planKnown: boolean;
+    scale: number;
+  }>;
+  drilldown: Array<{
+    accountName: string;
+    symbol: string;
+    occurredOn: string;
+    amountMinor: number;
+    scale: number;
+  }>;
+  latestActualOn: string | null;
+  yieldCount: number;
+  scale: number;
+};
+
+export type HouseholdSummaryGet = {
+  accountCount: number;
+  openLotCount: number;
+  yieldCount: number;
+  disbursementCount: number;
+  latestYieldOn: string | null;
+  planCount: number;
+};
+
+export type CalculatorGet = {
+  rows: Array<{
+    symbol: string;
+    paymentFrequency: string;
+    planKnown: boolean;
+    planPerShareMinor: number;
+    planScale: number;
+    planningPeriodsPerYear: number;
+    remainingQuantityMinor: number;
+    quantityScale: number;
+    planPaymentMinor: number;
+    remainingPerformanceMinor: number;
+    rocPct2025ActualMinor: number | null;
+    rocScale: number | null;
+    scale: number;
+  }>;
+  planCount: number;
+  scale: number;
+};
+
+export type DashboardBurndownGet = {
+  asOfDate: string;
+  start: string;
+  end: string;
+  status: string;
+  note: string;
+  lines: Array<{
+    accountName: string;
+    inflowMinor: number;
+    outflowMinor: number;
+    floorKnown: boolean;
+    scale: number;
+  }>;
+  scale: number;
+};
+
+export type HoldingsGet = {
+  lots: Array<{
+    lotId: string;
+    accountName: string;
+    symbol: string;
+    openedOn: string;
+    remainingQuantityMinor: number;
+    quantityScale: number;
+    remainingPerformanceMinor: number;
+    remainingTaxMinor: number;
+    scale: number;
+  }>;
+  scale: number;
+};
+
 export type DashboardGet = {
   actualDividendMinor: number;
   plannedIncomeMinor: number;
@@ -297,6 +381,34 @@ export type ClassificationReviewGet = {
   }>;
 };
 
+export type ActivityRecord = {
+  activityId: string;
+  accountId: string;
+  securityId: string | null;
+  activityType: string;
+  amountMinor: number;
+  scale: number;
+  occurredOn: string;
+};
+
+export type ExceptionRecord = {
+  exceptionId: string;
+  code: string;
+  message: string;
+  acknowledged: boolean;
+  createdAt: string;
+};
+
+export type DistributionGet = {
+  characterizations: Array<{
+    characterizationId: string;
+    activityId: string;
+    category: string;
+    amountMinor: number;
+    scale: number;
+  }>;
+};
+
 export type AnalysisRunList = {
   runs: Array<{
     runId: string;
@@ -306,6 +418,85 @@ export type AnalysisRunList = {
     model: string;
     status: string;
   }>;
+};
+
+export type AccountListItem = {
+  accountId: string;
+  name: string;
+  kind: string;
+};
+
+export type SecurityListItem = {
+  securityId: string;
+  symbol: string;
+  name: string;
+};
+
+export type PlanReviewGet = {
+  securityId: string;
+  observationCount: number;
+  mostCurrentMinor: number | null;
+  avg6Minor: number | null;
+  minMinor: number | null;
+  maxMinor: number | null;
+  averageMinor: number | null;
+  eightyPctOfAvgMinor: number | null;
+  avg6Complete: boolean;
+  fullAnalysisPossible: boolean;
+  confirmBlocked: boolean;
+  incompleteReasonRequired: boolean;
+  amountScale: number;
+};
+
+export type CurrentPriceGet = {
+  securityId: string;
+  priceMinor: number | null;
+  scale: number;
+  freshness: string;
+  priceDerivedValid: boolean;
+};
+
+export type InvestmentGet = {
+  securityId: string;
+  symbol: string;
+  name: string;
+  paymentFrequency: string;
+  riskTier: string;
+  provider: string;
+  underlying: string;
+  planKnown: boolean;
+  planPerShareMinor: number;
+  planScale: number;
+  planningPeriodsPerYear: number;
+  planReason: string;
+  planEffectiveFrom: string;
+  remainingQuantityMinor: number;
+  quantityScale: number;
+  remainingPerformanceMinor: number;
+  rocPct2025ActualMinor: number | null;
+  rocScale: number | null;
+  price: CurrentPriceGet;
+  review: PlanReviewGet;
+  template: {
+    priceSource: string;
+    sourceSymbol: string;
+    declarationSource: string;
+    lookbackCount: number;
+    paymentSource: string;
+  } | null;
+  lots: Array<{
+    lotId: string;
+    accountName: string;
+    openedOn: string;
+    remainingQuantityMinor: number;
+    quantityScale: number;
+    remainingPerformanceMinor: number;
+    remainingTaxMinor: number;
+    scale: number;
+  }>;
+  declarationCount: number;
+  firstLotComplete: boolean;
+  scale: number;
 };
 
 /** Check-for-update status. Fail closed: never applied, never posted. */

@@ -1,6 +1,8 @@
 //! Versioned Calculator Plan and cash burndown (table-isolated from MAGI and dividend actuals).
 
-use application_core::contracts::{BurndownBody, CalculatorPlanBody};
+use application_core::contracts::{
+    BurndownBody, CalculatorPlanBody, PlanHistoryRecord, PositionCharacteristicRecord,
+};
 use application_core::ports::platform::PlatformError;
 use financial_domain::plan::{next_plan_version, project_burndown, sum_cash};
 use sqlx::{Row, SqlitePool};
@@ -112,4 +114,237 @@ pub async fn burndown_get(pool: &SqlitePool) -> Result<BurndownBody, PlatformErr
         sufficient: snap.sufficient,
         scale: plan.scale,
     })
+}
+
+pub async fn plan_history_record(
+    pool: &SqlitePool,
+    security_id: Uuid,
+    amount_per_share_minor: i64,
+    amount_scale: u8,
+    planning_periods_per_year: u8,
+    effective_from: String,
+    decision_reason: String,
+) -> Result<PlanHistoryRecord, PlatformError> {
+    if let Some(existing) = plan_history_for_security(pool, security_id).await? {
+        return Ok(existing);
+    }
+    let record = PlanHistoryRecord {
+        plan_history_id: Uuid::new_v4(),
+        security_id,
+        amount_per_share_minor,
+        amount_scale,
+        planning_periods_per_year,
+        effective_from: effective_from.clone(),
+        decision_reason: decision_reason.clone(),
+    };
+    sqlx::query(
+        "INSERT INTO plan_history (
+            plan_history_id, security_id, amount_per_share_minor, amount_scale,
+            planning_periods_per_year, effective_from, effective_to, decision_date, decision_reason
+         ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+    )
+    .bind(record.plan_history_id.to_string())
+    .bind(security_id.to_string())
+    .bind(amount_per_share_minor)
+    .bind(amount_scale as i64)
+    .bind(planning_periods_per_year as i64)
+    .bind(&effective_from)
+    .bind(&effective_from)
+    .bind(&decision_reason)
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    Ok(record)
+}
+
+async fn plan_history_for_security(
+    pool: &SqlitePool,
+    security_id: Uuid,
+) -> Result<Option<PlanHistoryRecord>, PlatformError> {
+    let row = sqlx::query(
+        "SELECT plan_history_id, security_id, amount_per_share_minor, amount_scale,
+                planning_periods_per_year, effective_from, decision_reason
+         FROM plan_history WHERE security_id = ? AND effective_to IS NULL",
+    )
+    .bind(security_id.to_string())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    row.map(|row| plan_history_from_row(&row)).transpose()
+}
+
+fn plan_history_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<PlanHistoryRecord, PlatformError> {
+    Ok(PlanHistoryRecord {
+        plan_history_id: Uuid::parse_str(
+            &row.try_get::<String, _>("plan_history_id")
+                .map_err(|e| map_err(e.into()))?,
+        )
+        .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
+        security_id: Uuid::parse_str(
+            &row.try_get::<String, _>("security_id")
+                .map_err(|e| map_err(e.into()))?,
+        )
+        .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
+        amount_per_share_minor: row
+            .try_get("amount_per_share_minor")
+            .map_err(|e| map_err(e.into()))?,
+        amount_scale: row.try_get::<i64, _>("amount_scale").map_err(|e| map_err(e.into()))? as u8,
+        planning_periods_per_year: row
+            .try_get::<i64, _>("planning_periods_per_year")
+            .map_err(|e| map_err(e.into()))? as u8,
+        effective_from: row.try_get("effective_from").map_err(|e| map_err(e.into()))?,
+        decision_reason: row.try_get("decision_reason").map_err(|e| map_err(e.into()))?,
+    })
+}
+
+pub async fn plan_history_list(pool: &SqlitePool) -> Result<Vec<PlanHistoryRecord>, PlatformError> {
+    let rows = sqlx::query(
+        "SELECT plan_history_id, security_id, amount_per_share_minor, amount_scale,
+                planning_periods_per_year, effective_from, decision_reason
+         FROM plan_history WHERE effective_to IS NULL ORDER BY security_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    Ok(rows.iter().map(plan_history_from_row).collect::<Result<Vec<_>, _>>()?)
+}
+
+pub async fn plan_history_confirm(
+    pool: &SqlitePool,
+    security_id: Uuid,
+    amount_per_share_minor: i64,
+    amount_scale: u8,
+    planning_periods_per_year: u8,
+    effective_from: String,
+    decision_reason: String,
+) -> Result<PlanHistoryRecord, PlatformError> {
+    sqlx::query(
+        "UPDATE plan_history SET effective_to = ? WHERE security_id = ? AND effective_to IS NULL",
+    )
+    .bind(&effective_from)
+    .bind(security_id.to_string())
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    let record = PlanHistoryRecord {
+        plan_history_id: Uuid::new_v4(),
+        security_id,
+        amount_per_share_minor,
+        amount_scale,
+        planning_periods_per_year,
+        effective_from: effective_from.clone(),
+        decision_reason: decision_reason.clone(),
+    };
+    sqlx::query(
+        "INSERT INTO plan_history (
+            plan_history_id, security_id, amount_per_share_minor, amount_scale,
+            planning_periods_per_year, effective_from, effective_to, decision_date, decision_reason
+         ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+    )
+    .bind(record.plan_history_id.to_string())
+    .bind(security_id.to_string())
+    .bind(amount_per_share_minor)
+    .bind(amount_scale as i64)
+    .bind(planning_periods_per_year as i64)
+    .bind(&effective_from)
+    .bind(&effective_from)
+    .bind(&decision_reason)
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    Ok(record)
+}
+
+pub async fn position_characteristic_upsert(
+    pool: &SqlitePool,
+    record: PositionCharacteristicRecord,
+) -> Result<PositionCharacteristicRecord, PlatformError> {
+    let mut record = record;
+    record.risk_tier = financial_domain::plan_review::normalize_risk_tier(&record.risk_tier);
+    sqlx::query(
+        "INSERT INTO position_characteristic (
+            security_id, payment_frequency, risk_tier, provider, underlying,
+            roc_pct_2025_actual_minor, roc_pct_2026_estimate_minor, roc_pct_2026_actual_minor,
+            roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(security_id) DO UPDATE SET
+            payment_frequency = excluded.payment_frequency,
+            risk_tier = excluded.risk_tier,
+            provider = excluded.provider,
+            underlying = excluded.underlying,
+            roc_pct_2025_actual_minor = excluded.roc_pct_2025_actual_minor,
+            roc_pct_2026_estimate_minor = excluded.roc_pct_2026_estimate_minor,
+            roc_pct_2026_actual_minor = excluded.roc_pct_2026_actual_minor,
+            roc_pct_2024_actual_minor = excluded.roc_pct_2024_actual_minor,
+            roc_scale = excluded.roc_scale,
+            div_type = excluded.div_type,
+            needs_roc_research = excluded.needs_roc_research,
+            notes = excluded.notes",
+    )
+    .bind(record.security_id.to_string())
+    .bind(&record.payment_frequency)
+    .bind(financial_domain::plan_review::normalize_risk_tier(&record.risk_tier))
+    .bind(&record.provider)
+    .bind(&record.underlying)
+    .bind(record.roc_pct_2025_actual_minor)
+    .bind(record.roc_pct_2026_estimate_minor)
+    .bind(record.roc_pct_2026_actual_minor)
+    .bind(record.roc_pct_2024_actual_minor)
+    .bind(record.roc_scale.map(|s| s as i64))
+    .bind(&record.div_type)
+    .bind(if record.needs_roc_research { 1 } else { 0 })
+    .bind(&record.notes)
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    Ok(record)
+}
+
+fn characteristic_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<PositionCharacteristicRecord, PlatformError> {
+    let roc_scale: Option<i64> = row.try_get("roc_scale").map_err(|e| map_err(e.into()))?;
+    Ok(PositionCharacteristicRecord {
+        security_id: Uuid::parse_str(
+            &row.try_get::<String, _>("security_id")
+                .map_err(|e| map_err(e.into()))?,
+        )
+        .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
+        payment_frequency: row.try_get("payment_frequency").map_err(|e| map_err(e.into()))?,
+        risk_tier: row.try_get("risk_tier").map_err(|e| map_err(e.into()))?,
+        provider: row.try_get("provider").map_err(|e| map_err(e.into()))?,
+        underlying: row.try_get("underlying").map_err(|e| map_err(e.into()))?,
+        roc_pct_2025_actual_minor: row
+            .try_get("roc_pct_2025_actual_minor")
+            .map_err(|e| map_err(e.into()))?,
+        roc_pct_2026_estimate_minor: row
+            .try_get("roc_pct_2026_estimate_minor")
+            .map_err(|e| map_err(e.into()))?,
+        roc_pct_2026_actual_minor: row
+            .try_get("roc_pct_2026_actual_minor")
+            .map_err(|e| map_err(e.into()))?,
+        roc_pct_2024_actual_minor: row
+            .try_get("roc_pct_2024_actual_minor")
+            .map_err(|e| map_err(e.into()))?,
+        roc_scale: roc_scale.map(|s| s as u8),
+        div_type: row.try_get("div_type").map_err(|e| map_err(e.into()))?,
+        needs_roc_research: row.try_get::<i64, _>("needs_roc_research").map_err(|e| map_err(e.into()))?
+            != 0,
+        notes: row.try_get("notes").map_err(|e| map_err(e.into()))?,
+    })
+}
+
+pub async fn position_characteristic_list(
+    pool: &SqlitePool,
+) -> Result<Vec<PositionCharacteristicRecord>, PlatformError> {
+    let rows = sqlx::query(
+        "SELECT security_id, payment_frequency, risk_tier, provider, underlying,
+                roc_pct_2025_actual_minor, roc_pct_2026_estimate_minor, roc_pct_2026_actual_minor,
+                roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes
+         FROM position_characteristic ORDER BY security_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    rows.iter().map(characteristic_from_row).collect()
 }

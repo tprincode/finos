@@ -7,4 +7,5 @@ pub mod contracts;
 pub mod golden;
 pub mod handoff;
 pub mod ports;
+pub mod production_seed;
 pub mod queries;

@@ -7,8 +7,10 @@ use application_core::contracts::{
     CanonicalWeekBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
     ExceptionRecord, ImportBatchRecord, ImportCandidate, IncomePlanBody, LotAssignmentRecord,
     LotRecommendBody, LotRecord, MagiProjection, MagiTaxPaymentBody, ReconcileCounts, RoiBody,
-    SecurityRecord, AllocationGetBody, AiRunListBody, AiRunRecord, BacktestGetBody, BurndownBody, CalculatorPlanBody, CartGetBody,
-    ClassificationReviewGetBody, PositionDetailsBody, PositionLineBody, TaxProjectionBody,
+    SecurityRecord, AllocationGetBody, AiRunListBody, AiRunRecord, BacktestGetBody, BurndownBody,
+    CalculatorPlanBody, CartGetBody, ClassificationReviewGetBody, DistributionGetBody,
+    PlanHistoryRecord, PositionCharacteristicRecord, PositionDetailsBody, PositionLineBody,
+    TaxProjectionBody,
 };
 use application_core::ports::canonical::Canonical;
 use application_core::ports::platform::PlatformError;
@@ -45,6 +47,10 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::InsufficientLotQuantity => "insufficient_lot_quantity",
         DomainError::InvalidLotOrigin => "invalid_lot_origin",
         DomainError::ScaleMismatch => "scale_mismatch",
+        DomainError::PlanConfirmBlocked => "plan_confirm_blocked",
+        DomainError::IncompleteAnalysisRequired => "incomplete_analysis_required",
+        DomainError::MissingDeclarationSource => "missing_declaration_source",
+        DomainError::NonpositivePrice => "nonpositive_price",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -120,6 +126,7 @@ fn security_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<SecurityRecord, Pl
         .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
         symbol: row.try_get("symbol").map_err(|e| map_err(e.into()))?,
         name: row.try_get("name").map_err(|e| map_err(e.into()))?,
+        crf: row.try_get::<i64, _>("crf").map_err(|e| map_err(e.into()))? != 0,
     })
 }
 
@@ -363,17 +370,20 @@ impl Canonical for LocalPlatform {
         &self,
         symbol: String,
         name: String,
+        crf: bool,
     ) -> Result<SecurityRecord, PlatformError> {
         let pool = self.pool.read().await;
         let record = SecurityRecord {
             security_id: Uuid::new_v4(),
             symbol,
             name,
+            crf,
         };
-        sqlx::query("INSERT INTO security (security_id, symbol, name) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO security (security_id, symbol, name, crf) VALUES (?, ?, ?, ?)")
             .bind(record.security_id.to_string())
             .bind(&record.symbol)
             .bind(&record.name)
+            .bind(if record.crf { 1i64 } else { 0 })
             .execute(&*pool)
             .await
             .map_err(|e| map_err(e.into()))?;
@@ -387,9 +397,40 @@ impl Canonical for LocalPlatform {
         Ok(record)
     }
 
+    async fn security_update(
+        &self,
+        security_id: Uuid,
+        name: Option<String>,
+        symbol: Option<String>,
+    ) -> Result<SecurityRecord, PlatformError> {
+        let mut current = self.security_get(security_id).await?;
+        if let Some(name) = name {
+            if name.trim().is_empty() {
+                return Err(PlatformError::new("missing_name", "security name required"));
+            }
+            current.name = name.trim().to_string();
+        }
+        if let Some(symbol) = symbol {
+            if symbol.trim().is_empty() {
+                return Err(PlatformError::new("missing_symbol", "symbol required"));
+            }
+            current.symbol = symbol.trim().to_ascii_uppercase();
+        }
+        let pool = self.pool.read().await;
+        sqlx::query("UPDATE security SET name = ?, symbol = ? WHERE security_id = ?")
+            .bind(&current.name)
+            .bind(&current.symbol)
+            .bind(security_id.to_string())
+            .execute(&*pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+        audit(&pool, "SecurityUpdate", "security", &security_id.to_string()).await?;
+        Ok(current)
+    }
+
     async fn security_get(&self, security_id: Uuid) -> Result<SecurityRecord, PlatformError> {
         let pool = self.pool.read().await;
-        let row = sqlx::query("SELECT security_id, symbol, name FROM security WHERE security_id = ?")
+        let row = sqlx::query("SELECT security_id, symbol, name, crf FROM security WHERE security_id = ?")
             .bind(security_id.to_string())
             .fetch_optional(&*pool)
             .await
@@ -400,7 +441,7 @@ impl Canonical for LocalPlatform {
 
     async fn security_list(&self) -> Result<Vec<SecurityRecord>, PlatformError> {
         let pool = self.pool.read().await;
-        let rows = sqlx::query("SELECT security_id, symbol, name FROM security ORDER BY symbol")
+        let rows = sqlx::query("SELECT security_id, symbol, name, crf FROM security ORDER BY symbol")
             .fetch_all(&*pool)
             .await
             .map_err(|e| map_err(e.into()))?;
@@ -1146,11 +1187,13 @@ impl Canonical for LocalPlatform {
         tax_basis_minor: i64,
         scale: u8,
         opening_activity_id: Option<Uuid>,
+        is_open: bool,
     ) -> Result<LotRecord, PlatformError> {
-        let account = self.account_get(account_id).await?;
+        let _account = self.account_get(account_id).await?;
+        let security = self.security_get(security_id).await?;
         let parsed_origin = LotOrigin::parse(&origin).map_err(domain_err)?;
         let spec = prepare_lot_open(
-            &account.kind,
+            security.crf,
             parsed_origin,
             quantity_minor,
             quantity_scale,
@@ -1164,6 +1207,13 @@ impl Canonical for LocalPlatform {
             },
         )
         .map_err(domain_err)?;
+        let remaining_quantity = if is_open { spec.quantity_minor } else { 0 };
+        let remaining_performance = if is_open {
+            spec.basis.performance.amount_minor
+        } else {
+            0
+        };
+        let remaining_tax = if is_open { spec.basis.tax.amount_minor } else { 0 };
         let record = LotRecord {
             lot_id: Uuid::new_v4(),
             account_id,
@@ -1171,12 +1221,12 @@ impl Canonical for LocalPlatform {
             opened_on,
             origin: spec.origin.as_str().to_string(),
             quantity_minor: spec.quantity_minor,
-            remaining_quantity_minor: spec.quantity_minor,
+            remaining_quantity_minor: remaining_quantity,
             quantity_scale: spec.quantity_scale,
             performance_basis_minor: spec.basis.performance.amount_minor,
             tax_basis_minor: spec.basis.tax.amount_minor,
-            remaining_performance_minor: spec.basis.performance.amount_minor,
-            remaining_tax_minor: spec.basis.tax.amount_minor,
+            remaining_performance_minor: remaining_performance,
+            remaining_tax_minor: remaining_tax,
             scale: spec.basis.performance.scale,
             crf_zero_cost: spec.crf_zero_cost,
             opening_activity_id,
@@ -1503,6 +1553,173 @@ impl Canonical for LocalPlatform {
         crate::plan::burndown_get(&*pool).await
     }
 
+    async fn plan_history_record(
+        &self,
+        security_id: Uuid,
+        amount_per_share_minor: i64,
+        amount_scale: u8,
+        planning_periods_per_year: u8,
+        effective_from: String,
+        decision_reason: String,
+    ) -> Result<PlanHistoryRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::plan::plan_history_record(
+            &*pool,
+            security_id,
+            amount_per_share_minor,
+            amount_scale,
+            planning_periods_per_year,
+            effective_from,
+            decision_reason,
+        )
+        .await
+    }
+
+    async fn plan_history_list(&self) -> Result<Vec<PlanHistoryRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::plan::plan_history_list(&*pool).await
+    }
+
+    async fn position_characteristic_upsert(
+        &self,
+        record: PositionCharacteristicRecord,
+    ) -> Result<PositionCharacteristicRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::plan::position_characteristic_upsert(&*pool, record).await
+    }
+
+    async fn position_characteristic_list(
+        &self,
+    ) -> Result<Vec<PositionCharacteristicRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::plan::position_characteristic_list(&*pool).await
+    }
+
+    async fn plan_history_confirm(
+        &self,
+        security_id: Uuid,
+        amount_per_share_minor: i64,
+        amount_scale: u8,
+        planning_periods_per_year: u8,
+        effective_from: String,
+        decision_reason: String,
+    ) -> Result<PlanHistoryRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::plan::plan_history_confirm(
+            &*pool,
+            security_id,
+            amount_per_share_minor,
+            amount_scale,
+            planning_periods_per_year,
+            effective_from,
+            decision_reason,
+        )
+        .await
+    }
+
+    async fn issuer_declaration_record(
+        &self,
+        security_id: Uuid,
+        amount_per_share_minor: Option<i64>,
+        amount_scale: u8,
+        payment_period: String,
+        source: String,
+        entered_at: String,
+    ) -> Result<application_core::contracts::IssuerDeclarationRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::issuer_declaration_record(
+            &*pool,
+            security_id,
+            amount_per_share_minor,
+            amount_scale,
+            payment_period,
+            source,
+            entered_at,
+        )
+        .await
+    }
+
+    async fn issuer_declaration_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<application_core::contracts::IssuerDeclarationRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::issuer_declaration_list(&*pool, security_id).await
+    }
+
+    async fn price_quote_record(
+        &self,
+        security_id: Uuid,
+        price_minor: i64,
+        scale: u8,
+        as_of_at: String,
+        source: String,
+    ) -> Result<application_core::contracts::PriceQuoteBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::price_quote_record(&*pool, security_id, price_minor, scale, as_of_at, source)
+            .await
+    }
+
+    async fn price_quote_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<application_core::contracts::PriceQuoteBody>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::price_quote_list(&*pool, security_id).await
+    }
+
+    async fn manual_price_override(
+        &self,
+        security_id: Uuid,
+        price_minor: i64,
+        scale: u8,
+        reason: String,
+        effective_from: String,
+    ) -> Result<application_core::contracts::CurrentPriceBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::manual_price_override(
+            &*pool,
+            security_id,
+            price_minor,
+            scale,
+            reason,
+            effective_from,
+        )
+        .await
+    }
+
+    async fn current_price_get(
+        &self,
+        security_id: Uuid,
+        as_of_date: String,
+    ) -> Result<application_core::contracts::CurrentPriceBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::current_price_get(&*pool, security_id, as_of_date).await
+    }
+
+    async fn retrieval_template_set(
+        &self,
+        record: application_core::contracts::RetrievalTemplateRecord,
+    ) -> Result<application_core::contracts::RetrievalTemplateRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::retrieval_template_set(&*pool, record).await
+    }
+
+    async fn retrieval_template_get(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Option<application_core::contracts::RetrievalTemplateRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::retrieval_template_get(&*pool, security_id).await
+    }
+
+    async fn price_retrieval_set(
+        &self,
+    ) -> Result<application_core::contracts::PriceRetrievalSetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::price_retrieval_set(&*pool).await
+    }
+
     async fn allocation_target_set(
         &self,
         name: String,
@@ -1568,6 +1785,22 @@ impl Canonical for LocalPlatform {
     async fn classification_review_get(&self) -> Result<ClassificationReviewGetBody, PlatformError> {
         let pool = self.pool.read().await;
         crate::classification::review_get(&*pool).await
+    }
+
+    async fn distribution_characterize(
+        &self,
+        activity_id: Uuid,
+        category: String,
+        amount_minor: i64,
+        scale: u8,
+    ) -> Result<DistributionGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::distribution::characterize(&*pool, activity_id, category, amount_minor, scale).await
+    }
+
+    async fn distribution_get(&self) -> Result<DistributionGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::distribution::distribution_get(&*pool).await
     }
 
     async fn ai_analyze(&self, prompt: String) -> Result<AiRunRecord, PlatformError> {
@@ -1670,20 +1903,21 @@ impl LocalPlatform {
 
     async fn maybe_import_drip_lot(&self, posted: &ActivityRecord) -> Result<(), PlatformError> {
         let account = self.account_get(posted.account_id).await?;
-        if posted.amount_minor == 0 && !zero_cost_drip_allowed(&account.kind) {
+        let Some(security_id) = posted.security_id else {
+            return Ok(());
+        };
+        let security = self.security_get(security_id).await?;
+        if posted.amount_minor == 0 && !zero_cost_drip_allowed(security.crf) {
             let pool = self.pool.read().await;
             raise_exception(
                 &pool,
                 "zero_cost_drip_not_crf",
-                "zero-cost DRIP is not allowed on this account",
+                "zero-cost DRIP is not allowed unless the security is CRF",
             )
             .await?;
             return Ok(());
         }
         if posted.amount_minor == 0 && automatic_drip_capture_allowed(&account.kind) {
-            let Some(security_id) = posted.security_id else {
-                return Ok(());
-            };
             self.lot_open(
                 posted.account_id,
                 security_id,
@@ -1695,6 +1929,7 @@ impl LocalPlatform {
                 0,
                 posted.scale,
                 Some(posted.activity_id),
+                true,
             )
             .await?;
         }

@@ -71,12 +71,10 @@ pub fn require_explicit_lot(lot_id: Option<Uuid>) -> Result<Uuid, DomainError> {
     lot_id.ok_or(DomainError::FifoNotAssumed)
 }
 
-/// Zero-cost DRIP lots are legitimate only on CRF (including FI Roth).
-pub fn zero_cost_drip_allowed(account_kind: &str) -> bool {
-    matches!(
-        account_kind.to_ascii_lowercase().as_str(),
-        "crf" | "fi_roth"
-    )
+/// Zero-cost DRIP lots are legitimate only when the **security** is CRF.
+/// Account kind is not an alias for this policy (FI Roth is auto-capture only).
+pub fn zero_cost_drip_allowed(security_is_crf: bool) -> bool {
+    security_is_crf
 }
 
 /// Automatic CRF DRIP capture is enabled only for FI Roth.
@@ -89,7 +87,7 @@ pub fn is_zero_cost(basis: DualBasis) -> bool {
 }
 
 pub fn prepare_lot_open(
-    account_kind: &str,
+    security_is_crf: bool,
     origin: LotOrigin,
     quantity_minor: i64,
     quantity_scale: u8,
@@ -104,7 +102,7 @@ pub fn prepare_lot_open(
     }
     let basis = DualBasis { performance, tax };
     let crf_zero_cost = origin == LotOrigin::Drip && is_zero_cost(basis);
-    if crf_zero_cost && !zero_cost_drip_allowed(account_kind) {
+    if crf_zero_cost && !zero_cost_drip_allowed(security_is_crf) {
         return Err(DomainError::ZeroCostDripNotCrf);
     }
     Ok(LotOpenSpec {
@@ -194,7 +192,7 @@ mod tests {
     #[test]
     fn taxable_zero_cost_drip_is_refused() {
         let err = prepare_lot_open(
-            "taxable",
+            false,
             LotOrigin::Drip,
             10,
             0,
@@ -207,13 +205,15 @@ mod tests {
 
     #[test]
     fn crf_zero_cost_drip_is_allowed() {
-        let spec = prepare_lot_open("crf", LotOrigin::Drip, 10, 0, usd(0), usd(0)).unwrap();
+        let spec = prepare_lot_open(true, LotOrigin::Drip, 10, 0, usd(0), usd(0)).unwrap();
         assert!(spec.crf_zero_cost);
-        let fi = prepare_lot_open("fi_roth", LotOrigin::Drip, 4, 0, usd(0), usd(0)).unwrap();
-        assert!(fi.crf_zero_cost);
+        let purchase = prepare_lot_open(true, LotOrigin::Purchase, 4, 0, usd(0), usd(0)).unwrap();
+        assert!(!purchase.crf_zero_cost);
         assert!(automatic_drip_capture_allowed("fi_roth"));
         assert!(!automatic_drip_capture_allowed("crf"));
         assert!(!automatic_drip_capture_allowed("taxable"));
+        assert!(!zero_cost_drip_allowed(false));
+        assert!(zero_cost_drip_allowed(true));
     }
 
     #[test]

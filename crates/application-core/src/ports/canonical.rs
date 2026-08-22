@@ -7,9 +7,12 @@ use crate::contracts::{
     AccountRecord, ActivityRecord, AuditRecord, BasisGetBody, BrokerLotReconcileBody,
     CanonicalWeekBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
     ExceptionRecord, ImportBatchRecord, ImportCandidate, IncomePlanBody, LotAssignmentRecord,
-    LotRecommendBody, LotRecord,     MagiProjection, MagiTaxPaymentBody, ReconcileCounts, RoiBody,
-    SecurityRecord, AllocationGetBody, AiRunListBody, AiRunRecord, BacktestGetBody, BurndownBody, CalculatorPlanBody, CartGetBody,
-    ClassificationReviewGetBody, PositionDetailsBody, TaxProjectionBody,
+    LotRecommendBody, LotRecord, MagiProjection, MagiTaxPaymentBody, ReconcileCounts, RoiBody,
+    SecurityRecord, AllocationGetBody, AiRunListBody, AiRunRecord, BacktestGetBody, BurndownBody,
+    CalculatorPlanBody, CartGetBody, ClassificationReviewGetBody, PositionDetailsBody,
+    TaxProjectionBody, DistributionGetBody, PlanHistoryRecord, PositionCharacteristicRecord,
+    IssuerDeclarationRecord, PriceQuoteBody, CurrentPriceBody, RetrievalTemplateRecord,
+    PriceRetrievalSetBody,
 };
 use crate::ports::platform::PlatformError;
 
@@ -46,6 +49,13 @@ pub trait Canonical: Send + Sync {
         &self,
         symbol: String,
         name: String,
+        crf: bool,
+    ) -> Result<SecurityRecord, PlatformError> { ni() }
+    async fn security_update(
+        &self,
+        security_id: Uuid,
+        name: Option<String>,
+        symbol: Option<String>,
     ) -> Result<SecurityRecord, PlatformError> { ni() }
     async fn security_get(&self, security_id: Uuid) -> Result<SecurityRecord, PlatformError> { ni() }
     async fn security_list(&self) -> Result<Vec<SecurityRecord>, PlatformError> { ni() }
@@ -137,6 +147,7 @@ pub trait Canonical: Send + Sync {
         tax_basis_minor: i64,
         scale: u8,
         opening_activity_id: Option<Uuid>,
+        is_open: bool,
     ) -> Result<LotRecord, PlatformError> { ni() }
     async fn lot_assign(
         &self,
@@ -194,6 +205,78 @@ pub trait Canonical: Send + Sync {
     ) -> Result<CalculatorPlanBody, PlatformError> { ni() }
     async fn plan_get(&self) -> Result<CalculatorPlanBody, PlatformError> { ni() }
     async fn burndown_get(&self) -> Result<BurndownBody, PlatformError> { ni() }
+    async fn plan_history_record(
+        &self,
+        security_id: Uuid,
+        amount_per_share_minor: i64,
+        amount_scale: u8,
+        planning_periods_per_year: u8,
+        effective_from: String,
+        decision_reason: String,
+    ) -> Result<PlanHistoryRecord, PlatformError> { ni() }
+    async fn plan_history_list(&self) -> Result<Vec<PlanHistoryRecord>, PlatformError> { ni() }
+    async fn position_characteristic_upsert(
+        &self,
+        record: PositionCharacteristicRecord,
+    ) -> Result<PositionCharacteristicRecord, PlatformError> { ni() }
+    async fn position_characteristic_list(&self) -> Result<Vec<PositionCharacteristicRecord>, PlatformError> { ni() }
+
+    async fn plan_history_confirm(
+        &self,
+        security_id: Uuid,
+        amount_per_share_minor: i64,
+        amount_scale: u8,
+        planning_periods_per_year: u8,
+        effective_from: String,
+        decision_reason: String,
+    ) -> Result<PlanHistoryRecord, PlatformError> { ni() }
+    async fn issuer_declaration_record(
+        &self,
+        security_id: Uuid,
+        amount_per_share_minor: Option<i64>,
+        amount_scale: u8,
+        payment_period: String,
+        source: String,
+        entered_at: String,
+    ) -> Result<IssuerDeclarationRecord, PlatformError> { ni() }
+    async fn issuer_declaration_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<IssuerDeclarationRecord>, PlatformError> { ni() }
+    async fn price_quote_record(
+        &self,
+        security_id: Uuid,
+        price_minor: i64,
+        scale: u8,
+        as_of_at: String,
+        source: String,
+    ) -> Result<PriceQuoteBody, PlatformError> { ni() }
+    async fn price_quote_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<PriceQuoteBody>, PlatformError> { ni() }
+    async fn manual_price_override(
+        &self,
+        security_id: Uuid,
+        price_minor: i64,
+        scale: u8,
+        reason: String,
+        effective_from: String,
+    ) -> Result<CurrentPriceBody, PlatformError> { ni() }
+    async fn current_price_get(
+        &self,
+        security_id: Uuid,
+        as_of_date: String,
+    ) -> Result<CurrentPriceBody, PlatformError> { ni() }
+    async fn retrieval_template_set(
+        &self,
+        record: RetrievalTemplateRecord,
+    ) -> Result<RetrievalTemplateRecord, PlatformError> { ni() }
+    async fn retrieval_template_get(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Option<RetrievalTemplateRecord>, PlatformError> { ni() }
+    async fn price_retrieval_set(&self) -> Result<PriceRetrievalSetBody, PlatformError> { ni() }
 
     async fn allocation_target_set(
         &self,
@@ -228,6 +311,15 @@ pub trait Canonical: Send + Sync {
         status: String,
     ) -> Result<ClassificationReviewGetBody, PlatformError> { ni() }
     async fn classification_review_get(&self) -> Result<ClassificationReviewGetBody, PlatformError> { ni() }
+
+    async fn distribution_characterize(
+        &self,
+        activity_id: Uuid,
+        category: String,
+        amount_minor: i64,
+        scale: u8,
+    ) -> Result<DistributionGetBody, PlatformError> { ni() }
+    async fn distribution_get(&self) -> Result<DistributionGetBody, PlatformError> { ni() }
 
     async fn ai_analyze(&self, prompt: String) -> Result<AiRunRecord, PlatformError> { ni() }
     async fn ai_run_get(&self, run_id: Uuid) -> Result<AiRunRecord, PlatformError> { ni() }
@@ -265,6 +357,15 @@ impl Canonical for UnimplementedCanonical {
         &self,
         _symbol: String,
         _name: String,
+        _crf: bool,
+    ) -> Result<SecurityRecord, PlatformError> {
+        ni()
+    }
+    async fn security_update(
+        &self,
+        _security_id: Uuid,
+        _name: Option<String>,
+        _symbol: Option<String>,
     ) -> Result<SecurityRecord, PlatformError> {
         ni()
     }
@@ -401,6 +502,7 @@ impl Canonical for UnimplementedCanonical {
         _tax_basis_minor: i64,
         _scale: u8,
         _opening_activity_id: Option<Uuid>,
+        _is_open: bool,
     ) -> Result<LotRecord, PlatformError> {
         ni()
     }
@@ -494,6 +596,29 @@ impl Canonical for UnimplementedCanonical {
         ni()
     }
     async fn burndown_get(&self) -> Result<BurndownBody, PlatformError> {
+        ni()
+    }
+    async fn plan_history_record(
+        &self,
+        _security_id: Uuid,
+        _amount_per_share_minor: i64,
+        _amount_scale: u8,
+        _planning_periods_per_year: u8,
+        _effective_from: String,
+        _decision_reason: String,
+    ) -> Result<PlanHistoryRecord, PlatformError> {
+        ni()
+    }
+    async fn plan_history_list(&self) -> Result<Vec<PlanHistoryRecord>, PlatformError> {
+        ni()
+    }
+    async fn position_characteristic_upsert(
+        &self,
+        _record: PositionCharacteristicRecord,
+    ) -> Result<PositionCharacteristicRecord, PlatformError> {
+        ni()
+    }
+    async fn position_characteristic_list(&self) -> Result<Vec<PositionCharacteristicRecord>, PlatformError> {
         ni()
     }
     async fn allocation_target_set(

@@ -7,9 +7,10 @@
     "apps/*",
     "packages/*"
   ],
-  "scripts": {
+    "scripts": {
     "desktop": "npm start --workspace=@finos/desktop",
     "desktop:build": "npm run tauri --workspace=@finos/desktop -- build",
+    "household-seed": "cargo run -p golden-harness --bin household-seed",
     "web": "npm run dev --workspace=@finos/web",
     "web:check": "npm run build --workspace=@finos/web"
   }
