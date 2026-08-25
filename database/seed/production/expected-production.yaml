@@ -8,7 +8,7 @@ as_of: "2026-08-19"
 
 counts:
   accounts: 8
-  positions: 74
+  positions: 75
   lots_total: 1679
   lots_open: 1250
   transactions_yield: 5862
@@ -18,6 +18,8 @@ totals:
   yield_amount_minor: 16768338
   disbursement_gross_minor: 14982155
   disbursement_net_minor: 13905294
+  open_performance_minor: 46694666
+  open_tax_minor: 46135629
   scale: 2
 
 notes:
@@ -26,4 +28,5 @@ notes:
   - "Unknown/blank amounts must remain unknown — never coerce to zero."
   - "CRF zero-cost DRIP: legitimate on CRF DRIP lots; automatic capture only FI Roth."
   - "Money totals are owner-approved from the locked templates (scale 2 USD cents). Do not auto-write from code under test."
-  - "SSA/1099 rows post through an External holder; the accounts gate is the 8 brokerage accounts."
+  - "open_performance_minor / open_tax_minor are USD-cent sums of open lots in Template_Lots.xlsx (per-lot half-up). production_seed compares template, yaml, and posted BasisGet."
+  - "counts.positions is distinct open-lot symbols from PositionDetailsGet (BTC Grayscale and BTC-USD crypto are separate)."

@@ -35,6 +35,10 @@ pub struct ProductionTotals {
     pub yield_amount_minor: i64,
     pub disbursement_gross_minor: i64,
     pub disbursement_net_minor: i64,
+    #[serde(default)]
+    pub open_performance_minor: i64,
+    #[serde(default)]
+    pub open_tax_minor: i64,
     #[serde(default = "scale_two")]
     pub scale: u8,
 }
@@ -237,10 +241,18 @@ pub async fn production_seed_actual_totals(
             )
         })
         .sum();
+    let basis = execute_query_on(platform, platform, qry("BasisGet")).await;
+    if !basis.ok {
+        return Err("BasisGet failed".into());
+    }
+    let basis_val: Value =
+        serde_json::from_str(basis.body_json.as_deref().unwrap_or("{}")).map_err(|e| e.to_string())?;
     Ok(ProductionTotals {
         yield_amount_minor,
         disbursement_gross_minor,
         disbursement_net_minor: 0,
+        open_performance_minor: basis_val["openPerformanceMinor"].as_i64().unwrap_or(0),
+        open_tax_minor: basis_val["openTaxMinor"].as_i64().unwrap_or(0),
         scale: 2,
     })
 }
@@ -259,10 +271,14 @@ pub async fn production_seed_plan_count(platform: &LocalPlatform) -> Result<u64,
 pub fn production_template_totals(production_dir: &Path) -> Result<ProductionTotals, String> {
     let (yield_amount_minor, disbursement_gross_minor, disbursement_net_minor) =
         import_engine::production_template_totals(production_dir)?;
+    let (open_performance_minor, open_tax_minor) =
+        import_engine::production_template_basis_totals(production_dir)?;
     Ok(ProductionTotals {
         yield_amount_minor,
         disbursement_gross_minor,
         disbursement_net_minor,
+        open_performance_minor,
+        open_tax_minor,
         scale: 2,
     })
 }

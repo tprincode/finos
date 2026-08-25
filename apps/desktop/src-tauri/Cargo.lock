@@ -70,6 +70,7 @@ name = "application-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "financial-domain",
  "serde",
  "serde_json",
@@ -1030,6 +1031,7 @@ version = "0.1.0"
 dependencies = [
  "ai-gateway",
  "application-core",
+ "chrono",
  "dotenvy",
  "import-engine",
  "serde",
@@ -1038,6 +1040,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-updater",
+ "uuid",
 ]
 
 [[package]]

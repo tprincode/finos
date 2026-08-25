@@ -26,4 +26,10 @@ pub enum DomainError {
     MissingDeclarationSource,
     #[error("price must be positive; zero is not a quote")]
     NonpositivePrice,
+    #[error("backtest period is incomplete; owner must supply dates, kind, method, and reason")]
+    RegimePeriodIncomplete,
+    #[error("account quantities do not reconcile to open lots")]
+    QtyReconcileMismatch,
+    #[error("cost recovery cannot use a ROC-reduced economic-cost denominator")]
+    CostRecoveryRocReducedDenominator,
 }

@@ -405,7 +405,7 @@ pub fn desktop_ui_contains_no_sql(src_dir: &Path) -> Result<(), String> {
             let text = fs::read_to_string(&path)?;
             for (i, line) in text.lines().enumerate() {
                 let lower = line.to_ascii_lowercase();
-                if lower.contains("select ")
+                if (lower.contains("select ") && !lower.contains("select all"))
                     || lower.contains("insert into")
                     || lower.contains("delete from")
                     || lower.contains("sqlite")

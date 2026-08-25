@@ -2,11 +2,16 @@
 
 use std::process::ExitCode;
 
+use application_core::contracts::{
+    QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
+};
+use application_core::queries::execute_query_on;
 use golden_harness::{
     load_production_expected, load_production_seed_via_commands, production_seed_actual_counts,
     production_seed_actual_totals, production_seed_plan_count, profile_a_app_dir, repo_root,
 };
 use storage_sqlite::LocalPlatform;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -39,12 +44,6 @@ async fn run() -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     let before = production_seed_actual_counts(&platform).await?;
     let plans_before = production_seed_plan_count(&platform).await?;
-    if before == expected.counts && plans_before >= 40 {
-        return Ok(format!(
-            "household already loaded at {} (no re-seed)",
-            platform.db_path().display()
-        ));
-    }
     load_production_seed_via_commands(&platform, &production).await?;
     let after = production_seed_actual_counts(&platform).await?;
     if after != expected.counts {
@@ -64,8 +63,33 @@ async fn run() -> Result<String, String> {
             expected.totals.disbursement_gross_minor
         ));
     }
+    let coverage = execute_query_on(
+        &platform,
+        &platform,
+        QueryRequest {
+            contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
+            query_name: "PositionDetailsCoverageGet".into(),
+            correlation_id: Uuid::new_v4(),
+            body_json: None,
+        },
+    )
+    .await;
+    let coverage_note = if coverage.ok {
+        let val: serde_json::Value =
+            serde_json::from_str(coverage.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+        let n = val["rows"].as_array().map(|a| a.len()).unwrap_or(0);
+        format!("; coverage {n} securities")
+    } else {
+        String::new()
+    };
+    if before == expected.counts && plans_before >= 40 {
+        return Ok(format!(
+            "household already loaded at {} (calculator seed refreshed{coverage_note})",
+            platform.db_path().display()
+        ));
+    }
     Ok(format!(
-        "household loaded at {} (8/74/1679/5862/129)",
+        "household loaded at {} (8/75/1679/1250/5862/129{coverage_note})",
         platform.db_path().display()
     ))
 }

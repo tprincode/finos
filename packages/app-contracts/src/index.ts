@@ -170,6 +170,13 @@ export type HouseholdSummaryGet = {
   disbursementCount: number;
   latestYieldOn: string | null;
   planCount: number;
+  symbolCount: number;
+  openPerformanceMinor: number;
+  openTaxMinor: number;
+  lastPriceCount: number;
+  marketValueMinor: number | null;
+  marketValueComplete: boolean;
+  scale: number;
 };
 
 export type CalculatorGet = {
@@ -186,6 +193,10 @@ export type CalculatorGet = {
     remainingPerformanceMinor: number;
     rocPct2025ActualMinor: number | null;
     rocScale: number | null;
+    lastPriceMinor: number | null;
+    lastPriceScale: number | null;
+    priceFreshness: string;
+    marketValueMinor: number | null;
     scale: number;
   }>;
   planCount: number;
@@ -268,6 +279,17 @@ export type BrokerLotReconcileGet = {
   quantityScale: number;
 };
 
+export type AccountPositionTotal = {
+  accountId: string;
+  accountName: string;
+  symbolCount: number;
+  openLotCount: number;
+  openPerformanceMinor: number;
+  openTaxMinor: number;
+  marketValueMinor: number | null;
+  scale: number;
+};
+
 export type PositionDetailsGet = {
   positions: Array<{
     accountId: string;
@@ -281,8 +303,89 @@ export type PositionDetailsGet = {
     lotCount: number;
     scale: number;
   }>;
+  accountTotals: AccountPositionTotal[];
+  symbolCount: number;
+  accountCount: number;
+  openLotCount: number;
   openPerformanceMinor: number;
   openTaxMinor: number;
+  marketValueMinor: number | null;
+  marketValueComplete: boolean;
+  scale: number;
+};
+
+export type PositionMasterGet = {
+  rows: Array<{
+    securityId: string;
+    symbol: string;
+    name: string;
+    riskTier: string;
+    provider: string;
+    underlying: string;
+    paymentFrequency: string;
+    divType: string;
+    needsRocResearch: boolean;
+    isActive: boolean;
+    notes: string;
+    taxHandling: string;
+    declarationWeekday: string;
+    exdateWeekday: string;
+    paydayWeekday: string;
+    remainingQuantityMinor: number;
+    quantityScale: number;
+    remainingPerformanceMinor: number;
+    remainingTaxMinor: number;
+    unitCostMinor: number | null;
+    lastPriceMinor: number | null;
+    lastPriceScale: number | null;
+    priceFreshness: string;
+    priceDerivedValid: boolean;
+    marketValueMinor: number | null;
+    allocationBps: number | null;
+    planKnown: boolean;
+    planPerShareMinor: number;
+    planScale: number;
+    annualPlanMinor: number | null;
+    planYocBps: number | null;
+    planFwdYieldBps: number | null;
+    mostCurrentFwdYieldBps: number | null;
+    unrealizedPnlBps: number | null;
+    rocPct2024ActualMinor: number | null;
+    rocPct2025ActualMinor: number | null;
+    rocPct2026EstimateMinor: number | null;
+    rocPct2026ActualMinor: number | null;
+    rocScale: number | null;
+    declarationCount: number;
+    periodDated: boolean;
+    bearPriceReturnBps: number | null;
+    bearTotalReturnBps: number | null;
+    bullTotalReturnBps: number | null;
+    completeness: string;
+    scale: number;
+    totalDistributionsReceivedMinor?: number | null;
+    rocDistributionsMinor?: number | null;
+    costRecoveryBps?: number | null;
+    distributionsScope?: string;
+    evidence?: {
+      incomeReliability: number | null;
+      downsideResilience: number | null;
+      recoveryUpside: number | null;
+      navPersistence: number | null;
+      diversification: number | null;
+      dataConfidence: number;
+      knownComponents: number;
+    } | null;
+    bearCushionBps?: number | null;
+    bullPriceReturnBps?: number | null;
+    bullCushionBps?: number | null;
+    carMarketValueMinor?: number | null;
+    carShareOfSymbolBps?: number | null;
+    carShareOfHouseholdBps?: number | null;
+    rocResearchStatus?: string;
+    declarationFreshness?: string;
+  }>;
+  householdMarketValueMinor: number | null;
+  marketValueComplete: boolean;
   scale: number;
 };
 
@@ -473,8 +576,24 @@ export type InvestmentGet = {
   remainingQuantityMinor: number;
   quantityScale: number;
   remainingPerformanceMinor: number;
+  remainingTaxMinor: number;
+  rocPct2024ActualMinor: number | null;
   rocPct2025ActualMinor: number | null;
+  rocPct2026EstimateMinor: number | null;
+  rocPct2026ActualMinor: number | null;
   rocScale: number | null;
+  notes: string;
+  divType: string;
+  isActive?: boolean;
+  needsRocResearch?: boolean;
+  taxHandling?: string;
+  declarationWeekday?: string;
+  exdateWeekday?: string;
+  paydayWeekday?: string;
+  unitCostMinor?: number | null;
+  planFwdYieldBps?: number | null;
+  mostCurrentFwdYieldBps?: number | null;
+  unrealizedPnlBps?: number | null;
   price: CurrentPriceGet;
   review: PlanReviewGet;
   template: {
@@ -483,6 +602,12 @@ export type InvestmentGet = {
     declarationSource: string;
     lookbackCount: number;
     paymentSource: string;
+    sourceUrl?: string;
+    calendarPolicy?: string;
+    lastRunAt?: string;
+    lastRunOk?: boolean | null;
+    lastRunMessage?: string;
+    lastContentHash?: string;
   } | null;
   lots: Array<{
     lotId: string;
@@ -494,12 +619,187 @@ export type InvestmentGet = {
     remainingTaxMinor: number;
     scale: number;
   }>;
+  declarations: Array<{
+    paymentPeriod: string;
+    amountPerShareMinor: number | null;
+    amountScale: number;
+    source: string;
+  }>;
   declarationCount: number;
   firstLotComplete: boolean;
+  marketValueMinor: number | null;
+  unrealizedPerformanceMinor: number | null;
+  annualPlanMinor: number | null;
+  planYocBps: number | null;
+  mostCurrentVsPlanBps: number | null;
+  periods: Array<{
+    periodId: string;
+    kind: string;
+    name: string;
+    startOn: string;
+    endOn: string;
+    benchmarkSymbol: string;
+    selectionReason: string;
+    method: string;
+    status: string;
+    recordedAt: string;
+  }>;
+  results: Array<{
+    resultId: string;
+    securityId: string;
+    periodId: string;
+    priceReturnBps: number | null;
+    totalReturnBps: number | null;
+    cushionBps: number | null;
+    maxDrawdownBps: number | null;
+    recoveryRatioBps: number | null;
+    recoveryDays: number | null;
+    incomeReliabilityBps: number | null;
+    bearRelativeBps: number | null;
+    downsideCaptureBps: number | null;
+    upsideCaptureBps: number | null;
+    completeness: string;
+    source: string;
+    calculatedAt: string;
+  }>;
+  evidence: {
+    incomeReliability: number | null;
+    downsideResilience: number | null;
+    recoveryUpside: number | null;
+    navPersistence: number | null;
+    diversification: number | null;
+    dataConfidence: number;
+    knownComponents: number;
+  } | null;
+  suggestion: {
+    suggestedTier: string;
+    ruleset: string;
+    reason: string;
+    complete: boolean;
+  } | null;
+  totalDistributionsReceivedMinor?: number | null;
+  rocDistributionsMinor?: number | null;
+  costRecoveryBps?: number | null;
+  distributionsScope?: string;
+  carMarketValueMinor?: number | null;
+  carShareOfSymbolBps?: number | null;
+  carShareOfHouseholdBps?: number | null;
+  rocResearchStatus?: string;
+  declarationFreshness?: string;
+  rocEstimateMethod?: string;
+  rocEstimateSourceUrl?: string;
+  rocEstimateAsOf?: string;
+  rocEstimateEstablishedHow?: string;
   scale: number;
 };
 
+export type PositionDetailsCoverageRow = {
+  securityId: string;
+  symbol: string;
+  active: boolean;
+  openLots: boolean;
+  recordedStatus: string;
+  rocResearchStatus: string;
+  declarationFreshness: string;
+  distributionsScope: string;
+  declarationSource?: string;
+  lastRunAt?: string;
+  lastRunOk?: boolean | null;
+  lastRunMessage?: string;
+};
+
+export type PositionDetailsCoverageGet = {
+  rows: PositionDetailsCoverageRow[];
+};
+
+export type RocResearchGet = {
+  securityId: string | null;
+  rocPctMinor: number | null;
+  scale: number;
+  source: string;
+  complete: boolean;
+  reason: string;
+  candidates: Array<{
+    rocPctMinor: number | null;
+    scale: number;
+    taxYear: string;
+    source: string;
+    sourceUrl?: string;
+    method?: string;
+    asOf?: string;
+    kind?: string;
+    establishedHow?: string;
+    ownerOverride?: boolean;
+  }>;
+  remainingPeriods: number | null;
+  remainingTotalMinor: number | null;
+  remainingOrdinaryMinor: number | null;
+  remainingRocMinor: number | null;
+  magiEligible: boolean;
+  systemRocPctMinor?: number | null;
+  sourceUrl?: string;
+  method?: string;
+  asOf?: string;
+  kind?: string;
+  establishedHow?: string;
+  ownerOverride?: boolean;
+  observations?: Array<{
+    observationId: string;
+    securityId: string;
+    rocPctMinor: number | null;
+    scale: number;
+    taxYear: string;
+    source: string;
+    sourceUrl: string;
+    method: string;
+    asOf: string;
+    kind: string;
+    establishedHow: string;
+    ownerOverride: boolean;
+    recordedAt: string;
+  }>;
+};
+
 /** Check-for-update status. Fail closed: never applied, never posted. */
+export type RemainingYearIncomeGet = {
+  securityId: string;
+  asOfDate: string;
+  known: boolean;
+  provenance: string;
+  paymentFrequency: string;
+  latestDeclarationPeriod: string | null;
+  remainingPeriods: number | null;
+  yearToGoMinor: number | null;
+  thisLotYearToGoMinor: number | null;
+  positionAfterYearToGoMinor: number | null;
+  existingQuantityMinor: number;
+  thisLotQuantityMinor: number | null;
+  hypothetical: boolean;
+  planKnown: boolean;
+  payments: Array<{
+    payOn: string;
+    originalPayOn: string;
+    month: string;
+    cashMinor: number | null;
+    thisLotCashMinor: number | null;
+    positionAfterCashMinor: number | null;
+    ownerOverride: boolean;
+    dateProvenance?: string;
+  }>;
+  months: Array<{
+    month: string;
+    cashMinor: number | null;
+    thisLotCashMinor: number | null;
+    positionAfterCashMinor: number | null;
+  }>;
+  orphanedOverrides?: Array<{
+    originalPayOn: string;
+    payOn: string;
+  }>;
+  calendarPolicy?: string;
+  scale: number;
+};
+
 export type UpdaterCheckGet = {
   applied: boolean;
   posted: boolean;

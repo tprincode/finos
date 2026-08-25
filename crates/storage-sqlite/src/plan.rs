@@ -261,12 +261,20 @@ pub async fn position_characteristic_upsert(
 ) -> Result<PositionCharacteristicRecord, PlatformError> {
     let mut record = record;
     record.risk_tier = financial_domain::plan_review::normalize_risk_tier(&record.risk_tier);
+    let cadence = financial_domain::calculator::PaymentCadence::parse(&record.payment_frequency)
+        .ok_or_else(|| {
+            PlatformError::new(
+                "payment_cadence_required",
+                "Weekly (52), Monthly (12), Quarterly (4), or None (does not pay) must be identified; there is no default",
+            )
+        })?;
+    record.payment_frequency = cadence.label().to_string();
     sqlx::query(
         "INSERT INTO position_characteristic (
             security_id, payment_frequency, risk_tier, provider, underlying,
             roc_pct_2025_actual_minor, roc_pct_2026_estimate_minor, roc_pct_2026_actual_minor,
-            roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes, is_active
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(security_id) DO UPDATE SET
             payment_frequency = excluded.payment_frequency,
             risk_tier = excluded.risk_tier,
@@ -279,7 +287,8 @@ pub async fn position_characteristic_upsert(
             roc_scale = excluded.roc_scale,
             div_type = excluded.div_type,
             needs_roc_research = excluded.needs_roc_research,
-            notes = excluded.notes",
+            notes = excluded.notes,
+            is_active = excluded.is_active",
     )
     .bind(record.security_id.to_string())
     .bind(&record.payment_frequency)
@@ -294,6 +303,15 @@ pub async fn position_characteristic_upsert(
     .bind(&record.div_type)
     .bind(if record.needs_roc_research { 1 } else { 0 })
     .bind(&record.notes)
+    .bind(if record.is_active { 1 } else { 0 })
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    sqlx::query(
+        "UPDATE plan_history SET planning_periods_per_year = ? WHERE security_id = ? AND effective_to IS NULL",
+    )
+    .bind(cadence.periods().unwrap_or(0) as i64)
+    .bind(record.security_id.to_string())
     .execute(pool)
     .await
     .map_err(|e| map_err(e.into()))?;
@@ -331,6 +349,10 @@ fn characteristic_from_row(
         needs_roc_research: row.try_get::<i64, _>("needs_roc_research").map_err(|e| map_err(e.into()))?
             != 0,
         notes: row.try_get("notes").map_err(|e| map_err(e.into()))?,
+        is_active: row
+            .try_get::<i64, _>("is_active")
+            .map_err(|e| map_err(e.into()))?
+            != 0,
     })
 }
 
@@ -340,7 +362,7 @@ pub async fn position_characteristic_list(
     let rows = sqlx::query(
         "SELECT security_id, payment_frequency, risk_tier, provider, underlying,
                 roc_pct_2025_actual_minor, roc_pct_2026_estimate_minor, roc_pct_2026_actual_minor,
-                roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes
+                roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes, is_active
          FROM position_characteristic ORDER BY security_id",
     )
     .fetch_all(pool)

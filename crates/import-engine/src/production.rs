@@ -162,6 +162,15 @@ fn security_is_crf(symbol: &str) -> bool {
     symbol.eq_ignore_ascii_case("CRF")
 }
 
+/// Robinhood BTC lots are crypto (Yahoo BTC-USD). Other BTC lots are Grayscale (Yahoo BTC).
+fn household_symbol(account_name: &str, symbol: &str) -> String {
+    if symbol.eq_ignore_ascii_case("BTC") && account_name.eq_ignore_ascii_case("Robinhood") {
+        "BTC-USD".into()
+    } else {
+        symbol.to_string()
+    }
+}
+
 /// Parse production xlsx templates into a document that `ProductionSeedLoad` can apply.
 pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSeedDocument, String> {
     let accounts = read_data_rows(&production_dir.join("Template_Accounts.xlsx"))?;
@@ -206,8 +215,13 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
         push_security(symbol, name);
     }
     for row in lots.iter().chain(yield_rows.iter()) {
-        let symbol = get(row, "symbol");
-        push_security(symbol, symbol);
+        let symbol = household_symbol(get(row, "account_name"), get(row, "symbol"));
+        let name = if symbol.eq_ignore_ascii_case("BTC-USD") {
+            "Bitcoin"
+        } else {
+            symbol.as_str()
+        };
+        push_security(&symbol, name);
     }
 
     let mut lot_rows = Vec::new();
@@ -225,7 +239,7 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
         let tax_basis = (quantity_minor as i128) * (unit_tax as i128) / div;
         lot_rows.push(ProductionSeedLot {
             account_name: get(row, "account_name").to_string(),
-            symbol: get(row, "symbol").to_string(),
+            symbol: household_symbol(get(row, "account_name"), get(row, "symbol")),
             opened_on: as_iso_date(get(row, "purchase_date")),
             origin: if get(row, "notes").to_ascii_lowercase().contains("drip") {
                 "drip".into()
@@ -252,7 +266,8 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
             }
             candidates.push(ImportCandidate {
                 account_name: get(row, "account_name").to_string(),
-                symbol: Some(get(row, "symbol").to_string()).filter(|s| !s.is_empty()),
+                symbol: Some(household_symbol(get(row, "account_name"), get(row, "symbol")))
+                    .filter(|s| !s.is_empty()),
                 activity_type: "dividend".into(),
                 amount_minor: Some(to_minor(amount, 2)?),
                 scale: 2,
@@ -358,7 +373,14 @@ fn parse_characteristics(
         };
         rows.push(ProductionSeedCharacteristic {
             symbol,
-            payment_frequency: get(row, "payment_frequency").to_string(),
+            payment_frequency: {
+                let raw = get(row, "payment_frequency").trim();
+                if raw.is_empty() {
+                    "None".into()
+                } else {
+                    raw.to_string()
+                }
+            },
             risk_tier: get(row, "risk_tier").to_string(),
             provider: get(row, "provider").to_string(),
             underlying: get(row, "underlying").to_string(),
@@ -373,6 +395,10 @@ fn parse_characteristics(
                 "YES" | "1" | "TRUE"
             ),
             notes: get(row, "notes").to_string(),
+            is_active: !matches!(
+                get(row, "is_active").trim().to_ascii_uppercase().as_str(),
+                "NO" | "0" | "FALSE" | "INACTIVE"
+            ),
         });
     }
     Ok(rows)
@@ -478,4 +504,86 @@ pub fn production_template_totals(
         disbursement_gross_minor,
         disbursement_gross_minor - withheld_minor,
     ))
+}
+
+/// Open-lot original cost and tax basis from the locked lots template, in USD cents.
+pub fn production_template_basis_totals(production_dir: &Path) -> Result<(i64, i64), String> {
+    let doc = parse_production_templates(production_dir)?;
+    let mut open_performance_minor = 0i64;
+    let mut open_tax_minor = 0i64;
+    for lot in &doc.lots {
+        if !lot.is_open {
+            continue;
+        }
+        open_performance_minor +=
+            financial_domain::money::to_usd_cents(lot.performance_basis_minor, lot.scale);
+        open_tax_minor += financial_domain::money::to_usd_cents(lot.tax_basis_minor, lot.scale);
+    }
+    Ok((open_performance_minor, open_tax_minor))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn production_template_basis_totals_from_locked_xlsx() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../database/seed/production");
+        let (open_performance_minor, open_tax_minor) =
+            production_template_basis_totals(&dir).expect("locked lots template");
+        assert_eq!(open_performance_minor, 46_694_666);
+        assert_eq!(open_tax_minor, 46_135_629);
+    }
+
+    #[test]
+    fn robinhood_btc_parses_as_btc_usd_grayscale_stays_btc() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../database/seed/production");
+        let doc = parse_production_templates(&dir).expect("locked templates");
+        assert!(
+            doc.lots
+                .iter()
+                .any(|l| l.symbol == "BTC-USD" && l.account_name.eq_ignore_ascii_case("Robinhood")),
+            "Robinhood crypto lots must use BTC-USD"
+        );
+        assert!(
+            doc.lots
+                .iter()
+                .any(|l| l.symbol == "BTC" && !l.account_name.eq_ignore_ascii_case("Robinhood")),
+            "Grayscale BTC lots must stay BTC"
+        );
+        assert!(
+            !doc.lots
+                .iter()
+                .any(|l| l.symbol.eq_ignore_ascii_case("BTC")
+                    && l.account_name.eq_ignore_ascii_case("Robinhood")),
+            "Robinhood must not keep a BTC symbol after remap"
+        );
+        assert!(doc.securities.iter().any(|s| s.symbol == "BTC"));
+        assert!(doc.securities.iter().any(|s| s.symbol == "BTC-USD"));
+    }
+
+    #[test]
+    fn seed_payment_frequencies_are_cadence_or_empty() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../database/seed/production");
+        let doc = parse_production_templates(&dir).expect("locked templates");
+        let mut bad = Vec::new();
+        for row in &doc.characteristics {
+            if financial_domain::calculator::PaymentCadence::parse(&row.payment_frequency).is_none()
+            {
+                bad.push((row.symbol.clone(), row.payment_frequency.clone()));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "seed payment_frequency must be Weekly/Monthly/Quarterly/None: {bad:?}"
+        );
+        assert_eq!(
+            doc.characteristics
+                .iter()
+                .find(|r| r.symbol == "ENERGYX")
+                .map(|r| r.payment_frequency.as_str()),
+            Some("None")
+        );
+    }
 }

@@ -58,6 +58,9 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::IncompleteAnalysisRequired => "incomplete_analysis_required",
         DomainError::MissingDeclarationSource => "missing_declaration_source",
         DomainError::NonpositivePrice => "nonpositive_price",
+        DomainError::RegimePeriodIncomplete => "regime_period_incomplete",
+        DomainError::QtyReconcileMismatch => "qty_reconcile_mismatch",
+        DomainError::CostRecoveryRocReducedDenominator => "cost_recovery_roc_reduced_denominator",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -691,18 +694,29 @@ impl Canonical for PostgresPlatform {
                 remaining_performance_minor: line.remaining_performance_minor,
                 remaining_tax_minor: line.remaining_tax_minor,
                 lot_count: line.lot_count,
+                market_value_minor: None,
                 scale: line.scale,
             });
         }
         let open_performance_minor = positions
             .iter()
-            .map(|p| p.remaining_performance_minor)
+            .map(|p| financial_domain::money::to_usd_cents(p.remaining_performance_minor, p.scale))
             .sum();
-        let open_tax_minor = positions.iter().map(|p| p.remaining_tax_minor).sum();
+        let open_tax_minor = positions
+            .iter()
+            .map(|p| financial_domain::money::to_usd_cents(p.remaining_tax_minor, p.scale))
+            .sum();
         Ok(PositionDetailsBody {
             positions,
+            account_totals: Vec::new(),
+            symbol_count: 0,
+            account_count: 0,
+            open_lot_count: 0,
             open_performance_minor,
             open_tax_minor,
+            market_value_minor: None,
+            market_value_complete: false,
+            qty_reconcile_ok: true,
             scale: 2,
         })
     }

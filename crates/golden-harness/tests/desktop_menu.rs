@@ -39,6 +39,7 @@ const MENU_QUERIES: &[&str] = &[
     "AccountList",
     "SecurityList",
     "PositionDetailsGet",
+    "PositionMasterGet",
 ];
 
 #[test]

@@ -2,15 +2,59 @@
 
 use chrono::{Duration, NaiveDate};
 
-/// Normalized planning periods: Weekly=52, Monthly=12, Quarterly=4 (TR-C-5).
-pub fn periods_from_frequency(frequency: &str) -> Option<u8> {
-    match frequency.trim().to_ascii_lowercase().as_str() {
-        "weekly" => Some(52),
-        "monthly" => Some(12),
-        "quarterly" => Some(4),
-        "none" | "" => None,
-        _ => None,
+/// One locked cadence: label and period count are the same fact (TR-C-5).
+/// There is no default. Empty is unidentified. `None` means the position does not pay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymentCadence {
+    Weekly,
+    Monthly,
+    Quarterly,
+    None,
+}
+
+impl PaymentCadence {
+    /// Parse a description (`Weekly` / `None`) or a period count (`52` / `12` / `4`).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "weekly" | "52" => Some(Self::Weekly),
+            "monthly" | "12" => Some(Self::Monthly),
+            "quarterly" | "4" => Some(Self::Quarterly),
+            "none" => Some(Self::None),
+            _ => None,
+        }
     }
+
+    pub fn parse_periods(periods: u8) -> Option<Self> {
+        match periods {
+            52 => Some(Self::Weekly),
+            12 => Some(Self::Monthly),
+            4 => Some(Self::Quarterly),
+            _ => None,
+        }
+    }
+
+    pub fn periods(self) -> Option<u8> {
+        match self {
+            Self::Weekly => Some(52),
+            Self::Monthly => Some(12),
+            Self::Quarterly => Some(4),
+            Self::None => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Weekly => "Weekly",
+            Self::Monthly => "Monthly",
+            Self::Quarterly => "Quarterly",
+            Self::None => "None",
+        }
+    }
+}
+
+/// Normalized planning periods from the locked cadence. None means no 52/12/4 schedule.
+pub fn periods_from_frequency(frequency: &str) -> Option<u8> {
+    PaymentCadence::parse(frequency).and_then(PaymentCadence::periods)
 }
 
 /// Position dollars for one period, in USD cents (scale 2).
@@ -88,6 +132,22 @@ pub fn expected_in_week(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cadence_is_one_value_label_or_periods() {
+        assert_eq!(PaymentCadence::parse("Weekly").unwrap().periods(), Some(52));
+        assert_eq!(PaymentCadence::parse("52").unwrap().label(), "Weekly");
+        assert_eq!(PaymentCadence::parse("monthly").unwrap().periods(), Some(12));
+        assert_eq!(PaymentCadence::parse("12").unwrap().label(), "Monthly");
+        assert_eq!(PaymentCadence::parse("Quarterly").unwrap().periods(), Some(4));
+        assert_eq!(PaymentCadence::parse("4").unwrap().label(), "Quarterly");
+        assert_eq!(PaymentCadence::parse("None").unwrap().label(), "None");
+        assert_eq!(PaymentCadence::parse("None").unwrap().periods(), None);
+        assert!(PaymentCadence::parse("").is_none());
+        assert!(PaymentCadence::parse_periods(0).is_none());
+        assert!(periods_from_frequency("").is_none());
+        assert!(periods_from_frequency("None").is_none());
+    }
 
     #[test]
     fn crf_plan_payment_matches_qty_times_plan() {

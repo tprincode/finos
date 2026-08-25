@@ -123,6 +123,25 @@ async fn wz_add_lot_existing_increases_income_plan_not_plan_history() {
         .unwrap()["plannedMinor"]
         .as_i64()
         .unwrap();
+    let remaining_preview = query_json(
+        &platform,
+        "RemainingYearIncomeGet",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-08-21",
+            "thisLotQuantityMinor": 10,
+            "thisLotOpenedOn": "2026-08-15"
+        }),
+    )
+    .await;
+    assert!(remaining_preview["known"].as_bool().unwrap());
+    let this_lot = remaining_preview["thisLotYearToGoMinor"].as_i64().unwrap();
+    let after_add = remaining_preview["positionAfterYearToGoMinor"].as_i64().unwrap();
+    assert!(this_lot > 0, "Add Lot remaining-year this-lot cash: {remaining_preview}");
+    assert!(
+        after_add > this_lot,
+        "position after add must exceed this lot: {remaining_preview}"
+    );
     let summary_before = query_json(&platform, "HouseholdSummaryGet", serde_json::json!({})).await;
     must_ok(
         &platform,
@@ -163,6 +182,20 @@ async fn wz_add_lot_existing_increases_income_plan_not_plan_history() {
     assert_eq!(
         summary_before["planCount"], summary_after["planCount"],
         "Add Lot must not create PlanHistory"
+    );
+    let remaining_stored = query_json(
+        &platform,
+        "RemainingYearIncomeGet",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-08-21"
+        }),
+    )
+    .await;
+    assert_eq!(
+        remaining_stored["yearToGoMinor"].as_i64(),
+        remaining_preview["positionAfterYearToGoMinor"].as_i64(),
+        "stored lots must match the Add Lot position-after-add preview"
     );
 }
 

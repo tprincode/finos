@@ -10,7 +10,9 @@ use application_core::contracts::{
     SecurityRecord, AllocationGetBody, AiRunListBody, AiRunRecord, BacktestGetBody, BurndownBody,
     CalculatorPlanBody, CartGetBody, ClassificationReviewGetBody, DistributionGetBody,
     PlanHistoryRecord, PositionCharacteristicRecord, PositionDetailsBody, PositionLineBody,
-    TaxProjectionBody,
+    TaxProjectionBody, BacktestPeriodRecord, PositionBacktestResultBody,
+    RocResearchObservation, RemainingPaymentDateOverride, ExpectedPaymentPattern,
+    PositionTaxProfile, IssuerPayDateRecord,
 };
 use application_core::ports::canonical::Canonical;
 use application_core::ports::platform::PlatformError;
@@ -51,6 +53,9 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::IncompleteAnalysisRequired => "incomplete_analysis_required",
         DomainError::MissingDeclarationSource => "missing_declaration_source",
         DomainError::NonpositivePrice => "nonpositive_price",
+        DomainError::RegimePeriodIncomplete => "regime_period_incomplete",
+        DomainError::QtyReconcileMismatch => "qty_reconcile_mismatch",
+        DomainError::CostRecoveryRocReducedDenominator => "cost_recovery_roc_reduced_denominator",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -894,6 +899,34 @@ impl Canonical for LocalPlatform {
         rows.iter().map(activity_from_row).collect()
     }
 
+    async fn activity_reassign_security(
+        &self,
+        activity_id: Uuid,
+        security_id: Uuid,
+    ) -> Result<ActivityRecord, PlatformError> {
+        let _ = self.security_get(security_id).await?;
+        let pool = self.pool.read().await;
+        let n = sqlx::query("UPDATE activity_event SET security_id = ? WHERE activity_id = ?")
+            .bind(security_id.to_string())
+            .bind(activity_id.to_string())
+            .execute(&*pool)
+            .await
+            .map_err(|e| map_err(e.into()))?
+            .rows_affected();
+        if n == 0 {
+            return Err(PlatformError::new("not_found", "activity not found"));
+        }
+        audit(
+            &pool,
+            "ActivityReassignSecurity",
+            "activity_event",
+            &activity_id.to_string(),
+        )
+        .await?;
+        drop(pool);
+        self.activity_get(activity_id).await
+    }
+
     async fn audit_list(&self) -> Result<Vec<AuditRecord>, PlatformError> {
         let pool = self.pool.read().await;
         let rows = sqlx::query(
@@ -959,6 +992,34 @@ impl Canonical for LocalPlatform {
                 })
             })
             .collect()
+    }
+
+    async fn exception_raise(
+        &self,
+        code: String,
+        message: String,
+    ) -> Result<ExceptionRecord, PlatformError> {
+        let exception_id = Uuid::new_v4();
+        let created_at = now_rfc3339();
+        let pool = self.pool.read().await;
+        sqlx::query(
+            "INSERT INTO app_exception (exception_id, code, message, acknowledged, created_at)
+             VALUES (?, ?, ?, 0, ?)",
+        )
+        .bind(exception_id.to_string())
+        .bind(&code)
+        .bind(&message)
+        .bind(&created_at)
+        .execute(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        Ok(ExceptionRecord {
+            exception_id,
+            code,
+            message,
+            acknowledged: false,
+            created_at,
+        })
     }
 
     async fn canonical_week_get(&self, as_of_date: String) -> Result<CanonicalWeekBody, PlatformError> {
@@ -1262,6 +1323,28 @@ impl Canonical for LocalPlatform {
         Ok(record)
     }
 
+    async fn lot_reassign_security(
+        &self,
+        lot_id: Uuid,
+        security_id: Uuid,
+    ) -> Result<LotRecord, PlatformError> {
+        let _ = self.security_get(security_id).await?;
+        let pool = self.pool.read().await;
+        let n = sqlx::query("UPDATE lot SET security_id = ? WHERE lot_id = ?")
+            .bind(security_id.to_string())
+            .bind(lot_id.to_string())
+            .execute(&*pool)
+            .await
+            .map_err(|e| map_err(e.into()))?
+            .rows_affected();
+        if n == 0 {
+            return Err(PlatformError::new("not_found", "lot not found"));
+        }
+        audit(&pool, "LotReassignSecurity", "lot", &lot_id.to_string()).await?;
+        drop(pool);
+        self.lot_get(lot_id).await
+    }
+
     async fn lot_assign(
         &self,
         lot_id: Uuid,
@@ -1359,8 +1442,16 @@ impl Canonical for LocalPlatform {
 
     async fn basis_get(&self) -> Result<BasisGetBody, PlatformError> {
         let lots = self.lot_list().await?;
-        let open_performance_minor = lots.iter().map(|l| l.remaining_performance_minor).sum();
-        let open_tax_minor = lots.iter().map(|l| l.remaining_tax_minor).sum();
+        let open_performance_minor = lots
+            .iter()
+            .filter(|l| l.remaining_quantity_minor > 0)
+            .map(|l| financial_domain::money::to_usd_cents(l.remaining_performance_minor, l.scale))
+            .sum();
+        let open_tax_minor = lots
+            .iter()
+            .filter(|l| l.remaining_quantity_minor > 0)
+            .map(|l| financial_domain::money::to_usd_cents(l.remaining_tax_minor, l.scale))
+            .sum();
         Ok(BasisGetBody {
             lots,
             open_performance_minor,
@@ -1647,6 +1738,24 @@ impl Canonical for LocalPlatform {
         crate::wizard::issuer_declaration_list(&*pool, security_id).await
     }
 
+    async fn issuer_pay_date_replace(
+        &self,
+        security_id: Uuid,
+        as_of: String,
+        dates: Vec<IssuerPayDateRecord>,
+    ) -> Result<Vec<IssuerPayDateRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::issuer_pay::pay_date_replace(&*pool, security_id, as_of, dates).await
+    }
+
+    async fn issuer_pay_date_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<IssuerPayDateRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::issuer_pay::pay_date_list(&*pool, security_id).await
+    }
+
     async fn price_quote_record(
         &self,
         security_id: Uuid,
@@ -1666,6 +1775,14 @@ impl Canonical for LocalPlatform {
     ) -> Result<Vec<application_core::contracts::PriceQuoteBody>, PlatformError> {
         let pool = self.pool.read().await;
         crate::wizard::price_quote_list(&*pool, security_id).await
+    }
+
+    async fn price_quote_reject(
+        &self,
+        price_quote_id: Uuid,
+    ) -> Result<application_core::contracts::PriceQuoteBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::price_quote_reject(&*pool, price_quote_id).await
     }
 
     async fn manual_price_override(
@@ -1711,6 +1828,26 @@ impl Canonical for LocalPlatform {
     ) -> Result<Option<application_core::contracts::RetrievalTemplateRecord>, PlatformError> {
         let pool = self.pool.read().await;
         crate::wizard::retrieval_template_get(&*pool, security_id).await
+    }
+
+    async fn retrieval_template_touch_run(
+        &self,
+        security_id: Uuid,
+        ok: bool,
+        message: String,
+        ran_at: String,
+        content_hash: String,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::retrieval_template_touch_run(
+            &*pool,
+            security_id,
+            ok,
+            message,
+            ran_at,
+            content_hash,
+        )
+        .await
     }
 
     async fn price_retrieval_set(
@@ -1770,6 +1907,103 @@ impl Canonical for LocalPlatform {
     async fn backtest_get(&self) -> Result<BacktestGetBody, PlatformError> {
         let pool = self.pool.read().await;
         crate::backtest::run_get(&*pool).await
+    }
+
+    async fn backtest_period_record(
+        &self,
+        record: BacktestPeriodRecord,
+    ) -> Result<BacktestPeriodRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::regime::period_record(&*pool, record).await
+    }
+
+    async fn backtest_period_list(&self) -> Result<Vec<BacktestPeriodRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::regime::period_list(&*pool).await
+    }
+
+    async fn backtest_period_get(
+        &self,
+        period_id: Uuid,
+    ) -> Result<BacktestPeriodRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::regime::period_get(&*pool, period_id).await
+    }
+
+    async fn position_backtest_result_record(
+        &self,
+        record: PositionBacktestResultBody,
+    ) -> Result<PositionBacktestResultBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::regime::result_record(&*pool, record).await
+    }
+
+    async fn position_backtest_result_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<PositionBacktestResultBody>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::regime::result_list_for_security(&*pool, security_id).await
+    }
+
+    async fn roc_observation_record(
+        &self,
+        record: RocResearchObservation,
+    ) -> Result<RocResearchObservation, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::roc_obs::observation_record(&*pool, record).await
+    }
+
+    async fn roc_observation_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<RocResearchObservation>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::roc_obs::observation_list(&*pool, security_id).await
+    }
+
+    async fn remaining_payment_date_override_record(
+        &self,
+        record: RemainingPaymentDateOverride,
+    ) -> Result<RemainingPaymentDateOverride, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::payment_dates::override_record(&*pool, record).await
+    }
+
+    async fn remaining_payment_date_override_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<RemainingPaymentDateOverride>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::payment_dates::override_list(&*pool, security_id).await
+    }
+
+    async fn expected_payment_pattern_upsert(
+        &self,
+        record: ExpectedPaymentPattern,
+    ) -> Result<ExpectedPaymentPattern, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::pd_settings::expected_payment_pattern_upsert(&*pool, record).await
+    }
+
+    async fn expected_payment_pattern_list(
+        &self,
+    ) -> Result<Vec<ExpectedPaymentPattern>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::pd_settings::expected_payment_pattern_list(&*pool).await
+    }
+
+    async fn position_tax_profile_upsert(
+        &self,
+        record: PositionTaxProfile,
+    ) -> Result<PositionTaxProfile, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::pd_settings::position_tax_profile_upsert(&*pool, record).await
+    }
+
+    async fn position_tax_profile_list(&self) -> Result<Vec<PositionTaxProfile>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::pd_settings::position_tax_profile_list(&*pool).await
     }
 
     async fn classification_review_record(
@@ -1857,18 +2091,40 @@ impl Canonical for LocalPlatform {
                 remaining_performance_minor: line.remaining_performance_minor,
                 remaining_tax_minor: line.remaining_tax_minor,
                 lot_count: line.lot_count,
+                market_value_minor: None,
                 scale: line.scale,
             });
         }
         let open_performance_minor = positions
             .iter()
-            .map(|p| p.remaining_performance_minor)
+            .map(|p| financial_domain::money::to_usd_cents(p.remaining_performance_minor, p.scale))
             .sum();
-        let open_tax_minor = positions.iter().map(|p| p.remaining_tax_minor).sum();
+        let open_tax_minor = positions
+            .iter()
+            .map(|p| financial_domain::money::to_usd_cents(p.remaining_tax_minor, p.scale))
+            .sum();
+        let symbol_count = positions
+            .iter()
+            .map(|p| p.security_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len() as u64;
+        let account_count = positions
+            .iter()
+            .map(|p| p.account_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len() as u64;
+        let open_lot_count = positions.iter().map(|p| p.lot_count).sum();
         Ok(PositionDetailsBody {
             positions,
+            account_totals: Vec::new(),
+            symbol_count,
+            account_count,
+            open_lot_count,
             open_performance_minor,
             open_tax_minor,
+            market_value_minor: None,
+            market_value_complete: false,
+            qty_reconcile_ok: true,
             scale: 2,
         })
     }

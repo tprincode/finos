@@ -24,6 +24,168 @@
   overflow: auto;
 }
 
+/* Form/dossier tables: inner scroll + sticky header sits on the first input and eats clicks. */
+.table-wrap:has(input),
+.table-wrap:has(select) {
+  max-height: none;
+  overflow: visible;
+}
+
+.table-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f6f6f6;
+  box-shadow: 0 1px 0 #d0d0d0;
+  pointer-events: none;
+}
+
+.table-wrap thead th button,
+.table-wrap thead th .col-filter-btn {
+  pointer-events: auto;
+}
+
+.table-wrap:has(input) thead th,
+.table-wrap:has(select) thead th,
+.table-wrap:has(input) tfoot td,
+.table-wrap:has(select) tfoot td {
+  position: static;
+  z-index: auto;
+  pointer-events: auto;
+  box-shadow: none;
+}
+
+.table-wrap tfoot td {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  font-weight: 600;
+  background: #f6f6f6;
+  box-shadow: 0 -1px 0 #d0d0d0;
+}
+
+th.sortable {
+  padding: 0;
+}
+
+th.sortable button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  text-align: inherit;
+  width: 100%;
+}
+
+th.sortable .sort-th {
+  display: flex;
+  align-items: stretch;
+  min-width: max-content;
+}
+
+th.sortable .sort-th > button:first-child {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+th.sortable.numeric button:first-child {
+  text-align: right;
+}
+
+th.sortable button:focus-visible,
+th.sortable .col-filter-btn:focus-visible,
+.col-filter-menu button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
+}
+
+th.sortable .col-filter-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid #e4e4e4;
+  color: inherit;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  line-height: 1;
+  padding: 0.35rem 0.45rem;
+  width: auto;
+}
+
+th.sortable .col-filter-btn.is-filtered {
+  background: #d6e6f8;
+  font-weight: 700;
+}
+
+.col-filter-menu {
+  position: fixed;
+  inset: unset;
+  margin: 0;
+  min-width: 14rem;
+  max-height: 22rem;
+  overflow: auto;
+  padding: 0.35rem 0;
+  background: #fff;
+  color: #0f0f0f;
+  border: 1px solid #b0b0b0;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+
+.col-filter-menu .col-filter-clear {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.col-filter-menu .col-filter-clear:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.col-filter-menu .col-filter-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0.25rem 0.7rem;
+  cursor: pointer;
+}
+
+.col-filter-menu .col-filter-values {
+  list-style: none;
+  margin: 0;
+  padding: 0.2rem 0 0;
+  border-top: 1px solid #e0e0e0;
+}
+
+.col-filter-menu .col-filter-option input {
+  margin: 0;
+  padding: 0;
+  width: auto;
+}
+
+.filter-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -75,6 +237,17 @@ dd {
   font-weight: 600;
 }
 
+.unsaved-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.unsaved-bar p {
+  margin: 0;
+}
+
 .status-stored {
   color: #0a7a32;
 }
@@ -105,6 +278,40 @@ table[aria-label="Mandatory data checklist"] td:last-child {
   gap: 0.5rem;
 }
 
+.dossier-actions {
+  padding: 0.5rem 0;
+}
+
+table[aria-label="Position dossier"] td:nth-child(2),
+table[aria-label="Mandatory data checklist"] td:nth-child(2),
+table[aria-label="Add lot dossier"] td:nth-child(2) {
+  min-width: 16rem;
+}
+
+table[aria-label="Position dossier"] input,
+table[aria-label="Position dossier"] select,
+table[aria-label="Mandatory data checklist"] input,
+table[aria-label="Mandatory data checklist"] select,
+table[aria-label="Add lot dossier"] input,
+table[aria-label="Add lot dossier"] select,
+table[aria-label="Remaining-year payment dates"] input {
+  display: block;
+  width: 100%;
+  min-width: 12rem;
+  max-width: 28rem;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 2;
+}
+
+table[aria-label="Remaining-year payment dates"] {
+  margin: 0;
+}
+
+table[aria-label="Remaining-year payment dates"] input {
+  max-width: 12rem;
+}
+
 button {
   padding: 0.4rem 0.75rem;
 }
@@ -117,5 +324,10 @@ button:disabled {
   :root {
     color: #f6f6f6;
     background-color: #2f2f2f;
+  }
+
+  .table-wrap thead th,
+  .table-wrap tfoot td {
+    background: #2f2f2f;
   }
 }

@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 pub const FINANCE_CLIENT_CONTRACT_VERSION: &str = "1.0.0-draft";
 
-/// Schema version including distribution characterization (Wave 4).
-pub const SCHEMA_VERSION: &str = "15";
+/// Schema version including vendor calendar standing order.
+pub const SCHEMA_VERSION: &str = "20";
 /// Marketplace MAGI 2026.1 after owner-approved oracles.
 pub const CALCULATION_VERSION: &str = "magi-2026.1";
 pub const APP_VERSION: &str = "0.1.0";
@@ -506,6 +506,21 @@ pub struct PositionLineBody {
     pub remaining_performance_minor: i64,
     pub remaining_tax_minor: i64,
     pub lot_count: u64,
+    #[serde(default)]
+    pub market_value_minor: Option<i64>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPositionTotalBody {
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub symbol_count: u64,
+    pub open_lot_count: u64,
+    pub open_performance_minor: i64,
+    pub open_tax_minor: i64,
+    pub market_value_minor: Option<i64>,
     pub scale: u8,
 }
 
@@ -513,8 +528,16 @@ pub struct PositionLineBody {
 #[serde(rename_all = "camelCase")]
 pub struct PositionDetailsBody {
     pub positions: Vec<PositionLineBody>,
+    pub account_totals: Vec<AccountPositionTotalBody>,
+    pub symbol_count: u64,
+    pub account_count: u64,
+    pub open_lot_count: u64,
     pub open_performance_minor: i64,
     pub open_tax_minor: i64,
+    pub market_value_minor: Option<i64>,
+    pub market_value_complete: bool,
+    #[serde(default = "default_true")]
+    pub qty_reconcile_ok: bool,
     pub scale: u8,
 }
 
@@ -586,6 +609,8 @@ pub struct ProductionSeedCharacteristic {
     pub div_type: String,
     pub needs_roc_research: bool,
     pub notes: String,
+    #[serde(default = "default_true")]
+    pub is_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -645,6 +670,12 @@ pub struct ProductionSeedLoadBody {
     pub account_count: u64,
     pub security_count: u64,
     pub lot_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDeclarationSourcesApplyBody {
+    pub updated: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -733,6 +764,13 @@ pub struct HouseholdSummaryBody {
     pub disbursement_count: u64,
     pub latest_yield_on: Option<String>,
     pub plan_count: u64,
+    pub symbol_count: u64,
+    pub open_performance_minor: i64,
+    pub open_tax_minor: i64,
+    pub last_price_count: u64,
+    pub market_value_minor: Option<i64>,
+    pub market_value_complete: bool,
+    pub scale: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -763,6 +801,114 @@ pub struct PositionCharacteristicRecord {
     pub div_type: String,
     pub needs_roc_research: bool,
     pub notes: String,
+    #[serde(default = "default_true")]
+    pub is_active: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpectedPaymentPattern {
+    pub security_id: Uuid,
+    pub declaration_weekday: String,
+    pub exdate_weekday: String,
+    pub payday_weekday: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionTaxProfile {
+    pub security_id: Uuid,
+    pub expected_handling: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionMasterRowBody {
+    pub security_id: Uuid,
+    pub symbol: String,
+    pub name: String,
+    pub risk_tier: String,
+    pub provider: String,
+    pub underlying: String,
+    pub payment_frequency: String,
+    pub div_type: String,
+    pub needs_roc_research: bool,
+    pub is_active: bool,
+    pub notes: String,
+    pub tax_handling: String,
+    pub declaration_weekday: String,
+    pub exdate_weekday: String,
+    pub payday_weekday: String,
+    pub remaining_quantity_minor: i64,
+    pub quantity_scale: u8,
+    pub remaining_performance_minor: i64,
+    pub remaining_tax_minor: i64,
+    pub unit_cost_minor: Option<i64>,
+    pub last_price_minor: Option<i64>,
+    pub last_price_scale: Option<u8>,
+    pub price_freshness: String,
+    pub price_derived_valid: bool,
+    pub market_value_minor: Option<i64>,
+    pub allocation_bps: Option<i64>,
+    pub plan_known: bool,
+    pub plan_per_share_minor: i64,
+    pub plan_scale: u8,
+    pub annual_plan_minor: Option<i64>,
+    pub plan_yoc_bps: Option<i64>,
+    pub plan_fwd_yield_bps: Option<i64>,
+    pub most_current_fwd_yield_bps: Option<i64>,
+    pub unrealized_pnl_bps: Option<i64>,
+    pub roc_pct_2024_actual_minor: Option<i64>,
+    pub roc_pct_2025_actual_minor: Option<i64>,
+    pub roc_pct_2026_estimate_minor: Option<i64>,
+    pub roc_pct_2026_actual_minor: Option<i64>,
+    pub roc_scale: Option<u8>,
+    pub declaration_count: u64,
+    pub period_dated: bool,
+    pub bear_price_return_bps: Option<i64>,
+    pub bear_total_return_bps: Option<i64>,
+    pub bull_total_return_bps: Option<i64>,
+    pub completeness: String,
+    #[serde(default)]
+    pub total_distributions_received_minor: Option<i64>,
+    #[serde(default)]
+    pub roc_distributions_minor: Option<i64>,
+    #[serde(default)]
+    pub cost_recovery_bps: Option<i64>,
+    #[serde(default)]
+    pub distributions_scope: String,
+    #[serde(default)]
+    pub evidence: Option<EvidenceDimensionsBody>,
+    #[serde(default)]
+    pub bear_cushion_bps: Option<i64>,
+    #[serde(default)]
+    pub bull_price_return_bps: Option<i64>,
+    #[serde(default)]
+    pub bull_cushion_bps: Option<i64>,
+    #[serde(default)]
+    pub car_market_value_minor: Option<i64>,
+    #[serde(default)]
+    pub car_share_of_symbol_bps: Option<i64>,
+    #[serde(default)]
+    pub car_share_of_household_bps: Option<i64>,
+    #[serde(default)]
+    pub roc_research_status: String,
+    #[serde(default)]
+    pub declaration_freshness: String,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionMasterGetBody {
+    pub rows: Vec<PositionMasterRowBody>,
+    pub household_market_value_minor: Option<i64>,
+    pub market_value_complete: bool,
+    pub scale: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -780,6 +926,14 @@ pub struct CalculatorRowBody {
     pub remaining_performance_minor: i64,
     pub roc_pct_2025_actual_minor: Option<i64>,
     pub roc_scale: Option<u8>,
+    #[serde(default)]
+    pub last_price_minor: Option<i64>,
+    #[serde(default)]
+    pub last_price_scale: Option<u8>,
+    #[serde(default)]
+    pub price_freshness: String,
+    #[serde(default)]
+    pub market_value_minor: Option<i64>,
     pub scale: u8,
 }
 
@@ -821,6 +975,16 @@ pub struct IssuerDeclarationRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct IssuerPayDateRecord {
+    pub pay_date_id: Uuid,
+    pub security_id: Uuid,
+    pub pay_on: String,
+    pub source: String,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct PriceQuoteBody {
     pub price_quote_id: Uuid,
     pub security_id: Uuid,
@@ -850,6 +1014,37 @@ pub struct RetrievalTemplateRecord {
     pub declaration_source: String,
     pub lookback_count: u8,
     pub payment_source: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub calendar_policy: String,
+    #[serde(default)]
+    pub last_run_at: String,
+    #[serde(default)]
+    pub last_run_ok: Option<bool>,
+    #[serde(default)]
+    pub last_run_message: String,
+    #[serde(default)]
+    pub last_content_hash: String,
+}
+
+impl Default for RetrievalTemplateRecord {
+    fn default() -> Self {
+        Self {
+            security_id: Uuid::nil(),
+            price_source: String::new(),
+            source_symbol: String::new(),
+            declaration_source: String::new(),
+            lookback_count: 12,
+            payment_source: String::new(),
+            source_url: String::new(),
+            calendar_policy: String::new(),
+            last_run_at: String::new(),
+            last_run_ok: None,
+            last_run_message: String::new(),
+            last_content_hash: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -885,6 +1080,17 @@ pub struct InvestmentLotBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct InvestmentDeclarationBody {
+    pub payment_period: String,
+    pub amount_per_share_minor: Option<i64>,
+    pub amount_scale: u8,
+    pub source: String,
+    #[serde(default)]
+    pub entered_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct InvestmentGetBody {
     pub security_id: Uuid,
     pub symbol: String,
@@ -902,20 +1108,334 @@ pub struct InvestmentGetBody {
     pub remaining_quantity_minor: i64,
     pub quantity_scale: u8,
     pub remaining_performance_minor: i64,
+    pub remaining_tax_minor: i64,
+    pub roc_pct_2024_actual_minor: Option<i64>,
     pub roc_pct_2025_actual_minor: Option<i64>,
+    pub roc_pct_2026_estimate_minor: Option<i64>,
+    pub roc_pct_2026_actual_minor: Option<i64>,
     pub roc_scale: Option<u8>,
+    pub notes: String,
+    pub div_type: String,
+    #[serde(default = "default_true")]
+    pub is_active: bool,
+    #[serde(default)]
+    pub needs_roc_research: bool,
+    #[serde(default)]
+    pub tax_handling: String,
+    #[serde(default)]
+    pub declaration_weekday: String,
+    #[serde(default)]
+    pub exdate_weekday: String,
+    #[serde(default)]
+    pub payday_weekday: String,
+    #[serde(default)]
+    pub unit_cost_minor: Option<i64>,
+    #[serde(default)]
+    pub plan_fwd_yield_bps: Option<i64>,
+    #[serde(default)]
+    pub most_current_fwd_yield_bps: Option<i64>,
+    #[serde(default)]
+    pub unrealized_pnl_bps: Option<i64>,
     pub price: CurrentPriceBody,
     pub review: PlanReviewBody,
     pub template: Option<RetrievalTemplateRecord>,
     pub lots: Vec<InvestmentLotBody>,
+    pub declarations: Vec<InvestmentDeclarationBody>,
     pub declaration_count: u64,
     pub first_lot_complete: bool,
+    pub market_value_minor: Option<i64>,
+    pub unrealized_performance_minor: Option<i64>,
+    pub annual_plan_minor: Option<i64>,
+    pub plan_yoc_bps: Option<i64>,
+    pub most_current_vs_plan_bps: Option<i64>,
+    pub periods: Vec<BacktestPeriodRecord>,
+    pub results: Vec<PositionBacktestResultBody>,
+    pub evidence: Option<EvidenceDimensionsBody>,
+    pub suggestion: Option<TierSuggestionBody>,
+    #[serde(default)]
+    pub total_distributions_received_minor: Option<i64>,
+    #[serde(default)]
+    pub roc_distributions_minor: Option<i64>,
+    #[serde(default)]
+    pub cost_recovery_bps: Option<i64>,
+    #[serde(default)]
+    pub distributions_scope: String,
+    #[serde(default)]
+    pub car_market_value_minor: Option<i64>,
+    #[serde(default)]
+    pub car_share_of_symbol_bps: Option<i64>,
+    #[serde(default)]
+    pub car_share_of_household_bps: Option<i64>,
+    #[serde(default)]
+    pub roc_research_status: String,
+    #[serde(default)]
+    pub declaration_freshness: String,
+    #[serde(default)]
+    pub roc_estimate_method: String,
+    #[serde(default)]
+    pub roc_estimate_source_url: String,
+    #[serde(default)]
+    pub roc_estimate_as_of: String,
+    #[serde(default)]
+    pub roc_estimate_established_how: String,
     pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestPeriodRecord {
+    pub period_id: Uuid,
+    pub kind: String,
+    pub name: String,
+    pub start_on: String,
+    pub end_on: String,
+    pub benchmark_symbol: String,
+    pub selection_reason: String,
+    pub method: String,
+    pub status: String,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionBacktestResultBody {
+    pub result_id: Uuid,
+    pub security_id: Uuid,
+    pub period_id: Uuid,
+    pub price_return_bps: Option<i64>,
+    pub total_return_bps: Option<i64>,
+    pub cushion_bps: Option<i64>,
+    pub max_drawdown_bps: Option<i64>,
+    pub recovery_ratio_bps: Option<i64>,
+    pub recovery_days: Option<i64>,
+    pub income_reliability_bps: Option<i64>,
+    pub bear_relative_bps: Option<i64>,
+    pub downside_capture_bps: Option<i64>,
+    pub upside_capture_bps: Option<i64>,
+    pub completeness: String,
+    pub source: String,
+    pub calculated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceDimensionsBody {
+    pub income_reliability: Option<i64>,
+    pub downside_resilience: Option<i64>,
+    pub recovery_upside: Option<i64>,
+    pub nav_persistence: Option<i64>,
+    pub diversification: Option<i64>,
+    pub data_confidence: i64,
+    pub known_components: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TierSuggestionBody {
+    pub suggested_tier: String,
+    pub ruleset: String,
+    pub reason: String,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RocCandidateBody {
+    pub roc_pct_minor: Option<i64>,
+    pub scale: u8,
+    pub tax_year: String,
+    pub source: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub as_of: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub established_how: String,
+    #[serde(default)]
+    pub owner_override: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RocResearchObservation {
+    pub observation_id: Uuid,
+    pub security_id: Uuid,
+    pub roc_pct_minor: Option<i64>,
+    pub scale: u8,
+    pub tax_year: String,
+    pub source: String,
+    pub source_url: String,
+    pub method: String,
+    pub as_of: String,
+    pub kind: String,
+    pub established_how: String,
+    pub owner_override: bool,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RocResearchBody {
+    pub security_id: Option<Uuid>,
+    pub roc_pct_minor: Option<i64>,
+    pub scale: u8,
+    pub source: String,
+    pub complete: bool,
+    pub reason: String,
+    pub candidates: Vec<RocCandidateBody>,
+    pub remaining_periods: Option<i64>,
+    pub remaining_total_minor: Option<i64>,
+    pub remaining_ordinary_minor: Option<i64>,
+    pub remaining_roc_minor: Option<i64>,
+    pub magi_eligible: bool,
+    #[serde(default)]
+    pub system_roc_pct_minor: Option<i64>,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub as_of: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub established_how: String,
+    #[serde(default)]
+    pub owner_override: bool,
+    #[serde(default)]
+    pub observations: Vec<RocResearchObservation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemainingPaymentDateOverride {
+    pub override_id: Uuid,
+    pub security_id: Uuid,
+    pub original_pay_on: String,
+    pub pay_on: String,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemainingPaymentBody {
+    pub pay_on: String,
+    pub original_pay_on: String,
+    pub month: String,
+    pub cash_minor: Option<i64>,
+    pub this_lot_cash_minor: Option<i64>,
+    pub position_after_cash_minor: Option<i64>,
+    pub owner_override: bool,
+    #[serde(default)]
+    pub date_provenance: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemainingMonthBody {
+    pub month: String,
+    pub cash_minor: Option<i64>,
+    pub this_lot_cash_minor: Option<i64>,
+    pub position_after_cash_minor: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemainingYearIncomeBody {
+    pub security_id: Uuid,
+    pub as_of_date: String,
+    pub known: bool,
+    pub provenance: String,
+    pub payment_frequency: String,
+    pub latest_declaration_period: Option<String>,
+    pub remaining_periods: Option<i64>,
+    pub year_to_go_minor: Option<i64>,
+    pub this_lot_year_to_go_minor: Option<i64>,
+    pub position_after_year_to_go_minor: Option<i64>,
+    pub existing_quantity_minor: i64,
+    pub this_lot_quantity_minor: Option<i64>,
+    pub hypothetical: bool,
+    pub plan_known: bool,
+    pub payments: Vec<RemainingPaymentBody>,
+    pub months: Vec<RemainingMonthBody>,
+    #[serde(default)]
+    pub orphaned_overrides: Vec<RemainingPaymentDateOverride>,
+    #[serde(default)]
+    pub calendar_policy: String,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceRetrievalItem {
+    pub security_id: Uuid,
+    pub symbol: String,
+    #[serde(default)]
+    pub price_source: String,
+    #[serde(default)]
+    pub source_symbol: String,
+    #[serde(default)]
+    pub declaration_source: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub calendar_policy: String,
+    #[serde(default)]
+    pub last_content_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PriceRetrievalSetBody {
     pub security_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub items: Vec<PriceRetrievalItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LastPriceRefreshBody {
+    pub attempted: u64,
+    pub recorded: u64,
+    pub skipped: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclarationRefreshBody {
+    pub attempted: u64,
+    pub recorded: u64,
+    pub skipped: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionDetailsCoverageRow {
+    pub security_id: Uuid,
+    pub symbol: String,
+    pub active: bool,
+    pub open_lots: bool,
+    pub recorded_status: String,
+    pub roc_research_status: String,
+    pub declaration_freshness: String,
+    pub distributions_scope: String,
+    #[serde(default)]
+    pub declaration_source: String,
+    #[serde(default)]
+    pub last_run_at: String,
+    #[serde(default)]
+    pub last_run_ok: Option<bool>,
+    #[serde(default)]
+    pub last_run_message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionDetailsCoverageBody {
+    pub rows: Vec<PositionDetailsCoverageRow>,
 }
 

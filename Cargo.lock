@@ -40,6 +40,7 @@ name = "application-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "financial-domain",
  "serde",
  "serde_json",

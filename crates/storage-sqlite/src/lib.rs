@@ -9,8 +9,13 @@ mod classification;
 mod distribution;
 mod canonical;
 mod wizard;
+mod issuer_pay;
 mod magi;
 mod plan;
+mod regime;
+mod roc_obs;
+mod pd_settings;
+mod payment_dates;
 mod platform;
 mod store;
 

@@ -11,7 +11,7 @@ These files replace the synthetic 2-account `database/seed/fixture.yaml` for **p
 | Template_Lots.xlsx | ~1,679 lots / ~1,250 open, dual-cost |
 | Template_Transactions_Yield.xlsx | ~5,862 YIELD rows |
 | Template_Transactions_Disbursement.xlsx | ~129 non-ROI rows |
-| expected-production.yaml | Count gates: 8 / 74 / 1679 / 1250 / 5862 / 129 |
+| expected-production.yaml | Count gates: 8 / 75 / 1679 / 1250 / 5862 / 129 |
 
 ## Steps (finos repo)
 

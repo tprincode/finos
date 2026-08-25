@@ -125,6 +125,10 @@ Plan is confirmed only after the Plan-review service has declarations to work wi
 
 **Income Plan going-forward dollars** = confirmed Plan × eligible open quantity × normalized periods (52 weekly / 12 monthly / 4 quarterly). Frequency alone is not a Plan. Last Price is not a Plan. Without Gate B, week Plan stays **unknown**, never a invented projection (BR-IP-03, TR-C-10).
 
+**Remaining-year payment calendar (New Investment and Add Lot):** after Plan exists, the same engine lists each remaining payment date through 31 Dec, calendar-month cash (Plan × qty) for months that have a payment, and year-to-go total. Weekly = every remaining Sat–Fri week. Monthly/quarterly walk 30/91 days from the latest parseable declaration `paymentPeriod`. Unparseable labels leave the schedule **unknown** (not $0); the owner may name the next pay date in the same row. Owner date overrides persist; system-proposed dates stay derived. Add Lot does not re-ask Plan; it shows this-lot cash and position-after-add on that calendar. Hypothetical until `LotOpen`. Empty months are omitted, never $0. TR-C-2 ex/record/payment columns remain later.
+
+Income Plan weeks for a security with **no** broker actuals use this declaration calendar. Securities that already have actuals keep the last-actual walk so the seeded book does not silently move. MAGI remaining periods equal the remaining date count.
+
 ---
 
 ## 6. Durable retrieval template (standing order)
@@ -320,7 +324,7 @@ After gates pass, show what other tabs will see. These are **not** extra stores.
 | Calculator | Plan, declarations, Plan-review metrics; MV/P&L%/price yields only if Gate A | Plan-review empty without declarations |
 | Position Details | Identity, tier, frequency, joined qty/cost; MV/allocation only if Gate A; scores only if Step 10 dated | Completeness must be visible (PD-BR-10) |
 | Holdings | Open lots, dual cost | — |
-| Income Plan | Future week Plan = Plan × qty × expected week | Unknown if Plan unconfirmed; actuals only from ledger |
+| Income Plan | Future week Plan = Plan × qty × expected week (declaration calendar when no actuals) | Unknown if Plan unconfirmed; actuals only from ledger |
 | Dashboard | Uses Income Plan plan until week close; then closed actuals for Income/Car/Health/Roth | Account 9 not in burndown (BR-IP-11) |
 | Last Price | CurrentPrice for this identity | Unavailable/Stale labeled |
 | ROI / Import | Broker actuals as they post | Cash never copied to declaration grid |
@@ -381,6 +385,7 @@ Reviewers can treat these as the build gate. Existing domain ACs still apply.
 | WZ-12 | Re-import of the same broker payment does not duplicate ledger cash. |
 | WZ-13 | Maintain mode edits the same investment; ticker change is identifier history, not a new position_id. |
 | WZ-14 | No UI SQL; all writes go through FinanceClient commands. |
+| WZ-15 | New Investment and Add Lot present remaining payment dates, calendar-month cash, and year-to-go (unknown ≠ $0). A new monthly position with declarations and no actuals is scheduled on Income Plan weeks that contain a remaining date. |
 
 ---
 
@@ -396,7 +401,7 @@ Reviewers can treat these as the build gate. Existing domain ACs still apply.
 | CurrentPrice / PriceQuote / daily run | `PriceQuoteRecord`, `ManualPriceOverride`, `CurrentPriceGet`, `PriceRetrievalSetGet` (complete holdings only) |
 | Retrieval template entity | `RetrievalTemplateSet` |
 | Plan-review + Plan confirm UI | New Investment wizard; `PlanHistoryConfirm` (not MAGI `PlanApprove`) |
-| Add lot from UI | Add Lot screen + New Investment Part 2 `LotOpen` |
+| Add lot from UI | Add Lot screen + New Investment Part 2 `LotOpen`; remaining-year date list, month totals, year-to-go |
 | Connector jobs | Contract only |
 
 Existing seed is **onboarding-by-migration** for the current book. It is not a substitute for this wizard for the next symbol.
@@ -411,8 +416,9 @@ These are closed for this slice. They do not rewrite locked Authority docs.
 2. **Price:** establish CurrentPrice from **live public quote**; if unavailable, **prompt** for current price. Do **not** hide original-cost YOC or lot economics waiting for a price. Do **not** paste a legacy 70-row Last Price sheet (that was spreadsheet A2:B71 only). A ticker has a quote on initial add and each business day.
 3. **Watchlist:** **none.** New Investment is incomplete until the **first lot**. Part 1 (facts) then Part 2 (first lot) is one process. Calculator, Income Plan, and the daily price set omit incomplete investments.
 4. **Plan-review completeness:** `n` = non-null of the 12. n=0 confirm **blocked**. n=1–5 confirm only with explicit incomplete-analysis reason; Avg 6 / full analysis not possible. n≥6 full TR-C-7. Plan never auto-fills from Avg 6.
-5. **Two owner processes:** **New Investment** vs **Add Lot** (existing symbol). Add Lot does not re-ask Plan or re-fetch 12 declarations. It opens a lot, joins Plan × qty into upcoming Income Plan weeks, and keeps the symbol on the maintenance set.
-6. **Now:** this slice. Last Price and declaration history are unparked **for this wizard**. Connector *posting* stays parked (ADR-0010: candidates only).
+5. **Two owner processes:** **New Investment** vs **Add Lot** (existing symbol). Add Lot does not re-ask Plan or re-fetch 12 declarations. It opens a lot, joins Plan × qty into upcoming Income Plan weeks, and keeps the symbol on the maintenance set. Both processes show the remaining-year payment calendar (dates, month cash, year-to-go). Add Lot shows this-lot vs position-after-add on that calendar.
+6. **Remaining-year dates:** walk from the latest parseable declaration `paymentPeriod` + frequency (weekly = remaining Sat–Fri weeks; monthly ≈ 30 days; quarterly ≈ 91 days). Owner may override a date in the same row. Empty months are blank/unknown, not $0. Persist overrides only.
+7. **Now:** this slice. Last Price and declaration history are unparked **for this wizard**. Connector *posting* stays parked (ADR-0010: candidates only).
 
 ---
 
