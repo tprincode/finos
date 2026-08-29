@@ -36,6 +36,182 @@ async fn query_json(platform: &LocalPlatform, name: &str, body: serde_json::Valu
     serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap()
 }
 
+/// Process B requires a researched identity before LotOpen.
+async fn research_template(platform: &LocalPlatform, security_id: &str, symbol: &str) {
+    must_ok(
+        platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": symbol,
+            "declarationSource": "issuer",
+            "sourceUrl": format!("https://example.test/{}/distributions", symbol.to_ascii_lowercase()),
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn process_b_researched_zero_lots_then_explicit_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": "https://amplifyetfs.com/haky/#distributions"
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-29" }),
+    )
+    .await;
+    assert!(inv["lots"].as_array().unwrap().is_empty());
+    assert_eq!(inv["remainingQuantityMinor"], 0);
+
+    let lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-08-15",
+            "origin": "purchase",
+            "quantityMinor": 25,
+            "quantityScale": 0,
+            "performanceBasisMinor": 50_000,
+            "taxBasisMinor": 48_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    assert_eq!(lot["origin"], "purchase");
+    assert_eq!(lot["performanceBasisMinor"], 50_000);
+    assert_eq!(lot["taxBasisMinor"], 48_000);
+    assert_eq!(lot["openedOn"], "2026-08-15");
+
+    let inv2 = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-29" }),
+    )
+    .await;
+    assert_eq!(inv2["lots"].as_array().unwrap().len(), 1);
+    assert_eq!(inv2["remainingQuantityMinor"], 25);
+}
+
+#[tokio::test]
+async fn process_b_lot_open_without_research_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "RAW1", "name": "RAW1"}),
+    )
+    .await;
+    let result = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "LotOpen",
+            serde_json::json!({
+                "accountId": account["accountId"],
+                "securityId": security["securityId"],
+                "openedOn": "2026-08-01",
+                "origin": "purchase",
+                "quantityMinor": 1,
+                "quantityScale": 0,
+                "performanceBasisMinor": 100,
+                "taxBasisMinor": 100,
+                "scale": 2,
+                "isOpen": true
+            }),
+        ),
+    )
+    .await;
+    assert!(!result.ok);
+    assert_eq!(result.error_code.as_deref(), Some("not_researched"));
+}
+
+#[tokio::test]
+async fn process_b_origin_drip_and_transfer_are_explicit() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "ORIG", "name": "ORIG", "crf": true}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id, "ORIG").await;
+    let drip = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-08-10",
+            "origin": "drip",
+            "quantityMinor": 2,
+            "quantityScale": 0,
+            "performanceBasisMinor": 0,
+            "taxBasisMinor": 0,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    assert_eq!(drip["origin"], "drip");
+    let xfer = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-08-11",
+            "origin": "transfer",
+            "quantityMinor": 3,
+            "quantityScale": 0,
+            "performanceBasisMinor": 300,
+            "taxBasisMinor": 300,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    assert_eq!(xfer["origin"], "transfer");
+}
+
 #[tokio::test]
 async fn wz_add_lot_existing_increases_income_plan_not_plan_history() {
     let dir = tempfile::tempdir().unwrap();
@@ -54,6 +230,7 @@ async fn wz_add_lot_existing_increases_income_plan_not_plan_history() {
     .await;
     let account_id = account["accountId"].as_str().unwrap();
     let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id, "ADD1").await;
     must_ok(
         &platform,
         "PositionCharacteristicUpsert",
@@ -142,7 +319,7 @@ async fn wz_add_lot_existing_increases_income_plan_not_plan_history() {
         after_add > this_lot,
         "position after add must exceed this lot: {remaining_preview}"
     );
-    let summary_before = query_json(&platform, "HouseholdSummaryGet", serde_json::json!({})).await;
+    let summary_before = query_json(&platform, "DataSummaryGet", serde_json::json!({})).await;
     must_ok(
         &platform,
         "LotOpen",
@@ -178,7 +355,7 @@ async fn wz_add_lot_existing_increases_income_plan_not_plan_history() {
         plan_after > plan_before,
         "WZ-add-lot-existing planned amount should rise {plan_before} -> {plan_after}"
     );
-    let summary_after = query_json(&platform, "HouseholdSummaryGet", serde_json::json!({})).await;
+    let summary_after = query_json(&platform, "DataSummaryGet", serde_json::json!({})).await;
     assert_eq!(
         summary_before["planCount"], summary_after["planCount"],
         "Add Lot must not create PlanHistory"

@@ -12,7 +12,7 @@ The **architecture is holding**. Windows work through M7 is **gate-green**, not 
 
 V1.1 says Profile A is the product: one-owner Tauri desktop, local SQLite, then expand to C/D without changing the domain. Implementation followed that order. What is missing is mostly **product depth and the other platform**, not a new architecture.
 
-Do **not** treat M8 Postgres as the default next implementation step. Centralization is a required *capability* (ARCH-03, AC-ARCH-08). It is not how you finish a household-usable Profile A.
+Do **not** treat M8 Postgres as the default next implementation step. Centralization is a required *capability* (ARCH-03, AC-ARCH-08). It is not how you finish a data-usable Profile A.
 
 ## What's good
 

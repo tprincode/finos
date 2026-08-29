@@ -6,7 +6,7 @@ use std::path::Path;
 use application_core::contracts::{
     ImportCandidate, ProductionSeedAccount, ProductionSeedCharacteristic,
     ProductionSeedDisbursement, ProductionSeedDocument, ProductionSeedLot, ProductionSeedPlan,
-    ProductionSeedSecurity, ProductionSeedYieldBatch,
+    ProductionSeedSecurity, ProductionSeedTrendsWeek, ProductionSeedYieldBatch,
 };
 use calamine::{open_workbook, Data, Reader, Xlsx};
 use chrono::{Duration, NaiveDate};
@@ -121,7 +121,11 @@ fn decimal_scale(raw: &str) -> u8 {
 }
 
 fn to_minor(raw: &str, scale: u8) -> Result<i64, String> {
-    let t = raw.trim().replace(',', "");
+    let mut t = raw.trim().replace(',', "");
+    // Tolerate spreadsheet typos like 12002..70
+    while t.contains("..") {
+        t = t.replace("..", ".");
+    }
     if t.is_empty() {
         return Err("blank amount".into());
     }
@@ -163,7 +167,7 @@ fn security_is_crf(symbol: &str) -> bool {
 }
 
 /// Robinhood BTC lots are crypto (Yahoo BTC-USD). Other BTC lots are Grayscale (Yahoo BTC).
-fn household_symbol(account_name: &str, symbol: &str) -> String {
+fn data_symbol(account_name: &str, symbol: &str) -> String {
     if symbol.eq_ignore_ascii_case("BTC") && account_name.eq_ignore_ascii_case("Robinhood") {
         "BTC-USD".into()
     } else {
@@ -179,6 +183,7 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
     let yield_rows = read_data_rows(&production_dir.join("Template_Transactions_Yield.xlsx"))?;
     let disbursements =
         read_data_rows(&production_dir.join("Template_Transactions_Disbursement.xlsx"))?;
+    let trends_weeks = parse_trends_weeks(production_dir)?;
 
     let mut account_rows = Vec::new();
     for row in &accounts {
@@ -215,7 +220,7 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
         push_security(symbol, name);
     }
     for row in lots.iter().chain(yield_rows.iter()) {
-        let symbol = household_symbol(get(row, "account_name"), get(row, "symbol"));
+        let symbol = data_symbol(get(row, "account_name"), get(row, "symbol"));
         let name = if symbol.eq_ignore_ascii_case("BTC-USD") {
             "Bitcoin"
         } else {
@@ -239,7 +244,7 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
         let tax_basis = (quantity_minor as i128) * (unit_tax as i128) / div;
         lot_rows.push(ProductionSeedLot {
             account_name: get(row, "account_name").to_string(),
-            symbol: household_symbol(get(row, "account_name"), get(row, "symbol")),
+            symbol: data_symbol(get(row, "account_name"), get(row, "symbol")),
             opened_on: as_iso_date(get(row, "purchase_date")),
             origin: if get(row, "notes").to_ascii_lowercase().contains("drip") {
                 "drip".into()
@@ -266,7 +271,7 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
             }
             candidates.push(ImportCandidate {
                 account_name: get(row, "account_name").to_string(),
-                symbol: Some(household_symbol(get(row, "account_name"), get(row, "symbol")))
+                symbol: Some(data_symbol(get(row, "account_name"), get(row, "symbol")))
                     .filter(|s| !s.is_empty()),
                 activity_type: "dividend".into(),
                 amount_minor: Some(to_minor(amount, 2)?),
@@ -317,7 +322,53 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
         disbursements: disbursement_rows,
         plans: merge_plans(production_dir, &positions)?,
         characteristics: parse_characteristics(&positions)?,
+        trends_weeks,
     })
+}
+
+fn optional_money_minor(raw: &str) -> Result<Option<i64>, String> {
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(to_minor(raw, 2)?))
+}
+
+fn parse_trends_weeks(production_dir: &Path) -> Result<Vec<ProductionSeedTrendsWeek>, String> {
+    let path = production_dir.join("Template_Trends_Weekly.xlsx");
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let rows = read_data_rows(&path)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let period_end = as_iso_date(get(row, "week_end_friday"));
+        if period_end.is_empty() {
+            continue;
+        }
+        let profit = get(row, "profit");
+        if profit.is_empty() {
+            return Err(format!(
+                "trends week {i} blank profit (must stay unknown, not coerced)"
+            ));
+        }
+        out.push(ProductionSeedTrendsWeek {
+            period_end,
+            profit_minor: to_minor(profit, 2)?,
+            monthly_divs_minor: to_minor(get(row, "monthly_divs"), 2)?,
+            fidelity_total_minor: to_minor(get(row, "fidelity_total"), 2)?,
+            schwab_total_minor: to_minor(get(row, "schwab_total"), 2)?,
+            income_cash_minor: to_minor(get(row, "income_cash"), 2)?,
+            acct9_cash_minor: to_minor(get(row, "acct9_cash"), 2)?,
+            acct9_etf_value_minor: to_minor(get(row, "acct9_etf_value"), 2)?,
+            car_balance_minor: optional_money_minor(get(row, "car_balance"))?,
+            income_balance_minor: optional_money_minor(get(row, "income_balance"))?,
+            health_balance_minor: optional_money_minor(get(row, "health_balance"))?,
+            roth_balance_minor: optional_money_minor(get(row, "roth_balance"))?,
+            speculation_balance_minor: optional_money_minor(get(row, "speculation_balance"))?,
+            scale: 2,
+        });
+    }
+    Ok(out)
 }
 
 #[derive(Debug, serde::Deserialize)]

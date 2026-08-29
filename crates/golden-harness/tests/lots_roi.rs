@@ -46,6 +46,24 @@ async fn query_json(
     serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap()
 }
 
+async fn research_template(platform: &LocalPlatform, security_id: &str, symbol: &str) {
+    must_ok(
+        platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": symbol,
+            "declarationSource": "issuer",
+            "sourceUrl": format!("https://example.test/{}/distributions", symbol.to_ascii_lowercase()),
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn explicit_lots_dual_basis_no_fifo_and_broker_recon() {
     let dir = tempfile::tempdir().unwrap();
@@ -66,6 +84,7 @@ async fn explicit_lots_dual_basis_no_fifo_and_broker_recon() {
     )
     .await;
     let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id, "AAPL").await;
 
     must_ok(
         &platform,
@@ -226,6 +245,7 @@ async fn crf_policy_and_fi_roth_auto_capture() {
     )
     .await;
     let vti_id = vti["securityId"].as_str().unwrap();
+    research_template(&platform, vti_id, "VTI").await;
     let qyld = must_ok(
         &platform,
         "SecurityRegister",
@@ -233,6 +253,7 @@ async fn crf_policy_and_fi_roth_auto_capture() {
     )
     .await;
     let qyld_id = qyld["securityId"].as_str().unwrap();
+    research_template(&platform, qyld_id, "QYLD").await;
 
     must_err(
         &platform,
@@ -368,6 +389,12 @@ async fn option_close_requires_explicit_lot() {
         &platform,
         "SecurityRegister",
         serde_json::json!({"symbol": "AAPL", "name": "Apple"}),
+    )
+    .await;
+    research_template(
+        &platform,
+        security["securityId"].as_str().unwrap(),
+        "AAPL",
     )
     .await;
     let lot = must_ok(

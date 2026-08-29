@@ -57,6 +57,64 @@ pub fn periods_from_frequency(frequency: &str) -> Option<u8> {
     PaymentCadence::parse(frequency).and_then(PaymentCadence::periods)
 }
 
+/// Infer Weekly / Monthly / Quarterly from paid declaration dates and/or an issuer page label.
+/// Returns `None` (unknown) when history cannot support 52 / 12 / 4 — never invents a cadence.
+/// Owner does not type frequency; Process A persists the suggestion when present.
+pub fn infer_payment_cadence(
+    payment_periods: &[&str],
+    page_label: Option<&str>,
+) -> Option<PaymentCadence> {
+    if let Some(label) = page_label.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(c) = PaymentCadence::parse(label) {
+            if c.periods().is_some() {
+                return Some(c);
+            }
+        }
+        let lower = label.to_ascii_lowercase();
+        if lower.contains("weekly") {
+            return Some(PaymentCadence::Weekly);
+        }
+        if lower.contains("monthly") {
+            return Some(PaymentCadence::Monthly);
+        }
+        if lower.contains("quarterly") {
+            return Some(PaymentCadence::Quarterly);
+        }
+    }
+
+    let mut dates: Vec<NaiveDate> = payment_periods
+        .iter()
+        .filter_map(|raw| {
+            let s = raw.trim();
+            if s.len() < 10 {
+                return None;
+            }
+            NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d").ok()
+        })
+        .collect();
+    dates.sort_unstable();
+    dates.dedup();
+    if dates.len() < 2 {
+        return None;
+    }
+    let mut gaps: Vec<i64> = dates
+        .windows(2)
+        .map(|w| (w[1] - w[0]).num_days().abs())
+        .collect();
+    gaps.sort_unstable();
+    let med = gaps[gaps.len() / 2];
+    // ~weekly (≤10d), ~monthly (≤40d), ~quarterly (≤110d). Wider gaps stay unknown.
+    if med <= 10 {
+        Some(PaymentCadence::Weekly)
+    } else if med <= 40 {
+        Some(PaymentCadence::Monthly)
+    } else if med <= 110 {
+        Some(PaymentCadence::Quarterly)
+    } else {
+        None
+    }
+}
+
 /// Position dollars for one period, in USD cents (scale 2).
 pub fn plan_payment_cents(
     quantity_minor: i64,
@@ -171,5 +229,32 @@ mod tests {
             "2026-08-22",
             "2026-08-28"
         ));
+    }
+
+    #[test]
+    fn infer_monthly_from_seven_monthly_pays_or_page_label() {
+        let periods = [
+            "2026-01-31",
+            "2026-02-28",
+            "2026-03-31",
+            "2026-04-30",
+            "2026-05-30",
+            "2026-06-30",
+            "2026-07-31",
+        ];
+        assert_eq!(
+            infer_payment_cadence(&periods, None),
+            Some(PaymentCadence::Monthly)
+        );
+        assert_eq!(
+            infer_payment_cadence(&[], Some("Distribution Frequency: Monthly")),
+            Some(PaymentCadence::Monthly)
+        );
+        assert_eq!(infer_payment_cadence(&["2026-01-15"], None), None);
+        assert_eq!(
+            infer_payment_cadence(&["2026-01-01", "2026-07-01"], None),
+            None,
+            "semi-annual gap is not 52/12/4"
+        );
     }
 }

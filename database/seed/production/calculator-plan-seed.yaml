@@ -1,11 +1,11 @@
-# Locked Calculator AE Plan extract (12 Aug 2026).
+# Locked Calculator AE Plan extract. Initial load effective 2026-08-12.
 # Authority: docs/Authority/domains/Calculator_Current_Architecture_and_Target_Requirements_2026-08-12.docx
 # Template_Positions.current_plan_per_share is blank; this file is the initial effective PlanHistory.
 # Plan never auto-updates from declarations or broker cash.
 
 source: "2026-tracking spreadsheet.xlsb / Calculator / AE"
 effective_from: "2026-08-12"
-decision_reason: "Locked Calculator 40-symbol Plan seed 2026-08-12"
+decision_reason: "Locked Calculator from initial load on 2026-08-12"
 
 symbols:
   - { symbol: CRF, plan: "0.1168", periods: 12 }

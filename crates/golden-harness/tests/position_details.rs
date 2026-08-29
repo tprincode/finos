@@ -56,6 +56,7 @@ async fn position_details_rollup_does_not_post_dividend_or_change_basis_totals()
     )
     .await;
     let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id).await;
 
     must_ok(
         &platform,
@@ -170,6 +171,24 @@ async fn seed_two_accounts(platform: &LocalPlatform) -> (String, String, String,
     )
 }
 
+async fn research_template(platform: &LocalPlatform, security_id: &str) {
+    must_ok(
+        platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": "RESEARCHED",
+            "declarationSource": "issuer",
+            "sourceUrl": "https://example.test/distributions",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+}
+
 async fn open_lot(
     platform: &LocalPlatform,
     account_id: &str,
@@ -178,6 +197,7 @@ async fn open_lot(
     cost: i64,
     tax: i64,
 ) {
+    research_template(platform, security_id).await;
     must_ok(
         platform,
         "LotOpen",
@@ -197,7 +217,7 @@ async fn open_lot(
 }
 
 #[tokio::test]
-async fn household_totals_stay_put_and_account_subtotals_sum() {
+async fn data_totals_stay_put_and_account_subtotals_sum() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data"))
         .await
@@ -1002,7 +1022,7 @@ async fn ac_pd_07_car_mv_from_car_lots() {
         "Car qty 5 × $20, never unit-cost × price"
     );
     assert_eq!(haky["carShareOfSymbolBps"].as_i64(), Some(3_333));
-    assert_eq!(haky["carShareOfHouseholdBps"].as_i64(), Some(3_333));
+    assert_eq!(haky["carShareOfDataBps"].as_i64(), Some(3_333));
 }
 
 #[tokio::test]

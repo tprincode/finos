@@ -12,7 +12,7 @@ use application_core::contracts::{
     PlanHistoryRecord, PositionCharacteristicRecord, PositionDetailsBody, PositionLineBody,
     TaxProjectionBody, BacktestPeriodRecord, PositionBacktestResultBody,
     RocResearchObservation, RemainingPaymentDateOverride, ExpectedPaymentPattern,
-    PositionTaxProfile, IssuerPayDateRecord,
+    PositionTaxProfile, IssuerPayDateRecord, AccountBalanceSnapshotRecord, TrendsWeekSourceRecord,
 };
 use application_core::ports::canonical::Canonical;
 use application_core::ports::platform::PlatformError;
@@ -1837,6 +1837,7 @@ impl Canonical for LocalPlatform {
         message: String,
         ran_at: String,
         content_hash: String,
+        source_url: &str,
     ) -> Result<(), PlatformError> {
         let pool = self.pool.read().await;
         crate::wizard::retrieval_template_touch_run(
@@ -1846,6 +1847,7 @@ impl Canonical for LocalPlatform {
             message,
             ran_at,
             content_hash,
+            source_url,
         )
         .await
     }
@@ -1855,6 +1857,38 @@ impl Canonical for LocalPlatform {
     ) -> Result<application_core::contracts::PriceRetrievalSetBody, PlatformError> {
         let pool = self.pool.read().await;
         crate::wizard::price_retrieval_set(&*pool).await
+    }
+
+    async fn retrieve_run_record(
+        &self,
+        record: application_core::contracts::RetrieveRunRecord,
+    ) -> Result<application_core::contracts::RetrieveRunRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::retrieve_run_record(&*pool, record).await
+    }
+
+    async fn retrieve_run_list(
+        &self,
+        security_id: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<application_core::contracts::RetrieveRunRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::retrieve_run_list(&*pool, security_id, limit).await
+    }
+
+    async fn collector_set(
+        &self,
+    ) -> Result<application_core::contracts::CollectorSetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::collector_set(&*pool).await
+    }
+
+    async fn collector_stats(
+        &self,
+        as_of_date: String,
+    ) -> Result<application_core::contracts::CollectorStatsBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::collector_stats(&*pool, &as_of_date).await
     }
 
     async fn allocation_target_set(
@@ -2060,6 +2094,91 @@ impl Canonical for LocalPlatform {
     async fn analysis_run_list(&self) -> Result<AiRunListBody, PlatformError> {
         let pool = self.pool.read().await;
         crate::ai::run_list(&*pool).await
+    }
+
+    async fn trends_week_upsert(
+        &self,
+        record: TrendsWeekSourceRecord,
+    ) -> Result<TrendsWeekSourceRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::trends_week_upsert(&*pool, record).await
+    }
+
+    async fn trends_week_list(&self) -> Result<Vec<TrendsWeekSourceRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::trends_week_list(&*pool).await
+    }
+
+    async fn trends_week_get(
+        &self,
+        period_end: String,
+    ) -> Result<Option<TrendsWeekSourceRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::trends_week_get(&*pool, &period_end).await
+    }
+
+    async fn trends_week_set_closed(
+        &self,
+        period_end: String,
+        closed: bool,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::trends_week_set_closed(&*pool, &period_end, closed).await?;
+        audit(
+            &*pool,
+            if closed {
+                "TrendsWeekClose"
+            } else {
+                "TrendsWeekReopen"
+            },
+            "trends_week_source",
+            &period_end,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn trends_series_clear(&self) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::trends_series_clear(&*pool).await
+    }
+
+    async fn aca_threshold_get(
+        &self,
+        coverage_year: i32,
+        household_size: i32,
+        location_code: String,
+    ) -> Result<Option<(i64, u8)>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::aca_threshold_get(&*pool, coverage_year, household_size, &location_code)
+            .await
+    }
+
+    async fn account_balance_snapshot_upsert(
+        &self,
+        account_id: Uuid,
+        period_end: String,
+        balance_minor: i64,
+        scale: u8,
+        captured_at: String,
+    ) -> Result<AccountBalanceSnapshotRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::account_balance_snapshot_upsert(
+            &*pool,
+            account_id,
+            period_end,
+            balance_minor,
+            scale,
+            captured_at,
+        )
+        .await
+    }
+
+    async fn account_balance_snapshot_list(
+        &self,
+    ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::account_balance_snapshot_list(&*pool).await
     }
 
     async fn position_details_get(&self) -> Result<PositionDetailsBody, PlatformError> {

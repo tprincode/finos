@@ -200,7 +200,7 @@ async fn week_dividend_actuals_match_dividend_get_by_account() {
         .unwrap();
     assert_eq!(latest_income["actualMinor"].as_i64().unwrap(), 12_500);
 
-    let summary = query_json(&platform, "HouseholdSummaryGet", serde_json::json!({})).await;
+    let summary = query_json(&platform, "DataSummaryGet", serde_json::json!({})).await;
     assert_eq!(summary["accountCount"].as_u64().unwrap(), 3);
     assert_eq!(summary["yieldCount"].as_u64().unwrap(), 3);
     assert_eq!(summary["latestYieldOn"], "2026-08-19");

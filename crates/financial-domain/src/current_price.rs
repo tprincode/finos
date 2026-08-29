@@ -30,6 +30,34 @@ pub struct CurrentPrice {
     pub freshness: PriceFreshness,
 }
 
+/// Money-market NAV is always $1.00 (100 minor at scale 2).
+pub const CASH_PAR_MINOR: i64 = 100;
+pub const CASH_PAR_SCALE: u8 = 2;
+
+pub fn is_cash(div_type: &str) -> bool {
+    div_type.trim().eq_ignore_ascii_case("CASH")
+}
+
+/// Known money-market symbols that always use par (SPAXX/FDRXX/SWVXX).
+pub fn is_cash_par_symbol(symbol: &str) -> bool {
+    matches!(
+        symbol.trim().to_ascii_uppercase().as_str(),
+        "SPAXX" | "FDRXX" | "SWVXX"
+    )
+}
+
+pub fn uses_cash_par(div_type: &str, symbol: &str) -> bool {
+    is_cash(div_type) || is_cash_par_symbol(symbol)
+}
+
+pub fn cash_par_current_price() -> CurrentPrice {
+    CurrentPrice {
+        price_minor: Some(CASH_PAR_MINOR),
+        scale: CASH_PAR_SCALE,
+        freshness: PriceFreshness::Current,
+    }
+}
+
 fn valid_price(minor: i64) -> bool {
     minor > 0
 }
@@ -119,5 +147,17 @@ mod tests {
         assert_eq!(stale.freshness, PriceFreshness::Stale);
         assert!(price_derived_valid(stale.freshness));
         assert!(!price_derived_valid(PriceFreshness::Unavailable));
+    }
+
+    #[test]
+    fn cash_par_is_one_dollar_current() {
+        let par = cash_par_current_price();
+        assert_eq!(par.price_minor, Some(CASH_PAR_MINOR));
+        assert_eq!(par.scale, CASH_PAR_SCALE);
+        assert_eq!(par.freshness, PriceFreshness::Current);
+        assert!(uses_cash_par("CASH", "SPAXX"));
+        assert!(uses_cash_par("", "FDRXX"));
+        assert!(uses_cash_par("CASH", "OTHER"));
+        assert!(!uses_cash_par("DIV-1", "QYLD"));
     }
 }

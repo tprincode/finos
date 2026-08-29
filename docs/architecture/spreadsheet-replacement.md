@@ -2,7 +2,7 @@
 
 Product truth: [docs/Authority](../Authority/README.md). Order: Architecture V1.1 → BR-X → matching domain doc → production seed gates → code. [docs/architecture](.) is the execution board, not a substitute for domain specs.
 
-Usable means: a researcher can do the spreadsheet job on the household seed **without the xlsx open**. Gate-green is not sufficient. The desktop SQLite file starts empty; on first open with no accounts, the app runs `ProductionSeedLoad`. If that fails, **Accounts** has **Load household seed**. Tests use a temp DB; `%LOCALAPPDATA%\finos` is a different file.
+Usable means: a researcher can do the spreadsheet job on the seeded data **without the xlsx open**. Gate-green is not sufficient. Seed is CLI `npm run data-seed`, not an owner screen. Tests use a temp DB; `%LOCALAPPDATA%\finos` is a different file.
 
 ## Feature → specification
 

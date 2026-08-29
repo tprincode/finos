@@ -1,4 +1,4 @@
-# Production seed (household)
+# Production seed (data)
 
 These files replace the synthetic 2-account `database/seed/fixture.yaml` for **production reconcile gates**. Keep the fixture for fast unit tests.
 
@@ -11,6 +11,7 @@ These files replace the synthetic 2-account `database/seed/fixture.yaml` for **p
 | Template_Lots.xlsx | ~1,679 lots / ~1,250 open, dual-cost |
 | Template_Transactions_Yield.xlsx | ~5,862 YIELD rows |
 | Template_Transactions_Disbursement.xlsx | ~129 non-ROI rows |
+| Template_Trends_Weekly.xlsx | ~87 Sat–Fri weeks (2024–2025) of Trends balances + entered metrics |
 | expected-production.yaml | Count gates: 8 / 75 / 1679 / 1250 / 5862 / 129 |
 
 ## Steps (finos repo)
@@ -25,12 +26,12 @@ These files replace the synthetic 2-account `database/seed/fixture.yaml` for **p
 
 3. Load this machine’s desktop SQLite once (not an owner screen):
 
-   `npm run household-seed`
+   `npm run data-seed`
 
-   That writes into `%LOCALAPPDATA%\com.finos.desktop` (or `%LOCALAPPDATA%\finos` if that path is a sync folder). Complete household is a no-op. CI still uses a temp DB via `cargo test -p golden-harness -- production_seed_counts_reconcile`.
+   That writes into `%LOCALAPPDATA%\com.finos.desktop` (or `%LOCALAPPDATA%\finos` if that path is a sync folder). Complete data is a no-op. CI still uses a temp DB via `cargo test -p golden-harness -- production_seed_counts_reconcile`.
 
 4. Load order (respect FKs / identity):
-   Accounts → Positions (Security Master) → Lots → Yield transactions → Disbursement transactions
+   Accounts → Positions (Security Master) → Lots → Yield transactions → Disbursement transactions → Trends weekly snapshots
 
 5. Run reconcile and compare to `expected-production.yaml`:
    - accounts = 8
@@ -43,7 +44,7 @@ These files replace the synthetic 2-account `database/seed/fixture.yaml` for **p
 6. On first green run, record money totals in `expected-production.yaml` under `totals:`
    and owner-approve. Do not let tests auto-write expected values.
 
-7. Gate for Profile A “household ready”:
+7. Gate for Profile A “data ready”:
    `cargo test -p golden-harness production_seed_counts_reconcile` (or equivalent name)
    must pass on SQLite before treating desktop as daily-driver data.
 

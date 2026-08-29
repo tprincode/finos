@@ -48,7 +48,7 @@ The desktop today has **no such wizard**. Seed loaded the existing book from tem
 
 ### In scope
 
-- **Add** a new investment (not already in the household SQLite).
+- **Add** a new investment (not already in the data SQLite).
 - **Maintain** an existing investment’s identity, retrieval template, declarations, Plan, characteristics, and lots.
 - First save **and** the standing process that keeps data current after save.
 - Every tab that would otherwise show invented zeros or blank-as-complete.
@@ -280,7 +280,7 @@ After confirm: future Income Plan events use this Plan; **completed weeks never 
 
 | Field | Rule |
 |-------|------|
-| Account | Existing household account identity |
+| Account | Existing data account identity |
 | Opened on | Date |
 | Origin | e.g. purchase |
 | Quantity + quantity scale | Remaining quantity |
@@ -393,7 +393,7 @@ Reviewers can treat these as the build gate. Existing domain ACs still apply.
 
 | Capability | Today |
 |------------|--------|
-| Household seed (8 accounts, 74 symbols, lots, yield, 40 PlanHistory rows, characteristics) | CLI `npm run household-seed` |
+| Data seed (8 accounts, 74 symbols, lots, yield, 40 PlanHistory rows, characteristics) | CLI `npm run data-seed` |
 | Income Plan week grid, Dashboard burndown, Holdings lots, Import, read-only Calculator | Desktop menus |
 | `SecurityRegister` | Tests/seed only; not a menu |
 | `position_characteristic` | Frequency, risk_tier, provider, underlying, ROC year fields, div_type — from seed, no owner form |

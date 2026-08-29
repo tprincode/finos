@@ -14,24 +14,42 @@ pub struct Money {
 }
 
 /// Convert a fixed-scale integer to another scale. Half-up away from zero.
+/// Never panics on extreme scale deltas: scales down to 0, scales up toward i64 bounds.
 pub fn rescale(amount_minor: i64, from_scale: u8, to_scale: u8) -> i64 {
     if from_scale == to_scale {
         return amount_minor;
     }
     if from_scale > to_scale {
-        let div = 10i64.pow((from_scale - to_scale) as u32);
+        let delta = u32::from(from_scale - to_scale);
+        let Some(div) = 10i64.checked_pow(delta) else {
+            return 0;
+        };
         if div == 0 {
             return amount_minor;
         }
         let q = amount_minor / div;
         let r = (amount_minor % div).abs();
-        if r * 2 >= div {
-            q + if amount_minor >= 0 { 1 } else { -1 }
+        if r.saturating_mul(2) >= div {
+            if amount_minor >= 0 {
+                q.saturating_add(1)
+            } else {
+                q.saturating_add(-1)
+            }
         } else {
             q
         }
     } else {
-        amount_minor.saturating_mul(10i64.pow((to_scale - from_scale) as u32))
+        let delta = u32::from(to_scale - from_scale);
+        let Some(factor) = 10i64.checked_pow(delta) else {
+            return if amount_minor == 0 {
+                0
+            } else if amount_minor > 0 {
+                i64::MAX
+            } else {
+                i64::MIN
+            };
+        };
+        amount_minor.saturating_mul(factor)
     }
 }
 
@@ -79,5 +97,12 @@ mod tests {
         assert_eq!(super::to_usd_cents(207_000, 2), 207_000);
         assert_eq!(super::rescale(10, 0, 3), 10_000);
         assert_eq!(super::rescale(1_923, 3, 3), 1_923);
+    }
+
+    #[test]
+    fn rescale_does_not_panic_on_extreme_scale() {
+        assert_eq!(super::rescale(1, 0, 40), i64::MAX);
+        assert_eq!(super::rescale(-1, 0, 40), i64::MIN);
+        assert_eq!(super::rescale(1000, 40, 2), 0);
     }
 }

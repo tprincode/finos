@@ -25,7 +25,10 @@ async fn must_ok(platform: &LocalPlatform, name: &str, body: serde_json::Value) 
     serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap()
 }
 
-async fn investment_template_source(platform: &LocalPlatform, symbol: &str) -> (String, String) {
+async fn investment_template_source(
+    platform: &LocalPlatform,
+    symbol: &str,
+) -> (String, String, bool) {
     let got = execute_query_on(
         platform,
         platform,
@@ -49,6 +52,7 @@ async fn investment_template_source(platform: &LocalPlatform, symbol: &str) -> (
             .as_str()
             .unwrap_or("")
             .to_string(),
+        val["template"]["collectorEnabled"].as_bool().unwrap_or(false),
     )
 }
 
@@ -218,7 +222,7 @@ async fn production_seed_counts_reconcile() {
     );
     assert_eq!(
         topw_val["template"]["calendarPolicy"].as_str().unwrap_or(""),
-        "derived_walk"
+        "issuer_calendar"
     );
     assert_ne!(
         topw_val["rocResearchStatus"].as_str().unwrap_or(""),
@@ -228,27 +232,39 @@ async fn production_seed_counts_reconcile() {
 
     assert_eq!(
         investment_template_source(&platform, "QDVO").await,
-        ("amplify".into(), "issuer_calendar".into())
+        ("amplify".into(), "issuer_calendar".into(), true)
     );
     assert_eq!(
         investment_template_source(&platform, "SPYI").await,
-        ("neos".into(), "issuer_calendar".into())
+        ("neos".into(), "issuer_calendar".into(), true)
     );
     assert_eq!(
         investment_template_source(&platform, "MSTY").await,
-        ("yieldmax".into(), "derived_walk".into())
+        ("yieldmax".into(), "issuer_calendar".into(), true)
     );
     assert_eq!(
         investment_template_source(&platform, "QYLD").await,
-        ("unassigned".into(), "derived_walk".into())
+        ("globalx".into(), "issuer_calendar".into(), true)
+    );
+    assert_eq!(
+        investment_template_source(&platform, "CRF").await,
+        ("cornerstone".into(), "issuer_calendar".into(), true)
+    );
+    assert_eq!(
+        investment_template_source(&platform, "CLM").await,
+        ("cornerstone".into(), "issuer_calendar".into(), true)
+    );
+    assert_eq!(
+        investment_template_source(&platform, "JEPQ").await,
+        ("jpmorgan".into(), "issuer_calendar".into(), true)
     );
     assert_eq!(
         investment_template_source(&platform, "TSLA").await,
-        ("unassigned".into(), "none".into())
+        ("unassigned".into(), "none".into(), false)
     );
     assert_eq!(
         investment_template_source(&platform, "ENERGYX").await,
-        ("sec-edgar".into(), "none".into())
+        ("sec-edgar".into(), "none".into(), false)
     );
 
     let qdvo_row = cov_rows.iter().find(|r| r["symbol"] == "QDVO").unwrap();
@@ -295,27 +311,27 @@ async fn production_seed_counts_reconcile() {
     assert!(applied["updated"].as_u64().unwrap_or(0) >= 4);
     assert_eq!(
         investment_template_source(&platform, "QDVO").await,
-        ("amplify".into(), "issuer_calendar".into())
+        ("amplify".into(), "issuer_calendar".into(), true)
     );
     assert_eq!(
         investment_template_source(&platform, "SPYI").await,
-        ("neos".into(), "issuer_calendar".into())
+        ("neos".into(), "issuer_calendar".into(), true)
     );
     assert_eq!(
         investment_template_source(&platform, "MSTY").await,
-        ("yieldmax".into(), "derived_walk".into())
+        ("yieldmax".into(), "issuer_calendar".into(), true)
     );
     assert_eq!(
         investment_template_source(&platform, "TOPW").await,
-        ("roundhill".into(), "derived_walk".into())
+        ("roundhill".into(), "issuer_calendar".into(), true)
     );
     assert_eq!(
         investment_template_source(&platform, "QYLD").await,
-        ("unassigned".into(), "derived_walk".into())
+        ("globalx".into(), "issuer_calendar".into(), true)
     );
     assert_eq!(
         investment_template_source(&platform, "ENERGYX").await,
-        ("sec-edgar".into(), "none".into())
+        ("sec-edgar".into(), "none".into(), false)
     );
 
     set_declaration_source(&platform, "QDVO", "yieldmax").await;
@@ -329,6 +345,10 @@ async fn production_seed_counts_reconcile() {
         investment_template_source(&platform, "QDVO").await.0,
         "yieldmax",
         "Apply must not overwrite a registered vendor"
+    );
+    assert!(
+        investment_template_source(&platform, "QDVO").await.2,
+        "registered vendor must stay or become enabled"
     );
     set_declaration_source(&platform, "QDVO", "public").await;
     must_ok(

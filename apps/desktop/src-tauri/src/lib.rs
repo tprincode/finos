@@ -9,8 +9,30 @@ use application_core::ports::advisory::{Advisory, MissingKeyAdvisory};
 use application_core::queries::{execute_command_on, execute_query_on};
 use storage_sqlite::LocalPlatform;
 use tauri::menu::{MenuBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
+
+const POSITION_RESEARCH_PROGRESS_EVENT: &str = "position-research-progress";
+const POSITION_RESEARCH_TOTAL_STEPS: u32 = 4;
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PositionResearchProgressPayload {
+    step: u32,
+    total: u32,
+    label: String,
+}
+
+fn emit_position_research_progress(app: &AppHandle, step: u32, label: &str) {
+    let _ = app.emit(
+        POSITION_RESEARCH_PROGRESS_EVENT,
+        PositionResearchProgressPayload {
+            step,
+            total: POSITION_RESEARCH_TOTAL_STEPS,
+            label: label.to_string(),
+        },
+    );
+}
 
 #[tauri::command]
 async fn finance_query(
@@ -22,12 +44,18 @@ async fn finance_query(
 
 #[tauri::command]
 async fn finance_command(
+    app: AppHandle,
     platform: State<'_, Arc<LocalPlatform>>,
     mut request: CommandRequest,
 ) -> Result<CommandResult, String> {
     if matches!(
         request.command_name.as_str(),
-        "PriceQuoteRetrieve" | "DeclarationRetrieve" | "MarketRetrieve" | "PeriodSeriesRetrieve" | "RocResearchRetrieve"
+        "PriceQuoteRetrieve"
+            | "DeclarationRetrieve"
+            | "MarketRetrieve"
+            | "PeriodSeriesRetrieve"
+            | "RocResearchRetrieve"
+            | "CollectorRetrieve"
     ) {
         fill_declaration_source_from_template(platform.inner().as_ref(), &mut request).await;
         let name = request.command_name.clone();
@@ -36,19 +64,27 @@ async fn finance_command(
             .as_deref()
             .and_then(|raw| serde_json::from_str(raw).ok())
             .unwrap_or_else(|| serde_json::json!({}));
-        let filled = tauri::async_runtime::spawn_blocking(move || {
-            import_engine::enrich_retrieve_body(&name, &mut body);
-            body
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        request.body_json = Some(filled.to_string());
+        if name == "CollectorRetrieve" {
+            fill_collector_retrieve(platform.inner().as_ref(), &mut body).await;
+            request.body_json = Some(body.to_string());
+        } else {
+            let filled = tauri::async_runtime::spawn_blocking(move || {
+                import_engine::enrich_retrieve_body(&name, &mut body);
+                body
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            request.body_json = Some(filled.to_string());
+        }
     }
     if request.command_name == "LastPriceRefresh" {
         fill_last_price_refresh(platform.inner().as_ref(), &mut request).await;
     }
     if request.command_name == "DeclarationRefresh" {
         fill_declaration_refresh(platform.inner().as_ref(), &mut request).await;
+    }
+    if request.command_name == "PositionResearchSeed" {
+        return Ok(run_position_research_seed(&app, platform.inner().as_ref(), request).await);
     }
     Ok(execute_command_on(platform.inner().as_ref(), platform.inner().as_ref(), request).await)
 }
@@ -60,6 +96,229 @@ fn qry(name: &str, body: serde_json::Value) -> QueryRequest {
         correlation_id: Uuid::new_v4(),
         body_json: Some(body.to_string()),
     }
+}
+
+fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
+    CommandRequest {
+        contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
+        command_name: name.to_string(),
+        correlation_id: Uuid::new_v4(),
+        body_json: Some(body.to_string()),
+        expected_version: None,
+    }
+}
+
+/// Process A desktop path: seed identity+URL template, then live CollectorRetrieve / LastPriceRefresh.
+/// Injected candidates/misses/quotes (tests) skip live fill.
+/// Emits `position-research-progress` for the Research activity indicator (steps 1–3 of 4).
+async fn run_position_research_seed(
+    app: &AppHandle,
+    platform: &LocalPlatform,
+    request: CommandRequest,
+) -> CommandResult {
+    let body: serde_json::Value = request
+        .body_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let injected = body.get("candidates").is_some()
+        || body.get("declarations").is_some()
+        || body.get("misses").is_some()
+        || body.get("payDates").is_some()
+        || body.get("upcomingPays").is_some()
+        || body.get("quote").is_some()
+        || body.get("quotes").is_some();
+    emit_position_research_progress(app, 1, "retrieving declarations");
+    let mut result = execute_command_on(platform, platform, request).await;
+    if !result.ok || injected {
+        return result;
+    }
+    let mut seed: serde_json::Value =
+        serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+    let security_id = seed
+        .get("securityId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let symbol = seed
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if security_id.is_empty() || symbol.is_empty() {
+        return result;
+    }
+    let declaration_source = seed
+        .get("declarationSource")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let source_url = seed
+        .get("sourceUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let mut retrieve_body = serde_json::json!({
+        "securityId": security_id,
+        "symbol": symbol,
+        "declarationSource": declaration_source,
+        "sourceUrl": source_url,
+        "sourceSymbol": symbol,
+    });
+    fill_collector_retrieve(platform, &mut retrieve_body).await;
+    let retrieve = execute_command_on(
+        platform,
+        platform,
+        cmd("CollectorRetrieve", retrieve_body),
+    )
+    .await;
+    if retrieve.ok {
+        if let Ok(body) =
+            serde_json::from_str::<serde_json::Value>(retrieve.body_json.as_deref().unwrap_or("{}"))
+        {
+            seed["retrieveOk"] = body.get("ok").cloned().unwrap_or(serde_json::json!(false));
+            seed["retrieveCode"] = body
+                .get("code")
+                .cloned()
+                .unwrap_or(serde_json::json!(""));
+            seed["retrieveMessage"] = body
+                .get("message")
+                .cloned()
+                .unwrap_or(serde_json::json!(""));
+        }
+        let inv = execute_query_on(
+            platform,
+            platform,
+            qry(
+                "InvestmentGet",
+                serde_json::json!({ "securityId": security_id }),
+            ),
+        )
+        .await;
+        if inv.ok {
+            if let Ok(inv_body) =
+                serde_json::from_str::<serde_json::Value>(inv.body_json.as_deref().unwrap_or("{}"))
+            {
+                if let Some(freq) = inv_body.get("paymentFrequency").and_then(|v| v.as_str()) {
+                    if !freq.is_empty() {
+                        seed["paymentFrequency"] = serde_json::json!(freq);
+                    }
+                }
+            }
+        }
+        // Live Amplify/etc 19a-1 after declarations — propose estimate only (not complete).
+        emit_position_research_progress(app, 2, "retrieving 19a-1");
+        let paid = serde_json::from_str::<serde_json::Value>(inv.body_json.as_deref().unwrap_or("{}"))
+            .ok()
+            .and_then(|b| b.get("declarationCount").and_then(|c| c.as_u64()))
+            .unwrap_or(0);
+        if inv.ok && paid > 0 {
+            let name = "RocResearchRetrieve".to_string();
+            let filled = tauri::async_runtime::spawn_blocking({
+                let mut body = serde_json::json!({
+                    "securityId": security_id,
+                    "symbol": symbol,
+                    "declarationSource": declaration_source,
+                });
+                move || {
+                    import_engine::enrich_retrieve_body(&name, &mut body);
+                    body
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                serde_json::json!({
+                    "securityId": security_id,
+                    "symbol": symbol,
+                    "declarationSource": declaration_source,
+                })
+            });
+            let roc = execute_command_on(
+                platform,
+                platform,
+                cmd("RocResearchRetrieve", filled),
+            )
+            .await;
+            if roc.ok {
+                if let Ok(rb) = serde_json::from_str::<serde_json::Value>(
+                    roc.body_json.as_deref().unwrap_or("{}"),
+                ) {
+                    if let Some(arr) = rb.get("candidates").and_then(|c| c.as_array()) {
+                        if let Some(c) = arr.iter().find(|row| {
+                            row.get("rocPctMinor").and_then(|v| v.as_i64()).is_some()
+                                && row.get("ownerOverride").and_then(|v| v.as_bool()) != Some(true)
+                                && (row.get("source").and_then(|s| s.as_str()) == Some("19a-1")
+                                    || row.get("method").and_then(|s| s.as_str())
+                                        == Some("19a-1-current-year"))
+                        }) {
+                            seed["rocPctMinor"] = c.get("rocPctMinor").cloned().unwrap_or_default();
+                            seed["rocScale"] = c.get("scale").cloned().unwrap_or(serde_json::json!(2));
+                            seed["rocSourceUrl"] =
+                                c.get("sourceUrl").cloned().unwrap_or(serde_json::json!(""));
+                            seed["rocMethod"] =
+                                c.get("method").cloned().unwrap_or(serde_json::json!(""));
+                            seed["rocKind"] = c
+                                .get("kind")
+                                .cloned()
+                                .unwrap_or(serde_json::json!("estimate"));
+                            seed["rocAsOf"] = c.get("asOf").cloned().unwrap_or(serde_json::json!(""));
+                            seed["rocEstablishedHow"] = c
+                                .get("establishedHow")
+                                .cloned()
+                                .unwrap_or(serde_json::json!(""));
+                            seed["rocComplete"] = serde_json::json!(false);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        seed["retrieveOk"] = serde_json::json!(false);
+        seed["retrieveCode"] = serde_json::json!(retrieve
+            .error_code
+            .clone()
+            .unwrap_or_else(|| "retrieve_failed".into()));
+        // Still advance through known steps so the UI progress bar does not stall.
+        emit_position_research_progress(app, 2, "retrieving 19a-1");
+    }
+
+    emit_position_research_progress(app, 3, "retrieving price");
+    let targets = vec![import_engine::LastPriceTarget {
+        security_id: security_id.clone(),
+        symbol: symbol.clone(),
+        price_source: "public".into(),
+        source_symbol: symbol.clone(),
+    }];
+    let quotes = tauri::async_runtime::spawn_blocking(move || {
+        import_engine::collect_last_price_quotes_for(targets)
+    })
+    .await
+    .unwrap_or_default();
+    let mut misses = Vec::new();
+    if quotes.is_empty() {
+        misses.push(serde_json::json!({
+            "securityId": security_id,
+            "symbol": symbol,
+            "code": "price_retrieve_miss",
+            "reason": format!(
+                "Last price miss for {}. Stored price still displays; never $0.",
+                symbol
+            )
+        }));
+    }
+    let _ = execute_command_on(
+        platform,
+        platform,
+        cmd(
+            "LastPriceRefresh",
+            serde_json::json!({ "quotes": quotes, "misses": misses }),
+        ),
+    )
+    .await;
+
+    result.body_json = Some(seed.to_string());
+    result
 }
 
 async fn last_price_is_current(platform: &LocalPlatform, security_id: &str, today: &str) -> bool {
@@ -139,13 +398,28 @@ async fn fill_last_price_refresh(platform: &LocalPlatform, request: &mut Command
             if last_price_is_current(platform, id, &today).await {
                 continue;
             }
+            let symbol = item
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let div_type = item
+                .get("divType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            // Defense in depth: CASH / SPAXX / FDRXX / SWVXX never hit Yahoo.
+            // PriceRetrievalSetGet already excludes them.
+            if div_type.eq_ignore_ascii_case("CASH")
+                || matches!(
+                    symbol.to_ascii_uppercase().as_str(),
+                    "SPAXX" | "FDRXX" | "SWVXX"
+                )
+            {
+                continue;
+            }
             targets.push(import_engine::LastPriceTarget {
                 security_id: id.to_string(),
-                symbol: item
-                    .get("symbol")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                symbol,
                 price_source: item
                     .get("priceSource")
                     .and_then(|v| v.as_str())
@@ -172,6 +446,12 @@ async fn fill_last_price_refresh(platform: &LocalPlatform, request: &mut Command
                 continue;
             }
             if let Some(symbol) = symbol_by_id.get(id) {
+                if matches!(
+                    symbol.to_ascii_uppercase().as_str(),
+                    "SPAXX" | "FDRXX" | "SWVXX"
+                ) {
+                    continue;
+                }
                 targets.push(import_engine::LastPriceTarget {
                     security_id: id.to_string(),
                     symbol: symbol.clone(),
@@ -212,7 +492,7 @@ async fn fill_last_price_refresh(platform: &LocalPlatform, request: &mut Command
 async fn fill_declaration_source_from_template(platform: &LocalPlatform, request: &mut CommandRequest) {
     if !matches!(
         request.command_name.as_str(),
-        "MarketRetrieve" | "DeclarationRetrieve"
+        "MarketRetrieve" | "DeclarationRetrieve" | "RocResearchRetrieve"
     ) {
         return;
     }
@@ -229,12 +509,21 @@ async fn fill_declaration_source_from_template(platform: &LocalPlatform, request
     {
         return;
     }
-    if body
+    let has_source = body
         .get("declarationSource")
         .and_then(|s| s.as_str())
         .map(|s| !s.is_empty())
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+    let has_url = body
+        .get("sourceUrl")
+        .and_then(|s| s.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    // Roc validate needs stored issuer URL even when declarationSource is already set.
+    if has_source && has_url && request.command_name != "RocResearchRetrieve" {
+        return;
+    }
+    if has_source && request.command_name != "RocResearchRetrieve" {
         return;
     }
     let symbol = body
@@ -254,12 +543,19 @@ async fn fill_declaration_source_from_template(platform: &LocalPlatform, request
                 let item_symbol = item.get("symbol").and_then(|s| s.as_str()).unwrap_or("");
                 if item_symbol.eq_ignore_ascii_case(&symbol) {
                     if let Some(src) = item.get("declarationSource").and_then(|s| s.as_str()) {
-                        if !src.is_empty() {
+                        if !src.is_empty()
+                            && body
+                                .get("declarationSource")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("")
+                                .is_empty()
+                        {
                             body["declarationSource"] = serde_json::Value::String(src.to_string());
                         }
                     }
                     if let Some(src) = item.get("sourceSymbol").and_then(|s| s.as_str()) {
-                        if !src.is_empty() && body.get("sourceSymbol").and_then(|s| s.as_str()).unwrap_or("").is_empty()
+                        if !src.is_empty()
+                            && body.get("sourceSymbol").and_then(|s| s.as_str()).unwrap_or("").is_empty()
                         {
                             body["sourceSymbol"] = serde_json::Value::String(src.to_string());
                         }
@@ -272,35 +568,105 @@ async fn fill_declaration_source_from_template(platform: &LocalPlatform, request
                         }
                     }
                     request.body_json = Some(body.to_string());
-                    return;
+                    if request.command_name != "RocResearchRetrieve" {
+                        return;
+                    }
+                    break;
                 }
             }
         }
     }
-    let inv = execute_query_on(
-        platform,
-        platform,
-        qry("InvestmentGet", serde_json::json!({ "symbol": symbol })),
-    )
-    .await;
+    let inv_body = if let Some(sid) = body.get("securityId").and_then(|s| s.as_str()) {
+        serde_json::json!({ "securityId": sid })
+    } else {
+        serde_json::json!({ "symbol": symbol })
+    };
+    let inv = execute_query_on(platform, platform, qry("InvestmentGet", inv_body)).await;
     if inv.ok {
         let val: serde_json::Value =
             serde_json::from_str(inv.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
-        if let Some(src) = val
-            .pointer("/template/declarationSource")
+        if body
+            .get("declarationSource")
             .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .is_empty()
         {
-            if !src.is_empty() {
-                body["declarationSource"] = serde_json::Value::String(src.to_string());
+            if let Some(src) = val
+                .pointer("/template/declarationSource")
+                .and_then(|s| s.as_str())
+            {
+                if !src.is_empty() {
+                    body["declarationSource"] = serde_json::Value::String(src.to_string());
+                }
             }
         }
-        if let Some(src) = val.pointer("/template/sourceSymbol").and_then(|s| s.as_str()) {
-            if !src.is_empty() {
-                body["sourceSymbol"] = serde_json::Value::String(src.to_string());
+        if body
+            .get("sourceSymbol")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .is_empty()
+        {
+            if let Some(src) = val.pointer("/template/sourceSymbol").and_then(|s| s.as_str()) {
+                if !src.is_empty() {
+                    body["sourceSymbol"] = serde_json::Value::String(src.to_string());
+                }
+            }
+        }
+        if body
+            .get("sourceUrl")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .is_empty()
+        {
+            if let Some(url) = val.pointer("/template/sourceUrl").and_then(|s| s.as_str()) {
+                if !url.is_empty() {
+                    body["sourceUrl"] = serde_json::Value::String(url.to_string());
+                }
             }
         }
     }
     request.body_json = Some(body.to_string());
+}
+
+async fn paid_declaration_context(
+    platform: &LocalPlatform,
+    security_id: &str,
+) -> (u8, Vec<String>) {
+    let inv = execute_query_on(
+        platform,
+        platform,
+        qry(
+            "InvestmentGet",
+            serde_json::json!({ "securityId": security_id }),
+        ),
+    )
+    .await;
+    if !inv.ok {
+        return (0, Vec::new());
+    }
+    let val: serde_json::Value =
+        serde_json::from_str(inv.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+    let mut paid = 0u8;
+    let mut periods = Vec::new();
+    if let Some(arr) = val.get("declarations").and_then(|d| d.as_array()) {
+        for row in arr {
+            let amount = row
+                .get("amountPerShareMinor")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if amount <= 0 {
+                continue;
+            }
+            paid = paid.saturating_add(1);
+            if let Some(p) = row.get("paymentPeriod").and_then(|v| v.as_str()) {
+                let p = p.trim();
+                if !p.is_empty() {
+                    periods.push(p.to_string());
+                }
+            }
+        }
+    }
+    (paid, periods)
 }
 
 async fn declaration_entered_today(platform: &LocalPlatform, security_id: &str, source: &str, today: &str) -> bool {
@@ -327,6 +693,263 @@ async fn declaration_entered_today(platform: &LocalPlatform, security_id: &str, 
         .unwrap_or(false)
 }
 
+async fn cash_plan_standing_candidates(
+    platform: &LocalPlatform,
+    security_id: &str,
+    source: &str,
+) -> Option<Vec<serde_json::Value>> {
+    if security_id.is_empty() {
+        return None;
+    }
+    let inv = execute_query_on(
+        platform,
+        platform,
+        qry(
+            "InvestmentGet",
+            serde_json::json!({ "securityId": security_id }),
+        ),
+    )
+    .await;
+    if !inv.ok {
+        return None;
+    }
+    let val: serde_json::Value =
+        serde_json::from_str(inv.body_json.as_deref().unwrap_or("{}")).ok()?;
+    let amount = val
+        .get("planPerShareMinor")
+        .or_else(|| val.pointer("/plan/amountPerShareMinor"))
+        .or_else(|| val.get("amountPerShareMinor"))
+        .and_then(|x| x.as_i64())
+        .filter(|n| *n > 0)
+        .or_else(|| {
+            val.get("declarations")
+                .and_then(|d| d.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|d| {
+                    d.get("amountPerShareMinor")
+                        .and_then(|x| x.as_i64())
+                        .filter(|n| *n > 0)
+                })
+                .max()
+        })?;
+    let scale = val
+        .get("planScale")
+        .or_else(|| val.pointer("/plan/amountScale"))
+        .or_else(|| val.get("amountScale"))
+        .and_then(|x| x.as_u64())
+        .unwrap_or(5) as u8;
+    let pay = val
+        .get("planEffectiveFrom")
+        .or_else(|| val.pointer("/plan/effectiveFrom"))
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string();
+    let pay = if pay.is_empty() {
+        chrono::Utc::now().date_naive().to_string()
+    } else {
+        pay
+    };
+    let src = if source.is_empty() {
+        "plan".to_string()
+    } else {
+        source.to_string()
+    };
+    Some(vec![serde_json::json!({
+        "securityId": security_id,
+        "amountPerShareMinor": amount,
+        "amountScale": scale,
+        "paymentPeriod": pay,
+        "source": src,
+        "contentHash": format!("plan-standing-{pay}-{amount}"),
+    })])
+}
+
+async fn fill_collector_retrieve(platform: &LocalPlatform, body: &mut serde_json::Value) {
+    if body.get("candidates").is_some()
+        || body.get("declarations").is_some()
+        || body.get("misses").is_some()
+        || body.get("payDates").is_some()
+    {
+        return;
+    }
+    let security_id = body
+        .get("securityId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let symbol = body
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let declaration_source = body
+        .get("declarationSource")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let source_symbol = body
+        .get("sourceSymbol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let source_url = body
+        .get("sourceUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let last_content_hash = body
+        .get("lastContentHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let div_type = body
+        .get("divType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let force_refresh = body
+        .get("forceRefresh")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let last_run_ok = body
+        .get("lastRunOk")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let last_run_at = body
+        .get("lastRunAt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    body["symbol"] = serde_json::Value::String(symbol.clone());
+    body["declarationSource"] = serde_json::Value::String(declaration_source.clone());
+    body["divType"] = serde_json::Value::String(div_type.clone());
+    let (paid_count, known_periods) = paid_declaration_context(platform, &security_id).await;
+    let known_payment_periods = body
+        .get("knownPaymentPeriods")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.as_str().map(|s| s.trim().to_string()))
+                .filter(|p| !p.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty())
+        .unwrap_or(known_periods);
+    let target = import_engine::DeclarationTarget {
+        security_id: security_id.clone(),
+        symbol: symbol.clone(),
+        declaration_source: declaration_source.clone(),
+        source_symbol,
+        source_url,
+        last_content_hash,
+        div_type: div_type.clone(),
+        force_refresh,
+        last_run_ok,
+        last_run_at,
+        inception_on: body
+            .get("inceptionOn")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        payment_frequency: body
+            .get("paymentFrequency")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        paid_count,
+        known_payment_periods,
+    };
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        import_engine::collect_declarations_for(vec![target])
+    })
+    .await
+    .unwrap_or_default();
+    body["candidates"] = serde_json::Value::Array(outcome.candidates.clone());
+    body["declarations"] = serde_json::Value::Array(outcome.candidates);
+    body["payDates"] = serde_json::Value::Array(outcome.pay_dates);
+    body["upcomingPays"] = body["payDates"].clone();
+    body["misses"] = serde_json::Value::Array(outcome.misses);
+    body["unchanged"] = serde_json::json!(!outcome.unchanged.is_empty());
+    if !outcome.fetched_source_url.is_empty() {
+        body["fetchedSourceUrl"] = serde_json::Value::String(outcome.fetched_source_url);
+    }
+    if !outcome.fetched_payment_calendar_url.is_empty() {
+        body["fetchedPaymentCalendarUrl"] =
+            serde_json::Value::String(outcome.fetched_payment_calendar_url);
+    }
+    let is_cash = div_type.eq_ignore_ascii_case("CASH")
+        || matches!(
+            symbol.to_ascii_uppercase().as_str(),
+            "SPAXX" | "FDRXX" | "SWVXX"
+        );
+    if is_cash
+        && body
+            .get("candidates")
+            .and_then(|c| c.as_array())
+            .map(|a| a.is_empty())
+            .unwrap_or(true)
+    {
+        if let Some(plan_cands) =
+            cash_plan_standing_candidates(platform, &security_id, &declaration_source).await
+        {
+            body["candidates"] = serde_json::Value::Array(plan_cands.clone());
+            body["declarations"] = serde_json::Value::Array(plan_cands);
+            body["misses"] = serde_json::Value::Array(vec![]);
+            body["missExplanation"] = serde_json::Value::String(
+                "money-market issuer page unavailable — using standing Plan rate (not Yahoo)"
+                    .into(),
+            );
+        } else {
+            body["misses"] = serde_json::Value::Array(vec![]);
+            body["missExplanation"] = serde_json::Value::String(
+                "money-market standing (par); issuer distribution page unavailable — not Yahoo"
+                    .into(),
+            );
+        }
+    }
+    let _ = tauri::async_runtime::spawn_blocking({
+        let mut quote_body = body.clone();
+        move || {
+            import_engine::enrich_collector_quote_only(&mut quote_body);
+            quote_body
+        }
+    })
+    .await
+    .map(|quote_body| {
+        if let Some(quote) = quote_body.get("quote") {
+            body["quote"] = quote.clone();
+        }
+    });
+    if body
+        .get("candidates")
+        .and_then(|c| c.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true)
+        && !is_cash
+    {
+        body["missExplanation"] = serde_json::Value::String(
+            "Issuer page empty.".into(),
+        );
+    }
+    if let Some(hash) = outcome
+        .unchanged
+        .first()
+        .and_then(|u| u.get("contentHash"))
+        .cloned()
+        .or_else(|| {
+            body.get("candidates")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|c| c.get("contentHash"))
+                .cloned()
+        })
+    {
+        body["contentHash"] = hash;
+    }
+}
+
 async fn fill_declaration_refresh(platform: &LocalPlatform, request: &mut CommandRequest) {
     let mut body: serde_json::Value = request
         .body_json
@@ -339,7 +962,7 @@ async fn fill_declaration_refresh(platform: &LocalPlatform, request: &mut Comman
     {
         return;
     }
-    let set = execute_query_on(platform, platform, qry("PriceRetrievalSetGet", serde_json::json!({}))).await;
+    let set = execute_query_on(platform, platform, qry("CollectorSetGet", serde_json::json!({}))).await;
     if !set.ok {
         body["declarations"] = serde_json::json!([]);
         request.body_json = Some(body.to_string());
@@ -349,6 +972,7 @@ async fn fill_declaration_refresh(platform: &LocalPlatform, request: &mut Comman
         serde_json::from_str(set.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
     let today = chrono::Utc::now().date_naive().to_string();
     let mut targets = Vec::new();
+    let mut disabled_misses = Vec::new();
     let items = set_val
         .get("items")
         .and_then(|v| v.as_array())
@@ -358,51 +982,160 @@ async fn fill_declaration_refresh(platform: &LocalPlatform, request: &mut Comman
         let Some(id) = item.get("securityId").and_then(|v| v.as_str()) else {
             continue;
         };
+        let open_lots = item
+            .get("openLots")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !open_lots {
+            continue;
+        }
+        let symbol = item
+            .get("symbol")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let source = item
             .get("declarationSource")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let skip = source.is_empty()
-            || source.eq_ignore_ascii_case("unassigned")
-            || source.eq_ignore_ascii_case("public")
-            || source.eq_ignore_ascii_case("import")
-            || source.eq_ignore_ascii_case("sec-edgar");
-        if skip {
+        let div_type = item
+            .get("divType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let enabled = item
+            .get("collectorEnabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let registered = import_engine::is_registered_declaration_source(source);
+
+        if registered && enabled {
+            if declaration_entered_today(platform, id, source, &today).await {
+                continue;
+            }
+            let (paid_count, known_payment_periods) =
+                paid_declaration_context(platform, id).await;
+            targets.push(import_engine::DeclarationTarget {
+                security_id: id.to_string(),
+                symbol,
+                declaration_source: source.to_string(),
+                source_symbol: item
+                    .get("sourceSymbol")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                source_url: item
+                    .get("sourceUrl")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                last_content_hash: item
+                    .get("lastContentHash")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                div_type: div_type.to_string(),
+                force_refresh: false,
+                last_run_ok: item
+                    .get("lastRunOk")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                last_run_at: item
+                    .get("lastRunAt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                inception_on: item
+                    .get("inceptionOn")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                payment_frequency: item
+                    .get("paymentFrequency")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                paid_count,
+                known_payment_periods,
+            });
             continue;
         }
-        if declaration_entered_today(platform, id, source, &today).await {
+
+        // DIV-1 must be assigned and enabled; otherwise raise a loud miss (never Yahoo).
+        if import_engine::div1_adapter_missing(div_type, source) {
+            targets.push(import_engine::DeclarationTarget {
+                security_id: id.to_string(),
+                symbol,
+                declaration_source: source.to_string(),
+                source_symbol: item
+                    .get("sourceSymbol")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                source_url: String::new(),
+                last_content_hash: String::new(),
+                div_type: div_type.to_string(),
+                force_refresh: false,
+                last_run_ok: false,
+                last_run_at: String::new(),
+                inception_on: String::new(),
+                payment_frequency: item
+                    .get("paymentFrequency")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                paid_count: 0,
+                known_payment_periods: Vec::new(),
+            });
             continue;
         }
-        targets.push(import_engine::DeclarationTarget {
-            security_id: id.to_string(),
-            symbol: item
-                .get("symbol")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            declaration_source: source.to_string(),
-            source_symbol: item
-                .get("sourceSymbol")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            source_url: item
-                .get("sourceUrl")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            last_content_hash: item
-                .get("lastContentHash")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        });
+        if import_engine::is_div1(div_type) && registered && !enabled {
+            disabled_misses.push(serde_json::json!({
+                "securityId": id,
+                "symbol": symbol,
+                "declarationSource": source,
+                "reason": "DIV-1 adapter assigned but collector disabled.",
+                "code": "div1_adapter_missing",
+            }));
+        }
     }
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
+    let mut outcome = tauri::async_runtime::spawn_blocking(move || {
         import_engine::collect_declarations_for(targets)
     })
     .await
     .unwrap_or_default();
+    outcome.misses.extend(disabled_misses);
+    // Money-market SPA/403 pages: drop loud miss when Plan/par standing exists.
+    let mut kept_misses = Vec::new();
+    for miss in outcome.misses.drain(..) {
+        let sid = miss
+            .get("securityId")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        let src = miss
+            .get("declarationSource")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if matches!(src.as_str(), "fidelity" | "schwab") {
+            if let Some(cands) = cash_plan_standing_candidates(platform, &sid, &src).await {
+                for mut c in cands {
+                    c["securityId"] = serde_json::Value::String(sid.clone());
+                    outcome.candidates.push(c);
+                }
+                continue;
+            }
+            outcome.unchanged.push(serde_json::json!({
+                "securityId": sid,
+                "contentHash": "",
+                "forceOk": true,
+                "reason": "money-market standing (par); issuer distribution page unavailable",
+            }));
+            continue;
+        }
+        kept_misses.push(miss);
+    }
+    outcome.misses = kept_misses;
     body["declarations"] = serde_json::Value::Array(outcome.candidates);
     body["payDates"] = serde_json::Value::Array(outcome.pay_dates);
     body["misses"] = serde_json::Value::Array(outcome.misses);
@@ -411,7 +1144,71 @@ async fn fill_declaration_refresh(platform: &LocalPlatform, request: &mut Comman
 }
 
 #[tauri::command]
+fn open_exception_log(
+    app: AppHandle,
+    exceptions: Vec<serde_json::Value>,
+) -> Result<String, String> {
+    let preferred = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    let dir = resolve_app_data_dir(preferred).join("logs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let today = chrono::Utc::now().date_naive().to_string();
+    let path = dir.join(format!("exceptions-{today}.log"));
+    let mut lines = Vec::new();
+    lines.push(format!("# finos exceptions {today}"));
+    lines.push(format!("# written_at {}", chrono::Utc::now().to_rfc3339()));
+    for row in &exceptions {
+        let created = row
+            .get("createdAt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let code = row.get("code").and_then(|v| v.as_str()).unwrap_or("");
+        let message = row
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let ack = row
+            .get("acknowledged")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        lines.push(format!(
+            "{created}\t{code}\t{}\t{message}",
+            if ack { "ack" } else { "open" }
+        ));
+    }
+    if exceptions.is_empty() {
+        lines.push("# (no exceptions in current ExceptionList)".into());
+    }
+    let body = lines.join("\n") + "\n";
+    std::fs::write(&path, body).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .or_else(|_| std::process::Command::new("open").arg(&path).spawn())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 fn app_exit(app: AppHandle) {
+    // Destroy WebView windows before process exit. Chromium on Windows otherwise
+    // races UnregisterClass(Chrome_WidgetWin_0) and prints Error 1412
+    // (ERROR_CLASS_DOES_NOT_EXIST) — see tauri#7606 / Chromium 40720563.
+    for (_label, window) in app.webview_windows() {
+        let _ = window.destroy();
+    }
     app.exit(0);
 }
 
@@ -449,15 +1246,21 @@ pub fn run() {
             .map_err(|e| e.to_string())?;
             app.manage(Arc::new(platform));
             let file_menu = SubmenuBuilder::new(app, "File")
-                .quit_with_text("Exit")
+                .text("app-exit", "Exit")
                 .build()?;
             let menu = MenuBuilder::new(app).item(&file_menu).build()?;
             app.set_menu(menu)?;
             Ok(())
         })
+        .on_menu_event(|app, event| {
+            if event.id() == "app-exit" {
+                app_exit(app.clone());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             finance_query,
             finance_command,
+            open_exception_log,
             app_exit
         ])
         .run(tauri::generate_context!())

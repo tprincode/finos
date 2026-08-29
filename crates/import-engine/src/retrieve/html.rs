@@ -59,10 +59,23 @@ pub(crate) fn parse_leading_dollars(after: &str) -> Option<(i64, u8)> {
 }
 pub(crate) fn parse_issuer_date(raw: &str) -> Option<String> {
     let s = raw.trim();
-    if s.len() >= 10 && NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d").is_ok() {
-        return Some(s[..10].to_string());
+    // Never byte-slice UTF-8 (™ and similar appear in issuer page cells).
+    let iso_prefix: String = s.chars().take(10).collect();
+    if iso_prefix.chars().count() == 10
+        && NaiveDate::parse_from_str(&iso_prefix, "%Y-%m-%d").is_ok()
+    {
+        return Some(iso_prefix);
     }
-    for fmt in ["%m/%d/%Y", "%-m/%-d/%Y", "%m/%d/%y"] {
+    for fmt in [
+        "%m/%d/%Y",
+        "%-m/%-d/%Y",
+        "%m/%d/%y",
+        "%B %d, %Y",
+        "%b %d, %Y",
+        "%B %-d, %Y",
+        "%b %-d, %Y",
+        "%b-%d-%Y",
+    ] {
         if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
             return Some(d.format("%Y-%m-%d").to_string());
         }
@@ -183,4 +196,70 @@ pub(crate) fn upcoming_from_candidates(cands: &[Value], as_of: &str) -> Vec<Valu
             })
         })
         .collect()
+}
+
+/// Issuer fund-page link to a distribution calendar PDF (e.g. Simplify sidebar calendar).
+pub(crate) fn distribution_calendar_url(html: &str, site_origin: &str) -> Option<String> {
+    let origin = site_origin.trim().trim_end_matches('/');
+    if origin.is_empty() {
+        return None;
+    }
+    let lower = html.to_ascii_lowercase();
+    let mut search = 0usize;
+    while let Some(rel) = lower.get(search..).and_then(|s| s.find("href=\"")) {
+        let start = search + rel + 6;
+        let rest = html.get(start..)?;
+        let end = rest.find('"')?;
+        let href = rest.get(..end)?.trim();
+        search = start + end + 1;
+        let h = href.to_ascii_lowercase();
+        if !(h.contains("distribution") && h.contains("calendar")) && !h.contains("distribution-calendar") {
+            continue;
+        }
+        if !h.contains(".pdf") {
+            continue;
+        }
+        return Some(if href.starts_with("http") {
+            href.to_string()
+        } else if href.starts_with('/') {
+            format!("{origin}{href}")
+        } else {
+            format!("{origin}/{href}")
+        });
+    }
+    None
+}
+
+#[cfg(test)]
+mod calendar_url_tests {
+    use super::*;
+
+    #[test]
+    fn simplify_distribution_calendar_pdf_link() {
+        let html = r#"<div class="distribution-calendar-link">
+  <a href="/sites/default/files/2026-05/Simplify-Distribution-Calendar-June-2026..pdf">DISTRIBUTION CALENDAR</a>
+</div>"#;
+        assert_eq!(
+            distribution_calendar_url(html, "https://www.simplify.us").as_deref(),
+            Some("https://www.simplify.us/sites/default/files/2026-05/Simplify-Distribution-Calendar-June-2026..pdf")
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_issuer_date_tolerates_utf8_trademark() {
+        assert!(parse_issuer_date("Product™ Name").is_none());
+        assert_eq!(
+            parse_issuer_date("2026-08-26™").as_deref(),
+            Some("2026-08-26")
+        );
+        assert_eq!(
+            parse_issuer_date("07/31/2026").as_deref(),
+            Some("2026-07-31")
+        );
+    }
 }

@@ -44,4 +44,4 @@ cargo test --workspace
 
 ## Out of these slices
 
-Postgres, OIDC, updater, M1 macOS. Promoting one M6 stub to a real household workflow is a later Profile A slice.
+Postgres, OIDC, updater, M1 macOS. Promoting one M6 stub to a real data workflow is a later Profile A slice.

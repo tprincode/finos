@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FINANCE_CLIENT_CONTRACT_VERSION,
   type AccountListItem,
   type CalculatorGet,
   type CurrentPriceGet,
   type DashboardBurndownGet,
+  type DividendGet,
   type ExceptionRecord,
   type HandoffStatus,
   type HoldingsGet,
-  type HouseholdSummaryGet,
+  type DataSummaryGet,
   type IncomePlanWeekGet,
   type InvestmentGet,
+  type LookthroughResearch,
   type PositionDetailsGet,
   type PositionDetailsCoverageGet,
   type PositionMasterGet,
@@ -18,10 +20,14 @@ import {
   type RemainingYearIncomeGet,
   type RocResearchGet,
   type SecurityListItem,
+  type TrendsGet,
 } from "@finos/app-contracts";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import { LocalTauriFinanceClient } from "./financeClient";
+import { TrendsChartsPanel } from "./TrendsCharts";
+import { DeclarationPaymentsChart } from "./DeclarationPaymentsChart";
+import { TrendsCapturePanel, type TrendsWeekCapture } from "./TrendsCapture";
 import {
   CalculatorPanel,
   DashboardBurndownPanel,
@@ -34,10 +40,46 @@ import {
   formatCount,
   formatScaled,
   formatUsd,
+  formatPercentScaled,
 } from "@finos/ui-components";
 import "./App.css";
 
 const RISK_TIERS = ["Foundation", "Core", "Risk On"];
+
+const emptyLookthrough = (): LookthroughResearch => ({
+  themeStrategy: "",
+  primaryRiskDriver: "",
+  concentrationStatus: "unknown",
+  topHoldings: [],
+  sectorWeights: [],
+  concentrationAsOf: null,
+  volProxy: "",
+  taxCharacter: "",
+  riskTierSuggestion: "",
+  riskTierSuggestionReason: "",
+});
+
+function mergeLookthrough(raw?: LookthroughResearch | null): LookthroughResearch {
+  return {
+    ...emptyLookthrough(),
+    ...raw,
+    topHoldings: raw?.topHoldings ?? [],
+    sectorWeights: raw?.sectorWeights ?? [],
+  };
+}
+
+function concentrationSummary(lt: LookthroughResearch): string {
+  const names = (lt.topHoldings ?? []).map((h) =>
+    h.weightBps == null ? h.ticker : `${h.ticker} ${(h.weightBps / 100).toFixed(2)}%`,
+  );
+  const sectors = (lt.sectorWeights ?? []).map((s) =>
+    s.weightBps == null ? s.label : `${s.label} ${(s.weightBps / 100).toFixed(2)}%`,
+  );
+  const bits = [...names, ...sectors];
+  if (bits.length > 0) return bits.join(", ");
+  return lt.concentrationStatus?.trim() || "unknown";
+}
+
 const WEEKDAYS = [
   "",
   "Sunday",
@@ -75,6 +117,7 @@ type PdDraft = {
   risk: string;
   freq: string;
   underlying: string;
+  lookthrough: LookthroughResearch;
   plan: string;
   planReason: string;
   incomplete: string;
@@ -119,6 +162,7 @@ type WizEditDraft = {
   name: string;
   provider: string;
   underlying: string;
+  lookthrough: LookthroughResearch;
   risk: string;
   freq: string;
   price: string;
@@ -148,6 +192,7 @@ const emptyWizEdit = (): WizEditDraft => ({
   name: "",
   provider: "",
   underlying: "",
+  lookthrough: emptyLookthrough(),
   risk: "",
   freq: "",
   price: "",
@@ -175,19 +220,25 @@ const emptyWizEdit = (): WizEditDraft => ({
 type AddLotDraft = {
   securityId: string;
   accountId: string;
+  openedOn: string;
   qty: string;
   cost: string;
-  remainingPays: string;
-  nextPayDate: string;
+  taxCost: string;
+  taxCostDifferent: boolean;
+  origin: string;
 };
+
+const LOT_ORIGINS = ["purchase", "drip", "transfer"] as const;
 
 const emptyAddLot = (): AddLotDraft => ({
   securityId: "",
   accountId: "",
+  openedOn: new Date().toISOString().slice(0, 10),
   qty: "1",
   cost: "",
-  remainingPays: "|next:",
-  nextPayDate: "",
+  taxCost: "",
+  taxCostDifferent: false,
+  origin: "purchase",
 });
 
 function remainingPaysKey(
@@ -218,42 +269,6 @@ function parseRemainingPaysKey(key: string): {
   return { pays, nextPay };
 }
 
-function monthTotalsFromPays(
-  pays: Array<{ payOn: string; cashMinor: number | null; thisLotCashMinor?: number | null; positionAfterCashMinor?: number | null }>,
-): Array<{ month: string; cashMinor: number | null; thisLotCashMinor: number | null; positionAfterCashMinor: number | null }> {
-  const months: Array<{
-    month: string;
-    cashMinor: number | null;
-    thisLotCashMinor: number | null;
-    positionAfterCashMinor: number | null;
-  }> = [];
-  for (const p of pays) {
-    const month = p.payOn.length >= 7 ? p.payOn.slice(0, 7) : "";
-    if (!month) continue;
-    const last = months[months.length - 1];
-    if (last && last.month === month) {
-      last.cashMinor =
-        last.cashMinor == null || p.cashMinor == null ? null : last.cashMinor + p.cashMinor;
-      last.thisLotCashMinor =
-        last.thisLotCashMinor == null || p.thisLotCashMinor == null
-          ? null
-          : last.thisLotCashMinor + p.thisLotCashMinor;
-      last.positionAfterCashMinor =
-        last.positionAfterCashMinor == null || p.positionAfterCashMinor == null
-          ? null
-          : last.positionAfterCashMinor + p.positionAfterCashMinor;
-    } else {
-      months.push({
-        month,
-        cashMinor: p.cashMinor,
-        thisLotCashMinor: p.thisLotCashMinor ?? null,
-        positionAfterCashMinor: p.positionAfterCashMinor ?? null,
-      });
-    }
-  }
-  return months;
-}
-
 const PERIOD_KINDS = ["Bull", "Bear", "Recovery", "Stress"];
 
 function rocText(minor: number | null | undefined, scale: number | null | undefined): string {
@@ -275,6 +290,7 @@ function draftFromInvestment(body: InvestmentGet): PdDraft {
     risk: body.riskTier,
     freq: body.paymentFrequency,
     underlying: body.underlying,
+    lookthrough: mergeLookthrough(body.lookthrough),
     plan: body.planKnown ? scaledDollars(body.planPerShareMinor, body.planScale) : "",
     planReason: body.planReason,
     incomplete: "",
@@ -304,6 +320,129 @@ function formatBps(bps: number | null | undefined): string {
   return `${(bps / 100).toFixed(2)}%`;
 }
 
+/** Most Current vs Plan as Above / Equal / Below (spreadsheet control signal). */
+function mostCurrentVsPlanFace(bps: number | null | undefined): string {
+  if (bps == null) return "unknown";
+  if (bps === 0) return "Equal to Plan";
+  const pct = `${(Math.abs(bps) / 100).toFixed(2)}%`;
+  return bps > 0 ? `Above Plan ${pct}` : `Below Plan ${pct}`;
+}
+
+/** Hover/aria formula hint for Plan and yields metrics. */
+function metricHint(label: string, formula: string): { title: string; "aria-label": string } {
+  const text = `${label}: ${formula}`;
+  return { title: text, "aria-label": text };
+}
+
+function priceUpdatedOn(price: CurrentPriceGet | null | undefined): string {
+  const raw = price?.asOfAt?.trim();
+  if (!raw) return "";
+  return raw.length >= 10 ? raw.slice(0, 10) : raw;
+}
+
+function formatHubPrice(price: CurrentPriceGet | null | undefined, scale = 2): string {
+  if (!price?.priceDerivedValid || price.priceMinor == null || price.priceMinor <= 0) {
+    return "unknown";
+  }
+  const amount = formatUsd(price.priceMinor, price.scale ?? scale);
+  const updated = priceUpdatedOn(price);
+  return updated ? `${amount} · updated ${updated}` : amount;
+}
+
+function rocResearchLabel(inv: InvestmentGet): string {
+  const status = inv.rocResearchStatus || "not-in-scope";
+  const completed = inv.rocResearchCompletedAt?.trim();
+  if (status === "complete" && completed) {
+    const day = completed.length >= 10 ? completed.slice(0, 10) : completed;
+    return `complete · ${day}`;
+  }
+  return status;
+}
+
+function rocResearchUpdated(inv: InvestmentGet): string {
+  const completed = inv.rocResearchCompletedAt?.trim();
+  if (completed) {
+    return completed.length >= 10 ? completed.slice(0, 10) : completed;
+  }
+  return "—";
+}
+
+/** Owner-facing calendar policy — never say "walk" on the hub face. */
+function calendarPolicyLabel(policy: string | null | undefined): string {
+  const p = (policy || "").trim();
+  if (p === "issuer_calendar") return "Issuer published dates";
+  if (p === "derived_walk") return "Cadence from last pay";
+  if (p === "none") return "Does not pay";
+  return p || "—";
+}
+
+function dateProvenanceLabel(provenance: string | null | undefined): string {
+  const p = (provenance || "").trim();
+  if (!p) return "—";
+  if (p === "issuer_calendar" || p.includes("issuer_calendar")) {
+    return "Issuer published date";
+  }
+  if (p === "derived_walk" || p.includes("derived_walk") || /\bwalk\b/i.test(p)) {
+    return "Cadence from last pay";
+  }
+  if (p === "owner_override" || p.includes("owner")) return "Owner override";
+  return p;
+}
+
+const DECLARATION_LOOKBACK_TARGET = 12;
+
+/** Mirror of financial-domain expected_declaration_lookback for hub labels. */
+function expectedDeclarationLookback(
+  inceptionOn: string | null | undefined,
+  asOf: string,
+  paymentFrequency: string | null | undefined,
+): number {
+  const freq = (paymentFrequency || "").trim().toLowerCase();
+  const periods =
+    freq === "weekly" || freq === "52"
+      ? 52
+      : freq === "monthly" || freq === "12"
+        ? 12
+        : freq === "quarterly" || freq === "4"
+          ? 4
+          : 0;
+  if (!periods) return DECLARATION_LOOKBACK_TARGET;
+  const inc = (inceptionOn || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(inc) || !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
+    return DECLARATION_LOOKBACK_TARGET;
+  }
+  const [iy, im, id] = inc.split("-").map(Number);
+  const [ay, am, ad] = asOf.split("-").map(Number);
+  if (ay < iy || (ay === iy && am < im) || (ay === iy && am === im && ad <= id)) {
+    return 0;
+  }
+  if (periods === 52) {
+    const ms =
+      Date.UTC(ay, am - 1, ad) - Date.UTC(iy, im - 1, id);
+    return Math.min(DECLARATION_LOOKBACK_TARGET, Math.floor(ms / 86_400_000 / 7));
+  }
+  let months = (ay - iy) * 12 + (am - im);
+  if (ad < id) months -= 1;
+  if (periods === 12) {
+    return Math.min(DECLARATION_LOOKBACK_TARGET, Math.max(0, months));
+  }
+  return Math.min(DECLARATION_LOOKBACK_TARGET, Math.max(0, Math.floor(months / 3)));
+}
+
+function receivedByYear(
+  actuals: Array<{ occurredOn: string; amountMinor: number }>,
+): Array<{ year: string; amountMinor: number }> {
+  const map = new Map<string, number>();
+  for (const a of actuals) {
+    const year = (a.occurredOn || "").slice(0, 4);
+    if (!/^\d{4}$/.test(year)) continue;
+    map.set(year, (map.get(year) ?? 0) + a.amountMinor);
+  }
+  return [...map.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([year, amountMinor]) => ({ year, amountMinor }));
+}
+
 const client = new LocalTauriFinanceClient();
 
 type HealthView = {
@@ -317,12 +456,124 @@ type Screen =
   | "income-plan"
   | "calculator"
   | "dashboard"
+  | "trends"
   | "holdings"
   | "import"
   | "settings"
   | "new-investment"
   | "add-lot"
-  | "position-details";
+  | "position-details"
+  | "collectors";
+
+type CollectorSetItem = {
+  securityId: string;
+  symbol: string;
+  provider: string;
+  divType: string;
+  paymentFrequency?: string;
+  declarationSource: string;
+  priceSource: string;
+  sourceUrl?: string;
+  calendarPolicy?: string;
+  collectorEnabled: boolean;
+  lastRunAt?: string;
+  lastRunOk?: boolean | null;
+  lastRunMessage?: string;
+  lastContentHash?: string;
+  openLots: boolean;
+  inceptionOn?: string;
+};
+
+type Div1ComplianceRow = {
+  securityId: string;
+  symbol: string;
+  futurePayDatesQty: number;
+  priorDeclarationsQty: number;
+  currentDeclarationAmountMinor: number | null;
+  currentDeclarationAmountScale: number | null;
+  currentDeclarationDate: string;
+  lastRunOk?: boolean | null;
+  requiredPaid: number;
+};
+
+function collectorRetrieveNeedsRun(row: CollectorSetItem, asOfDate: string): boolean {
+  if (!row.collectorEnabled || !row.declarationSource.trim()) {
+    return false;
+  }
+  if (row.lastRunOk !== true) {
+    return true;
+  }
+  const ran = (row.lastRunAt ?? "").trim();
+  if (!ran) {
+    return true;
+  }
+  return !ran.startsWith(asOfDate);
+}
+
+function collectorCommandBody(row: CollectorSetItem, forceRefresh: boolean) {
+  return {
+    securityId: row.securityId,
+    symbol: row.symbol,
+    declarationSource: row.declarationSource,
+    sourceUrl: row.sourceUrl ?? "",
+    divType: row.divType ?? "",
+    lastContentHash: row.lastContentHash ?? "",
+    lastRunOk: row.lastRunOk === true,
+    lastRunAt: row.lastRunAt ?? "",
+    paymentFrequency: row.paymentFrequency ?? "",
+    inceptionOn: row.inceptionOn ?? "",
+    forceRefresh,
+  };
+}
+
+/** Fleet shows income names only — matches storage collector_symbol_pays. */
+function collectorItemPays(row: CollectorSetItem): boolean {
+  const sym = row.symbol.trim().toUpperCase();
+  const div = (row.divType || "").trim().toUpperCase().replace(/\s+/g, "-");
+  if (div === "CASH" || sym === "SPAXX" || sym === "FDRXX" || sym === "SWVXX") {
+    return true;
+  }
+  if (div === "DIV-1" || div === "DIV1") {
+    return true;
+  }
+  const freq = (row.paymentFrequency || "").trim().toLowerCase();
+  return (
+    freq === "weekly" ||
+    freq === "52" ||
+    freq === "monthly" ||
+    freq === "12" ||
+    freq === "quarterly" ||
+    freq === "4"
+  );
+}
+
+type CollectorStats = {
+  assigned: number;
+  enabled: number;
+  ranToday: number;
+  missToday: number;
+  unchangedToday: number;
+  cashPar: number;
+  priceCurrent: number;
+  priceStale: number;
+  openExceptions: number;
+  asOfDate: string;
+};
+
+type RetrieveRunRow = {
+  runId: string;
+  securityId: string;
+  kind: string;
+  requestedAt: string;
+  ok: boolean;
+  code?: string;
+  message?: string;
+  attempted: number;
+  recorded: number;
+  skipped: number;
+  unchanged: number;
+  payloadJson?: string;
+};
 
 function parseHandoff(bodyJson?: string): HandoffStatus | null {
   if (!bodyJson) return null;
@@ -350,10 +601,18 @@ export default function App() {
   const [asOfDate, setAsOfDate] = useState("");
   const [incomeWeek, setIncomeWeek] = useState<IncomePlanWeekGet | null>(null);
   const [burndown, setBurndown] = useState<DashboardBurndownGet | null>(null);
+  const [trends, setTrends] = useState<TrendsGet | null>(null);
+  const [trendsError, setTrendsError] = useState<string | null>(null);
+  const [trendsCapture, setTrendsCapture] = useState<TrendsWeekCapture | null>(null);
   const [holdings, setHoldings] = useState<HoldingsGet | null>(null);
   const [calculator, setCalculator] = useState<CalculatorGet | null>(null);
-  const [summary, setSummary] = useState<HouseholdSummaryGet | null>(null);
+  const [summary, setSummary] = useState<DataSummaryGet | null>(null);
+  const [dividendLifetime, setDividendLifetime] = useState<DividendGet | null>(null);
   const [exceptions, setExceptions] = useState<ExceptionRecord[]>([]);
+  const [positionFocusPanel, setPositionFocusPanel] = useState<
+    "lots" | "income" | "declarations" | "ledger" | ""
+  >("");
+  const [pdLedger, setPdLedger] = useState<DividendGet | null>(null);
   const [pendingBatchId, setPendingBatchId] = useState<string | null>(null);
   const [pendingBatchStatus, setPendingBatchStatus] = useState<string>("none");
   const [holdingsFilter, setHoldingsFilter] = useState("");
@@ -368,6 +627,7 @@ export default function App() {
   const [wizName, setWizName] = useState("");
   const [wizProvider, setWizProvider] = useState("");
   const [wizUnderlying, setWizUnderlying] = useState("");
+  const [wizLookthrough, setWizLookthrough] = useState<LookthroughResearch>(emptyLookthrough);
   const [wizRisk, setWizRisk] = useState("");
   const [wizFreq, setWizFreq] = useState("");
   const [wizSecurityId, setWizSecurityId] = useState("");
@@ -375,19 +635,19 @@ export default function App() {
   const [wizPriceSource, setWizPriceSource] = useState("public");
   const [wizDeclSource, setWizDeclSource] = useState("");
   const [wizLookback, setWizLookback] = useState("12");
-  const [wizAnalytics, setWizAnalytics] = useState<{
+  const [, setWizAnalytics] = useState<{
     htmlReturned?: boolean;
     fundPage?: boolean;
     tableOnGet?: boolean;
     tableRowCount?: number;
     jsLikely?: boolean;
   } | null>(null);
-  const [wizFutureStrategy, setWizFutureStrategy] = useState("");
+  const [, setWizFutureStrategy] = useState("");
   const [wizDeclAmounts, setWizDeclAmounts] = useState("");
-  const [wizAttempts, setWizAttempts] = useState<
+  const [, setWizAttempts] = useState<
     Array<{ vendor: string; url: string; found: boolean; note: string }>
   >([]);
-  const [wizMiss, setWizMiss] = useState("");
+  const [, setWizMiss] = useState("");
   const [wizSourceUrl, setWizSourceUrl] = useState("");
   const [wizCalendarPolicy, setWizCalendarPolicy] = useState("");
   const [wizUpcomingPays, setWizUpcomingPays] = useState<
@@ -412,29 +672,32 @@ export default function App() {
   const [wizRetrieveNote, setWizRetrieveNote] = useState("");
   const [addLotSecurityId, setAddLotSecurityId] = useState("");
   const [addLotAccountId, setAddLotAccountId] = useState("");
+  const [addLotOpenedOn, setAddLotOpenedOn] = useState(() =>
+    new Date().toISOString().slice(0, 10),
+  );
   const [addLotQty, setAddLotQty] = useState("1");
   const [addLotCost, setAddLotCost] = useState("");
+  const [addLotTaxCost, setAddLotTaxCost] = useState("");
+  const [addLotTaxDifferent, setAddLotTaxDifferent] = useState(false);
+  const [addLotOrigin, setAddLotOrigin] = useState("purchase");
   const [addLotBaseline, setAddLotBaseline] = useState(() => JSON.stringify(emptyAddLot()));
   const [wizRemaining, setWizRemaining] = useState<RemainingYearIncomeGet | null>(null);
   const [wizPayDraft, setWizPayDraft] = useState<Array<{ originalPayOn: string; payOn: string }>>(
     [],
   );
   const [wizNextPay, setWizNextPay] = useState("");
-  const [addLotRemaining, setAddLotRemaining] = useState<RemainingYearIncomeGet | null>(null);
-  const [addLotPayDraft, setAddLotPayDraft] = useState<
-    Array<{ originalPayOn: string; payOn: string }>
-  >([]);
-  const [addLotNextPay, setAddLotNextPay] = useState("");
   const [positionDetails, setPositionDetails] = useState<PositionDetailsGet | null>(null);
   const [positionMaster, setPositionMaster] = useState<PositionMasterGet | null>(null);
   const [issuerCoverage, setIssuerCoverage] = useState<PositionDetailsCoverageGet | null>(null);
   const [pdRemaining, setPdRemaining] = useState<RemainingYearIncomeGet | null>(null);
   const [positionSymbol, setPositionSymbol] = useState("");
+  const [positionSymbolQuery, setPositionSymbolQuery] = useState("");
+  const [positionSymbolOpen, setPositionSymbolOpen] = useState(false);
   const [investment, setInvestment] = useState<InvestmentGet | null>(null);
-  const [wizPart1Stored, setWizPart1Stored] = useState(false);
+  const [, setWizPart1Stored] = useState(false);
   const [wizPlanStored, setWizPlanStored] = useState(false);
-  const [wizLotStored, setWizLotStored] = useState(false);
-  const [wizStep, setWizStep] = useState(1);
+  const [, setWizLotStored] = useState(false);
+  const [, setWizStep] = useState(1);
   const [wizRocPct, setWizRocPct] = useState("");
   const [wizRoc, setWizRoc] = useState<RocResearchGet | null>(null);
   const [wizBullStart, setWizBullStart] = useState("");
@@ -444,6 +707,24 @@ export default function App() {
   const [wizBullStored, setWizBullStored] = useState(false);
   const [wizBearStored, setWizBearStored] = useState(false);
   const [wizBaseline, setWizBaseline] = useState(() => JSON.stringify(emptyWizEdit()));
+  /** Process A: results panel after Research (symbol + distribution URL). */
+  const [wizResearchDone, setWizResearchDone] = useState(false);
+  /** Process A: owner Save → explicit completion screen (not a blank wizard). */
+  const [wizProcessASaved, setWizProcessASaved] = useState(false);
+  /** Process A activity indicator — known steps use a progress bar. */
+  const [wizResearchProgress, setWizResearchProgress] = useState<{
+    step: number;
+    total: number;
+    label: string;
+  } | null>(null);
+  const [addLotQuery, setAddLotQuery] = useState("");
+  const [addLotSymbolOpen, setAddLotSymbolOpen] = useState(false);
+  const [wizTierSuggestion, setWizTierSuggestion] = useState<{
+    suggestedTier: string;
+    ruleset: string;
+    reason: string;
+    complete: boolean;
+  } | null>(null);
   const [pdDraft, setPdDraft] = useState<PdDraft | null>(null);
   const [pdBaseline, setPdBaseline] = useState("");
   const [pdPeriod, setPdPeriod] = useState<PdPeriodDraft>(() => emptyPeriod());
@@ -451,15 +732,464 @@ export default function App() {
   const [savedPeriodId, setSavedPeriodId] = useState("");
   const [lastPriceBusy, setLastPriceBusy] = useState(false);
   const lastPriceKickoff = useRef(false);
+  const [collectorItems, setCollectorItems] = useState<CollectorSetItem[]>([]);
+  const [collectorStats, setCollectorStats] = useState<CollectorStats | null>(null);
+  const [collectorSymbol, setCollectorSymbol] = useState("");
+  const [collectorRuns, setCollectorRuns] = useState<RetrieveRunRow[]>([]);
+  const [collectorPayload, setCollectorPayload] = useState<Record<string, unknown> | null>(null);
+  const [collectorPlan, setCollectorPlan] = useState<{
+    known: boolean;
+    perShareMinor: number;
+    scale: number;
+    reason: string;
+  } | null>(null);
+  const [collectorAction, setCollectorAction] = useState<string | null>(null);
+  const [settingsTemplateDrafts, setSettingsTemplateDrafts] = useState<
+    Record<
+      string,
+      {
+        declarationSource: string;
+        sourceUrl: string;
+        calendarPolicy: string;
+        lookbackCount: string;
+        inceptionOn: string;
+      }
+    >
+  >({});
+  const [collectorRunProgress, setCollectorRunProgress] = useState<{
+    running: boolean;
+    total: number;
+    current: number;
+    symbol: string;
+    ok: number;
+    miss: number;
+    lines: string[];
+  } | null>(null);
+  const [div1Compliance, setDiv1Compliance] = useState<Div1ComplianceRow[]>([]);
 
-  const refreshHousehold = useCallback(async (asOf: string) => {
-    const [weekResult, burnResult, holdingsResult, exceptionResult, summaryResult, calcResult, accountResult, securityResult, positionResult, masterResult, coverageResult] =
+  const refreshCollectors = useCallback(async (asOf: string, symbol?: string) => {
+    setBusy(true);
+    setCollectorAction("Loading collector fleet…");
+    try {
+      const [setResult, statsResult, complianceResult] = await Promise.all([
+        client.executeQuery("CollectorSetGet", {}),
+        client.executeQuery("CollectorStatsGet", { asOfDate: asOf || "2026-08-26" }),
+        client.executeQuery("Div1ComplianceSummaryGet", {}),
+      ]);
+      if (!setResult.ok) {
+        const msg = `Collector fleet failed: ${setResult.errorCode ?? "error"}. Restart with npm run desktop so Rust is rebuilt.`;
+        setCollectorAction(msg);
+        setActionMessage(msg);
+        return;
+      }
+      let items: CollectorSetItem[] = [];
+      if (setResult.bodyJson) {
+        try {
+          const body = JSON.parse(setResult.bodyJson) as { items?: CollectorSetItem[] };
+          const raw = Array.isArray(body.items) ? body.items : [];
+          items = raw.filter(collectorItemPays);
+          setCollectorItems(items);
+          setSettingsTemplateDrafts((prev) => {
+            const next = { ...prev };
+            for (const row of items) {
+              if (next[row.securityId]) continue;
+              next[row.securityId] = {
+                declarationSource: row.declarationSource || "",
+                sourceUrl: row.sourceUrl ?? "",
+                calendarPolicy: row.calendarPolicy ?? "",
+                lookbackCount: String(DECLARATION_LOOKBACK_TARGET),
+                inceptionOn: row.inceptionOn ?? "",
+              };
+            }
+            return next;
+          });
+        } catch {
+          setCollectorItems([]);
+        }
+      } else {
+        setCollectorItems([]);
+      }
+      if (statsResult.ok && statsResult.bodyJson) {
+        try {
+          setCollectorStats(JSON.parse(statsResult.bodyJson) as CollectorStats);
+        } catch {
+          setCollectorStats(null);
+        }
+      }
+      if (complianceResult.ok && complianceResult.bodyJson) {
+        try {
+          const body = JSON.parse(complianceResult.bodyJson) as {
+            rows?: Div1ComplianceRow[];
+          };
+          setDiv1Compliance(Array.isArray(body.rows) ? body.rows : []);
+        } catch {
+          setDiv1Compliance([]);
+        }
+      } else {
+        setDiv1Compliance([]);
+      }
+      const focus = symbol ?? collectorSymbol;
+      if (!focus) {
+        const msg = `Fleet loaded: ${formatCount(items.length)} paying symbols (non-payers excluded).`;
+        setCollectorAction(msg);
+        setActionMessage(msg);
+        return;
+      }
+      const row = items.find((i) => i.symbol === focus);
+      if (!row) {
+        setCollectorSymbol("");
+        setCollectorRuns([]);
+        setCollectorPayload(null);
+        setCollectorPlan(null);
+        const msg = `Fleet loaded: ${formatCount(items.length)} paying symbols. ${focus} is not a payer — removed from list.`;
+        setCollectorAction(msg);
+        setActionMessage(msg);
+        return;
+      }
+      setCollectorAction(`Loading ${focus} retrieve runs…`);
+      const [runsResult, invResult] = await Promise.all([
+        client.executeQuery("RetrieveRunList", {
+          securityId: row.securityId,
+          limit: 40,
+        }),
+        client.executeQuery("InvestmentGet", {
+          securityId: row.securityId,
+          asOfDate: asOf || "2026-08-26",
+        }),
+      ]);
+      if (runsResult.ok && runsResult.bodyJson) {
+        try {
+          const body = JSON.parse(runsResult.bodyJson) as { runs?: RetrieveRunRow[] };
+          const runs = Array.isArray(body.runs) ? body.runs : [];
+          setCollectorRuns(runs);
+          const declarationRun =
+            runs.find((r) => r.kind === "declaration" || r.kind === "moneymarket") ??
+            runs.find((r) => r.kind !== "price");
+          const raw = declarationRun?.payloadJson ?? null;
+          if (raw) {
+            try {
+              setCollectorPayload(JSON.parse(raw) as Record<string, unknown>);
+            } catch {
+              setCollectorPayload({ raw });
+            }
+          } else {
+            setCollectorPayload(null);
+          }
+        } catch {
+          setCollectorRuns([]);
+          setCollectorPayload(null);
+        }
+      }
+      if (invResult.ok && invResult.bodyJson) {
+        try {
+          const inv = JSON.parse(invResult.bodyJson) as {
+            planKnown?: boolean;
+            planPerShareMinor?: number;
+            planScale?: number;
+            planReason?: string;
+            template?: { declarationSource?: string; lastRunOk?: boolean | null };
+          };
+          setCollectorPlan({
+            known: !!inv.planKnown,
+            perShareMinor: inv.planPerShareMinor ?? 0,
+            scale: inv.planScale ?? 2,
+            reason: inv.planReason ?? "",
+          });
+        } catch {
+          setCollectorPlan(null);
+        }
+      } else {
+        setCollectorPlan(null);
+      }
+      const lastOk = row.lastRunOk === true ? "ok" : row.lastRunOk === false ? "miss" : "never";
+      const msg = `${focus}: last run ${lastOk}${
+        row.declarationSource ? ` via ${row.declarationSource}` : ""
+      }. Open Position Details for declarations and received. Fleet ${formatCount(items.length)} paying symbols.`;
+      setCollectorAction(msg);
+      setActionMessage(msg);
+    } catch (err: unknown) {
+      const msg = String(err);
+      setCollectorAction(msg);
+      setActionMessage(msg);
+    } finally {
+      setBusy(false);
+    }
+  }, [collectorSymbol]);
+
+  const runCollectorTargets = async (
+    targets: CollectorSetItem[],
+    label: string,
+    forceRefresh: boolean,
+  ) => {
+    if (targets.length === 0) {
+      const msg = `No ${label.toLowerCase()} to run.`;
+      setCollectorAction(msg);
+      setActionMessage(msg);
+      setCollectorRunProgress(null);
+      return;
+    }
+    setBusy(true);
+    setCollectorRunProgress({
+      running: true,
+      total: targets.length,
+      current: 0,
+      symbol: "",
+      ok: 0,
+      miss: 0,
+      lines: [],
+    });
+    setCollectorAction(`Running ${formatCount(targets.length)} ${label}…`);
+    setActionMessage(`Running ${formatCount(targets.length)} ${label}…`);
+    let ok = 0;
+    let miss = 0;
+    const lines: string[] = [];
+    try {
+      const { flushSync } = await import("react-dom");
+      for (let i = 0; i < targets.length; i++) {
+        const row = targets[i];
+        flushSync(() => {
+          setCollectorRunProgress({
+            running: true,
+            total: targets.length,
+            current: i + 1,
+            symbol: row.symbol,
+            ok,
+            miss,
+            lines: [...lines],
+          });
+          setCollectorAction(
+            `Running ${formatCount(i + 1)} of ${formatCount(targets.length)}: ${row.symbol}…`,
+          );
+        });
+        await new Promise<void>((resolve) => {
+          window.setTimeout(() => resolve(), 0);
+        });
+        try {
+          const result = await client.executeCommand(
+            "CollectorRetrieve",
+            collectorCommandBody(row, forceRefresh),
+          );
+          if (!result.ok) {
+            miss += 1;
+            lines.push(
+              `${row.symbol}: fail ${result.errorCode ?? "error"}`,
+            );
+          } else {
+            let recorded = 0;
+            let skipped = 0;
+            let unchanged = 0;
+            let runOk = true;
+            let message = "";
+            if (result.bodyJson) {
+              try {
+                const body = JSON.parse(result.bodyJson) as {
+                  recorded?: number;
+                  skipped?: number;
+                  unchanged?: number;
+                  ok?: boolean;
+                  message?: string;
+                };
+                recorded = body.recorded ?? 0;
+                skipped = body.skipped ?? 0;
+                unchanged = body.unchanged ?? 0;
+                runOk = body.ok !== false;
+                message = body.message ?? "";
+              } catch {
+                /* ignore */
+              }
+            }
+            if (runOk) {
+              ok += 1;
+              lines.push(
+                unchanged > 0
+                  ? `${row.symbol}: unchanged (fresh today)`
+                  : `${row.symbol}: ok — ${formatCount(recorded)} recorded, ${formatCount(skipped)} skipped`,
+              );
+            } else {
+              miss += 1;
+              lines.push(
+                `${row.symbol}: miss${message ? ` — ${message}` : ""}`,
+              );
+            }
+          }
+        } catch (err: unknown) {
+          miss += 1;
+          lines.push(`${row.symbol}: ${String(err)}`);
+        }
+        if (lines.length > 40) {
+          lines.splice(0, lines.length - 40);
+        }
+        flushSync(() => {
+          setCollectorRunProgress({
+            running: true,
+            total: targets.length,
+            current: i + 1,
+            symbol: row.symbol,
+            ok,
+            miss,
+            lines: [...lines],
+          });
+        });
+      }
+      const summary = `${label} finished: ${formatCount(ok)} ok, ${formatCount(miss)} miss of ${formatCount(targets.length)}. Reloading fleet…`;
+      setCollectorAction(summary);
+      setActionMessage(summary);
+      await refreshCollectors(asOfDate);
+      const done = `${label} finished: ${formatCount(ok)} ok, ${formatCount(miss)} miss of ${formatCount(targets.length)}.`;
+      setCollectorAction(done);
+      setActionMessage(done);
+      setCollectorRunProgress({
+        running: false,
+        total: targets.length,
+        current: targets.length,
+        symbol: "",
+        ok,
+        miss,
+        lines: [...lines],
+      });
+    } catch (err: unknown) {
+      const msg = String(err);
+      setCollectorAction(msg);
+      setActionMessage(msg);
+      setCollectorRunProgress((prev) =>
+        prev ? { ...prev, running: false } : null,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runEnabledCollectors = async () => {
+    const targets = collectorItems.filter(
+      (row) => row.collectorEnabled && row.declarationSource.trim(),
+    );
+    if (targets.length === 0) {
+      const msg =
+        "No enabled collectors with an assigned source. Enable rows in the fleet first.";
+      setCollectorAction(msg);
+      setActionMessage(msg);
+      setCollectorRunProgress(null);
+      return;
+    }
+    await runCollectorTargets(targets, "Enabled collectors", false);
+  };
+
+  const runMissesOnlyCollectors = async () => {
+    const targets = collectorItems.filter((row) =>
+      collectorRetrieveNeedsRun(row, asOfDate),
+    );
+    if (targets.length === 0) {
+      const msg = "No misses or stale runs — every enabled collector is fresh today.";
+      setCollectorAction(msg);
+      setActionMessage(msg);
+      setCollectorRunProgress(null);
+      return;
+    }
+    await runCollectorTargets(targets, "Miss/stale collectors", false);
+  };
+
+  const forceCollectorRefresh = async (row: CollectorSetItem) => {
+    setBusy(true);
+    setActionMessage(`Force refresh ${row.symbol}…`);
+    try {
+      const result = await client.executeCommand(
+        "CollectorRetrieve",
+        collectorCommandBody(row, true),
+      );
+      if (!result.ok) {
+        setActionMessage(`Force refresh failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      let recorded = 0;
+      let skipped = 0;
+      if (result.bodyJson) {
+        try {
+          const body = JSON.parse(result.bodyJson) as {
+            recorded?: number;
+            skipped?: number;
+            payloadJson?: string;
+            ok?: boolean;
+            message?: string;
+          };
+          recorded = body.recorded ?? 0;
+          skipped = body.skipped ?? 0;
+          if (body.payloadJson) {
+            try {
+              setCollectorPayload(JSON.parse(body.payloadJson) as Record<string, unknown>);
+            } catch {
+              setCollectorPayload({ raw: body.payloadJson });
+            }
+          }
+          setActionMessage(
+            `${row.symbol}: ${body.ok === false ? "miss" : "ok"} — ${formatCount(recorded)} recorded, ${formatCount(skipped)} skipped${
+              body.message ? `. ${body.message}` : ""
+            }`,
+          );
+        } catch {
+          setActionMessage(`${row.symbol}: retrieve finished.`);
+        }
+      }
+      setCollectorSymbol(row.symbol);
+      await refreshCollectors(asOfDate, row.symbol);
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleCollectorEnabled = async (row: CollectorSetItem, enabled: boolean) => {
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("RetrievalTemplateSet", {
+        securityId: row.securityId,
+        declarationSource: row.declarationSource,
+        priceSource: row.priceSource || "public",
+        sourceSymbol: row.symbol,
+        sourceUrl: row.sourceUrl ?? "",
+        calendarPolicy: row.calendarPolicy ?? "",
+        lookbackCount: 12,
+        collectorEnabled: enabled,
+        inceptionOn: row.inceptionOn ?? "",
+      });
+      if (!result.ok) {
+        setActionMessage(`Enable failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      setActionMessage(
+        `${row.symbol}: collector ${enabled ? "enabled" : "disabled"}.`,
+      );
+      await refreshCollectors(asOfDate, row.symbol);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openExceptionLog = useCallback(async () => {
+    try {
+      const path = await invoke<string>("open_exception_log", {
+        exceptions,
+      });
+      setActionMessage(`Exception log opened: ${path}`);
+    } catch (err: unknown) {
+      setActionMessage(`Could not open exception log: ${String(err)}`);
+    }
+  }, [exceptions]);
+
+  const refreshData = useCallback(async (asOf: string) => {
+    const [weekResult, burnResult, trendsResult, trendsWeekResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, accountResult, securityResult, positionResult, masterResult, coverageResult] =
       await Promise.all([
         client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf }),
         client.executeQuery("DashboardBurndownGet", { asOfDate: asOf }),
+        client.executeQuery("TrendsGet", { asOfDate: asOf }),
+        client.executeQuery("TrendsWeekGet", { asOfDate: asOf }),
         client.executeQuery("HoldingsGet"),
         client.executeQuery("ExceptionList"),
-        client.executeQuery("HouseholdSummaryGet"),
+        client.executeQuery("DataSummaryGet"),
+        client.executeQuery("DividendGet"),
         client.executeQuery("CalculatorGet"),
         client.executeQuery("AccountList"),
         client.executeQuery("SecurityList"),
@@ -470,9 +1200,12 @@ export default function App() {
     const failed = [
       weekResult,
       burnResult,
+      trendsResult,
+      trendsWeekResult,
       holdingsResult,
       exceptionResult,
       summaryResult,
+      dividendResult,
       calcResult,
       accountResult,
       securityResult,
@@ -501,9 +1234,20 @@ export default function App() {
     };
     setIncomeWeek(parse<IncomePlanWeekGet>(weekResult.bodyJson));
     setBurndown(parse<DashboardBurndownGet>(burnResult.bodyJson));
+    if (trendsResult.ok) {
+      setTrends(parse<TrendsGet>(trendsResult.bodyJson));
+      setTrendsError(null);
+    } else {
+      setTrends({ points: [], totalMinor: 0, weeks: [], scale: 2 });
+      setTrendsError(trendsResult.errorCode ?? "TrendsGet failed");
+    }
+    if (trendsWeekResult.ok) {
+      setTrendsCapture(parse<TrendsWeekCapture>(trendsWeekResult.bodyJson));
+    }
     setHoldings(parse<HoldingsGet>(holdingsResult.bodyJson));
     setCalculator(parse<CalculatorGet>(calcResult.bodyJson));
-    setSummary(parse<HouseholdSummaryGet>(summaryResult.bodyJson));
+    setSummary(parse<DataSummaryGet>(summaryResult.bodyJson));
+    setDividendLifetime(parse<DividendGet>(dividendResult.bodyJson));
     setPositionDetails(parse<PositionDetailsGet>(positionResult.bodyJson));
     setPositionMaster(parse<PositionMasterGet>(masterResult.bodyJson));
     setIssuerCoverage(parse<PositionDetailsCoverageGet>(coverageResult.bodyJson));
@@ -536,6 +1280,19 @@ export default function App() {
     setLastPriceBusy(true);
     setActionMessage("Refreshing last prices…");
     try {
+      const apply = await client.executeCommand("ProviderDeclarationSourcesApply", {});
+      if (apply.ok && apply.bodyJson) {
+        try {
+          const body = JSON.parse(apply.bodyJson) as { updated?: number };
+          if ((body.updated ?? 0) > 0) {
+            setActionMessage(
+              `Applied issuer sources from provider: ${formatCount(body.updated ?? 0)} updated.`,
+            );
+          }
+        } catch {
+          /* ignore */
+        }
+      }
       const result = await client.executeCommand("LastPriceRefresh", {});
       if (!result.ok) {
         setActionMessage(
@@ -560,7 +1317,7 @@ export default function App() {
       setActionMessage(
         `Last prices updated: ${formatCount(recorded)} recorded, ${formatCount(skipped)} skipped. Stale last price still displays. Miss stays unknown.`,
       );
-      await refreshHousehold(asOfDate);
+      await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -586,20 +1343,21 @@ export default function App() {
         (prev) =>
           `${prev ?? "Last prices updated."} Declarations: ${formatCount(declRecorded)} recorded, ${formatCount(declSkipped)} skipped.`,
       );
-      await refreshHousehold(asOfDate);
+      await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
     }
-  }, [asOfDate, refreshHousehold]);
+  }, [asOfDate, refreshData]);
 
   const applyIssuerSources = async () => {
     setBusy(true);
+    setCollectorAction("Applying issuer sources from provider…");
     try {
       const result = await client.executeCommand("ProviderDeclarationSourcesApply", {});
       if (!result.ok) {
-        setActionMessage(
-          `Apply issuer sources failed: ${result.errorCode ?? "error"}`,
-        );
+        const msg = `Apply issuer sources failed: ${result.errorCode ?? "error"}`;
+        setCollectorAction(msg);
+        setActionMessage(msg);
         return;
       }
       let updated = 0;
@@ -611,21 +1369,31 @@ export default function App() {
           /* ignore */
         }
       }
-      setActionMessage(
-        `Applied issuer sources from provider: ${formatCount(updated)} updated. Empty, public, and unassigned only.`,
-      );
-      await refreshHousehold(asOfDate);
-      if (positionSymbol) {
-        await loadInvestment(positionSymbol);
+      const msg =
+        updated > 0
+          ? `Applied issuer sources: ${formatCount(updated)} templates updated (empty/public/unassigned only).`
+          : "Apply issuer sources: 0 updated — assigned sources already match provider (nothing left to fill).";
+      setCollectorAction(msg);
+      setActionMessage(msg);
+      if (screen === "collectors") {
+        await refreshCollectors(asOfDate);
+        setCollectorAction(msg);
+      } else {
+        await refreshData(asOfDate);
+        if (positionSymbol) {
+          await loadInvestment(positionSymbol);
+        }
       }
     } catch (err: unknown) {
-      setActionMessage(String(err));
+      const msg = String(err);
+      setCollectorAction(msg);
+      setActionMessage(msg);
     } finally {
       setBusy(false);
     }
   };
 
-  const loadInvestment = useCallback(async (symbol: string) => {
+  const loadInvestment = useCallback(async (symbol: string, options?: { skipPriceRefresh?: boolean }) => {
     if (!symbol) {
       setInvestment(null);
       setPdDraft(null);
@@ -636,17 +1404,27 @@ export default function App() {
       setPdRemaining(null);
       return;
     }
-    const result = await client.executeQuery("InvestmentGet", {
-      symbol,
-      asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
-    });
-    if (!result.ok || !result.bodyJson) {
-      setInvestment(null);
-      setActionMessage(`InvestmentGet failed: ${result.errorCode ?? "not found"}`);
-      return;
-    }
-    try {
-      const body = JSON.parse(result.bodyJson) as InvestmentGet;
+    const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+    const fetchInvestment = async (): Promise<InvestmentGet | null> => {
+      const result = await client.executeQuery("InvestmentGet", {
+        symbol,
+        asOfDate: asOf,
+      });
+      if (!result.ok || !result.bodyJson) {
+        setInvestment(null);
+        setActionMessage(`InvestmentGet failed: ${result.errorCode ?? "not found"}`);
+        return null;
+      }
+      try {
+        return JSON.parse(result.bodyJson) as InvestmentGet;
+      } catch {
+        setInvestment(null);
+        setPdDraft(null);
+        setPdBaseline("");
+        return null;
+      }
+    };
+    const applyInvestment = (body: InvestmentGet) => {
       const draft = draftFromInvestment(body);
       setInvestment(body);
       setPdDraft(draft);
@@ -654,10 +1432,106 @@ export default function App() {
       setPdPeriod(emptyPeriod());
       setPdPeriodBaseline(JSON.stringify(emptyPeriod()));
       setSavedPeriodId(body.periods?.at(-1)?.periodId ?? "");
-    } catch {
-      setInvestment(null);
-      setPdDraft(null);
-      setPdBaseline("");
+    };
+    let body = await fetchInvestment();
+    if (!body) return;
+    applyInvestment(body);
+    let draft = draftFromInvestment(body);
+    let changed = false;
+    if (!options?.skipPriceRefresh && body.price?.freshness !== "current") {
+      try {
+        const result = await client.executeCommand("MarketRetrieve", {
+          symbol: body.symbol,
+          priceSource: draft.priceSource,
+          sourceSymbol: draft.sourceSymbol,
+        });
+        if (result.ok && result.bodyJson) {
+          const retrieve = JSON.parse(result.bodyJson) as {
+            quote?: { priceMinor?: number; scale?: number; asOfAt?: string; source?: string } | null;
+          };
+          const quote = retrieve.quote;
+          if (quote?.priceMinor && quote.priceMinor > 0) {
+            const posted = await client.executeCommand("PriceQuoteRecord", {
+              securityId: body.securityId,
+              priceMinor: quote.priceMinor,
+              scale: quote.scale ?? 2,
+              asOfAt: quote.asOfAt ?? asOf,
+              source: quote.source ?? "yahoo",
+            });
+            if (posted.ok) {
+              changed = true;
+            }
+          }
+        }
+      } catch {
+        /* keep stored price + date */
+      }
+    }
+    const paidDecls = body.declarations.filter(
+      (d) => d.amountPerShareMinor != null && d.amountPerShareMinor > 0,
+    ).length;
+    if (
+      !options?.skipPriceRefresh &&
+      paidDecls < DECLARATION_LOOKBACK_TARGET &&
+      (body.template?.declarationSource?.trim() || draft.declarationSource.trim())
+    ) {
+      try {
+        const knownPaymentPeriods = body.declarations
+          .map((d) => d.paymentPeriod?.trim())
+          .filter((p): p is string => Boolean(p));
+        const result = await client.executeCommand("MarketRetrieve", {
+          symbol: body.symbol,
+          securityId: body.securityId,
+          declarationSource:
+            body.template?.declarationSource ?? draft.declarationSource ?? "",
+          sourceSymbol: body.template?.sourceSymbol ?? draft.sourceSymbol ?? body.symbol,
+          priceSource: body.template?.priceSource ?? draft.priceSource ?? "",
+          sourceUrl: body.template?.sourceUrl ?? draft.sourceUrl,
+          knownPaymentPeriods,
+        });
+        if (result.ok && result.bodyJson) {
+          const retrieve = JSON.parse(result.bodyJson) as {
+            candidates?: Array<{
+              amountPerShareMinor?: number;
+              amountScale?: number;
+              paymentPeriod?: string;
+              source?: string;
+            }>;
+          };
+          const existing = new Set(knownPaymentPeriods);
+          const retrieved = (retrieve.candidates ?? []).filter(
+            (d) =>
+              d.source &&
+              d.amountPerShareMinor != null &&
+              d.amountPerShareMinor > 0 &&
+              d.paymentPeriod?.trim() &&
+              !existing.has(d.paymentPeriod.trim()),
+          );
+          let posted = 0;
+          for (const [i, cand] of retrieved.entries()) {
+            const rec = await client.executeCommand("IssuerDeclarationRecord", {
+              securityId: body.securityId,
+              amountPerShareMinor: cand.amountPerShareMinor,
+              amountScale: cand.amountScale ?? 4,
+              paymentPeriod: cand.paymentPeriod ?? `period-${i}`,
+              source: cand.source,
+              enteredAt: asOf,
+            });
+            if (rec.ok) posted += 1;
+          }
+          if (posted > 0) {
+            changed = true;
+          }
+        }
+      } catch {
+        /* keep stored declarations */
+      }
+    }
+    if (changed) {
+      const refreshed = await fetchInvestment();
+      if (refreshed) {
+        applyInvestment(refreshed);
+      }
     }
   }, [asOfDate]);
 
@@ -735,14 +1609,20 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const result = await client.executeQuery("HouseholdSummaryGet");
+        const [summaryResult, dividendResult] = await Promise.all([
+          client.executeQuery("DataSummaryGet"),
+          client.executeQuery("DividendGet"),
+        ]);
         if (cancelled) return;
-        if (!result.ok || !result.bodyJson) {
+        if (!summaryResult.ok || !summaryResult.bodyJson) {
           setAsOfDate("");
           return;
         }
-        const body = JSON.parse(result.bodyJson) as HouseholdSummaryGet;
+        const body = JSON.parse(summaryResult.bodyJson) as DataSummaryGet;
         setSummary(body);
+        if (dividendResult.ok && dividendResult.bodyJson) {
+          setDividendLifetime(JSON.parse(dividendResult.bodyJson) as DividendGet);
+        }
         setAsOfDate(body.latestYieldOn ?? "");
       } catch {
         if (!cancelled) setAsOfDate("");
@@ -754,10 +1634,51 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    refreshHousehold(asOfDate).catch((err: unknown) => {
+    refreshData(asOfDate).catch((err: unknown) => {
       setActionMessage(String(err));
     });
-  }, [asOfDate, refreshHousehold]);
+  }, [asOfDate, refreshData]);
+
+  useEffect(() => {
+    if (screen !== "collectors" && screen !== "settings") {
+      return;
+    }
+    void refreshCollectors(asOfDate).catch((err: unknown) => {
+      setActionMessage(String(err));
+    });
+  }, [screen, asOfDate, refreshCollectors]);
+
+  const saveSettingsTemplate = async (row: CollectorSetItem) => {
+    const draft = settingsTemplateDrafts[row.securityId];
+    if (!draft) return;
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("RetrievalTemplateSet", {
+        securityId: row.securityId,
+        declarationSource: draft.declarationSource.trim(),
+        priceSource: row.priceSource || "public",
+        sourceSymbol: row.symbol,
+        sourceUrl: draft.sourceUrl.trim(),
+        calendarPolicy: draft.calendarPolicy.trim(),
+        lookbackCount:
+          Number(draft.lookbackCount) || DECLARATION_LOOKBACK_TARGET,
+        collectorEnabled: row.collectorEnabled,
+        inceptionOn: draft.inceptionOn.trim(),
+      });
+      if (!result.ok) {
+        setActionMessage(
+          `Template not stored for ${row.symbol}: ${result.errorCode ?? "error"}`,
+        );
+        return;
+      }
+      setActionMessage(`${row.symbol}: retrieval template saved.`);
+      await refreshCollectors(asOfDate, row.symbol);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (lastPriceKickoff.current) {
@@ -777,14 +1698,11 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    const qty = Number(wizQty);
     const asOf = asOfDate || new Date().toISOString().slice(0, 10);
     void client
       .executeQuery("RemainingYearIncomeGet", {
         securityId: wizSecurityId,
         asOfDate: asOf,
-        thisLotQuantityMinor: Number.isFinite(qty) ? qty : null,
-        thisLotOpenedOn: asOf,
       })
       .then((result) => {
         if (cancelled || !result.ok || !result.bodyJson) return;
@@ -809,46 +1727,17 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [screen, wizSecurityId, wizQty, wizPlanStored, asOfDate]);
+  }, [screen, wizSecurityId, wizPlanStored, asOfDate]);
 
   useEffect(() => {
-    if (screen !== "add-lot" || !addLotSecurityId) {
+    if (screen !== "position-details" || !positionFocusPanel) {
       return;
     }
-    let cancelled = false;
-    const qty = Number(addLotQty);
-    const asOf = asOfDate || new Date().toISOString().slice(0, 10);
-    void client
-      .executeQuery("RemainingYearIncomeGet", {
-        securityId: addLotSecurityId,
-        asOfDate: asOf,
-        thisLotQuantityMinor: Number.isFinite(qty) ? qty : null,
-        thisLotOpenedOn: asOf,
-      })
-      .then((result) => {
-        if (cancelled || !result.ok || !result.bodyJson) return;
-        const body = JSON.parse(result.bodyJson) as RemainingYearIncomeGet;
-        const next = body.payments.map((p) => ({
-          originalPayOn: p.originalPayOn,
-          payOn: p.payOn,
-        }));
-        setAddLotRemaining(body);
-        setAddLotPayDraft((prev) => {
-          if (prev.some((p) => p.payOn !== p.originalPayOn)) return prev;
-          return next;
-        });
-        setAddLotBaseline((prev) => {
-          const draft = JSON.parse(prev) as AddLotDraft;
-          const parsed = parseRemainingPaysKey(draft.remainingPays ?? "");
-          if (parsed.pays.some((p) => p.payOn !== p.originalPayOn)) return prev;
-          draft.remainingPays = remainingPaysKey(next, draft.nextPayDate ?? "");
-          return JSON.stringify(draft);
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [screen, addLotSecurityId, addLotQty, asOfDate]);
+    const el = document.getElementById(`hub-${positionFocusPanel}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [screen, positionFocusPanel, investment?.symbol]);
 
   useEffect(() => {
     if (screen !== "position-details" || !investment) {
@@ -865,6 +1754,19 @@ export default function App() {
         if (cancelled || !result.ok || !result.bodyJson) return;
         setPdRemaining(JSON.parse(result.bodyJson) as RemainingYearIncomeGet);
       });
+    void client.executeQuery("DividendGet", {}).then((result) => {
+      if (cancelled || !result.ok || !result.bodyJson) return;
+      try {
+        const body = JSON.parse(result.bodyJson) as DividendGet;
+        const sid = investment.securityId;
+        setPdLedger({
+          ...body,
+          actuals: (body.actuals ?? []).filter((a) => a.securityId === sid),
+        });
+      } catch {
+        setPdLedger(null);
+      }
+    });
     return () => {
       cancelled = true;
     };
@@ -879,7 +1781,7 @@ export default function App() {
         result.ok ? `${name} ok` : `${name} failed: ${result.errorCode ?? "error"}`,
       );
       await refreshHandoff();
-      await refreshHousehold(asOfDate);
+      await refreshData(asOfDate);
       if (name === "ConfigSet" && result.bodyJson) {
         const cfg = JSON.parse(result.bodyJson) as { deviceName?: string };
         if (cfg.deviceName) setDeviceName(cfg.deviceName);
@@ -898,6 +1800,7 @@ export default function App() {
     name: wizName,
     provider: wizProvider,
     underlying: wizUnderlying,
+    lookthrough: wizLookthrough,
     risk: wizRisk,
     freq: wizFreq,
     price: wizPrice,
@@ -931,6 +1834,7 @@ export default function App() {
     setWizName(draft.name);
     setWizProvider(draft.provider);
     setWizUnderlying(draft.underlying ?? "");
+    setWizLookthrough(mergeLookthrough(draft.lookthrough));
     setWizRisk(draft.risk);
     setWizFreq(draft.freq);
     setWizPrice(draft.price);
@@ -959,21 +1863,26 @@ export default function App() {
   const currentAddLot = (): AddLotDraft => ({
     securityId: addLotSecurityId,
     accountId: addLotAccountId,
+    openedOn: addLotOpenedOn,
     qty: addLotQty,
     cost: addLotCost,
-    remainingPays: remainingPaysKey(addLotPayDraft, addLotNextPay),
-    nextPayDate: addLotNextPay,
+    taxCost: addLotTaxCost,
+    taxCostDifferent: addLotTaxDifferent,
+    origin: addLotOrigin,
   });
   const addLotDirty = JSON.stringify(currentAddLot()) !== addLotBaseline;
   const cancelAddLotEdits = () => {
     const draft = JSON.parse(addLotBaseline) as AddLotDraft;
     setAddLotSecurityId(draft.securityId);
+    const sec = securities.find((s) => s.securityId === draft.securityId);
+    setAddLotQuery(sec ? `${sec.symbol}${sec.name ? ` — ${sec.name}` : ""}` : "");
     setAddLotAccountId(draft.accountId);
+    setAddLotOpenedOn(draft.openedOn || new Date().toISOString().slice(0, 10));
     setAddLotQty(draft.qty);
     setAddLotCost(draft.cost);
-    const remaining = parseRemainingPaysKey(draft.remainingPays ?? "");
-    setAddLotPayDraft(remaining.pays);
-    setAddLotNextPay(draft.nextPayDate ?? remaining.nextPay);
+    setAddLotTaxCost(draft.taxCost ?? "");
+    setAddLotTaxDifferent(Boolean(draft.taxCostDifferent));
+    setAddLotOrigin(draft.origin || "purchase");
     setActionMessage("Edits discarded.");
   };
 
@@ -1033,25 +1942,6 @@ export default function App() {
     }
   };
 
-  const saveAddLotRemainingDates = async () => {
-    if (!addLotSecurityId) {
-      setActionMessage("Choose an existing symbol first.");
-      return;
-    }
-    setBusy(true);
-    try {
-      const result = await persistRemainingDates(addLotSecurityId, addLotPayDraft, addLotNextPay);
-      if (!result.ok) {
-        setActionMessage(`Remaining dates not stored: ${result.errorCode ?? "error"}`);
-        return;
-      }
-      setAddLotBaseline(JSON.stringify(currentAddLot()));
-      setActionMessage("Stored remaining payment dates.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const applyMarketBody = (raw: string, mode: "research" | "retrieve" = "retrieve") => {
     const body = JSON.parse(raw) as {
       name?: string;
@@ -1059,6 +1949,7 @@ export default function App() {
       suggestedFrequency?: string;
       suggestedCalendarPolicy?: string;
       underlying?: string;
+      lookthrough?: LookthroughResearch;
       declarationSource?: string;
       priceSource?: string;
       lookbackCount?: number;
@@ -1095,6 +1986,9 @@ export default function App() {
     }
     if (body.underlying?.trim()) {
       setWizUnderlying(body.underlying.trim());
+    }
+    if (body.lookthrough) {
+      setWizLookthrough(mergeLookthrough(body.lookthrough));
     }
     if (body.declarationSource?.trim()) {
       setWizDeclSource(body.declarationSource.trim());
@@ -1213,7 +2107,7 @@ export default function App() {
       }
       applyMarketBody(result.bodyJson, "research");
       setActionMessage(
-        "Research filled provider, source analytics, future-declaration method, and underlying when found. Confirm the standing template, then Next retrieves. Yahoo is last price only.",
+        "Research filled provider, source analytics, future-declaration method, underlying, and look-through when found. Confirm the standing template, then Next retrieves. Yahoo is last price only. Risk On is not auto-applied.",
       );
       return true;
     } catch (err: unknown) {
@@ -1249,7 +2143,7 @@ export default function App() {
         setActionMessage(miss);
       } else if (!hasQuote && n === 0) {
         setActionMessage(
-          "Issuer page empty — not using Yahoo.",
+          "Issuer page empty.",
         );
       } else {
         const provider = body.suggestedProvider?.trim() || wizProvider;
@@ -1284,7 +2178,7 @@ export default function App() {
       cadence.label === "None" ? "none" : wizCalendarPolicy.trim();
     if (!calendarPolicy) {
       setActionMessage(
-        "Choose issuer calendar or derived walk. The standing order needs one calendar policy; there is no default.",
+        "Choose issuer published dates or cadence from last pay. The standing order needs one calendar policy; there is no default.",
       );
       return;
     }
@@ -1341,6 +2235,7 @@ export default function App() {
         riskTier: wizRisk,
         provider: wizProvider.trim(),
         underlying: wizUnderlying.trim(),
+        lookthrough: wizLookthrough,
       });
       let pricePosted = false;
       const live = market.quote;
@@ -1432,7 +2327,7 @@ export default function App() {
       setWizPart1Stored(true);
       setWizStep(6);
       snapshotWiz();
-      await refreshHousehold(asOfDate);
+      await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -1442,11 +2337,15 @@ export default function App() {
 
   const confirmPlan = async () => {
     if (!wizSecurityId) {
-      setActionMessage("Complete Part 1 first.");
+      setActionMessage("Run Research first.");
       return;
     }
     if (!wizPlanReason) {
       setActionMessage("Choose a Plan reason.");
+      return;
+    }
+    if (wizReview?.confirmBlocked || (wizReview?.observationCount ?? 0) < 1) {
+      setActionMessage("Confirm Plan stays disabled until declaration research exists.");
       return;
     }
     setBusy(true);
@@ -1455,7 +2354,7 @@ export default function App() {
       const cadence = parseCadence(wizFreq);
       if (!cadence) {
         setActionMessage(
-          "Choose Weekly (52), Monthly (12), Quarterly (4), or None before Confirm Plan. There is no default.",
+          "Confirm Plan stays disabled until payment frequency research exists.",
         );
         return;
       }
@@ -1475,17 +2374,11 @@ export default function App() {
         return;
       }
       setWizPlanStored(true);
-      setWizStep(7);
-      const rocBody = await loadRocResearch();
       snapshotWiz();
-      const rocNote =
-        rocBody?.rocPctMinor != null
-          ? ` System ROC ${(rocBody.rocPctMinor / 10 ** rocBody.scale).toFixed(rocBody.scale)}% from ${rocBody.method || rocBody.source}${rocBody.sourceUrl ? ` (${rocBody.sourceUrl})` : ""}. Override if needed, then open the first lot.`
-          : " ROC unknown — paste a 19a-1 percent. Unknown is not 0%.";
       setActionMessage(
-        `Stored Plan ${wizPlan}/share (${wizPlanReason}).${rocNote}`,
+        `Stored Plan ${wizPlan}/share (${wizPlanReason}). Add lots from Add Lot when ready — not on this screen.`,
       );
-      await refreshHousehold(asOfDate);
+      await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -1493,30 +2386,361 @@ export default function App() {
     }
   };
 
-  const loadRocResearch = async (): Promise<RocResearchGet | null> => {
+  const applyWizSuggestedTier = async () => {
+    if (!wizSecurityId) {
+      setActionMessage("Run Research first.");
+      return;
+    }
+    const tier =
+      wizTierSuggestion?.suggestedTier?.trim() ||
+      wizLookthrough.riskTierSuggestion?.trim() ||
+      "";
+    if (!tier || !RISK_TIERS.includes(tier)) {
+      setActionMessage("Apply tier stays disabled until a suggested tier exists.");
+      return;
+    }
+    setBusy(true);
+    setActionMessage(null);
+    try {
+      const result = await client.executeCommand("ClassificationApply", {
+        securityId: wizSecurityId,
+        riskTier: tier,
+      });
+      if (!result.ok) {
+        setActionMessage(`Apply failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      setWizRisk(tier);
+      setActionMessage(`Applied ${tier}.`);
+      snapshotWiz({ risk: tier });
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Process A: symbol + distribution URL → seed + retrieve; no lot / questionnaire. */
+  const runProcessAResearch = async () => {
+    const symbol = wizSymbol.trim().toUpperCase();
+    const sourceUrl = wizSourceUrl.trim();
+    if (!symbol || !sourceUrl) {
+      setActionMessage("Enter symbol and distribution URL, then Research.");
+      return;
+    }
+    const PROCESS_A_TOTAL = 4;
+    setBusy(true);
+    setActionMessage(null);
+    setWizResearchDone(false);
+    setWizProcessASaved(false);
+    setWizTierSuggestion(null);
+    setWizMiss("");
+    setWizRetrieveNote("");
+    setWizResearchProgress({
+      step: 1,
+      total: PROCESS_A_TOTAL,
+      label: "retrieving declarations",
+    });
+    let unlistenProgress: (() => void) | undefined;
+    try {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlistenProgress = await listen<{
+          step: number;
+          total: number;
+          label: string;
+        }>("position-research-progress", (event) => {
+          const p = event.payload;
+          if (!p?.label) return;
+          setWizResearchProgress({
+            step: p.step ?? 1,
+            total: p.total > 0 ? p.total : PROCESS_A_TOTAL,
+            label: p.label,
+          });
+        });
+      } catch {
+        /* browser preview without Tauri events — keep client status line */
+      }
+
+      const seedResult = await client.executeCommand("PositionResearchSeed", {
+        symbol,
+        sourceUrl,
+      });
+      if (!seedResult.ok || !seedResult.bodyJson) {
+        setActionMessage(`Research seed failed: ${seedResult.errorCode ?? "error"}`);
+        return;
+      }
+      const seed = JSON.parse(seedResult.bodyJson) as {
+        securityId: string;
+        symbol: string;
+        declarationSource: string;
+        sourceUrl: string;
+        calendarPolicy: string;
+        paymentFrequency?: string;
+        retrieveOk: boolean;
+        retrieveCode?: string;
+        retrieveMessage?: string;
+        rocPctMinor?: number | null;
+        rocScale?: number;
+        rocSourceUrl?: string;
+        rocMethod?: string;
+        rocKind?: string;
+        rocAsOf?: string;
+        rocEstablishedHow?: string;
+        rocComplete?: boolean;
+      };
+      setWizResearchProgress({
+        step: 4,
+        total: PROCESS_A_TOTAL,
+        label: "drafting suggestions",
+      });
+      setWizSecurityId(seed.securityId);
+      setWizSymbol(seed.symbol || symbol);
+      setWizDeclSource(seed.declarationSource || "");
+      setWizSourceUrl(seed.sourceUrl || sourceUrl);
+      setWizCalendarPolicy(seed.calendarPolicy || "");
+      setWizPart1Stored(true);
+
+      const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+      const invResult = await client.executeQuery("InvestmentGet", {
+        securityId: seed.securityId,
+        asOfDate: asOf,
+      });
+      if (!invResult.ok || !invResult.bodyJson) {
+        setActionMessage(`InvestmentGet failed: ${invResult.errorCode ?? "error"}`);
+        return;
+      }
+      const inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+      setWizName(inv.name || symbol);
+      setWizProvider(inv.provider || "");
+      setWizUnderlying(inv.underlying || "");
+      setWizFreq(seed.paymentFrequency || inv.paymentFrequency || "");
+      setWizRisk(inv.riskTier || "");
+      setWizLookthrough(mergeLookthrough(inv.lookthrough));
+      setWizReview(inv.review);
+      setWizPriceState(inv.price);
+      if (inv.price.priceMinor != null && inv.price.priceMinor > 0) {
+        setWizPrice(scaledDollars(inv.price.priceMinor, inv.price.scale));
+      } else {
+        setWizPrice("");
+      }
+      const decls = (inv.declarations ?? [])
+        .filter((d) => d.amountPerShareMinor != null && (d.amountPerShareMinor as number) > 0)
+        .slice(0, 12)
+        .map((d) => ({
+          amountPerShareMinor: d.amountPerShareMinor as number,
+          amountScale: d.amountScale,
+          paymentPeriod: d.paymentPeriod,
+          source: d.source,
+        }));
+      setWizDecls(decls);
+      if (inv.template?.declarationSource) {
+        setWizDeclSource(inv.template.declarationSource);
+      }
+      if (inv.template?.sourceUrl) {
+        setWizSourceUrl(inv.template.sourceUrl);
+      }
+      if (inv.template?.calendarPolicy) {
+        setWizCalendarPolicy(inv.template.calendarPolicy);
+      }
+      if (inv.review?.mostCurrentMinor != null) {
+        setWizPlan(scaledDollars(inv.review.mostCurrentMinor, inv.review.amountScale));
+        if (!wizPlanReason) setWizPlanReason("Match Most Current");
+      }
+      if (inv.suggestion?.suggestedTier) {
+        setWizTierSuggestion(inv.suggestion);
+      }
+      setWizPlanStored(inv.planKnown);
+
+      const rem = await client.executeQuery("RemainingYearIncomeGet", {
+        securityId: seed.securityId,
+        asOfDate: asOf,
+      });
+      if (rem.ok && rem.bodyJson) {
+        const body = JSON.parse(rem.bodyJson) as RemainingYearIncomeGet;
+        setWizRemaining(body);
+        setWizUpcomingPays(
+          body.payments.map((p) => ({
+            payOn: p.payOn,
+            amountPerShareMinor: null,
+            amountScale: 2,
+          })),
+        );
+        setWizPayDraft(
+          body.payments.map((p) => ({
+            originalPayOn: p.originalPayOn,
+            payOn: p.payOn,
+          })),
+        );
+      } else {
+        setWizRemaining(null);
+        setWizUpcomingPays([]);
+      }
+
+      const sug = await client.executeQuery("ClassificationSuggestGet", {
+        securityId: seed.securityId,
+      });
+      if (sug.ok && sug.bodyJson) {
+        const body = JSON.parse(sug.bodyJson) as {
+          suggestedTier: string;
+          ruleset: string;
+          reason: string;
+          complete: boolean;
+        };
+        if (body.suggestedTier?.trim()) {
+          setWizTierSuggestion(body);
+        }
+      }
+
+      // Process A proposes 19a-1 estimate only — never marks research complete, never 0%.
+      if (seed.rocPctMinor != null && seed.rocPctMinor > 0) {
+        const scale = seed.rocScale ?? 2;
+        setWizRoc({
+          securityId: seed.securityId,
+          rocPctMinor: seed.rocPctMinor,
+          scale,
+          source: "19a-1",
+          complete: false,
+          reason: "current-year 19a-1 estimate",
+          candidates: [],
+          remainingPeriods: null,
+          remainingTotalMinor: null,
+          remainingOrdinaryMinor: null,
+          remainingRocMinor: null,
+          magiEligible: false,
+          systemRocPctMinor: seed.rocPctMinor,
+          sourceUrl: seed.rocSourceUrl || "",
+          method: seed.rocMethod || "19a-1-current-year",
+          asOf: seed.rocAsOf || "",
+          kind: seed.rocKind || "estimate",
+          establishedHow: seed.rocEstablishedHow || "",
+          ownerOverride: false,
+          observations: [],
+        });
+        setWizRocPct((seed.rocPctMinor / 10 ** scale).toFixed(scale));
+      } else {
+        setWizRoc(null);
+        setWizRocPct("");
+      }
+      setWizResearchDone(true);
+      snapshotWiz({
+        symbol: seed.symbol || symbol,
+        name: inv.name || symbol,
+        provider: inv.provider || "",
+        underlying: inv.underlying || "",
+        freq: seed.paymentFrequency || inv.paymentFrequency || "",
+        risk: inv.riskTier || "",
+        sourceUrl: seed.sourceUrl || sourceUrl,
+        declSource: seed.declarationSource || "",
+        calendarPolicy: seed.calendarPolicy || "",
+        plan: inv.review?.mostCurrentMinor != null
+          ? scaledDollars(inv.review.mostCurrentMinor, inv.review.amountScale)
+          : "",
+      });
+      const retrieveNote = seed.retrieveOk
+        ? "Retrieve finished."
+        : `Retrieve miss${seed.retrieveCode ? ` (${seed.retrieveCode})` : ""}${seed.retrieveMessage ? `: ${seed.retrieveMessage}` : ""}. Unknown stays unknown — never $0.`;
+      setWizRetrieveNote(retrieveNote);
+      setActionMessage(
+        `Researched ${seed.symbol}. ${retrieveNote} Confirm Plan and Apply tier are owner actions when research exists.`,
+      );
+      await refreshData(asOf);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+      setWizResearchDone(false);
+    } finally {
+      unlistenProgress?.();
+      setWizResearchProgress(null);
+      setBusy(false);
+    }
+  };
+
+  const validateCurrentRocEstimate = async (opts: {
+    securityId: string;
+    symbol: string;
+    sourceUrl?: string;
+    declarationSource?: string;
+    forProcessA?: boolean;
+  }): Promise<RocResearchGet | null> => {
+    const symbol = opts.symbol.trim().toUpperCase();
+    const sourceUrl = (opts.sourceUrl || "").trim();
+    const declarationSource = (opts.declarationSource || "").trim();
+    if (!opts.securityId || !symbol) {
+      setActionMessage("Choose a researched symbol first.");
+      return null;
+    }
+    if (!sourceUrl && !declarationSource) {
+      setActionMessage(
+        "Validate current ROC estimate needs a stored distribution URL (or issuer source). Unknown stays unknown — never $0.",
+      );
+      return null;
+    }
+    const asOf = asOfDate || new Date().toISOString().slice(0, 10);
     const retrieved = await client.executeCommand("RocResearchRetrieve", {
-      symbol: wizSymbol.trim().toUpperCase(),
-      securityId: wizSecurityId || undefined,
-      asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
+      symbol,
+      securityId: opts.securityId,
+      asOfDate: asOf,
+      sourceUrl: sourceUrl || undefined,
+      declarationSource: declarationSource || undefined,
     });
     const candidates =
       retrieved.ok && retrieved.bodyJson
         ? ((JSON.parse(retrieved.bodyJson) as { candidates?: unknown[] }).candidates ?? [])
         : [];
     const result = await client.executeQuery("RocResearchGet", {
-      securityId: wizSecurityId,
-      accountId: wizAccountId || undefined,
-      asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
+      securityId: opts.securityId,
+      accountId: opts.forProcessA ? wizAccountId || undefined : undefined,
+      asOfDate: asOf,
       candidates,
     });
     if (!result.ok || !result.bodyJson) {
+      setActionMessage("ROC estimate miss. Unknown is not 0%.");
       return null;
     }
     const body = JSON.parse(result.bodyJson) as RocResearchGet;
-    setWizRoc(body);
-    if (body.rocPctMinor != null) {
-      setWizRocPct((body.rocPctMinor / 10 ** body.scale).toFixed(body.scale));
+    const system =
+      body.candidates?.find(
+        (c) =>
+          c.rocPctMinor != null &&
+          !c.ownerOverride &&
+          (c.source === "19a-1" || c.method === "19a-1-current-year" || c.kind === "estimate"),
+      ) ?? null;
+    const pct = system?.rocPctMinor ?? body.systemRocPctMinor ?? null;
+    const scale = system?.scale ?? body.scale ?? 2;
+    if (pct == null || pct <= 0) {
+      if (opts.forProcessA) {
+        setWizRoc(null);
+        setWizRocPct("");
+      }
+      setActionMessage("ROC estimate unknown — not 0%. No 19a-1 notice parsed.");
+      return body;
     }
+    // Propose only — not research-complete, not 1099 actual.
+    if (opts.forProcessA) {
+      setWizRoc({
+        ...body,
+        rocPctMinor: pct,
+        scale,
+        complete: false,
+        source: system?.source || body.source || "19a-1",
+        sourceUrl: system?.sourceUrl || body.sourceUrl || "",
+        method: system?.method || body.method || "19a-1-current-year",
+        kind: system?.kind || body.kind || "estimate",
+        systemRocPctMinor: pct,
+      });
+      setWizRocPct((pct / 10 ** scale).toFixed(scale));
+    } else if (pdDraft) {
+      patchDraft({
+        roc2026e: (pct / 10 ** scale).toFixed(scale),
+        needsRoc: true,
+      });
+    }
+    setActionMessage(
+      `Proposed ${ (pct / 10 ** scale).toFixed(scale) }% current-year ROC estimate (${system?.kind || "estimate"})${
+        system?.sourceUrl || body.sourceUrl ? ` — ${system?.sourceUrl || body.sourceUrl}` : ""
+      }. Not research-complete; not 1099 actual.`,
+    );
     return body;
   };
 
@@ -1528,16 +2752,13 @@ export default function App() {
     setBusy(true);
     setActionMessage(null);
     try {
-      const body = await loadRocResearch();
-      if (!body) {
-        setActionMessage("ROC research missed.");
-        return;
-      }
-      setActionMessage(
-        body.complete
-          ? `System ROC ${body.rocPctMinor == null ? "unknown" : `${(body.rocPctMinor / 10 ** body.scale).toFixed(body.scale)}%`} from ${body.method || body.source}${body.sourceUrl ? ` at ${body.sourceUrl}` : ""}. You may override before MAGI uses it.`
-          : "ROC unknown — paste a 19a-1 or 1099 percent. Unknown is not 0%.",
-      );
+      await validateCurrentRocEstimate({
+        securityId: wizSecurityId,
+        symbol: wizSymbol,
+        sourceUrl: wizSourceUrl,
+        declarationSource: wizDeclSource,
+        forProcessA: true,
+      });
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -1663,8 +2884,10 @@ export default function App() {
         `Stored first lot for ${symbol}.${magiNote} Name this position's Bull and Bear windows. The system does not pick dates.`,
       );
       setPositionSymbol(symbol);
-      await refreshHousehold(asOfDate);
+      setPositionFocusPanel("lots");
+      await refreshData(asOfDate);
       await loadInvestment(symbol);
+      setScreen("position-details");
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -1724,7 +2947,7 @@ export default function App() {
   ];
   const dirtyScreenNames = [
     pdDirty ? "Position Details" : null,
-    wizDirty ? "New Investment" : null,
+    wizDirty ? "Add Position" : null,
     addLotDirty ? "Add Lot" : null,
   ]
     .filter((name): name is string => name != null)
@@ -1872,8 +3095,8 @@ export default function App() {
         return;
       }
       setActionMessage(`Applied ${tier}.`);
-      await refreshHousehold(asOfDate);
-      await loadInvestment(investment.symbol);
+      await refreshData(asOfDate);
+      await loadInvestment(investment.symbol, { skipPriceRefresh: true });
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -1892,6 +3115,18 @@ export default function App() {
       return;
     }
     next();
+  };
+
+  const openPositionHub = (
+    symbol: string,
+    focus: "lots" | "income" | "declarations" | "ledger" | "" = "",
+  ) => {
+    leaveWithoutSaving(() => {
+      setPositionFocusPanel(focus);
+      setPositionSymbol(symbol);
+      setScreen("position-details");
+      void loadInvestment(symbol);
+    });
   };
 
   const saveStoredFacts = async () => {
@@ -1940,6 +3175,7 @@ export default function App() {
         riskTier: pdDraft.risk,
         provider: pdDraft.provider.trim(),
         underlying: pdDraft.underlying.trim(),
+        lookthrough: pdDraft.lookthrough,
         notes: pdDraft.notes,
         divType: pdDraft.divType.trim(),
         needsRocResearch: pdDraft.needsRoc,
@@ -1956,12 +3192,27 @@ export default function App() {
       }
       const template = await client.executeCommand("RetrievalTemplateSet", {
         securityId: investment.securityId,
-        priceSource: pdDraft.priceSource.trim() || "public",
-        sourceSymbol: pdDraft.sourceSymbol.trim() || investment.symbol,
-        declarationSource: pdDraft.declarationSource.trim(),
-        lookbackCount: Number(pdDraft.lookbackCount) || 12,
-        sourceUrl: pdDraft.sourceUrl.trim(),
-        calendarPolicy: pdDraft.calendarPolicy.trim(),
+        priceSource:
+          investment.template?.priceSource?.trim() ||
+          pdDraft.priceSource.trim() ||
+          "public",
+        sourceSymbol:
+          investment.template?.sourceSymbol?.trim() ||
+          pdDraft.sourceSymbol.trim() ||
+          investment.symbol,
+        declarationSource:
+          investment.template?.declarationSource?.trim() ||
+          pdDraft.declarationSource.trim(),
+        lookbackCount:
+          investment.template?.lookbackCount ??
+          (Number(pdDraft.lookbackCount) || DECLARATION_LOOKBACK_TARGET),
+        sourceUrl:
+          investment.template?.sourceUrl?.trim() ?? pdDraft.sourceUrl.trim(),
+        calendarPolicy:
+          investment.template?.calendarPolicy?.trim() ||
+          pdDraft.calendarPolicy.trim(),
+        collectorEnabled: investment.template?.collectorEnabled,
+        inceptionOn: investment.template?.inceptionOn?.trim() ?? "",
       });
       if (!template.ok) {
         setActionMessage(`Retrieval template not stored: ${template.errorCode ?? "error"}`);
@@ -2007,15 +3258,15 @@ export default function App() {
         });
         if (!planResult.ok) {
           setActionMessage(`Facts stored; Plan not stored: ${planResult.errorCode ?? "error"}`);
-          await refreshHousehold(asOfDate);
-          await loadInvestment(investment.symbol);
+      await refreshData(asOfDate);
+      await loadInvestment(investment.symbol, { skipPriceRefresh: true });
           return;
         }
         planNote = `; Plan ${pdDraft.plan}/share`;
       }
       setActionMessage(`Stored ${investment.symbol}${planNote}.`);
-      await refreshHousehold(asOfDate);
-      await loadInvestment(investment.symbol);
+      await refreshData(asOfDate);
+      await loadInvestment(investment.symbol, { skipPriceRefresh: true });
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -2024,7 +3275,7 @@ export default function App() {
   };
 
   const refreshPdLastPrice = async () => {
-    if (!investment) {
+    if (!investment || !pdDraft) {
       setActionMessage("Choose a symbol first.");
       return;
     }
@@ -2045,17 +3296,8 @@ export default function App() {
       };
       const quote = body.quote;
       if (!quote?.priceMinor || quote.priceMinor <= 0) {
-        await client.executeCommand("LastPriceRefresh", {
-          quotes: [],
-          misses: [{
-            securityId: investment.securityId,
-            symbol: investment.symbol,
-            code: "price_retrieve_miss",
-            reason: `Last price miss for ${investment.symbol}. Stored price still displays; never $0.`,
-          }],
-        });
-        setActionMessage("Last price retrieve missed. Unknown stays unknown — not $0.");
-        await refreshHousehold(asOfDate);
+        await refreshData(asOfDate);
+        await loadInvestment(investment.symbol, { skipPriceRefresh: true });
         return;
       }
       const posted = await client.executeCommand("PriceQuoteRecord", {
@@ -2072,8 +3314,8 @@ export default function App() {
       setActionMessage(
         `Stored last price ${formatUsd(quote.priceMinor, quote.scale ?? 2)} for ${investment.symbol}.`,
       );
-      await refreshHousehold(asOfDate);
-      await loadInvestment(investment.symbol);
+      await refreshData(asOfDate);
+      await loadInvestment(investment.symbol, { skipPriceRefresh: true });
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -2082,7 +3324,7 @@ export default function App() {
   };
 
   const refreshPdDeclarations = async () => {
-    if (!investment) {
+    if (!investment || !pdDraft) {
       setActionMessage("Choose a symbol first.");
       return;
     }
@@ -2096,6 +3338,9 @@ export default function App() {
         sourceSymbol: investment.template?.sourceSymbol ?? investment.symbol,
         priceSource: investment.template?.priceSource ?? "",
         sourceUrl: investment.template?.sourceUrl ?? pdDraft.sourceUrl,
+        knownPaymentPeriods: (investment.declarations ?? [])
+          .map((d) => d.paymentPeriod?.trim())
+          .filter((p): p is string => Boolean(p)),
       });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Declaration retrieve missed: ${result.errorCode ?? "error"}`);
@@ -2111,8 +3356,18 @@ export default function App() {
         upcomingPays?: Array<{ payOn?: string; source?: string }>;
         missExplanation?: string;
       };
+      const existingPeriods = new Set(
+        (investment.declarations ?? [])
+          .map((d) => d.paymentPeriod?.trim())
+          .filter((p): p is string => Boolean(p)),
+      );
       const retrieved = (body.candidates ?? []).filter(
-        (d) => d.source && d.amountPerShareMinor != null && d.amountPerShareMinor > 0,
+        (d) =>
+          d.source &&
+          d.amountPerShareMinor != null &&
+          d.amountPerShareMinor > 0 &&
+          d.paymentPeriod?.trim() &&
+          !existingPeriods.has(d.paymentPeriod.trim()),
       );
       if (retrieved.length === 0) {
         await client.executeCommand("DeclarationRefresh", {
@@ -2120,11 +3375,11 @@ export default function App() {
             securityId: investment.securityId,
             symbol: investment.symbol,
             code: "declaration_retrieve_miss",
-            reason: body.missExplanation || "Issuer page empty — not using Yahoo.",
+            reason: body.missExplanation || "Issuer page empty.",
           }],
         });
-        setActionMessage("Issuer page empty — not using Yahoo.");
-        await refreshHousehold(asOfDate);
+        setActionMessage("Issuer page empty.");
+        await refreshData(asOfDate);
         return;
       }
       let posted = 0;
@@ -2159,8 +3414,8 @@ export default function App() {
         return;
       }
       setActionMessage(`Stored ${formatCount(posted)} declarations for ${investment.symbol}.`);
-      await refreshHousehold(asOfDate);
-      await loadInvestment(investment.symbol);
+      await refreshData(asOfDate);
+      await loadInvestment(investment.symbol, { skipPriceRefresh: true });
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -2176,31 +3431,23 @@ export default function App() {
     setBusy(true);
     setActionMessage(null);
     try {
-      const retrieved = await client.executeCommand("RocResearchRetrieve", {
+      const sourceUrl =
+        pdDraft?.sourceUrl?.trim() ||
+        investment.template?.sourceUrl?.trim() ||
+        "";
+      const declarationSource =
+        pdDraft?.declarationSource?.trim() ||
+        investment.template?.declarationSource?.trim() ||
+        "";
+      const body = await validateCurrentRocEstimate({
+        securityId: investment.securityId,
         symbol: investment.symbol,
-        securityId: investment.securityId,
-        asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
+        sourceUrl,
+        declarationSource,
+        forProcessA: false,
       });
-      const candidates =
-        retrieved.ok && retrieved.bodyJson
-          ? ((JSON.parse(retrieved.bodyJson) as { candidates?: unknown[] }).candidates ?? [])
-          : [];
-      const result = await client.executeQuery("RocResearchGet", {
-        securityId: investment.securityId,
-        asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
-        candidates,
-      });
-      if (!result.ok || !result.bodyJson) {
-        setActionMessage("ROC research missed. Unknown is not 0%.");
-        return;
-      }
-      const body = JSON.parse(result.bodyJson) as RocResearchGet;
-      setActionMessage(
-        body.complete
-          ? `System ROC ${body.rocPctMinor == null ? "unknown" : `${(body.rocPctMinor / 10 ** body.scale).toFixed(body.scale)}%`} from ${body.method || body.source}${body.sourceUrl ? ` at ${body.sourceUrl}` : ""}. Confirm in the ROC year boxes if you accept it.`
-          : "ROC unknown — paste a 19a-1 percent. Unknown is not 0%.",
-      );
-      await loadInvestment(investment.symbol);
+      if (!body) return;
+      await loadInvestment(investment.symbol, { skipPriceRefresh: true });
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -2210,23 +3457,28 @@ export default function App() {
 
   const openAddLot = async () => {
     if (!addLotSecurityId || !addLotAccountId) {
-      setActionMessage("Choose an existing symbol and account.");
+      setActionMessage("Choose a researched symbol and account.");
       return;
     }
-    const dates = await persistRemainingDates(addLotSecurityId, addLotPayDraft, addLotNextPay);
-    if (!dates.ok) {
-      setActionMessage(`Remaining dates not stored: ${dates.errorCode ?? "error"}`);
+    if (!addLotOpenedOn.trim()) {
+      setActionMessage("Opened-on date is required.");
       return;
     }
+    if (!LOT_ORIGINS.includes(addLotOrigin as (typeof LOT_ORIGINS)[number])) {
+      setActionMessage("Choose origin: purchase, drip, or transfer.");
+      return;
+    }
+    const performance = dollarsToMinor(addLotCost);
+    const tax = addLotTaxDifferent ? dollarsToMinor(addLotTaxCost) : performance;
     await runCommand("LotOpen", {
       accountId: addLotAccountId,
       securityId: addLotSecurityId,
-      openedOn: new Date().toISOString().slice(0, 10),
-      origin: "purchase",
+      openedOn: addLotOpenedOn,
+      origin: addLotOrigin,
       quantityMinor: Number(addLotQty),
       quantityScale: 0,
-      performanceBasisMinor: dollarsToMinor(addLotCost),
-      taxBasisMinor: dollarsToMinor(addLotCost),
+      performanceBasisMinor: performance,
+      taxBasisMinor: tax,
       scale: 2,
       isOpen: true,
     });
@@ -2259,7 +3511,7 @@ export default function App() {
           ? (JSON.parse(validated.bodyJson) as { status?: string }).status ?? "unknown"
           : "unknown";
       setPendingBatchStatus(status);
-      await refreshHousehold(asOfDate);
+      await refreshData(asOfDate);
       if (!validated.ok || status !== "validated") {
         setActionMessage(
           `Staged ${batchId}; status ${status}. Review exceptions before approve/post.`,
@@ -2295,7 +3547,7 @@ export default function App() {
         result.ok ? `${name} ok` : `${name} failed: ${result.errorCode ?? "error"}`,
       );
       await refreshHandoff();
-      await refreshHousehold(asOfDate);
+      await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -2358,94 +3610,170 @@ export default function App() {
     };
   }, [pdDirty, wizDirty, addLotDirty]);
 
-  const wizardResearched = wizAttempts.length > 0 || Boolean(wizDeclSource) || Boolean(wizMiss);
-  const goWizardNext = async () => {
-    if (wizStep === 1) {
-      if (!wizSymbol.trim()) {
-        setActionMessage("Type the ticker, then Next drafts how this position will be maintained.");
-        return;
-      }
-      setWizStep(2);
-      return;
-    }
-    if (wizStep === 2) {
-      const ok = await researchSource();
-      if (ok) setWizStep(3);
-      return;
-    }
-    if (wizStep === 3) {
-      if (!wizardResearched) {
-        const ok = await researchSource();
-        if (!ok) return;
-      }
-      if (!wizDeclSource.trim()) {
-        setActionMessage(
-          "No issuer source yet. Choose Roundhill or another provider site, or Next will retrieve last price only and leave declarations unknown.",
+  // Process A UI does not call the former 9-step handlers; keep bindings referenced for tsc.
+  void [
+    saveWizRemainingDates,
+    researchSource,
+    retrieveFromMarket,
+    newInvestmentPart1,
+    researchRoc,
+    confirmRocPlan,
+    openFirstLot,
+    recordWizardPeriod,
+  ];
+
+  const positionSymbolOptions = useMemo(() => {
+    const fromSecs = securities.map((s) => s.symbol);
+    const fromCalc = (calculator?.rows ?? []).map((row) => row.symbol);
+    return [...new Set([...fromSecs, ...fromCalc])].sort();
+  }, [securities, calculator]);
+
+  const filteredPositionSymbols = useMemo(() => {
+    const q = positionSymbolQuery.trim().toUpperCase();
+    if (!q) return positionSymbolOptions;
+    return positionSymbolOptions.filter((sym) => sym.toUpperCase().startsWith(q));
+  }, [positionSymbolOptions, positionSymbolQuery]);
+
+  const addLotSecurityOptions = useMemo(() => {
+    return securities
+      .map((s) => {
+        const byHoldings =
+          holdings?.lots.filter(
+            (l) =>
+              l.symbol.toUpperCase() === s.symbol.toUpperCase() &&
+              l.remainingQuantityMinor > 0,
+          ).length ?? 0;
+        const collector = collectorItems.find((c) => c.securityId === s.securityId);
+        const openLotCount = byHoldings > 0 ? byHoldings : collector?.openLots ? 1 : 0;
+        return {
+          securityId: s.securityId,
+          symbol: s.symbol,
+          name: s.name || "",
+          openLotCount,
+        };
+      })
+      .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  }, [securities, holdings, collectorItems]);
+
+  const filteredAddLotSecurities = useMemo(() => {
+    const q = addLotQuery.trim().toUpperCase();
+    if (!q) return addLotSecurityOptions.slice(0, 12);
+    return addLotSecurityOptions
+      .filter((s) => {
+        const sym = s.symbol.toUpperCase();
+        const name = s.name.toUpperCase();
+        return (
+          sym.startsWith(q) ||
+          sym.includes(q) ||
+          name.startsWith(q) ||
+          name.includes(q)
         );
-      }
-      const ok = await retrieveFromMarket();
-      if (ok) setWizStep(4);
-      return;
-    }
-    if (wizStep === 4) {
-      setWizStep(5);
-      return;
-    }
-    if (wizStep === 5) {
-      if (!RISK_TIERS.includes(wizRisk)) {
-        setActionMessage(
-          "Choose Foundation, Core, or Risk On. The form does not assume Risk On.",
-        );
-        return;
-      }
-      await newInvestmentPart1();
-      return;
-    }
-    if (wizStep === 6) {
-      if (!wizPlanStored) {
-        setActionMessage(
-          "Type Plan and a reason, then Confirm Plan. Most Current / Avg 6 stay calculated; Plan is yours.",
-        );
-        return;
-      }
-      setWizStep(7);
-      return;
-    }
-    if (wizStep === 7) {
-      if (!wizSecurityId) {
-        setActionMessage("Save Part 1 before ROC research.");
-        return;
-      }
-      if (!wizRoc) {
-        await researchRoc();
-        return;
-      }
-      setWizStep(8);
-      return;
-    }
-    if (wizStep === 8) {
-      if (!wizLotStored) {
-        setActionMessage(
-          "Choose account, quantity, and original cost, then Open first lot.",
-        );
-        return;
-      }
-      setWizStep(9);
-    }
+      })
+      .slice(0, 12);
+  }, [addLotSecurityOptions, addLotQuery]);
+
+  const selectAddLotSecurity = (row: {
+    securityId: string;
+    symbol: string;
+    name: string;
+  }) => {
+    setAddLotSecurityId(row.securityId);
+    setAddLotQuery(`${row.symbol}${row.name ? ` — ${row.name}` : ""}`);
+    setAddLotSymbolOpen(false);
   };
-  const showWiz = {
-    symbol: wizStep === 1,
-    strategy: wizStep === 1 || wizStep === 2,
-    template: wizStep === 2,
-    research: wizStep === 3,
-    price: wizStep === 4,
-    review: wizStep === 4 || wizStep === 6,
-    identity: wizStep === 5,
-    risk: wizStep === 5,
-    plan: wizStep === 6,
-    roc: wizStep === 7,
-    lot: wizStep === 8,
-    regime: wizStep === 9,
+
+  const processALotCount =
+    holdings?.lots.filter(
+      (l) =>
+        l.symbol.toUpperCase() === wizSymbol.trim().toUpperCase() &&
+        l.remainingQuantityMinor > 0,
+    ).length ?? 0;
+
+  const processAFieldStatus = {
+    frequency: Boolean(parseCadence(wizFreq)),
+    declarations: wizDecls.length > 0,
+    roc:
+      wizRoc != null &&
+      wizRoc.rocPctMinor != null &&
+      (wizRoc.rocPctMinor as number) > 0,
+    price:
+      wizPriceState?.priceMinor != null && wizPriceState.priceMinor > 0,
+  };
+
+  const saveProcessAResearch = () => {
+    if (!wizSecurityId || !wizResearchDone) {
+      setActionMessage("Run Research before Save.");
+      return;
+    }
+    snapshotWiz();
+    setWizProcessASaved(true);
+    setActionMessage(
+      `Saved ${wizSymbol.trim().toUpperCase()}. Open Position Details, Validate ROC, or Add lots — zero lots is valid.`,
+    );
+    void refreshData(asOfDate || new Date().toISOString().slice(0, 10));
+  };
+
+  const startAnotherProcessA = () => {
+    setWizProcessASaved(false);
+    setWizResearchDone(false);
+    setWizSecurityId("");
+    setWizSymbol("");
+    setWizName("");
+    setWizSourceUrl("");
+    setWizFreq("");
+    setWizDecls([]);
+    setWizRoc(null);
+    setWizRocPct("");
+    setWizPrice("");
+    setWizPriceState(null);
+    setWizRetrieveNote("");
+    setWizTierSuggestion(null);
+    setWizPlanStored(false);
+    setWizRisk("");
+    setWizBaseline(JSON.stringify(emptyWizEdit()));
+  };
+
+  const goProcessAToPositionDetails = () => {
+    if (!wizSymbol.trim()) return;
+    leaveWithoutSaving(() => {
+      setPositionSymbol(wizSymbol.trim().toUpperCase());
+      setPositionSymbolQuery(wizSymbol.trim().toUpperCase());
+      setScreen("position-details");
+      void loadInvestment(wizSymbol.trim().toUpperCase());
+    }, "position-details");
+  };
+
+  const goProcessAToAddLot = () => {
+    if (!wizSecurityId) return;
+    leaveWithoutSaving(() => {
+      const row = securities.find((s) => s.securityId === wizSecurityId);
+      setAddLotSecurityId(wizSecurityId);
+      setAddLotQuery(
+        row
+          ? `${row.symbol}${row.name ? ` — ${row.name}` : ""}`
+          : wizSymbol.trim().toUpperCase(),
+      );
+      setScreen("add-lot");
+    }, "add-lot");
+  };
+
+  useEffect(() => {
+    setPositionSymbolQuery(positionSymbol);
+  }, [positionSymbol]);
+
+  const selectPositionSymbol = (symbol: string) => {
+    leaveWithoutSaving(() => {
+      setPositionFocusPanel("");
+      setPositionSymbol(symbol);
+      setPositionSymbolQuery(symbol);
+      setPositionSymbolOpen(false);
+      if (symbol) {
+        void loadInvestment(symbol);
+      } else {
+        setInvestment(null);
+        setPdDraft(null);
+      }
+    });
   };
 
   const navButton = (id: Screen, label: string) => (
@@ -2468,17 +3796,100 @@ export default function App() {
   return (
     <main className="container" aria-label="finos">
       <h1>finos</h1>
-      <p>
-        Household stays on this machine after seed. Last prices refresh on open; a stored last
-        price still displays when it is not from today.
-        {summary
-          ? ` Loaded: ${formatCount(summary.accountCount)} accounts, ${formatCount(summary.symbolCount ?? 0)} symbols, ${formatCount(summary.openLotCount)} open lots, ${formatCount(summary.yieldCount)} yield, ${formatCount(summary.disbursementCount)} disbursement, ${formatCount(summary.planCount)} Calculator plans${summary.latestYieldOn ? `, last yield ${summary.latestYieldOn}` : ""}. Original cost ${formatUsd(summary.openPerformanceMinor ?? 0, summary.scale ?? 2)}. Tax ${formatUsd(summary.openTaxMinor ?? 0, summary.scale ?? 2)}. Last prices ${formatCount(summary.lastPriceCount ?? 0)} of ${formatCount(summary.symbolCount ?? 0)}. Market value ${
-              summary.marketValueMinor == null
-                ? "unknown"
-                : `${formatUsd(summary.marketValueMinor, summary.scale ?? 2)}${summary.marketValueComplete ? "" : " (incomplete)"}`
-            }.`
-          : " Checking household file…"}
-      </p>
+      {summary ? (
+        <section aria-label="Portfolio summary">
+          <dl className="portfolio-summary">
+            <div className="ps-cell ps-mv">
+              <dt>Market value</dt>
+              <dd>
+                {summary.marketValueMinor == null
+                  ? "unknown"
+                  : `${formatUsd(summary.marketValueMinor, summary.scale ?? 2)}${
+                      summary.marketValueComplete ? "" : " (incomplete)"
+                    }`}
+              </dd>
+            </div>
+            <div className="ps-cell ps-cost">
+              <dt>Original cost</dt>
+              <dd>{formatUsd(summary.openPerformanceMinor ?? 0, summary.scale ?? 2)}</dd>
+            </div>
+            <div className="ps-cell ps-tax">
+              <dt>Tax basis</dt>
+              <dd>{formatUsd(summary.openTaxMinor ?? 0, summary.scale ?? 2)}</dd>
+            </div>
+            <div
+              className={`ps-cell ps-unrealized${
+                summary.marketValueMinor == null
+                  ? ""
+                  : summary.marketValueMinor - (summary.openPerformanceMinor ?? 0) >= 0
+                    ? " ps-gain"
+                    : " ps-loss"
+              }`}
+            >
+              <dt>Unrealized</dt>
+              <dd>
+                {summary.marketValueMinor == null
+                  ? "unknown"
+                  : formatUsd(
+                      summary.marketValueMinor - (summary.openPerformanceMinor ?? 0),
+                      summary.scale ?? 2,
+                    )}
+              </dd>
+            </div>
+            <div className="ps-cell ps-income">
+              <dt>Income earned</dt>
+              <dd>
+                {formatUsd(
+                  dividendLifetime?.actualTotalMinor ??
+                    summary.incomeEarnedMinor ??
+                    0,
+                  dividendLifetime?.scale ?? summary.scale ?? 2,
+                )}
+              </dd>
+              <p className="ps-note">Lifetime paid dividends (cash)</p>
+            </div>
+            <div className="ps-cell ps-count">
+              <dt>Accounts</dt>
+              <dd>{formatCount(summary.accountCount)}</dd>
+            </div>
+            <div className="ps-cell ps-count">
+              <dt>Symbols</dt>
+              <dd>{formatCount(summary.symbolCount ?? 0)}</dd>
+            </div>
+            <div className="ps-cell ps-count">
+              <dt>Open lots</dt>
+              <dd>{formatCount(summary.openLotCount)}</dd>
+            </div>
+            <div className="ps-cell ps-coverage">
+              <dt>Last prices</dt>
+              <dd>
+                {formatCount(summary.lastPriceCount ?? 0)} of{" "}
+                {formatCount(summary.symbolCount ?? 0)}
+              </dd>
+            </div>
+            <div className="ps-cell ps-count">
+              <dt>Yield events</dt>
+              <dd>{formatCount(summary.yieldCount)}</dd>
+              <p className="ps-note">Count of paid dividend posts</p>
+            </div>
+            <div className="ps-cell ps-count">
+              <dt>Disbursements</dt>
+              <dd>{formatCount(summary.disbursementCount)}</dd>
+              <p className="ps-note">Count of Non-ROI posts</p>
+            </div>
+            <div className="ps-cell ps-count">
+              <dt>Calculator plans</dt>
+              <dd>{formatCount(summary.planCount)}</dd>
+            </div>
+            <div className="ps-cell ps-date">
+              <dt>Last yield</dt>
+              <dd>{summary.latestYieldOn?.trim() || "none"}</dd>
+            </div>
+          </dl>
+        </section>
+      ) : (
+        <p role="status">Loading portfolio summary…</p>
+      )}
       <p>
         <button
           type="button"
@@ -2492,15 +3903,17 @@ export default function App() {
         </button>
       </p>
       <p>Week labeled by Friday {incomeWeek?.end ?? asOfDate} (Sat–Fri).</p>
-      <nav className="nav" aria-label="Household screens">
+      <nav className="nav" aria-label="Data screens">
         {navButton("income-plan", "Income Plan")}
         {navButton("calculator", "Calculator")}
         {navButton("position-details", "Position Details")}
         {navButton("dashboard", "Dashboard")}
+        {navButton("trends", "Trends")}
         {navButton("holdings", "Holdings")}
-        {navButton("new-investment", "New Investment")}
+        {navButton("new-investment", "Add Position")}
         {navButton("add-lot", "Add Lot")}
         {navButton("import", "Import")}
+        {navButton("collectors", "Collectors")}
         {navButton("settings", "Settings")}
       </nav>
       {pdDirty || wizDirty || addLotDirty ? (
@@ -2523,7 +3936,7 @@ export default function App() {
                   {id === "position-details"
                     ? "Position Details"
                     : id === "new-investment"
-                      ? "New Investment"
+                      ? "Add Position"
                       : "Add Lot"}
                 </button>
               ))}
@@ -2583,7 +3996,11 @@ export default function App() {
               ))}
             </select>
           </label>
-          <IncomePlanWeekPanel week={incomeWeek} selectedAccount={drillAccount} />
+          <IncomePlanWeekPanel
+            week={incomeWeek}
+            selectedAccount={drillAccount}
+            onOpenSymbol={(symbol) => openPositionHub(symbol, "income")}
+          />
         </section>
       ) : null}
 
@@ -2594,7 +4011,10 @@ export default function App() {
             Plan × quantity for completed investments. Open Position Details to see price,
             declarations, Most Current, and Avg 6 for one symbol.
           </p>
-          <CalculatorPanel rows={calculator?.rows ?? null} />
+          <CalculatorPanel
+            rows={calculator?.rows ?? null}
+            onOpenSymbol={(symbol) => openPositionHub(symbol)}
+          />
         </section>
       ) : null}
 
@@ -2602,9 +4022,9 @@ export default function App() {
         <section aria-label="Position Details">
           <h2>Position Details</h2>
           <p>
-            One row per symbol with joined quantity, cost, last price, yields, and completeness.
-            Click a symbol to open the dossier. Owner settings save in place. Calculated rows stay
-            calculated. Save or Cancel; other screens stay blocked while edits are unsaved.
+            Open a symbol for the position hub: Calculator metrics, Plan payment summary,
+            future pay dates, declarations, and holdings by account. Fleet compare stays
+            below. Save or Cancel; other screens stay blocked while edits are unsaved.
           </p>
           <div className="buttons">
             <button
@@ -2624,83 +4044,55 @@ export default function App() {
               Apply issuer sources from provider
             </button>
           </div>
-          <section aria-label="Issuer retrieve miss summary">
-            <ExceptionList exceptions={exceptions} />
-          </section>
-          <h3>Issuer retrieve</h3>
-          <div className="table-wrap">
-            <table aria-label="Issuer retrieve">
-              <thead>
-                <tr>
-                  <th scope="col">Symbol</th>
-                  <th scope="col">Source</th>
-                  <th scope="col">Freshness</th>
-                  <th scope="col">Last run</th>
-                  <th scope="col">Miss</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(issuerCoverage?.rows ?? []).map((row) => (
-                  <tr key={row.securityId}>
-                    <td>{row.symbol}</td>
-                    <td>{row.declarationSource || "unassigned"}</td>
-                    <td>{row.declarationFreshness || "unavailable"}</td>
-                    <td>
-                      {row.lastRunAt || "never"}
-                      {row.lastRunOk === true
-                        ? " ok"
-                        : row.lastRunOk === false
-                          ? " miss"
-                          : ""}
-                    </td>
-                    <td>
-                      {row.lastRunOk === false
-                        ? row.lastRunMessage || "Issuer page empty — not using Yahoo."
-                        : "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <PositionMasterTable
-            rows={positionMaster?.rows ?? null}
-            selectedSymbol={positionSymbol}
-            onOpenSymbol={(symbol) => {
-              leaveWithoutSaving(() => {
-                setPositionSymbol(symbol);
-                void loadInvestment(symbol);
-              });
-            }}
-          />
-          <h3>Account splits</h3>
-          <p>Account × symbol quantity and cost. Market value is qty × last price when valid.</p>
-          <PositionDetailsTable
-            positions={positionDetails}
-            filter={positionSymbol}
-          />
-          <label>
+          <label className="symbol-combobox">
             Symbol
-            <select
+            <input
               aria-label="Position symbol"
-              value={positionSymbol}
+              aria-expanded={positionSymbolOpen}
+              aria-controls="position-symbol-list"
+              aria-autocomplete="list"
+              role="combobox"
+              value={positionSymbolQuery}
               onChange={(e) => {
-                const symbol = e.target.value;
-                leaveWithoutSaving(() => {
-                  setPositionSymbol(symbol);
-                  void loadInvestment(symbol);
-                });
+                setPositionSymbolQuery(e.target.value.toUpperCase());
+                setPositionSymbolOpen(true);
               }}
-            >
-              <option value="">Choose a holding</option>
-              {(securities.length > 0 ? securities : (calculator?.rows ?? []).map((row) => ({
-                symbol: row.symbol,
-              }))).map((row) => (
-                <option key={row.symbol} value={row.symbol}>
-                  {row.symbol}
-                </option>
-              ))}
-            </select>
+              onFocus={() => setPositionSymbolOpen(true)}
+              onBlur={() => {
+                window.setTimeout(() => setPositionSymbolOpen(false), 150);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && filteredPositionSymbols[0]) {
+                  e.preventDefault();
+                  selectPositionSymbol(filteredPositionSymbols[0]);
+                }
+                if (e.key === "Escape") {
+                  setPositionSymbolOpen(false);
+                }
+              }}
+            />
+            {positionSymbolOpen && filteredPositionSymbols.length > 0 ? (
+              <ul
+                id="position-symbol-list"
+                className="symbol-combobox-list"
+                role="listbox"
+                aria-label="Position symbols"
+              >
+                {filteredPositionSymbols.slice(0, 30).map((sym) => (
+                  <li
+                    key={sym}
+                    role="option"
+                    aria-selected={sym === positionSymbol}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      selectPositionSymbol(sym);
+                    }}
+                  >
+                    {sym}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </label>
           {investment && pdDraft ? (
             <>
@@ -2780,52 +4172,561 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  aria-label="Research ROC for this symbol"
-                  disabled={busy || writesBlocked}
+                  aria-label="Validate current ROC estimate"
+                  disabled={
+                    busy ||
+                    writesBlocked ||
+                    !(
+                      pdDraft?.sourceUrl?.trim() ||
+                      investment.template?.sourceUrl?.trim() ||
+                      pdDraft?.declarationSource?.trim() ||
+                      investment.template?.declarationSource?.trim()
+                    )
+                  }
                   onClick={() => void researchPdRoc()}
                 >
-                  Research ROC
+                  Validate current ROC estimate
                 </button>
               </div>
-              <p aria-label="Issuer retrieve status">
-                Source: {investment.template?.declarationSource || "unassigned"}. Freshness:{" "}
-                {investment.declarationFreshness || "unavailable"}. Last run:{" "}
-                {investment.template?.lastRunAt || "never"}
-                {investment.template?.lastRunOk === true
-                  ? " success"
-                  : investment.template?.lastRunOk === false
-                    ? ` miss: ${investment.template?.lastRunMessage || "Issuer page empty — not using Yahoo."}`
-                    : ""}
-                .
-              </p>
-              <p aria-label="Position ROC research status">
-                ROC research: {investment.rocResearchStatus || "not-in-scope"}
-                {investment.rocEstimateMethod
-                  ? `. Estimate ${investment.rocEstimateMethod}${
-                      investment.rocEstimateSourceUrl
-                        ? ` from ${investment.rocEstimateSourceUrl}`
-                        : ""
-                    }${investment.rocEstimateAsOf ? ` as of ${investment.rocEstimateAsOf}` : ""}${
-                      investment.rocEstimateEstablishedHow
-                        ? ` (${investment.rocEstimateEstablishedHow})`
-                        : ""
-                    }`
-                  : ""}
-                .
-              </p>
-              <p aria-label="Lifetime distributions">
-                Total distributions:{" "}
-                {investment.distributionsScope === "incomplete" ||
-                investment.totalDistributionsReceivedMinor == null
-                  ? "unknown"
-                  : formatUsd(investment.totalDistributionsReceivedMinor, investment.scale)}
-                . ROC component:{" "}
-                {investment.distributionsScope === "incomplete" ||
-                investment.rocDistributionsMinor == null
-                  ? "unknown"
-                  : formatUsd(investment.rocDistributionsMinor, investment.scale)}
-                . Cost recovery: {formatBps(investment.costRecoveryBps ?? null)}.
-              </p>
+              <dl className="hub-hero" aria-label="Position hub summary">
+                <div>
+                  <dt>Symbol</dt>
+                  <dd>{investment.symbol}</dd>
+                </div>
+                <div>
+                  <dt>Market value</dt>
+                  <dd>
+                    {investment.marketValueMinor == null
+                      ? "unknown"
+                      : formatUsd(investment.marketValueMinor, investment.scale)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Plan annual</dt>
+                  <dd>
+                    {investment.annualPlanMinor == null
+                      ? "unknown"
+                      : formatUsd(investment.annualPlanMinor, investment.scale)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Underlying</dt>
+                  <dd>{investment.underlying?.trim() || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Plan YOC</dt>
+                  <dd>{formatBps(investment.planYocBps ?? null)}</dd>
+                </div>
+                <div>
+                  <dt>Price</dt>
+                  <dd>{formatHubPrice(investment.price, investment.scale)}</dd>
+                </div>
+                <div>
+                  <dt>Total distributions</dt>
+                  <dd>
+                    {investment.distributionsScope === "incomplete" ||
+                    investment.totalDistributionsReceivedMinor == null
+                      ? "unknown"
+                      : formatUsd(
+                          investment.totalDistributionsReceivedMinor,
+                          investment.scale,
+                        )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>ROC component</dt>
+                  <dd>
+                    {investment.distributionsScope === "incomplete" ||
+                    investment.rocDistributionsMinor == null
+                      ? "unknown"
+                      : formatUsd(investment.rocDistributionsMinor, investment.scale)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Cost recovery</dt>
+                  <dd>{formatBps(investment.costRecoveryBps ?? null)}</dd>
+                </div>
+                {(() => {
+                  const master = (positionMaster?.rows ?? []).find(
+                    (r) => r.symbol === investment.symbol,
+                  );
+                  if (!master) return null;
+                  return (
+                    <div>
+                      <dt title="Share of total data portfolio market value">Portfolio %</dt>
+                      <dd>{formatBps(master.allocationBps)}</dd>
+                    </div>
+                  );
+                })()}
+              </dl>
+              <nav className="hub-toc" aria-label="Position hub sections">
+                <a href="#hub-identity">Position information</a>
+                <a href="#hub-calculator">Calculator</a>
+                <a href="#hub-plan-yields">Plan</a>
+                <a href="#hub-income">Payment summary</a>
+                <a href="#hub-pay-dates">Pay dates</a>
+                <a href="#hub-received">Received</a>
+                <a href="#hub-declarations">Declarations</a>
+                <a href="#hub-accounts">By account</a>
+                <a href="#hub-lots">Lots</a>
+                <a href="#hub-ledger">Ledger</a>
+              </nav>
+              <section className="hub-panel" id="hub-identity" aria-label="Position information">
+                <h3>Position information</h3>
+                <div className="table-wrap">
+                  <table aria-label="Position information">
+                    <thead>
+                      <tr>
+                        <th scope="col">Fact</th>
+                        <th scope="col">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <th scope="row">Symbol</th>
+                        <td>{investment.symbol}</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Name</th>
+                        <td>{pdDraft.name.trim() || investment.name || "—"}</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Provider</th>
+                        <td>{pdDraft.provider.trim() || investment.provider || "—"}</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Underlying</th>
+                        <td>
+                          {pdDraft.underlying.trim() ||
+                            investment.underlying?.trim() ||
+                            "—"}
+                        </td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Risk</th>
+                        <td>{pdDraft.risk.trim() || investment.riskTier || "—"}</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Frequency</th>
+                        <td>
+                          {pdDraft.freq.trim() ||
+                            investment.paymentFrequency ||
+                            "—"}
+                        </td>
+                      </tr>
+                      <tr>
+                        <th scope="row">ROC research</th>
+                        <td aria-label="Position ROC research status">
+                          {rocResearchLabel(investment)}
+                        </td>
+                      </tr>
+                      <tr>
+                        <th scope="row">ROC last update</th>
+                        <td>{rocResearchUpdated(investment)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+              <section className="hub-panel" id="hub-calculator" aria-label="Calculator snapshot">
+                <h3>Calculator snapshot</h3>
+                {(() => {
+                  const calc = (calculator?.rows ?? []).find(
+                    (r) => r.symbol === investment.symbol,
+                  );
+                  if (!calc) {
+                    return (
+                      <p>
+                        No Calculator row yet (needs Plan + first lot). Holdings and
+                        remaining-year panels below still apply.
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="table-wrap">
+                      <table aria-label="Calculator snapshot">
+                        <thead>
+                          <tr>
+                            <th scope="col">Metric</th>
+                            <th className="numeric" scope="col">Value</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <th scope="row">Frequency</th>
+                            <td className="numeric">{calc.paymentFrequency || "—"}</td>
+                          </tr>
+                          <tr>
+                            <th scope="row">Plan / share</th>
+                            <td className="numeric">
+                              {calc.planKnown
+                                ? `$${formatScaled(calc.planPerShareMinor, calc.planScale)}`
+                                : "N/A"}
+                            </td>
+                          </tr>
+                          <tr>
+                            <th scope="row">Periods / year</th>
+                            <td className="numeric">
+                              {calc.planningPeriodsPerYear > 0
+                                ? formatCount(calc.planningPeriodsPerYear)
+                                : "N/A"}
+                            </td>
+                          </tr>
+                          <tr>
+                            <th scope="row">Open quantity</th>
+                            <td className="numeric">
+                              {formatScaled(calc.remainingQuantityMinor, calc.quantityScale)}
+                            </td>
+                          </tr>
+                          <tr>
+                            <th scope="row">Plan payment</th>
+                            <td className="numeric">
+                              {calc.planKnown
+                                ? formatUsd(calc.planPaymentMinor, calc.scale)
+                                : "N/A"}
+                            </td>
+                          </tr>
+                          <tr>
+                            <th scope="row">Original cost</th>
+                            <td className="numeric">
+                              {formatUsd(calc.remainingPerformanceMinor, calc.scale)}
+                            </td>
+                          </tr>
+                          <tr>
+                            <th scope="row">Last price</th>
+                            <td className="numeric">
+                              {calc.lastPriceMinor == null
+                                ? "unknown"
+                                : formatUsd(
+                                    calc.lastPriceMinor,
+                                    calc.lastPriceScale ?? calc.scale,
+                                  )}
+                            </td>
+                          </tr>
+                          <tr>
+                            <th scope="row">Price freshness</th>
+                            <td className="numeric">{calc.priceFreshness || "unavailable"}</td>
+                          </tr>
+                          <tr>
+                            <th scope="row">Market value</th>
+                            <td className="numeric">
+                              {calc.marketValueMinor == null
+                                ? "unknown"
+                                : formatUsd(calc.marketValueMinor, calc.scale)}
+                            </td>
+                          </tr>
+                          <tr>
+                            <th scope="row">ROC 2025</th>
+                            <td className="numeric">
+                              {calc.rocPct2025ActualMinor == null || calc.rocScale == null
+                                ? "N/A"
+                                : formatPercentScaled(calc.rocPct2025ActualMinor, calc.rocScale)}
+                            </td>
+                          </tr>
+                          <tr>
+                            <th scope="row">ROC 2026 estimate</th>
+                            <td className="numeric">
+                              {calc.rocPct2026EstimateMinor == null || calc.rocScale == null
+                                ? "N/A"
+                                : formatPercentScaled(
+                                    calc.rocPct2026EstimateMinor,
+                                    calc.rocScale,
+                                  )}
+                            </td>
+                          </tr>
+                          <tr>
+                            <th scope="row">ROC 2026 actual</th>
+                            <td className="numeric">
+                              {calc.rocPct2026ActualMinor == null || calc.rocScale == null
+                                ? "N/A"
+                                : formatPercentScaled(calc.rocPct2026ActualMinor, calc.rocScale)}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </section>
+              <section className="hub-panel" id="hub-plan-yields" aria-label="Plan and yields">
+                <h3>Plan and yields</h3>
+                <div className="table-wrap">
+                  <table aria-label="Plan and yields">
+                    <thead>
+                      <tr>
+                        <th scope="col">Metric</th>
+                        <th scope="col">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(() => {
+                        const planShare = investment.planKnown
+                          ? `$${formatScaled(investment.planPerShareMinor, investment.planScale)}`
+                          : "unknown";
+                        const periods =
+                          investment.planningPeriodsPerYear > 0
+                            ? formatCount(investment.planningPeriodsPerYear)
+                            : "unknown";
+                        const qty = formatScaled(
+                          investment.remainingQuantityMinor,
+                          investment.quantityScale,
+                        );
+                        const cost = formatUsd(
+                          investment.remainingPerformanceMinor,
+                          investment.scale,
+                        );
+                        const price =
+                          investment.price?.priceMinor == null
+                            ? "unknown"
+                            : formatUsd(
+                                investment.price.priceMinor,
+                                investment.price.scale ?? investment.scale,
+                              );
+                        const mostCurrent =
+                          investment.review.mostCurrentMinor == null
+                            ? "unknown"
+                            : `$${formatScaled(
+                                investment.review.mostCurrentMinor,
+                                investment.review.amountScale,
+                              )}`;
+                        const annual =
+                          investment.annualPlanMinor == null
+                            ? "unknown"
+                            : formatUsd(investment.annualPlanMinor, investment.scale);
+                        return (
+                          <>
+                            <tr>
+                              <th
+                                scope="row"
+                                className="metric-hint"
+                                {...metricHint(
+                                  "Plan / share",
+                                  `Owner PlanHistory $/share (never auto from declarations). Last adjusted ${
+                                    investment.planEffectiveFrom?.trim() || "unknown"
+                                  }.`,
+                                )}
+                              >
+                                Plan / share
+                              </th>
+                              <td>
+                                {investment.planKnown
+                                  ? `$${formatScaled(investment.planPerShareMinor, investment.planScale)}`
+                                  : "unknown"}
+                                {investment.planEffectiveFrom?.trim()
+                                  ? ` — last adjusted ${investment.planEffectiveFrom}`
+                                  : ""}
+                              </td>
+                            </tr>
+                            <tr>
+                              <th
+                                scope="row"
+                                className="metric-hint"
+                                {...metricHint(
+                                  "Annual plan",
+                                  `Plan/share × open qty × periods/year. Inputs: ${planShare} × ${qty} × ${periods} → ${annual}.`,
+                                )}
+                              >
+                                Annual plan
+                              </th>
+                              <td>
+                                {investment.annualPlanMinor == null
+                                  ? "unknown"
+                                  : formatUsd(
+                                      investment.annualPlanMinor,
+                                      investment.scale,
+                                    )}
+                              </td>
+                            </tr>
+                            <tr>
+                              <th
+                                scope="row"
+                                className="metric-hint"
+                                {...metricHint(
+                                  "Plan YOC",
+                                  `Annual plan $ ÷ original economic cost. Inputs: ${annual} ÷ ${cost}.`,
+                                )}
+                              >
+                                Plan YOC
+                              </th>
+                              <td>{formatBps(investment.planYocBps ?? null)}</td>
+                            </tr>
+                            <tr>
+                              <th
+                                scope="row"
+                                className="metric-hint"
+                                {...metricHint(
+                                  "Plan FWD",
+                                  `(Plan/share × periods) ÷ last price. Inputs: (${planShare} × ${periods}) ÷ ${price}.`,
+                                )}
+                              >
+                                Plan FWD
+                              </th>
+                              <td>
+                                {formatBps(investment.planFwdYieldBps ?? null)}
+                              </td>
+                            </tr>
+                            <tr>
+                              <th
+                                scope="row"
+                                className="metric-hint"
+                                {...metricHint(
+                                  "Most Current",
+                                  `Latest paid issuer declaration $/share (Plan-review). This position: ${mostCurrent}.`,
+                                )}
+                              >
+                                Most Current
+                              </th>
+                              <td>
+                                {investment.review.mostCurrentMinor == null
+                                  ? "unknown"
+                                  : `$${formatScaled(
+                                      investment.review.mostCurrentMinor,
+                                      investment.review.amountScale,
+                                    )}`}
+                              </td>
+                            </tr>
+                            <tr>
+                              <th
+                                scope="row"
+                                className="metric-hint"
+                                {...metricHint(
+                                  "Avg 6",
+                                  "Mean of up to 6 most recent paid declarations (blank weeks are not $0).",
+                                )}
+                              >
+                                Avg 6
+                              </th>
+                              <td>
+                                {investment.review.avg6Minor == null
+                                  ? "unknown"
+                                  : `$${formatScaled(
+                                      investment.review.avg6Minor,
+                                      investment.review.amountScale,
+                                    )}`}
+                              </td>
+                            </tr>
+                            <tr>
+                              <th
+                                scope="row"
+                                className="metric-hint"
+                                {...metricHint(
+                                  "Most Current FWD",
+                                  `(Most Current × periods) ÷ last price. Inputs: (${mostCurrent} × ${periods}) ÷ ${price}.`,
+                                )}
+                              >
+                                Most Current FWD
+                              </th>
+                              <td>
+                                {formatBps(
+                                  investment.mostCurrentFwdYieldBps ?? null,
+                                )}
+                              </td>
+                            </tr>
+                            <tr>
+                              <th
+                                scope="row"
+                                className="metric-hint"
+                                {...metricHint(
+                                  "Most Current vs Plan",
+                                  `(Most Current − Plan) ÷ Plan → Above / Equal / Below. Inputs: (${mostCurrent} − ${planShare}) ÷ ${planShare}.`,
+                                )}
+                              >
+                                Most Current vs Plan
+                              </th>
+                              <td>
+                                {mostCurrentVsPlanFace(
+                                  investment.mostCurrentVsPlanBps ?? null,
+                                )}
+                              </td>
+                            </tr>
+                          </>
+                        );
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+              <section className="hub-panel" id="hub-accounts" aria-label="Holdings by account">
+                <h3>Holdings by account</h3>
+                <p>
+                  Open quantity and cost for this symbol by control account. Market value is
+                  qty × last price when the price is valid. P&amp;L is market value minus tax
+                  basis.
+                </p>
+                {(() => {
+                  const rows = (positionDetails?.positions ?? []).filter(
+                    (r) => r.symbol === investment.symbol,
+                  );
+                  if (rows.length === 0) {
+                    return <p>No open account splits for this symbol.</p>;
+                  }
+                  const price =
+                    investment.price?.priceDerivedValid && investment.price.priceMinor != null
+                      ? {
+                          minor: investment.price.priceMinor,
+                          scale: investment.price.scale ?? investment.scale,
+                        }
+                      : null;
+                  return (
+                    <div className="table-wrap">
+                      <table aria-label="Holdings by account">
+                        <thead>
+                          <tr>
+                            <th scope="col">Account</th>
+                            <th className="numeric" scope="col">Qty</th>
+                            <th className="numeric" scope="col">Lots</th>
+                            <th className="numeric" scope="col">Original cost</th>
+                            <th className="numeric" scope="col">Tax basis</th>
+                            <th className="numeric" scope="col">Market value</th>
+                            <th className="numeric" scope="col">P&amp;L</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((row) => {
+                            let mv: string = "unknown";
+                            let pnl: string = "unknown";
+                            if (price && row.remainingQuantityMinor > 0) {
+                              const qScale = row.quantityScale ?? 0;
+                              const mvMinor = Math.trunc(
+                                (row.remainingQuantityMinor * price.minor) /
+                                  10 ** qScale,
+                              );
+                              mv = formatUsd(mvMinor, price.scale);
+                              pnl = formatUsd(
+                                mvMinor - row.remainingTaxMinor,
+                                row.scale,
+                              );
+                            }
+                            return (
+                              <tr key={`${row.accountId}-${row.symbol}`}>
+                                <td>{row.accountName}</td>
+                                <td className="numeric">
+                                  {formatScaled(
+                                    row.remainingQuantityMinor,
+                                    row.quantityScale,
+                                  )}
+                                </td>
+                                <td className="numeric">{formatCount(row.lotCount)}</td>
+                                <td className="numeric">
+                                  {formatUsd(row.remainingPerformanceMinor, row.scale)}
+                                </td>
+                                <td className="numeric">
+                                  {formatUsd(row.remainingTaxMinor, row.scale)}
+                                </td>
+                                <td className="numeric">{mv}</td>
+                                <td className="numeric">{pnl}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </section>
+              <details className="hub-panel" aria-label="Identity and holdings facts">
+              <summary>Identity and edit facts (name, provider, Plan edit, template)</summary>
+              <h3>Identity, economics, and Plan (edit)</h3>
               <div className="table-wrap">
                 <table aria-label="Position dossier">
                   <thead>
@@ -2909,6 +4810,90 @@ export default function App() {
                           aria-label="Position underlying"
                           value={pdDraft.underlying}
                           onChange={(e) => patchDraft({ underlying: e.target.value })}
+                          disabled={busy || writesBlocked}
+                        />
+                      </td>
+                      <td>editable</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Theme / strategy</th>
+                      <td>
+                        <input
+                          aria-label="Position theme strategy"
+                          value={pdDraft.lookthrough.themeStrategy ?? ""}
+                          onChange={(e) =>
+                            patchDraft({
+                              lookthrough: {
+                                ...pdDraft.lookthrough,
+                                themeStrategy: e.target.value,
+                              },
+                            })
+                          }
+                          disabled={busy || writesBlocked}
+                        />
+                      </td>
+                      <td>editable</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Primary risk driver</th>
+                      <td>
+                        <input
+                          aria-label="Position primary risk driver"
+                          value={pdDraft.lookthrough.primaryRiskDriver ?? ""}
+                          onChange={(e) =>
+                            patchDraft({
+                              lookthrough: {
+                                ...pdDraft.lookthrough,
+                                primaryRiskDriver: e.target.value,
+                              },
+                            })
+                          }
+                          disabled={busy || writesBlocked}
+                        />
+                      </td>
+                      <td>editable</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Concentration</th>
+                      <td aria-label="Position concentration">
+                        {concentrationSummary(pdDraft.lookthrough)}
+                      </td>
+                      <td>
+                        {(pdDraft.lookthrough.concentrationStatus ?? "unknown") === "unknown"
+                          ? "unknown"
+                          : "researched"}
+                      </td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Volatility / beta proxy</th>
+                      <td>
+                        <input
+                          aria-label="Position volatility proxy"
+                          value={pdDraft.lookthrough.volProxy ?? ""}
+                          onChange={(e) =>
+                            patchDraft({
+                              lookthrough: { ...pdDraft.lookthrough, volProxy: e.target.value },
+                            })
+                          }
+                          disabled={busy || writesBlocked}
+                        />
+                      </td>
+                      <td>editable</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Tax character note</th>
+                      <td>
+                        <input
+                          aria-label="Position tax character"
+                          value={pdDraft.lookthrough.taxCharacter ?? ""}
+                          onChange={(e) =>
+                            patchDraft({
+                              lookthrough: {
+                                ...pdDraft.lookthrough,
+                                taxCharacter: e.target.value,
+                              },
+                            })
+                          }
                           disabled={busy || writesBlocked}
                         />
                       </td>
@@ -3123,6 +5108,13 @@ export default function App() {
                       <td>editable</td>
                     </tr>
                     <tr>
+                      <th scope="row">Plan last adjusted</th>
+                      <td>
+                        {investment.planEffectiveFrom?.trim() || "unknown"}
+                      </td>
+                      <td>from PlanHistory</td>
+                    </tr>
+                    <tr>
                       <th scope="row">Plan reason</th>
                       <td>
                         <select
@@ -3219,7 +5211,9 @@ export default function App() {
                     </tr>
                     <tr>
                       <th scope="row">Most Current vs Plan</th>
-                      <td>{formatBps(investment.mostCurrentVsPlanBps)}</td>
+                      <td>
+                        {mostCurrentVsPlanFace(investment.mostCurrentVsPlanBps)}
+                      </td>
                       <td>calculated</td>
                     </tr>
                     <tr>
@@ -3290,65 +5284,36 @@ export default function App() {
                     <tr>
                       <th scope="row">Retrieval template</th>
                       <td>
-                        <label>
-                          Price source
-                          <input
-                            aria-label="Price source"
-                            value={pdDraft.priceSource}
-                            onChange={(e) => patchDraft({ priceSource: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          />
-                        </label>
-                        <label>
-                          Source symbol
-                          <input
-                            aria-label="Source symbol"
-                            value={pdDraft.sourceSymbol}
-                            onChange={(e) => patchDraft({ sourceSymbol: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          />
-                        </label>
-                        <label>
-                          Declaration source
-                          <input
-                            aria-label="Declaration source"
-                            value={pdDraft.declarationSource}
-                            onChange={(e) => patchDraft({ declarationSource: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          />
-                        </label>
-                        <label>
-                          Lookback
-                          <input
-                            aria-label="Lookback count"
-                            value={pdDraft.lookbackCount}
-                            onChange={(e) => patchDraft({ lookbackCount: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          />
-                        </label>
-                        <label>
-                          Source URL
-                          <input
-                            aria-label="Source URL"
-                            value={pdDraft.sourceUrl}
-                            onChange={(e) => patchDraft({ sourceUrl: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          />
-                        </label>
-                        <label>
-                          Calendar policy
-                          <select
-                            aria-label="Calendar policy"
-                            value={pdDraft.calendarPolicy}
-                            onChange={(e) => patchDraft({ calendarPolicy: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          >
-                            <option value="">Choose policy</option>
-                            <option value="issuer_calendar">issuer_calendar — published year dates</option>
-                            <option value="derived_walk">derived_walk — from last pay + cadence</option>
-                            <option value="none">none — does not pay</option>
-                          </select>
-                        </label>
+                        <p aria-label="Adapter source">
+                          Adapter:{" "}
+                          {investment.template?.declarationSource ||
+                            "unassigned"}
+                        </p>
+                        <p>
+                          Schedule:{" "}
+                          {calendarPolicyLabel(
+                            investment.template?.calendarPolicy,
+                          )}
+                        </p>
+                        <p>
+                          Source URL:{" "}
+                          {investment.template?.sourceUrl?.trim()
+                            ? investment.template.sourceUrl
+                            : "—"}
+                        </p>
+                        <p>
+                          Lookback:{" "}
+                          {formatCount(
+                            investment.template?.lookbackCount ??
+                              DECLARATION_LOOKBACK_TARGET,
+                          )}
+                        </p>
+                        <p>
+                          Inception (optional):{" "}
+                          {investment.template?.inceptionOn?.trim()
+                            ? investment.template.inceptionOn
+                            : "— (only used when paid decls are under 12)"}
+                        </p>
                         {investment.template?.lastRunAt ? (
                           <p>
                             Last run {investment.template.lastRunAt}
@@ -3364,8 +5329,19 @@ export default function App() {
                         ) : (
                           <p>Last run: never</p>
                         )}
+                        <p>
+                          Edit retrieval templates on Settings. Hub face source is
+                          the adapter, not the stored template knobs.
+                        </p>
+                        <button
+                          type="button"
+                          aria-label="Open Settings retrieval templates"
+                          onClick={() => setScreen("settings")}
+                        >
+                          Open Settings
+                        </button>
                       </td>
-                      <td>editable</td>
+                      <td>Settings</td>
                     </tr>
                     <tr>
                       <th scope="row">Backtest / scores</th>
@@ -3381,108 +5357,331 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              <h3>Last 12 paid distributions</h3>
-              <p>Paid $/share from the issuer page. Blank stays unknown, not $0.</p>
-              {(investment.declarations ?? []).length === 0 ? (
-                <p>No issuer declarations stored.</p>
-              ) : (
-                <div className="table-wrap">
-                  <table aria-label="Stored declarations">
-                    <thead>
-                      <tr>
-                        <th scope="col">Period</th>
-                        <th className="numeric" scope="col">Per share</th>
-                        <th scope="col">Source</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(investment.declarations ?? []).map((row, i) => (
-                        <tr key={`${row.paymentPeriod}-${i}`}>
-                          <td>{row.paymentPeriod || "—"}</td>
-                          <td className="numeric">
-                            {row.amountPerShareMinor == null
-                              ? "—"
-                              : `$${formatScaled(row.amountPerShareMinor, row.amountScale)}`}
-                          </td>
-                          <td>{row.source || "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <h3>Remaining-year income</h3>
+              </details>
+              <section className="hub-panel" id="hub-declarations" aria-label="Declarations" data-focus={positionFocusPanel === "declarations" ? "1" : undefined}>
+              <h3>Declarations</h3>
+              {(() => {
+                const decls = investment.declarations ?? [];
+                const paid = decls.filter((d) => d.amountPerShareMinor != null).length;
+                const stored = decls.length;
+                const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+                const inception = investment.template?.inceptionOn?.trim() || "";
+                let short: string | null = null;
+                let needLabel = `need ${formatCount(DECLARATION_LOOKBACK_TARGET)}`;
+                if (paid >= DECLARATION_LOOKBACK_TARGET) {
+                  needLabel = `${formatCount(DECLARATION_LOOKBACK_TARGET)}+ paid — inception N/A`;
+                } else if (inception) {
+                  const expected = expectedDeclarationLookback(
+                    inception,
+                    asOf,
+                    pdDraft.freq || investment.paymentFrequency,
+                  );
+                  needLabel = `need ${formatCount(expected)} (inception-limited; full is ${formatCount(DECLARATION_LOOKBACK_TARGET)})`;
+                  if (paid < expected) {
+                    short = `Adapter returned ${formatCount(paid)} of ${formatCount(expected)} paid declarations expected since inception ${inception}.`;
+                  }
+                } else {
+                  short = `Adapter returned ${formatCount(paid)} of ${formatCount(DECLARATION_LOOKBACK_TARGET)} required paid declarations. Optional inception on Settings only if this name is too new for a full lookback.`;
+                }
+                return (
+                  <>
+                    <h4>Latest paid ({needLabel})</h4>
+                    <p>
+                      Paid $/share from the adapter. Blank stays unknown, not $0.
+                      Stored: {formatCount(stored)}. Retrieve first; inception is
+                      consulted only when under{" "}
+                      {formatCount(DECLARATION_LOOKBACK_TARGET)} paid points.
+                    </p>
+                    {short ? (
+                      <p role="status" aria-label="Declaration shortfall">
+                        {short}
+                      </p>
+                    ) : null}
+                    <DeclarationPaymentsChart
+                      declarations={(investment.declarations ?? []).map((d) => ({
+                        paymentPeriod: d.paymentPeriod,
+                        amountPerShareMinor: d.amountPerShareMinor ?? 0,
+                        amountScale: d.amountScale,
+                      }))}
+                      asOfDate={asOf}
+                    />
+                    {stored === 0 ? (
+                      <p>No issuer declarations stored.</p>
+                    ) : (
+                      <div className="table-wrap">
+                        <table aria-label="Stored declarations">
+                          <thead>
+                            <tr>
+                              <th scope="col">Period</th>
+                              <th className="numeric" scope="col">
+                                Per share
+                              </th>
+                              <th scope="col">Source</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {decls.map((row, i) => (
+                              <tr key={`${row.paymentPeriod}-${i}`}>
+                                <td>{row.paymentPeriod || "—"}</td>
+                                <td className="numeric">
+                                  {row.amountPerShareMinor == null
+                                    ? "—"
+                                    : `$${formatScaled(row.amountPerShareMinor, row.amountScale)}`}
+                                </td>
+                                <td>{row.source || "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+              </section>
+              <section className="hub-panel" id="hub-income" aria-label="Plan payment summary" data-focus={positionFocusPanel === "income" ? "1" : undefined}>
+              <h3>Plan payment summary</h3>
               <p>
-                Dates × Plan × quantity. Blank issuer amount is unknown, not $0. Do not mix
-                with paid history.
+                Remaining-year Plan cash (Plan × quantity). Blank stays unknown, not $0.
+                Separate from paid declaration history and broker ledger.
               </p>
               {pdRemaining == null ? (
-                <p>Loading remaining-year dates…</p>
+                <p>Loading plan payment summary…</p>
+              ) : (
+                <>
+                  <p aria-label="Remaining year schedule provenance">
+                    {pdRemaining.known
+                      ? dateProvenanceLabel(pdRemaining.provenance)
+                      : `${dateProvenanceLabel(pdRemaining.provenance)}. Unknown stays unknown.`}
+                    {pdRemaining.calendarPolicy
+                      ? ` Schedule: ${calendarPolicyLabel(pdRemaining.calendarPolicy)}.`
+                      : ""}
+                  </p>
+                  <div className="table-wrap">
+                    <table aria-label="Plan payment summary">
+                      <thead>
+                        <tr>
+                          <th scope="col">Period</th>
+                          <th className="numeric" scope="col">Plan cash</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <th scope="row">Remaining this year</th>
+                          <td className="numeric">
+                            {pdRemaining.yearToGoMinor == null
+                              ? "unknown"
+                              : formatUsd(pdRemaining.yearToGoMinor, pdRemaining.scale)}
+                          </td>
+                        </tr>
+                        {pdRemaining.months.map((m) => (
+                          <tr key={m.month}>
+                            <th scope="row">{m.month}</th>
+                            <td className="numeric">
+                              {m.cashMinor == null
+                                ? "unknown"
+                                : formatUsd(m.cashMinor, pdRemaining.scale)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+              </section>
+              <section className="hub-panel" id="hub-pay-dates" aria-label="Future plan payment dates">
+              <h3>Future plan payment dates</h3>
+              <p>Each remaining pay date × Plan × open quantity for this symbol.</p>
+              {pdRemaining == null ? (
+                <p>Loading pay dates…</p>
+              ) : (pdRemaining.payments ?? []).length === 0 ? (
+                <p>No remaining-year pay dates yet.</p>
               ) : (
                 <div className="table-wrap">
-                  <table aria-label="Remaining-year payment dates">
+                  <table aria-label="Future plan payment dates">
                     <thead>
                       <tr>
-                        <th scope="col">Item</th>
-                        <th scope="col">Value</th>
+                        <th scope="col">Pay on</th>
+                        <th className="numeric" scope="col">Plan cash</th>
+                        <th scope="col">Date source</th>
                       </tr>
                     </thead>
                     <tbody>
-                      <tr>
-                        <th scope="row">Schedule</th>
-                        <td>
-                          {pdRemaining.known
-                            ? pdRemaining.provenance
-                            : `${pdRemaining.provenance}. Unknown stays unknown.`}
-                          {pdRemaining.calendarPolicy
-                            ? ` Policy ${pdRemaining.calendarPolicy}.`
-                            : ""}
-                          {(pdRemaining.orphanedOverrides ?? []).length > 0
-                            ? ` Orphaned owner date overrides (issuer calendar no longer has that original date): ${(pdRemaining.orphanedOverrides ?? [])
-                                .map((o) => `${o.originalPayOn}→${o.payOn}`)
-                                .join(", ")}.`
-                            : ""}
-                        </td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Year-to-go</th>
-                        <td>
-                          {pdRemaining.yearToGoMinor == null
-                            ? "unknown"
-                            : formatUsd(pdRemaining.yearToGoMinor, pdRemaining.scale)}
-                        </td>
-                      </tr>
-                      {pdRemaining.months.map((m) => (
-                        <tr key={m.month}>
-                          <th scope="row">{m.month}</th>
-                          <td>
-                            {m.cashMinor == null
-                              ? "unknown"
-                              : formatUsd(m.cashMinor, pdRemaining.scale)}
-                          </td>
-                        </tr>
-                      ))}
                       {pdRemaining.payments.map((pay) => (
                         <tr key={pay.originalPayOn}>
-                          <th scope="row">{pay.payOn}</th>
-                          <td>
+                          <td>{pay.payOn}</td>
+                          <td className="numeric">
                             {pay.cashMinor == null
                               ? "unknown"
                               : formatUsd(pay.cashMinor, pdRemaining.scale)}
                           </td>
+                          <td>
+                            {dateProvenanceLabel(
+                              pay.dateProvenance || pay.originalPayOn,
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
               )}
-              <h3>This symbol</h3>
-              <p>Lots and cost for the chosen ticker only. Household totals above stay put.</p>
-              {investment.lots.length === 0 ? (
-                <p>No open lots. Calculator omits this symbol until the first lot.</p>
-              ) : (
-                <SymbolLotsTable lots={investment.lots} />
-              )}
+              </section>
+              <section
+                className="hub-panel"
+                id="hub-received"
+                aria-label="Received payments"
+              >
+                <h3>Received payments</h3>
+                <p>
+                  Broker cash already received for this symbol (Investment Activity
+                  Ledger). All-years and per calendar year. Unknown stays unknown.
+                </p>
+                {(() => {
+                  const actuals = pdLedger?.actuals ?? [];
+                  const scale = pdLedger?.scale ?? investment.scale;
+                  const byYear = receivedByYear(actuals);
+                  const allYears =
+                    investment.distributionsScope === "incomplete" ||
+                    investment.totalDistributionsReceivedMinor == null
+                      ? null
+                      : investment.totalDistributionsReceivedMinor;
+                  const ledgerSum = actuals.reduce((s, a) => s + a.amountMinor, 0);
+                  return (
+                    <>
+                      <div className="table-wrap">
+                        <table aria-label="Received payment totals">
+                          <thead>
+                            <tr>
+                              <th scope="col">Scope</th>
+                              <th className="numeric" scope="col">
+                                Received
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <th scope="row">All years</th>
+                              <td className="numeric">
+                                {allYears == null
+                                  ? actuals.length === 0
+                                    ? "unknown"
+                                    : formatUsd(ledgerSum, scale)
+                                  : formatUsd(allYears, investment.scale)}
+                              </td>
+                            </tr>
+                            {investment.rocDistributionsMinor != null ? (
+                              <tr>
+                                <th scope="row">ROC component (all years)</th>
+                                <td className="numeric">
+                                  {formatUsd(
+                                    investment.rocDistributionsMinor,
+                                    investment.scale,
+                                  )}
+                                </td>
+                              </tr>
+                            ) : null}
+                          </tbody>
+                        </table>
+                      </div>
+                      {byYear.length === 0 ? (
+                        <p>No ledger dividends stored for this symbol yet.</p>
+                      ) : (
+                        <div className="table-wrap">
+                          <table aria-label="Received payments by year">
+                            <thead>
+                              <tr>
+                                <th scope="col">Year</th>
+                                <th className="numeric" scope="col">
+                                  Received
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {byYear.map((row) => (
+                                <tr key={row.year}>
+                                  <td>{row.year}</td>
+                                  <td className="numeric">
+                                    {formatUsd(row.amountMinor, scale)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </section>
+              <section
+                className="hub-panel"
+                id="hub-ledger"
+                aria-label="Ledger income"
+                data-focus={positionFocusPanel === "ledger" ? "1" : undefined}
+              >
+                <h3>Ledger income</h3>
+                <p>
+                  Broker-paid dividends for this symbol (Investment Activity Ledger).
+                  Unknown stays unknown.
+                </p>
+                {(pdLedger?.actuals ?? []).length === 0 ? (
+                  <p>No ledger dividends stored for this symbol yet.</p>
+                ) : (
+                  <div className="table-wrap">
+                    <table aria-label="Ledger dividends">
+                      <thead>
+                        <tr>
+                          <th scope="col">Occurred</th>
+                          <th className="numeric" scope="col">
+                            Amount
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(pdLedger?.actuals ?? []).map((row) => (
+                          <tr key={row.actualId}>
+                            <td>{row.occurredOn}</td>
+                            <td className="numeric">
+                              {formatUsd(row.amountMinor, row.scale)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr>
+                          <td>Total</td>
+                          <td className="numeric">
+                            {formatUsd(
+                              (pdLedger?.actuals ?? []).reduce(
+                                (s, a) => s + a.amountMinor,
+                                0,
+                              ),
+                              pdLedger?.scale ?? 2,
+                            )}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                )}
+              </section>
+              <section
+                className="hub-panel"
+                id="hub-lots"
+                aria-label="Lots by account"
+                data-focus={positionFocusPanel === "lots" ? "1" : undefined}
+              >
+                <h3>Lots by account</h3>
+                <p>Lots and cost for the chosen ticker only. Data totals above stay put.</p>
+                {investment.lots.length === 0 ? (
+                  <p>No open lots. Calculator omits this symbol until the first lot.</p>
+                ) : (
+                  <SymbolLotsTable lots={investment.lots} />
+                )}
+              </section>
+              <section className="hub-panel" aria-label="Backtests">
               <h3>Owner period</h3>
               <p>
                 You name the window. The system does not pick bull or bear dates.
@@ -3750,10 +5949,75 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              </section>
             </>
+
           ) : (
-            <p>Choose a symbol to load stored facts from FinanceClient.</p>
+            <p>Choose a symbol to open the position hub.</p>
           )}
+          <details className="hub-fleet" aria-label="Position fleet compare">
+            <summary>
+              {positionSymbol
+                ? `Fleet compare (all symbols) — ${positionSymbol} hub is above`
+                : "Fleet compare — all symbols"}
+            </summary>
+            <section aria-label="Issuer retrieve miss summary">
+              <ExceptionList exceptions={exceptions} onOpenLog={() => void openExceptionLog()} />
+            </section>
+            <h3>Issuer retrieve</h3>
+            <div className="table-wrap">
+              <table aria-label="Issuer retrieve">
+                <thead>
+                  <tr>
+                    <th scope="col">Symbol</th>
+                    <th scope="col">Source</th>
+                    <th scope="col">Freshness</th>
+                    <th scope="col">Last run</th>
+                    <th scope="col">Miss</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(issuerCoverage?.rows ?? []).map((row) => (
+                    <tr key={row.securityId}>
+                      <td>{row.symbol}</td>
+                      <td>{row.declarationSource || "unassigned"}</td>
+                      <td>{row.declarationFreshness || "unavailable"}</td>
+                      <td>
+                        {row.lastRunAt || "never"}
+                        {row.lastRunOk === true
+                          ? " ok"
+                          : row.lastRunOk === false
+                            ? " miss"
+                            : ""}
+                      </td>
+                      <td>
+                        {row.lastRunOk === false
+                          ? row.lastRunMessage || "Issuer page empty."
+                          : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <PositionMasterTable
+              rows={positionMaster?.rows ?? null}
+              selectedSymbol={positionSymbol}
+              onOpenSymbol={(symbol) => {
+                leaveWithoutSaving(() => {
+                  setPositionFocusPanel("");
+                  setPositionSymbol(symbol);
+                  void loadInvestment(symbol);
+                });
+              }}
+            />
+            <h3>Account splits (all symbols)</h3>
+            <p>Account × symbol quantity and cost. Filter to the open hub symbol when set.</p>
+            <PositionDetailsTable
+              positions={positionDetails}
+              filter={positionSymbol}
+            />
+          </details>
         </section>
       ) : null}
 
@@ -3761,6 +6025,83 @@ export default function App() {
         <section aria-label="Dashboard">
           <h2>Dashboard</h2>
           <DashboardBurndownPanel burndown={burndown} />
+        </section>
+      ) : null}
+
+      {screen === "trends" ? (
+        <section aria-label="Trends">
+          <h2>Trends</h2>
+          <TrendsCapturePanel
+            capture={trendsCapture}
+            busy={busy}
+            onReload={(d) => {
+              void (async () => {
+                const r = await client.executeQuery("TrendsWeekGet", { asOfDate: d });
+                if (r.ok && r.bodyJson) {
+                  setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
+                }
+              })();
+            }}
+            onCopyPrior={() => {
+              if (!trendsCapture?.prior) return;
+              setTrendsCapture({
+                ...trendsCapture,
+                current: {
+                  profitMinor: trendsCapture.prior.profitMinor,
+                  monthlyDivsMinor: trendsCapture.prior.monthlyDivsMinor,
+                  fidelityTotalMinor: trendsCapture.prior.fidelityTotalMinor,
+                  schwabTotalMinor: trendsCapture.prior.schwabTotalMinor,
+                  incomeCashMinor: trendsCapture.prior.incomeCashMinor,
+                  acct9CashMinor: trendsCapture.prior.acct9CashMinor,
+                  acct9EtfValueMinor: trendsCapture.prior.acct9EtfValueMinor,
+                },
+              });
+            }}
+            onSave={async (body, correct) => {
+              setBusy(true);
+              try {
+                const r = await client.executeCommand(
+                  correct ? "TrendsWeekCorrect" : "TrendsWeekSave",
+                  body,
+                );
+                if (!r.ok) {
+                  setActionMessage(`Trends save failed: ${r.errorCode ?? "error"}`);
+                  return;
+                }
+                if (r.bodyJson) {
+                  setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
+                }
+                await refreshData(asOfDate || body.periodEnd as string);
+              } finally {
+                setBusy(false);
+              }
+            }}
+            onClose={async (periodEnd) => {
+              setBusy(true);
+              try {
+                const r = await client.executeCommand("TrendsWeekClose", { periodEnd });
+                if (!r.ok) {
+                  setActionMessage(`Trends close failed: ${r.errorCode ?? "error"}`);
+                  return;
+                }
+                if (r.bodyJson) {
+                  setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
+                }
+                await refreshData(asOfDate || periodEnd);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          />
+          <TrendsChartsPanel
+            weeks={trends?.weeks}
+            note={trends?.note}
+            error={trendsError}
+            overview={trends?.overview as never}
+            distributions={trends?.distributions as never}
+            taxMonitor={trends?.taxMonitor as never}
+            missingRequired={trends?.missingRequired}
+          />
         </section>
       ) : null}
 
@@ -3776,7 +6117,11 @@ export default function App() {
               aria-label="Filter holdings"
             />
           </label>
-          <HoldingsPanel lots={holdings?.lots ?? null} filter={holdingsFilter} />
+          <HoldingsPanel
+            lots={holdings?.lots ?? null}
+            filter={holdingsFilter}
+            onOpenSymbol={(symbol) => openPositionHub(symbol, "lots")}
+          />
           <p>Open lots. Owner assigns sales; no FIFO. Type a sell activity id to assign.</p>
           <label>
             Lot id
@@ -3821,972 +6166,490 @@ export default function App() {
       ) : null}
 
       {screen === "new-investment" ? (
-        <section aria-label="New Investment">
-          <h2>New Investment</h2>
-          <p>
-            Step {wizStep} of 9. First define how this position will be maintained.
-            Research then fills provider, source analytics, future-declaration method, and underlying.
-            Retrieve runs after that. Yahoo is last price only. Missing stays unknown, never $0.
-          </p>
-          <div className="buttons">
-            <button
-              type="button"
-              aria-label="Previous wizard step"
-              disabled={busy || wizStep <= 1}
-              onClick={() => setWizStep((s) => Math.max(1, s - 1))}
-            >
-              Back
-            </button>
-            <button
-              type="button"
-              aria-label="Next wizard step"
-              disabled={busy || wizStep >= 9}
-              onClick={() => void goWizardNext()}
-            >
-              Next
-            </button>
-          </div>
-          <p aria-label="Wizard step guidance">
-            {wizStep === 1
-              ? "Name the ticker and confirm what this identity must keep current. Next does not retrieve."
-              : wizStep === 2
-                ? "Draft the standing template: price source, declaration source, lookback. Next researches issuer sites to fill provider, analytics, future-declaration method, and underlying."
-                : wizStep === 3
-                  ? "Review research. Confirm or override the issuer source. Next runs the first retrieve using this strategy. Yahoo is last price only."
-                  : wizStep === 4
-                    ? "Review issuer declarations, future pay dates, and Yahoo last price. Missing rows stay unknown. Then Next."
-                    : wizStep === 5
-                      ? "Confirm name, provider, underlying, frequency, and Risk. Next saves identity, the retrieval template, last price, and declarations. Not Plan, not ROC, not the lot."
-                      : wizStep === 6
-                        ? "Most Current / Avg 6 are calculated from issuer declarations. Type Plan and a reason, then Confirm Plan."
-                        : wizStep === 7
-                          ? "Next researches current-year ROC from the issuer 19a-1 when found. Unknown is not 0%."
-                          : wizStep === 8
-                            ? "Choose account, quantity, and original cost, then Open first lot. Remaining-year dates use issuer pay dates when retrieved."
-                            : "Name Bull and Bear windows. The system does not pick dates."}
-          </p>
-          {wizDirty ? (
-            <p className="blocked" role="status">
-              Unsaved edits. Save or Cancel — other screens stay blocked.
-            </p>
-          ) : null}
-          <div className="buttons dossier-actions">
-            {wizStep === 3 || wizStep === 4 ? (
-            <button
-              type="button"
-              aria-label="Retrieve from market"
-              disabled={busy || writesBlocked}
-              onClick={() => void retrieveFromMarket()}
-            >
-              Retrieve from market
-            </button>
-            ) : null}
-            {wizStep === 5 ? (
-            <button
-              type="button"
-              aria-label="Save new investment facts"
-              disabled={busy || writesBlocked}
-              onClick={() => void newInvestmentPart1()}
-            >
-              Save
-            </button>
-            ) : null}
-            <button
-              type="button"
-              aria-label="Cancel new investment edits"
-              disabled={busy || !wizDirty}
-              onClick={() => cancelWizEdits()}
-            >
-              Cancel
-            </button>
-            {wizStep === 6 ? (
-            <>
-            <button
-              type="button"
-              aria-label="Use Most Current as Plan"
-              disabled={
-                busy ||
-                writesBlocked ||
-                (wizReview?.mostCurrentMinor == null && wizDecls[0] == null)
-              }
-              onClick={() => {
-                const minor = wizReview?.mostCurrentMinor ?? wizDecls[0]?.amountPerShareMinor;
-                const scale = wizReview?.amountScale ?? wizDecls[0]?.amountScale ?? 4;
-                if (minor == null) return;
-                setWizPlan(scaledDollars(minor, scale));
-                setWizPlanReason("Match Most Current");
-              }}
-            >
-              Use Most Current as Plan
-            </button>
-            <button
-              type="button"
-              aria-label="Use Avg 6 as Plan"
-              disabled={busy || writesBlocked || wizReview?.avg6Minor == null}
-              onClick={() => {
-                if (wizReview?.avg6Minor == null) return;
-                setWizPlan(scaledDollars(wizReview.avg6Minor, wizReview.amountScale));
-                setWizPlanReason("Match Avg 6 (owner typed)");
-              }}
-            >
-              Use Avg 6 as Plan
-            </button>
-            <button
-              type="button"
-              aria-label="Confirm Plan"
-              disabled={busy || writesBlocked || !wizSecurityId}
-              onClick={() => void confirmPlan()}
-            >
-              Confirm Plan
-            </button>
-            </>
-            ) : null}
-            {wizStep === 7 ? (
-            <>
-            <button
-              type="button"
-              aria-label="Research ROC"
-              disabled={busy || writesBlocked || !wizSecurityId}
-              onClick={() => void researchRoc()}
-            >
-              Research ROC
-            </button>
-            <button
-              type="button"
-              aria-label="Confirm ROC plan"
-              disabled={busy || writesBlocked || !wizSecurityId}
-              onClick={() => void confirmRocPlan()}
-            >
-              Confirm ROC plan
-            </button>
-            </>
-            ) : null}
-            {wizStep === 8 ? (
-            <>
-            <button
-              type="button"
-              aria-label="Open first lot"
-              disabled={busy || writesBlocked || !wizSecurityId}
-              onClick={() => void openFirstLot()}
-            >
-              Open first lot
-            </button>
-            <button
-              type="button"
-              aria-label="Save remaining payment dates"
-              disabled={busy || writesBlocked || !wizSecurityId}
-              onClick={() => void saveWizRemainingDates()}
-            >
-              Save remaining dates
-            </button>
-            </>
-            ) : null}
-            {wizStep === 9 ? (
-            <>
-            <button
-              type="button"
-              aria-label="Record bull period"
-              disabled={busy || writesBlocked}
-              onClick={() => void recordWizardPeriod("Bull")}
-            >
-              Record Bull dates
-            </button>
-            <button
-              type="button"
-              aria-label="Record bear period"
-              disabled={busy || writesBlocked}
-              onClick={() => void recordWizardPeriod("Bear")}
-            >
-              Record Bear dates
-            </button>
-            </>
-            ) : null}
-          </div>
-          {wizRetrieveNote && showWiz.price ? <p>{wizRetrieveNote}</p> : null}
-          {showWiz.strategy ? (
-            <section aria-label="What we maintain">
-              <h3>What this position must keep current</h3>
+        <section aria-label="Add Position">
+          <h2>Add Position</h2>
+          {wizProcessASaved && wizSecurityId ? (
+            <section aria-label="Process A completion">
+              <h3>Research saved</h3>
               <p>
-                Define the maintenance streams before any retrieve. Research comes next and fills
-                provider, issuer-page analytics, the future-declaration method, and underlying.
+                Process A finished for this identity. Zero lots is valid. Choose a next
+                action — this screen stays until you research another symbol.
               </p>
-              <table aria-label="Maintenance strategy">
+              <dl className="process-a-completion-summary" aria-label="Saved identity summary">
+                <div>
+                  <dt>Symbol</dt>
+                  <dd>{wizSymbol.trim().toUpperCase() || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Name</dt>
+                  <dd>{wizName.trim() || "unknown"}</dd>
+                </div>
+                <div>
+                  <dt>Lot count</dt>
+                  <dd>{formatCount(processALotCount)}</dd>
+                </div>
+                <div>
+                  <dt>Overall</dt>
+                  <dd>
+                    {processAFieldStatus.frequency &&
+                    processAFieldStatus.declarations &&
+                    processAFieldStatus.roc &&
+                    processAFieldStatus.price
+                      ? "researched"
+                      : "incomplete"}
+                  </dd>
+                </div>
+              </dl>
+              <table aria-label="Researched versus incomplete">
                 <thead>
                   <tr>
-                    <th scope="col">Stream</th>
-                    <th scope="col">How it stays current</th>
+                    <th scope="col">Field</th>
+                    <th scope="col">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr>
-                    <th scope="row">Last price</th>
-                    <td>Public quote (Yahoo). Never used for declarations or provider.</td>
+                    <th scope="row">Frequency</th>
+                    <td>{processAFieldStatus.frequency ? "filled" : "unknown"}</td>
                   </tr>
                   <tr>
-                    <th scope="row">Issuer declarations</th>
-                    <td>Issuer site named by research. Lookback is observation count, not Yahoo dividends.</td>
+                    <th scope="row">Declarations</th>
+                    <td>
+                      {processAFieldStatus.declarations
+                        ? `filled (${formatCount(wizDecls.length)})`
+                        : "unknown"}
+                    </td>
                   </tr>
                   <tr>
-                    <th scope="row">Future pay dates</th>
-                    <td>Remaining-year calendar from issuer pay dates when the GET table is readable.</td>
+                    <th scope="row">ROC estimate</th>
+                    <td>
+                      {processAFieldStatus.roc
+                        ? `filled (${((wizRoc!.rocPctMinor as number) / 10 ** wizRoc!.scale).toFixed(wizRoc!.scale)}%)`
+                        : "unknown"}
+                    </td>
                   </tr>
                   <tr>
-                    <th scope="row">ROC</th>
-                    <td>Current-year 19a-1 when published. Blank is unknown, not 0%.</td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Characteristics</th>
-                    <td>Provider, underlying, frequency — researched, then owner-confirmed.</td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Broker actuals</th>
-                    <td>From the account that holds the lot (import). Not a template field.</td>
+                    <th scope="row">Price</th>
+                    <td>
+                      {processAFieldStatus.price
+                        ? `filled (${scaledDollars(wizPriceState!.priceMinor as number, wizPriceState!.scale)})`
+                        : "unknown"}
+                    </td>
                   </tr>
                 </tbody>
               </table>
+              <div className="buttons dossier-actions">
+                <button
+                  type="button"
+                  aria-label="Open Position Details"
+                  disabled={busy}
+                  onClick={() => goProcessAToPositionDetails()}
+                >
+                  Open Position Details
+                </button>
+                <button
+                  type="button"
+                  aria-label="Validate current ROC estimate"
+                  disabled={
+                    busy ||
+                    writesBlocked ||
+                    !(wizSourceUrl.trim() || wizDeclSource.trim())
+                  }
+                  onClick={() => void researchRoc()}
+                >
+                  Validate current ROC estimate
+                </button>
+                <button
+                  type="button"
+                  aria-label="Add lots"
+                  disabled={busy}
+                  onClick={() => goProcessAToAddLot()}
+                >
+                  Add lots
+                </button>
+                <button
+                  type="button"
+                  aria-label="Research another position"
+                  disabled={busy || writesBlocked}
+                  onClick={() => startAnotherProcessA()}
+                >
+                  Research another
+                </button>
+              </div>
             </section>
-          ) : null}
-          {showWiz.template ? (
-            <section aria-label="Standing retrieval template">
-              <h3>Standing retrieval template</h3>
-              <p>
-                This is the how. Next researches issuer sites to fill blanks. It does not pull last
-                price or post declarations yet.
+          ) : (
+            <>
+          <p>
+            Process A: enter symbol and the issuer distribution URL, then Research.
+            Retrieved facts show below; missing stays unknown — never $0. Confirm Plan
+            and Apply tier are explicit owner actions. Lots are opened on Add Lot, not here.
+            Save ends Process A on an explicit completion screen.
+          </p>
+          <div className="form-grid process-a-inputs">
+            <label>
+              Symbol
+              <input
+                aria-label="Symbol"
+                value={wizSymbol}
+                onChange={(e) => {
+                  setWizSymbol(e.target.value.toUpperCase());
+                  setWizResearchDone(false);
+                  setWizProcessASaved(false);
+                }}
+                disabled={busy || writesBlocked}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              Distribution URL
+              <input
+                aria-label="Distribution URL"
+                value={wizSourceUrl}
+                onChange={(e) => {
+                  setWizSourceUrl(e.target.value);
+                  setWizResearchDone(false);
+                  setWizProcessASaved(false);
+                }}
+                disabled={busy || writesBlocked}
+                placeholder="https://…/#distributions"
+                autoComplete="off"
+              />
+            </label>
+          </div>
+          <div className="buttons dossier-actions">
+            <button
+              type="button"
+              aria-label="Research"
+              disabled={
+                busy ||
+                Boolean(wizResearchProgress) ||
+                writesBlocked ||
+                !wizSymbol.trim() ||
+                !wizSourceUrl.trim()
+              }
+              onClick={() => void runProcessAResearch()}
+            >
+              Research
+            </button>
+            {wizResearchDone ? (
+              <button
+                type="button"
+                aria-label="Save Process A research"
+                disabled={busy || writesBlocked || !wizSecurityId}
+                onClick={() => saveProcessAResearch()}
+              >
+                Save
+              </button>
+            ) : null}
+          </div>
+          {wizResearchProgress ? (
+            <section
+              className="process-a-research-progress"
+              aria-label="Research progress"
+              aria-busy="true"
+            >
+              <p role="status" aria-live="polite">
+                {wizResearchProgress.label}
               </p>
-              <label>
-                Price source
-                <input
-                  aria-label="Price source"
-                  value={wizPriceSource}
-                  onChange={(e) => setWizPriceSource(e.target.value)}
-                  disabled={busy || writesBlocked}
+              {wizResearchProgress.total > 0 ? (
+                <progress
+                  max={wizResearchProgress.total}
+                  value={Math.min(wizResearchProgress.step, wizResearchProgress.total)}
                 />
-              </label>
-              <label>
-                Declaration source
-                <select
-                  aria-label="Declaration source"
-                  value={wizDeclSource}
-                  onChange={(e) => setWizDeclSource(e.target.value)}
-                  disabled={busy || writesBlocked}
-                >
-                  <option value="">Unassigned — research will propose one</option>
-                  <option value="roundhill">roundhill</option>
-                  <option value="amplify">amplify</option>
-                  <option value="neos">neos</option>
-                  <option value="yieldmax">yieldmax</option>
-                </select>
-              </label>
-              <label>
-                Payment cadence
-                <select
-                  aria-label="New investment frequency"
-                  value={wizFreq}
-                  onChange={(e) => setWizFreq(e.target.value)}
-                  disabled={busy || writesBlocked}
-                >
-                  <option value="">Choose cadence</option>
-                  <option value="Weekly">Weekly (52)</option>
-                  <option value="Monthly">Monthly (12)</option>
-                  <option value="Quarterly">Quarterly (4)</option>
-                  <option value="None">None (does not pay)</option>
-                </select>
-              </label>
-              <label>
-                Lookback (observations)
-                <input
-                  aria-label="Lookback count"
-                  value={wizLookback}
-                  onChange={(e) => setWizLookback(e.target.value)}
-                  disabled={busy || writesBlocked}
-                />
-              </label>
-              <label>
-                Calendar policy
-                <select
-                  aria-label="Calendar policy"
-                  value={wizCalendarPolicy}
-                  onChange={(e) => setWizCalendarPolicy(e.target.value)}
-                  disabled={busy || writesBlocked}
-                >
-                  <option value="">Choose how remaining-year dates are built</option>
-                  <option value="issuer_calendar">issuer_calendar — published year dates</option>
-                  <option value="derived_walk">derived_walk — from last pay + cadence</option>
-                  <option value="none">none — does not pay</option>
-                </select>
-              </label>
-            </section>
-          ) : null}
-          {showWiz.research ? (
-            <section aria-label="Source research">
-              <h3>Source research</h3>
-              <p>
-                Provider lookup, issuer-page analytics, future-declaration strategy, and
-                characteristics. Yahoo is last price only. If a site cannot fill a fact, it stays
-                unknown and the note explains why.
-              </p>
-              {wizAttempts.length === 0 ? (
-                <p>No issuer attempts yet. Next on step 2 runs this research.</p>
               ) : (
-                <table aria-label="Issuer site attempts">
-                  <thead>
-                    <tr>
-                      <th scope="col">Site</th>
-                      <th scope="col">Found</th>
-                      <th scope="col">Note</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {wizAttempts.map((row) => (
-                      <tr key={`${row.vendor}-${row.url}`}>
-                        <td>
-                          {row.vendor}{" "}
-                          <a href={row.url} target="_blank" rel="noreferrer">
-                            {row.url}
-                          </a>
-                        </td>
-                        <td>{row.found ? "yes" : "no"}</td>
-                        <td>{row.note}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="process-a-research-spinner" aria-hidden="true" />
               )}
-              {wizAnalytics ? (
-                <table aria-label="Source analytics">
-                  <thead>
-                    <tr>
-                      <th scope="col">Issuer GET</th>
-                      <th scope="col">Result</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <th scope="row">HTML returned</th>
-                      <td>{wizAnalytics.htmlReturned ? "yes" : "no"}</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Fund page</th>
-                      <td>{wizAnalytics.fundPage ? "yes" : "no"}</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Distribution table on GET</th>
-                      <td>
-                        {wizAnalytics.tableOnGet
-                          ? `${formatCount(wizAnalytics.tableRowCount ?? 0)} rows`
-                          : "empty"}
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">JS-filled grid likely</th>
-                      <td>{wizAnalytics.jsLikely ? "yes" : "no"}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              ) : null}
-              {wizFutureStrategy ? (
-                <p aria-label="Future declaration strategy">{wizFutureStrategy}</p>
-              ) : null}
-              {wizMiss ? <p role="status">{wizMiss}</p> : null}
-              {wizSourceUrl ? <p>Chosen page: {wizSourceUrl}</p> : null}
-              <label>
-                Declaration source
-                <select
-                  aria-label="Declaration source"
-                  value={wizDeclSource}
-                  onChange={(e) => setWizDeclSource(e.target.value)}
-                  disabled={busy || writesBlocked}
-                >
-                  <option value="">Unassigned — do not use Yahoo dividends</option>
-                  <option value="roundhill">roundhill</option>
-                  <option value="amplify">amplify</option>
-                  <option value="neos">neos</option>
-                  <option value="yieldmax">yieldmax</option>
-                </select>
-              </label>
-              <label>
-                Provider
-                <input
-                  aria-label="New investment provider"
-                  value={wizProvider}
-                  onChange={(e) => setWizProvider(e.target.value)}
-                  disabled={busy || writesBlocked}
-                  placeholder="issuer/sponsor from the chosen site"
-                />
-              </label>
-              <label>
-                Underlying
-                <input
-                  aria-label="New investment underlying"
-                  value={wizUnderlying}
-                  onChange={(e) => setWizUnderlying(e.target.value)}
-                  disabled={busy || writesBlocked}
-                  placeholder="researched exposure ticker, blank if unknown"
-                />
-              </label>
             </section>
           ) : null}
-          {wizRisk === "Risk On" ? (
-            <p role="status">
-              Risk On is your manual setting. High-distribution ETFs often return capital: treat
-              ROC as unknown until researched, and do not auto-fill Plan from Avg 6.
-            </p>
-          ) : null}
-          <div className="table-wrap">
-          <table aria-label="Mandatory data checklist">
-            <thead>
-              <tr>
-                <th scope="col">Fact</th>
-                <th scope="col">Value</th>
-                <th scope="col">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {showWiz.symbol ? (
-              <tr>
-                <th scope="row">Symbol</th>
-                <td>
-                  <input
-                    aria-label="New investment symbol"
-                    value={wizSymbol}
-                    onChange={(e) => setWizSymbol(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  />
-                </td>
-                <td>{wizPart1Stored ? "stored" : wizSymbol ? "editable" : "missing"}</td>
-              </tr>
-              ) : null}
-              {showWiz.identity ? (
-              <>
-              <tr>
-                <th scope="row">Name</th>
-                <td>
-                  <input
-                    aria-label="New investment name"
-                    value={wizName}
-                    onChange={(e) => setWizName(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  />
-                </td>
-                <td>{wizPart1Stored ? "stored" : wizName ? "retrieved" : "missing"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Provider</th>
-                <td>
-                  <input
-                    aria-label="New investment provider"
-                    value={wizProvider}
-                    onChange={(e) => setWizProvider(e.target.value)}
-                    disabled={busy || writesBlocked}
-                    placeholder="issuer/sponsor — not the instrument name"
-                  />
-                </td>
-                <td>{wizProvider ? (wizPart1Stored ? "stored" : "retrieved") : "missing"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Underlying</th>
-                <td>
-                  <input
-                    aria-label="New investment underlying"
-                    value={wizUnderlying}
-                    onChange={(e) => setWizUnderlying(e.target.value)}
-                    disabled={busy || writesBlocked}
-                    placeholder="exposure ticker — blank if unknown"
-                  />
-                </td>
-                <td>{wizUnderlying ? (wizPart1Stored ? "stored" : "researched") : "unknown"}</td>
-              </tr>
-              </>
-              ) : null}
-              {showWiz.risk ? (
-              <>
-              <tr>
-                <th scope="row">Risk</th>
-                <td>
-                  <select
-                    aria-label="New investment risk"
-                    value={wizRisk}
-                    onChange={(e) => setWizRisk(e.target.value)}
-                    disabled={busy || writesBlocked}
+          {wizRetrieveNote ? <p role="status">{wizRetrieveNote}</p> : null}
+          {wizResearchDone && !wizResearchProgress ? (
+            <section aria-label="Research results">
+              <h3>Research results</h3>
+              <table aria-label="Retrieved versus unknown">
+                <thead>
+                  <tr>
+                    <th scope="col">Field</th>
+                    <th scope="col">Value</th>
+                    <th scope="col">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th scope="row">Provider / type</th>
+                    <td>
+                      {[wizProvider, wizDeclSource].filter(Boolean).join(" · ") || "—"}
+                    </td>
+                    <td>{wizProvider.trim() || wizDeclSource.trim() ? "retrieved" : "unknown"}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Underlying</th>
+                    <td>{wizUnderlying.trim() || "—"}</td>
+                    <td>{wizUnderlying.trim() ? "retrieved" : "unknown"}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Frequency</th>
+                    <td>{wizFreq.trim() || "—"}</td>
+                    <td>{parseCadence(wizFreq) ? "retrieved" : "unknown"}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Last 12 declarations</th>
+                    <td>
+                      {wizDecls.length > 0
+                        ? `${formatCount(wizDecls.length)} paid`
+                        : "—"}
+                    </td>
+                    <td>{wizDecls.length > 0 ? "retrieved" : "unknown"}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Remaining-year dates</th>
+                    <td>
+                      {(wizRemaining?.payments?.length ?? wizUpcomingPays.length) > 0
+                        ? `${formatCount(wizRemaining?.payments?.length ?? wizUpcomingPays.length)} dates`
+                        : "—"}
+                    </td>
+                    <td>
+                      {(wizRemaining?.payments?.length ?? wizUpcomingPays.length) > 0
+                        ? "retrieved"
+                        : "unknown"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Suggested Plan</th>
+                    <td>
+                      {wizReview?.mostCurrentMinor != null
+                        ? `${scaledDollars(wizReview.mostCurrentMinor, wizReview.amountScale)}/share (Most Current)`
+                        : "—"}
+                      {wizReview?.avg6Minor != null
+                        ? `; Avg 6 ${scaledDollars(wizReview.avg6Minor, wizReview.amountScale)}`
+                        : ""}
+                    </td>
+                    <td>
+                      {wizReview?.mostCurrentMinor != null || wizReview?.avg6Minor != null
+                        ? "retrieved"
+                        : "unknown"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Last price</th>
+                    <td>
+                      {wizPriceState?.priceMinor != null && wizPriceState.priceMinor > 0
+                        ? `${scaledDollars(wizPriceState.priceMinor, wizPriceState.scale)} (${wizPriceState.freshness || "unknown"})`
+                        : "—"}
+                    </td>
+                    <td>
+                      {wizPriceState?.priceMinor != null && wizPriceState.priceMinor > 0
+                        ? "retrieved"
+                        : "unknown"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Suggested tier</th>
+                    <td>
+                      {(wizTierSuggestion?.suggestedTier || wizLookthrough.riskTierSuggestion || "").trim()
+                        ? `${wizTierSuggestion?.suggestedTier || wizLookthrough.riskTierSuggestion}${
+                            (wizTierSuggestion?.reason || wizLookthrough.riskTierSuggestionReason)
+                              ? ` — ${wizTierSuggestion?.reason || wizLookthrough.riskTierSuggestionReason}`
+                              : ""
+                          }`
+                        : "—"}
+                    </td>
+                    <td>
+                      {(wizTierSuggestion?.suggestedTier || wizLookthrough.riskTierSuggestion || "").trim()
+                        ? "retrieved"
+                        : "unknown"}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <section aria-label="ROC research strip" className="roc-research-strip">
+                <h4>ROC research</h4>
+                <p>
+                  {wizRoc && wizRoc.rocPctMinor != null
+                    ? `Proposed ${((wizRoc.rocPctMinor as number) / 10 ** wizRoc.scale).toFixed(wizRoc.scale)}% (2026 estimate, ${wizRoc.kind || "estimate"})${
+                        wizRoc.sourceUrl ? ` — ${wizRoc.sourceUrl}` : ""
+                      }. Not research-complete; not 1099 actual.`
+                    : "unknown — not 0%"}
+                </p>
+                {wizSourceUrl.trim() || wizDeclSource.trim() ? (
+                  <button
+                    type="button"
+                    aria-label="Validate current ROC estimate"
+                    disabled={busy || writesBlocked || !wizSecurityId}
+                    onClick={() => void researchRoc()}
                   >
-                    <option value="">Choose owner tier</option>
-                    {RISK_TIERS.map((tier) => (
-                      <option key={tier} value={tier}>
-                        {tier}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td>{wizPart1Stored ? "stored" : wizRisk ? "owner" : "missing — owner must choose"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Frequency</th>
-                <td>
-                  <select
-                    aria-label="New investment frequency"
-                    value={wizFreq}
-                    onChange={(e) => setWizFreq(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  >
-                    <option value="">Choose cadence</option>
-                    <option value="Weekly">Weekly (52)</option>
-                    <option value="Monthly">Monthly (12)</option>
-                    <option value="Quarterly">Quarterly (4)</option>
-                    <option value="None">None (does not pay)</option>
-                  </select>
-                </td>
-                <td>
-                  {wizPart1Stored
-                    ? "stored"
-                    : parseCadence(wizFreq)?.label === "None"
-                      ? "None (does not pay)"
-                      : parseCadence(wizFreq)
-                        ? `${parseCadence(wizFreq)?.label} (${parseCadence(wizFreq)?.periods})`
-                        : "missing — required to add"}
-                </td>
-              </tr>
-              </>
-              ) : null}
-              {showWiz.price ? (
-              <>
-              <tr>
-                <th scope="row">CurrentPrice</th>
-                <td>
-                  <input
-                    aria-label="Record last price"
-                    value={wizPrice}
-                    onChange={(e) => setWizPrice(e.target.value)}
-                    disabled={busy || writesBlocked}
-                    placeholder="Yahoo last price only, or type override"
-                  />
-                </td>
-                <td>
-                  {wizPriceState?.priceMinor != null
-                    ? `${wizPriceState.freshness} stored`
-                    : wizPrice
-                      ? "retrieved — not stored yet"
-                      : "missing"}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Declarations (12 lookback)</th>
-                <td>
-                  {formatCount(wizReview?.observationCount ?? wizDecls.length)} / 12
-                  {wizDecls.length === 0 ? (
-                    <>
-                      <input
-                        aria-label="Declaration source"
-                        value={wizDeclSource}
-                        onChange={(e) => setWizDeclSource(e.target.value)}
-                        disabled={busy || writesBlocked}
-                        placeholder="source"
-                      />
-                      <input
-                        aria-label="Retrieve declarations"
-                        value={wizDeclAmounts}
-                        onChange={(e) => setWizDeclAmounts(e.target.value)}
-                        disabled={busy || writesBlocked}
-                        placeholder="up to 12 amounts, newest first"
-                      />
-                    </>
-                  ) : null}
-                </td>
-                <td>
-                  {(wizReview?.observationCount ?? wizDecls.length) > 0
-                    ? wizPart1Stored
-                      ? "stored"
-                      : "retrieved"
-                    : "missing — paste in this row"}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Future pay dates</th>
-                <td>
-                  {wizUpcomingPays.length === 0
-                    ? "none from issuer page — remaining-year stays unknown until researched"
-                    : wizUpcomingPays.map((p) => (
-                        <div key={p.payOn}>
-                          {p.payOn}
-                          {p.amountPerShareMinor == null
-                            ? ""
-                            : ` $${formatScaled(p.amountPerShareMinor, p.amountScale ?? 4)}`}
-                        </div>
+                    Validate current ROC estimate
+                  </button>
+                ) : null}
+              </section>
+
+              {wizDecls.length > 0 ? (
+                <div className="table-wrap">
+                  <p>Last {formatCount(wizDecls.length)} declarations (newest first).</p>
+                  <table aria-label="Last declarations">
+                    <thead>
+                      <tr>
+                        <th scope="col">Period</th>
+                        <th className="numeric" scope="col">Per share</th>
+                        <th scope="col">Source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {wizDecls.map((d, i) => (
+                        <tr key={`${d.paymentPeriod ?? i}`}>
+                          <td>{d.paymentPeriod ?? "—"}</td>
+                          <td className="numeric">
+                            {formatScaled(d.amountPerShareMinor, d.amountScale ?? 4)}
+                          </td>
+                          <td>{d.source ?? "—"}</td>
+                        </tr>
                       ))}
-                </td>
-                <td>
-                  {wizUpcomingPays.length === 0
-                    ? "unknown — not invented"
-                    : "from issuer site"}
-                </td>
-              </tr>
-              </>
+                    </tbody>
+                  </table>
+                </div>
               ) : null}
-              {showWiz.review ? (
-              <>
-              <tr>
-                <th scope="row">Most Current</th>
-                <td>
-                  {(wizReview?.mostCurrentMinor ?? wizDecls[0]?.amountPerShareMinor) == null
-                    ? "N/A"
-                    : `$${formatScaled(
-                        wizReview?.mostCurrentMinor ?? wizDecls[0]?.amountPerShareMinor ?? 0,
-                        wizReview?.amountScale ?? wizDecls[0]?.amountScale ?? 4,
-                      )}`}
-                </td>
-                <td>
-                  {(wizReview?.mostCurrentMinor ?? wizDecls[0]?.amountPerShareMinor) == null
-                    ? "missing"
-                    : "calculated"}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Avg 6</th>
-                <td>
-                  {wizReview?.avg6Minor == null
-                    ? "incomplete"
-                    : `$${formatScaled(wizReview.avg6Minor, wizReview.amountScale)}`}
-                </td>
-                <td>{wizReview?.avg6Complete ? "calculated" : "incomplete"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Min / max / 80% of avg</th>
-                <td>
-                  {wizReview?.minMinor == null
-                    ? "N/A until retrieve/save"
-                    : `$${formatScaled(wizReview.minMinor, wizReview.amountScale)} / $${formatScaled(wizReview.maxMinor ?? 0, wizReview.amountScale)} / ${
-                        wizReview.eightyPctOfAvgMinor == null
-                          ? "N/A"
-                          : `$${formatScaled(wizReview.eightyPctOfAvgMinor, wizReview.amountScale)}`
-                      }`}
-                </td>
-                <td>{wizReview?.fullAnalysisPossible ? "calculated" : "blocked or incomplete"}</td>
-              </tr>
-              </>
+
+              {(wizRemaining?.payments?.length ?? 0) > 0 ? (
+                <div className="table-wrap">
+                  <p>Remaining-year pay dates.</p>
+                  <table aria-label="Remaining year dates">
+                    <thead>
+                      <tr>
+                        <th scope="col">Pay on</th>
+                        <th scope="col">Source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {wizRemaining!.payments.map((p) => (
+                        <tr key={p.payOn}>
+                          <td>{p.payOn}</td>
+                          <td>{dateProvenanceLabel(p.dateProvenance) || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               ) : null}
-              {showWiz.plan ? (
-              <>
-              <tr>
-                <th scope="row">Plan / share</th>
-                <td>
-                  <input
-                    aria-label="Plan per share"
-                    value={wizPlan}
-                    onChange={(e) => setWizPlan(e.target.value)}
-                    disabled={busy || writesBlocked}
-                    placeholder={
-                      wizDecls[0]
-                        ? `Most Current ${formatScaled(wizDecls[0].amountPerShareMinor, wizDecls[0].amountScale ?? 4)} — type Plan`
-                        : "Owner-controlled; not filled from Avg 6"
-                    }
-                  />
-                </td>
-                <td>{wizPlanStored ? "stored" : "editable"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Plan reason</th>
-                <td>
-                  <select
-                    aria-label="Plan decision reason"
-                    value={wizPlanReason}
-                    onChange={(e) => setWizPlanReason(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  >
-                    <option value="">Choose reason</option>
-                    {PLAN_REASONS.map((reason) => (
-                      <option key={reason} value={reason}>
-                        {reason}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td>{wizPlanStored ? "stored" : "editable"}</td>
-              </tr>
-              {(wizReview?.incompleteReasonRequired ||
-                (wizDecls.length > 0 && wizDecls.length < 6)) && (
-                <tr>
-                  <th scope="row">Incomplete analysis</th>
-                  <td>
+
+              <section aria-label="Owner plan and tier actions">
+                <h4>Owner actions</h4>
+                <p>
+                  Confirm Plan needs declaration research
+                  {parseCadence(wizFreq) ? "" : " and retrieved frequency"}.
+                  Apply tier needs a suggested tier. Neither runs automatically.
+                </p>
+                <div className="form-grid">
+                  <label>
+                    Plan / share
+                    <input
+                      aria-label="Plan per share"
+                      value={wizPlan}
+                      onChange={(e) => setWizPlan(e.target.value)}
+                      disabled={busy || writesBlocked}
+                    />
+                  </label>
+                  <label>
+                    Plan reason
                     <select
-                      aria-label="Incomplete analysis reason"
-                      value={wizIncomplete}
-                      onChange={(e) => setWizIncomplete(e.target.value)}
+                      aria-label="Plan reason"
+                      value={wizPlanReason}
+                      onChange={(e) => setWizPlanReason(e.target.value)}
                       disabled={busy || writesBlocked}
                     >
-                      <option value="">Choose why full analysis is not possible</option>
-                      {INCOMPLETE_REASONS.map((reason) => (
-                        <option key={reason} value={reason}>
-                          {reason}
+                      <option value="">Select reason</option>
+                      {PLAN_REASONS.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
                         </option>
                       ))}
                     </select>
-                  </td>
-                  <td>editable</td>
-                </tr>
-              )}
-              </>
-              ) : null}
-              {showWiz.roc ? (
-              <>
-              <tr>
-                <th scope="row">ROC percent</th>
-                <td>
-                  <input
-                    aria-label="ROC percent"
-                    value={wizRocPct}
-                    onChange={(e) => setWizRocPct(e.target.value)}
-                    disabled={busy || writesBlocked}
-                    placeholder="system-filled when researched; override if needed"
-                  />
-                </td>
-                <td>
-                  {wizRoc?.complete
-                    ? wizRoc.ownerOverride
-                      ? "owner override"
-                      : "system"
-                    : "unknown is not 0%"}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">ROC how / where</th>
-                <td>
-                  {wizRoc
-                    ? `${wizRoc.establishedHow || wizRoc.reason}${wizRoc.method ? ` via ${wizRoc.method}` : ""}${wizRoc.asOf ? ` as of ${wizRoc.asOf}` : ""}${wizRoc.sourceUrl ? ` ${wizRoc.sourceUrl}` : ""}`
-                    : "not researched"}
-                </td>
-                <td>calculated</td>
-              </tr>
-              </>
-              ) : null}
-              {showWiz.lot ? (
-              <>
-              <tr>
-                <th scope="row">First lot account</th>
-                <td>
-                  <select
-                    aria-label="First lot account"
-                    value={wizAccountId}
-                    onChange={(e) => setWizAccountId(e.target.value)}
-                    disabled={busy || writesBlocked}
+                  </label>
+                  {wizReview?.incompleteReasonRequired ? (
+                    <label>
+                      Incomplete analysis reason
+                      <input
+                        aria-label="Incomplete analysis reason"
+                        value={wizIncomplete}
+                        onChange={(e) => setWizIncomplete(e.target.value)}
+                        disabled={busy || writesBlocked}
+                      />
+                    </label>
+                  ) : null}
+                </div>
+                <div className="buttons">
+                  <button
+                    type="button"
+                    aria-label="Use Most Current as Plan"
+                    disabled={
+                      busy ||
+                      writesBlocked ||
+                      (wizReview?.mostCurrentMinor == null && wizDecls[0] == null)
+                    }
+                    onClick={() => {
+                      const minor = wizReview?.mostCurrentMinor ?? wizDecls[0]?.amountPerShareMinor;
+                      const scale = wizReview?.amountScale ?? wizDecls[0]?.amountScale ?? 4;
+                      if (minor == null) return;
+                      setWizPlan(scaledDollars(minor, scale));
+                      setWizPlanReason("Match Most Current");
+                    }}
                   >
-                    <option value="">Choose account</option>
-                    {accounts.map((a) => (
-                      <option key={a.accountId} value={a.accountId}>
-                        {a.name}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td>{wizLotStored ? "stored" : "editable"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Quantity</th>
-                <td>
-                  <input
-                    aria-label="First lot quantity"
-                    value={wizQty}
-                    onChange={(e) => setWizQty(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  />
-                </td>
-                <td>{wizLotStored ? "stored" : "editable"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Original cost</th>
-                <td>
-                  <input
-                    aria-label="First lot original cost"
-                    value={wizCost}
-                    onChange={(e) => setWizCost(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  />
-                </td>
-                <td>{wizLotStored ? "stored" : "editable"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Remaining-year schedule</th>
-                <td>
-                  {!wizSecurityId
-                    ? "Save Part 1 first."
-                    : wizRemaining == null
-                      ? "loading"
-                      : wizRemaining.known
-                        ? `${wizRemaining.provenance}${wizRemaining.hypothetical ? " — planned if this quantity is opened" : ""}`
-                        : `${wizRemaining.provenance}. Name the next payment date; do not invent $0.`}
-                </td>
-                <td>{wizRemaining?.known ? "calculated" : "unknown"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Year-to-go planned income</th>
-                <td>
-                  {wizRemaining?.yearToGoMinor == null
-                    ? "unknown"
-                    : formatUsd(wizRemaining.yearToGoMinor, wizRemaining.scale)}
-                </td>
-                <td>{wizRemaining?.planKnown ? "Plan × qty" : "need confirmed Plan"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Monthly planned income</th>
-                <td>
-                  {monthTotalsFromPays(
-                    wizPayDraft.map((d) => {
-                      const src = wizRemaining?.payments.find(
-                        (p) => p.originalPayOn === d.originalPayOn,
-                      );
-                      return {
-                        payOn: d.payOn,
-                        cashMinor: src?.cashMinor ?? null,
-                      };
-                    }),
-                  ).map((m) => (
-                    <div key={m.month}>
-                      {m.month}: {m.cashMinor == null ? "unknown" : formatUsd(m.cashMinor, 2)}
-                    </div>
-                  ))}
-                  {wizRemaining?.known && wizPayDraft.length === 0 ? "unknown" : null}
-                </td>
-                <td>months with a payment only</td>
-              </tr>
-              <tr>
-                <th scope="row">Remaining payment dates</th>
-                <td>
-                  {wizRemaining != null && !wizRemaining.known ? (
-                    <input
-                      aria-label="Next payment date"
-                      type="date"
-                      value={wizNextPay}
-                      onChange={(e) => setWizNextPay(e.target.value)}
-                      disabled={busy || writesBlocked || !wizSecurityId}
-                    />
-                  ) : (
-                    <table aria-label="Remaining-year payment dates">
-                      <thead>
-                        <tr>
-                          <th scope="col">Pay date</th>
-                          <th scope="col">Cash</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {wizPayDraft.map((pay) => {
-                          const src = wizRemaining?.payments.find(
-                            (p) => p.originalPayOn === pay.originalPayOn,
-                          );
-                          return (
-                            <tr key={pay.originalPayOn}>
-                              <td>
-                                <input
-                                  type="date"
-                                  aria-label={`Remaining pay date ${pay.originalPayOn}`}
-                                  value={pay.payOn}
-                                  onChange={(e) =>
-                                    setWizPayDraft((prev) =>
-                                      prev.map((row) =>
-                                        row.originalPayOn === pay.originalPayOn
-                                          ? { ...row, payOn: e.target.value }
-                                          : row,
-                                      ),
-                                    )
-                                  }
-                                  disabled={busy || writesBlocked}
-                                />
-                              </td>
-                              <td>
-                                {src?.cashMinor == null
-                                  ? "unknown"
-                                  : formatUsd(src.cashMinor, wizRemaining?.scale ?? 2)}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                      <tfoot>
-                        <tr>
-                          <td>Year-to-go</td>
-                          <td>
-                            {wizRemaining?.yearToGoMinor == null
-                              ? "unknown"
-                              : formatUsd(wizRemaining.yearToGoMinor, wizRemaining.scale)}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  )}
-                </td>
-                <td>editable in the same row</td>
-              </tr>
-              </>
-              ) : null}
-              {showWiz.regime ? (
-              <>
-              <tr>
-                <th scope="row">Bull start / end</th>
-                <td>
-                  <input
-                    type="date"
-                    aria-label="Bull start"
-                    value={wizBullStart}
-                    onChange={(e) => setWizBullStart(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  />
-                  <input
-                    type="date"
-                    aria-label="Bull end"
-                    value={wizBullEnd}
-                    onChange={(e) => setWizBullEnd(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  />
-                </td>
-                <td>{wizBullStored ? "stored" : "owner names dates"}</td>
-              </tr>
-              <tr>
-                <th scope="row">Bear start / end</th>
-                <td>
-                  <input
-                    type="date"
-                    aria-label="Bear start"
-                    value={wizBearStart}
-                    onChange={(e) => setWizBearStart(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  />
-                  <input
-                    type="date"
-                    aria-label="Bear end"
-                    value={wizBearEnd}
-                    onChange={(e) => setWizBearEnd(e.target.value)}
-                    disabled={busy || writesBlocked}
-                  />
-                </td>
-                <td>{wizBearStored ? "stored" : "owner names dates"}</td>
-              </tr>
-              </>
-              ) : null}
-            </tbody>
-          </table>
-          </div>
-          {wizDecls.length > 0 && (showWiz.price || showWiz.review) ? (
-            <div className="table-wrap">
-              <p>Last {formatCount(wizDecls.length)} declarations from the market (newest first).</p>
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">Period</th>
-                    <th className="numeric" scope="col">Per share</th>
-                    <th scope="col">Source</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {wizDecls.map((d, i) => (
-                    <tr key={`${d.paymentPeriod ?? i}`}>
-                      <td>{d.paymentPeriod ?? "—"}</td>
-                      <td className="numeric">
-                        {formatScaled(d.amountPerShareMinor, d.amountScale ?? 4)}
-                      </td>
-                      <td>{d.source ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                    Use Most Current as Plan
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Use Avg 6 as Plan"
+                    disabled={busy || writesBlocked || wizReview?.avg6Minor == null}
+                    onClick={() => {
+                      if (wizReview?.avg6Minor == null) return;
+                      setWizPlan(scaledDollars(wizReview.avg6Minor, wizReview.amountScale));
+                      setWizPlanReason("Match Avg 6 (owner typed)");
+                    }}
+                  >
+                    Use Avg 6 as Plan
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Confirm Plan"
+                    disabled={
+                      busy ||
+                      writesBlocked ||
+                      !wizSecurityId ||
+                      !wizPlan.trim() ||
+                      !wizPlanReason ||
+                      !parseCadence(wizFreq) ||
+                      Boolean(wizReview?.confirmBlocked) ||
+                      (wizReview?.observationCount ?? 0) < 1 ||
+                      (Boolean(wizReview?.incompleteReasonRequired) && !wizIncomplete.trim())
+                    }
+                    onClick={() => void confirmPlan()}
+                  >
+                    Confirm Plan
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Apply suggested tier"
+                    disabled={
+                      busy ||
+                      writesBlocked ||
+                      !wizSecurityId ||
+                      !RISK_TIERS.includes(
+                        (wizTierSuggestion?.suggestedTier ||
+                          wizLookthrough.riskTierSuggestion ||
+                          "").trim(),
+                      )
+                    }
+                    onClick={() => void applyWizSuggestedTier()}
+                  >
+                    Apply tier
+                  </button>
+                </div>
+                {wizPlanStored ? <p role="status">Plan confirmed.</p> : null}
+                {wizRisk.trim() ? <p role="status">Applied tier: {wizRisk}</p> : null}
+              </section>
+            </section>
           ) : null}
+            </>
+          )}
         </section>
       ) : null}
 
@@ -4794,9 +6657,10 @@ export default function App() {
         <section aria-label="Add Lot">
           <h2>Add Lot</h2>
           <p>
-            Existing symbol only. Quantity and cost are edited in the same row that shows them.
-            Remaining-year payment dates and monthly/year-to-go Plan cash use this lot and the
-            position after add. Save or Cancel; other screens stay blocked while this row is dirty.
+            Process B: open an explicit lot on a researched symbol (Add Position first).
+            Account, opened-on, quantity, original cost, tax cost if different, and origin only.
+            No frequency, URL, ROC, or tier here. Opening is explicit — no FIFO. Zero lots after
+            research is valid until you save.
           </p>
           {addLotDirty ? (
             <p className="blocked" role="status">
@@ -4806,11 +6670,20 @@ export default function App() {
           <div className="buttons dossier-actions">
             <button
               type="button"
-              aria-label="Add Lot"
-              disabled={busy || writesBlocked}
+              aria-label="Open lot"
+              disabled={
+                busy ||
+                writesBlocked ||
+                !addLotSecurityId ||
+                !addLotAccountId ||
+                !addLotOpenedOn.trim() ||
+                !addLotQty.trim() ||
+                !addLotCost.trim() ||
+                (addLotTaxDifferent && !addLotTaxCost.trim())
+              }
               onClick={() => void openAddLot()}
             >
-              Save
+              Open lot
             </button>
             <button
               type="button"
@@ -4820,232 +6693,153 @@ export default function App() {
             >
               Cancel
             </button>
-            <button
-              type="button"
-              aria-label="Save remaining payment dates"
-              disabled={busy || writesBlocked || !addLotSecurityId}
-              onClick={() => void saveAddLotRemainingDates()}
-            >
-              Save remaining dates
-            </button>
           </div>
-          <div className="table-wrap">
-            <table aria-label="Add lot dossier">
-              <thead>
-                <tr>
-                  <th scope="col">Fact</th>
-                  <th scope="col">Value</th>
-                  <th scope="col">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th scope="row">Symbol</th>
-                  <td>
-                    <select
-                      aria-label="Add lot symbol"
-                      value={addLotSecurityId}
-                      onChange={(e) => setAddLotSecurityId(e.target.value)}
-                      disabled={busy || writesBlocked}
+          <div className="form-grid">
+            <label className="symbol-combobox">
+              Researched symbol
+              <input
+                aria-label="Add lot symbol"
+                aria-expanded={addLotSymbolOpen}
+                aria-controls="add-lot-symbol-list"
+                aria-autocomplete="list"
+                role="combobox"
+                value={addLotQuery}
+                placeholder="Type to filter (e.g. NV)"
+                autoComplete="off"
+                onChange={(e) => {
+                  setAddLotQuery(e.target.value.toUpperCase());
+                  setAddLotSecurityId("");
+                  setAddLotSymbolOpen(true);
+                }}
+                onFocus={() => setAddLotSymbolOpen(true)}
+                onBlur={() => {
+                  window.setTimeout(() => setAddLotSymbolOpen(false), 150);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && filteredAddLotSecurities[0]) {
+                    e.preventDefault();
+                    selectAddLotSecurity(filteredAddLotSecurities[0]);
+                  }
+                  if (e.key === "Escape") {
+                    setAddLotSymbolOpen(false);
+                  }
+                }}
+                disabled={busy || writesBlocked}
+              />
+              {addLotSymbolOpen && filteredAddLotSecurities.length > 0 ? (
+                <ul
+                  id="add-lot-symbol-list"
+                  className="symbol-combobox-list"
+                  role="listbox"
+                  aria-label="Add lot symbol matches"
+                >
+                  {filteredAddLotSecurities.map((row) => (
+                    <li
+                      key={row.securityId}
+                      role="option"
+                      aria-selected={row.securityId === addLotSecurityId}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        selectAddLotSecurity(row);
+                      }}
                     >
-                      <option value="">Choose existing holding</option>
-                      {securities
-                        .filter((s) => (calculator?.rows ?? []).some((r) => r.symbol === s.symbol))
-                        .map((s) => (
-                          <option key={s.securityId} value={s.securityId}>
-                            {s.symbol}
-                          </option>
-                        ))}
-                    </select>
-                  </td>
-                  <td>editable</td>
-                </tr>
-                <tr>
-                  <th scope="row">Account</th>
-                  <td>
-                    <select
-                      aria-label="Add lot account"
-                      value={addLotAccountId}
-                      onChange={(e) => setAddLotAccountId(e.target.value)}
-                      disabled={busy || writesBlocked}
-                    >
-                      <option value="">Choose account</option>
-                      {accounts.map((a) => (
-                        <option key={a.accountId} value={a.accountId}>
-                          {a.name}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td>editable</td>
-                </tr>
-                <tr>
-                  <th scope="row">Quantity</th>
-                  <td>
-                    <input
-                      aria-label="Add lot quantity"
-                      value={addLotQty}
-                      onChange={(e) => setAddLotQty(e.target.value)}
-                      disabled={busy || writesBlocked}
-                    />
-                  </td>
-                  <td>editable</td>
-                </tr>
-                <tr>
-                  <th scope="row">Original cost</th>
-                  <td>
-                    <input
-                      aria-label="Add lot original cost"
-                      value={addLotCost}
-                      onChange={(e) => setAddLotCost(e.target.value)}
-                      disabled={busy || writesBlocked}
-                    />
-                  </td>
-                  <td>editable</td>
-                </tr>
-                <tr>
-                  <th scope="row">Remaining-year schedule</th>
-                  <td>
-                    {!addLotSecurityId
-                      ? "Choose a holding first."
-                      : addLotRemaining == null
-                        ? "loading"
-                        : addLotRemaining.known
-                          ? `${addLotRemaining.provenance}${addLotRemaining.hypothetical ? " — planned if this quantity is opened" : ""}`
-                          : `${addLotRemaining.provenance}. Name the next payment date; do not invent $0.`}
-                  </td>
-                  <td>{addLotRemaining?.known ? "calculated" : "unknown"}</td>
-                </tr>
-                <tr>
-                  <th scope="row">Year-to-go planned income</th>
-                  <td>
-                    {addLotRemaining?.thisLotYearToGoMinor == null
-                      ? "unknown"
-                      : `This lot ${formatUsd(addLotRemaining.thisLotYearToGoMinor, addLotRemaining.scale)}`}
-                    {addLotRemaining?.positionAfterYearToGoMinor == null
-                      ? ""
-                      : `; position after add ${formatUsd(addLotRemaining.positionAfterYearToGoMinor, addLotRemaining.scale)}`}
-                  </td>
-                  <td>this lot vs position after add</td>
-                </tr>
-                <tr>
-                  <th scope="row">Monthly planned income</th>
-                  <td>
-                    {monthTotalsFromPays(
-                      addLotPayDraft.map((d) => {
-                        const src = addLotRemaining?.payments.find(
-                          (p) => p.originalPayOn === d.originalPayOn,
-                        );
-                        return {
-                          payOn: d.payOn,
-                          cashMinor: src?.positionAfterCashMinor ?? src?.cashMinor ?? null,
-                          thisLotCashMinor: src?.thisLotCashMinor ?? null,
-                          positionAfterCashMinor: src?.positionAfterCashMinor ?? null,
-                        };
-                      }),
-                    ).map((m) => (
-                      <div key={m.month}>
-                        {m.month}: this lot{" "}
-                        {m.thisLotCashMinor == null ? "unknown" : formatUsd(m.thisLotCashMinor, 2)}
-                        {"; after add "}
-                        {m.positionAfterCashMinor == null
-                          ? "unknown"
-                          : formatUsd(m.positionAfterCashMinor, 2)}
-                      </div>
-                    ))}
-                  </td>
-                  <td>months with a payment only</td>
-                </tr>
-                <tr>
-                  <th scope="row">Remaining payment dates</th>
-                  <td>
-                    {addLotRemaining != null && !addLotRemaining.known ? (
-                      <input
-                        aria-label="Next payment date"
-                        type="date"
-                        value={addLotNextPay}
-                        onChange={(e) => setAddLotNextPay(e.target.value)}
-                        disabled={busy || writesBlocked || !addLotSecurityId}
-                      />
-                    ) : (
-                      <table aria-label="Remaining-year payment dates">
-                        <thead>
-                          <tr>
-                            <th scope="col">Pay date</th>
-                            <th scope="col">This lot</th>
-                            <th scope="col">After add</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {addLotPayDraft.map((pay) => {
-                            const src = addLotRemaining?.payments.find(
-                              (p) => p.originalPayOn === pay.originalPayOn,
-                            );
-                            return (
-                              <tr key={pay.originalPayOn}>
-                                <td>
-                                  <input
-                                    type="date"
-                                    aria-label={`Remaining pay date ${pay.originalPayOn}`}
-                                    value={pay.payOn}
-                                    onChange={(e) =>
-                                      setAddLotPayDraft((prev) =>
-                                        prev.map((row) =>
-                                          row.originalPayOn === pay.originalPayOn
-                                            ? { ...row, payOn: e.target.value }
-                                            : row,
-                                        ),
-                                      )
-                                    }
-                                    disabled={busy || writesBlocked}
-                                  />
-                                </td>
-                                <td>
-                                  {src?.thisLotCashMinor == null
-                                    ? "unknown"
-                                    : formatUsd(src.thisLotCashMinor, addLotRemaining?.scale ?? 2)}
-                                </td>
-                                <td>
-                                  {src?.positionAfterCashMinor == null
-                                    ? "unknown"
-                                    : formatUsd(
-                                        src.positionAfterCashMinor,
-                                        addLotRemaining?.scale ?? 2,
-                                      )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                        <tfoot>
-                          <tr>
-                            <td>Year-to-go</td>
-                            <td>
-                              {addLotRemaining?.thisLotYearToGoMinor == null
-                                ? "unknown"
-                                : formatUsd(
-                                    addLotRemaining.thisLotYearToGoMinor,
-                                    addLotRemaining.scale,
-                                  )}
-                            </td>
-                            <td>
-                              {addLotRemaining?.positionAfterYearToGoMinor == null
-                                ? "unknown"
-                                : formatUsd(
-                                    addLotRemaining.positionAfterYearToGoMinor,
-                                    addLotRemaining.scale,
-                                  )}
-                            </td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    )}
-                  </td>
-                  <td>editable in the same row</td>
-                </tr>
-              </tbody>
-            </table>
+                      {row.symbol}
+                      {row.name ? ` — ${row.name}` : ""}
+                      {row.openLotCount === 0 ? " (no lots yet)" : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </label>
+            <label>
+              Account
+              <select
+                aria-label="Add lot account"
+                value={addLotAccountId}
+                onChange={(e) => setAddLotAccountId(e.target.value)}
+                disabled={busy || writesBlocked}
+              >
+                <option value="">Choose account</option>
+                {accounts.map((a) => (
+                  <option key={a.accountId} value={a.accountId}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Opened on
+              <input
+                aria-label="Add lot opened on"
+                type="date"
+                value={addLotOpenedOn}
+                onChange={(e) => setAddLotOpenedOn(e.target.value)}
+                disabled={busy || writesBlocked}
+              />
+            </label>
+            <label>
+              Quantity
+              <input
+                aria-label="Add lot quantity"
+                value={addLotQty}
+                onChange={(e) => setAddLotQty(e.target.value)}
+                disabled={busy || writesBlocked}
+              />
+            </label>
+            <label>
+              Original cost
+              <input
+                aria-label="Add lot original cost"
+                value={addLotCost}
+                onChange={(e) => setAddLotCost(e.target.value)}
+                disabled={busy || writesBlocked}
+              />
+            </label>
+            <label>
+              <span>
+                <input
+                  type="checkbox"
+                  aria-label="Tax cost different"
+                  checked={addLotTaxDifferent}
+                  onChange={(e) => setAddLotTaxDifferent(e.target.checked)}
+                  disabled={busy || writesBlocked}
+                />{" "}
+                Tax cost different
+              </span>
+              <input
+                aria-label="Add lot tax cost"
+                value={addLotTaxDifferent ? addLotTaxCost : addLotCost}
+                onChange={(e) => setAddLotTaxCost(e.target.value)}
+                disabled={busy || writesBlocked || !addLotTaxDifferent}
+              />
+            </label>
+            <label>
+              Origin
+              <select
+                aria-label="Add lot origin"
+                value={addLotOrigin}
+                onChange={(e) => setAddLotOrigin(e.target.value)}
+                disabled={busy || writesBlocked}
+              >
+                {LOT_ORIGINS.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
+          {securities.length === 0 ? (
+            <p role="status">
+              No securities yet. Use Add Position (symbol + distribution URL), then return
+              here to open a lot. Researched names with zero lots are included.
+            </p>
+          ) : addLotQuery.trim() && !addLotSecurityId && filteredAddLotSecurities.length === 0 ? (
+            <p role="status">
+              No matching researched symbol. Cannot create a new ticker here — research it
+              on Add Position first.
+            </p>
+          ) : null}
         </section>
       ) : null}
 
@@ -5059,7 +6853,7 @@ export default function App() {
           <p>Pending: {pendingBatchId ?? "none"} ({pendingBatchStatus}).</p>
           <section aria-label="Exceptions">
             <h3>Exceptions</h3>
-            <ExceptionList exceptions={exceptions} />
+            <ExceptionList exceptions={exceptions} onOpenLog={() => void openExceptionLog()} />
           </section>
           <div className="buttons">
             <label>
@@ -5106,6 +6900,359 @@ export default function App() {
         </section>
       ) : null}
 
+      {screen === "collectors" ? (
+        <section aria-label="Collectors">
+          <h2>Collectors</h2>
+          <p>
+            Income names only (DIV-1, CASH, Weekly/Monthly/Quarterly). Non-payers
+            are excluded. Force refresh runs the issuer declaration collector;
+            Yahoo last price is separate and does not fill this page. Yahoo is
+            never a declaration source.
+          </p>
+          <div className="buttons">
+            <button
+              type="button"
+              aria-label="Refresh collector fleet"
+              disabled={busy}
+              onClick={() => void refreshCollectors(asOfDate)}
+            >
+              {busy && !collectorRunProgress?.running ? "Working…" : "Reload fleet"}
+            </button>
+            <button
+              type="button"
+              aria-label="Run enabled collectors"
+              disabled={busy || writesBlocked}
+              onClick={() => void runEnabledCollectors()}
+            >
+              {collectorRunProgress?.running
+                ? `Running ${formatCount(collectorRunProgress.current)} of ${formatCount(collectorRunProgress.total)}${
+                    collectorRunProgress.symbol
+                      ? `: ${collectorRunProgress.symbol}`
+                      : ""
+                  }…`
+                : "Run enabled collectors"}
+            </button>
+            <button
+              type="button"
+              aria-label="Run misses only"
+              disabled={busy || writesBlocked}
+              onClick={() => void runMissesOnlyCollectors()}
+            >
+              Run misses only
+            </button>
+            <button
+              type="button"
+              aria-label="Apply issuer sources from provider"
+              disabled={busy || writesBlocked}
+              onClick={() => void applyIssuerSources()}
+            >
+              Apply issuer sources from provider
+            </button>
+          </div>
+          {writesBlocked ? (
+            <p role="status">
+              Writes are blocked on this device, so Apply and Run enabled are
+              disabled. Reload fleet still works.
+            </p>
+          ) : null}
+          {collectorAction ? (
+            <p aria-label="Collector action status" role="status" aria-live="polite">
+              {collectorAction}
+            </p>
+          ) : (
+            <p aria-label="Collector action status" role="status">
+              Reload fleet refreshes this list from the database. Run enabled
+              collectors hits issuer sites one symbol at a time with live
+              progress. Run misses only skips symbols already ok today.
+              Apply fills empty templates from provider (0 updated
+              means already assigned).
+            </p>
+          )}
+          {collectorRunProgress ? (
+            <section
+              aria-label="Collector run progress"
+              aria-busy={collectorRunProgress.running}
+            >
+              <h3>
+                {collectorRunProgress.running ? "Collecting…" : "Last run"}
+              </h3>
+              <p>
+                Progress {formatCount(collectorRunProgress.current)} /{" "}
+                {formatCount(collectorRunProgress.total)}
+                {collectorRunProgress.symbol
+                  ? ` — ${collectorRunProgress.symbol}`
+                  : ""}
+                . Ok {formatCount(collectorRunProgress.ok)}. Miss{" "}
+                {formatCount(collectorRunProgress.miss)}.
+              </p>
+              <progress
+                max={Math.max(collectorRunProgress.total, 1)}
+                value={collectorRunProgress.current}
+              />
+              <div className="table-wrap">
+                <table aria-label="Collector run log">
+                  <thead>
+                    <tr>
+                      <th scope="col">Result</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {collectorRunProgress.lines.length === 0 ? (
+                      <tr>
+                        <td>
+                          {collectorRunProgress.running
+                            ? "Waiting for first symbol…"
+                            : "No lines."}
+                        </td>
+                      </tr>
+                    ) : (
+                      [...collectorRunProgress.lines].reverse().map((line, idx) => (
+                        <tr key={`${idx}-${line}`}>
+                          <td>{line}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
+          {collectorStats ? (
+            <p aria-label="Collector statistics">
+              Assigned {formatCount(collectorStats.assigned)}. Enabled{" "}
+              {formatCount(collectorStats.enabled)}. Ran today{" "}
+              {formatCount(collectorStats.ranToday)}. Miss today{" "}
+              {formatCount(collectorStats.missToday)}. Unchanged today{" "}
+              {formatCount(collectorStats.unchangedToday)}. Price current{" "}
+              {formatCount(collectorStats.priceCurrent)} / stale{" "}
+              {formatCount(collectorStats.priceStale)}. Open exceptions{" "}
+              {formatCount(collectorStats.openExceptions)}.
+            </p>
+          ) : null}
+          <div className="table-wrap">
+            <table aria-label="Collector fleet">
+              <thead>
+                <tr>
+                  <th scope="col">Symbol</th>
+                  <th scope="col">Cadence</th>
+                  <th scope="col">Provider</th>
+                  <th scope="col">Source</th>
+                  <th scope="col">Enabled</th>
+                  <th scope="col">Last declaration run</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {collectorItems.map((row) => (
+                  <tr key={row.securityId}>
+                    <td>
+                      <button
+                        type="button"
+                        aria-label={`Open ${row.symbol} collector`}
+                        onClick={() => {
+                          setCollectorSymbol(row.symbol);
+                          void refreshCollectors(asOfDate, row.symbol);
+                        }}
+                      >
+                        {row.symbol}
+                      </button>
+                    </td>
+                    <td>{row.paymentFrequency || row.divType || "—"}</td>
+                    <td>{row.provider || "—"}</td>
+                    <td>{row.declarationSource || "unassigned"}</td>
+                    <td>{row.collectorEnabled ? "yes" : "no"}</td>
+                    <td>
+                      {row.lastRunAt || "never"}
+                      {row.lastRunOk === true
+                        ? " ok"
+                        : row.lastRunOk === false
+                          ? " miss"
+                          : ""}
+                      {row.lastRunMessage ? (
+                        <span className="collector-run-message">
+                          {" "}
+                          — {row.lastRunMessage}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        aria-label={
+                          row.collectorEnabled
+                            ? `Disable collector for ${row.symbol}`
+                            : `Enable collector for ${row.symbol}`
+                        }
+                        disabled={busy || writesBlocked || !row.declarationSource}
+                        onClick={() =>
+                          void toggleCollectorEnabled(row, !row.collectorEnabled)
+                        }
+                      >
+                        {row.collectorEnabled ? "Disable" : "Enable"}
+                      </button>{" "}
+                      <button
+                        type="button"
+                        aria-label="Force refresh this symbol"
+                        disabled={busy || writesBlocked}
+                        onClick={() => void forceCollectorRefresh(row)}
+                      >
+                        Force refresh
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <h3>DIV-1 compliance</h3>
+          <p>
+            Numeric summary per enabled DIV-1 collector: upcoming pay dates,
+            stored declaration history, and the newest paid declaration.
+          </p>
+          <div className="table-wrap">
+            <table aria-label="DIV-1 compliance summary">
+              <thead>
+                <tr>
+                  <th scope="col">Symbol</th>
+                  <th scope="col">Future dates qty</th>
+                  <th scope="col">Prior decls qty</th>
+                  <th scope="col">Current amount</th>
+                  <th scope="col">Current date</th>
+                  <th scope="col">Required paid</th>
+                  <th scope="col">OK</th>
+                </tr>
+              </thead>
+              <tbody>
+                {div1Compliance.length === 0 ? (
+                  <tr>
+                    <td colSpan={7}>No DIV-1 compliance rows yet.</td>
+                  </tr>
+                ) : (
+                  div1Compliance.map((row) => (
+                    <tr key={row.securityId}>
+                      <td>{row.symbol}</td>
+                      <td className="numeric">{formatCount(row.futurePayDatesQty)}</td>
+                      <td className="numeric">{formatCount(row.priorDeclarationsQty)}</td>
+                      <td className="numeric">
+                        {row.currentDeclarationAmountMinor == null ||
+                        row.currentDeclarationAmountScale == null
+                          ? "—"
+                          : `$${formatScaled(
+                              row.currentDeclarationAmountMinor,
+                              row.currentDeclarationAmountScale,
+                            )}`}
+                      </td>
+                      <td>{row.currentDeclarationDate || "—"}</td>
+                      <td className="numeric">{formatCount(row.requiredPaid)}</td>
+                      <td>
+                        {row.lastRunOk === true
+                          ? "yes"
+                          : row.lastRunOk === false
+                            ? "no"
+                            : "—"}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          {collectorSymbol ? (
+            <section aria-label="Collector symbol page">
+              <h3>{collectorSymbol}</h3>
+              <div className="buttons">
+                <button
+                  type="button"
+                  aria-label="Open in Position Details"
+                  onClick={() => openPositionHub(collectorSymbol)}
+                >
+                  Open in Position Details
+                </button>
+              </div>
+              <p>
+                Collectors is ops only — last retrieve runs and payload. Position
+                data (declarations, plan pays, received totals) lives on Position
+                Details.
+              </p>
+              {collectorPlan ? (
+                <p aria-label="Collector plan">
+                  Plan check:{" "}
+                  {collectorPlan.known
+                    ? `${formatUsd(collectorPlan.perShareMinor, collectorPlan.scale)}${
+                        collectorPlan.reason ? ` — ${collectorPlan.reason}` : ""
+                      }`
+                    : "unknown (not $0)"}
+                </p>
+              ) : null}
+              <div className="table-wrap">
+                <table aria-label="Retrieve runs">
+                  <thead>
+                    <tr>
+                      <th scope="col">When</th>
+                      <th scope="col">Kind</th>
+                      <th scope="col">Ok</th>
+                      <th scope="col">Recorded</th>
+                      <th scope="col">Skipped</th>
+                      <th scope="col">Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {collectorRuns
+                      .filter((run) => run.kind !== "price")
+                      .concat(collectorRuns.filter((run) => run.kind === "price").slice(0, 3))
+                      .map((run) => (
+                      <tr key={run.runId}>
+                        <td>{run.requestedAt}</td>
+                        <td>{run.kind}</td>
+                        <td>{run.ok ? "ok" : "miss"}</td>
+                        <td>{formatCount(run.recorded)}</td>
+                        <td>{formatCount(run.skipped)}</td>
+                        <td>
+                          {run.code ? `${run.code}: ` : ""}
+                          {run.message || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {collectorPayload ? (
+                <div className="table-wrap">
+                  <table aria-label="Collector retrieve payload">
+                    <thead>
+                      <tr>
+                        <th scope="col">Field</th>
+                        <th scope="col">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(collectorPayload).map(([key, value]) => (
+                        <tr key={key}>
+                          <td>{key}</td>
+                          <td>
+                            <code>
+                              {typeof value === "string"
+                                ? value
+                                : JSON.stringify(value)}
+                            </code>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p>
+                  No declaration retrieve payload yet. Daily open and Force
+                  refresh write declaration runs here; last-price-only runs are
+                  not shown as the payload.
+                </p>
+              )}
+            </section>
+          ) : null}
+        </section>
+      ) : null}
+
       {screen === "settings" ? (
         <section className="actions" aria-label="Settings">
           <h2>Settings</h2>
@@ -5121,6 +7268,131 @@ export default function App() {
               <dd>{health.contractVersion}</dd>
             </dl>
           )}
+          <h3>Retrieval templates</h3>
+          <p>
+            Adapter, source URL, lookback, and schedule live here. Inception is
+            optional — rare exception for names too new for 12 paid points.
+            Collectors retrieve first; if 12+ paid decls land, inception is N/A.
+            Under 12, inception (when set) confirms the short history is complete.
+          </p>
+          <div className="table-wrap">
+            <table aria-label="Retrieval templates">
+              <thead>
+                <tr>
+                  <th scope="col">Symbol</th>
+                  <th scope="col">Adapter</th>
+                  <th scope="col">Source URL</th>
+                  <th scope="col">Schedule</th>
+                  <th scope="col">Inception</th>
+                  <th scope="col">Lookback</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {collectorItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={7}>
+                      No paying symbols loaded yet. Open Collectors once, or wait
+                      for this list to refresh.
+                    </td>
+                  </tr>
+                ) : (
+                  collectorItems.map((row) => {
+                    const draft = settingsTemplateDrafts[row.securityId] ?? {
+                      declarationSource: row.declarationSource || "",
+                      sourceUrl: row.sourceUrl ?? "",
+                      calendarPolicy: row.calendarPolicy ?? "",
+                      lookbackCount: String(DECLARATION_LOOKBACK_TARGET),
+                      inceptionOn: row.inceptionOn ?? "",
+                    };
+                    const patch = (
+                      patch: Partial<typeof draft>,
+                    ) => {
+                      setSettingsTemplateDrafts((prev) => ({
+                        ...prev,
+                        [row.securityId]: { ...draft, ...patch },
+                      }));
+                    };
+                    return (
+                      <tr key={row.securityId}>
+                        <td>{row.symbol}</td>
+                        <td>
+                          <input
+                            aria-label={`Adapter for ${row.symbol}`}
+                            value={draft.declarationSource}
+                            onChange={(e) =>
+                              patch({ declarationSource: e.target.value })
+                            }
+                            disabled={busy || writesBlocked}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            aria-label={`Source URL for ${row.symbol}`}
+                            value={draft.sourceUrl}
+                            onChange={(e) =>
+                              patch({ sourceUrl: e.target.value })
+                            }
+                            disabled={busy || writesBlocked}
+                          />
+                        </td>
+                        <td>
+                          <select
+                            aria-label={`Schedule for ${row.symbol}`}
+                            value={draft.calendarPolicy}
+                            onChange={(e) =>
+                              patch({ calendarPolicy: e.target.value })
+                            }
+                            disabled={busy || writesBlocked}
+                          >
+                            <option value="">Choose policy</option>
+                            <option value="issuer_calendar">
+                              Issuer published dates
+                            </option>
+                            <option value="derived_walk">
+                              Cadence from last pay
+                            </option>
+                            <option value="none">Does not pay</option>
+                          </select>
+                        </td>
+                        <td>
+                          <input
+                            aria-label={`Inception date for ${row.symbol}`}
+                            placeholder="optional YYYY-MM-DD"
+                            value={draft.inceptionOn}
+                            onChange={(e) =>
+                              patch({ inceptionOn: e.target.value })
+                            }
+                            disabled={busy || writesBlocked}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            aria-label={`Lookback for ${row.symbol}`}
+                            value={draft.lookbackCount}
+                            onChange={(e) =>
+                              patch({ lookbackCount: e.target.value })
+                            }
+                            disabled={busy || writesBlocked}
+                          />
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            aria-label={`Save template for ${row.symbol}`}
+                            disabled={busy || writesBlocked}
+                            onClick={() => void saveSettingsTemplate(row)}
+                          >
+                            Save
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
           <h3>HandoffStatusGet</h3>
           {handoffError ? <p className="blocked">{handoffError}</p> : null}
           {handoff ? (

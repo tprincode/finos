@@ -105,6 +105,21 @@ async fn roc_unknown_is_not_zero_and_car_magi_plans_then_actuals() {
     .await;
     must_ok(
         &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": "HAKY",
+            "declarationSource": "amplify",
+            "sourceUrl": "https://amplifyetfs.com/haky/#distributions",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
         "LotOpen",
         serde_json::json!({
             "accountId": account_id,

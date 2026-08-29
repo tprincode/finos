@@ -17,7 +17,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: MAGI pack on the production path
         run: cargo test -p golden-harness --features magi-gate -- magi_pack
-      - name: Synthetic M2 seed and production household counts
+      - name: Synthetic M2 seed and production data counts
         run: cargo test -p golden-harness -- seed_counts
       - name: CRF lots policy
         run: cargo test -p golden-harness --test lots_roi

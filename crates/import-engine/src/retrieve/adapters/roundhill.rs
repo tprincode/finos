@@ -1,14 +1,72 @@
-//! Roundhill HTML table, then CSV href. Empty GET stays unknown.
+//! Roundhill: live distributions via PHP API (HTML calHisDistri tbody is empty on GET).
+//! Fallback: HTML table, then CSV href. Empty stays unknown — not Yahoo.
 
 use serde_json::{json, Value};
 
 use crate::retrieve::html::{
-    distribution_candidate, parse_issuer_amount, parse_issuer_date, strip_html,
+    distribution_candidate, parse_issuer_amount, parse_issuer_date, sort_newest_first, strip_html,
 };
 use crate::retrieve::{first_percent, http_get};
 use super::{html_names_symbol, page_is_not_found};
 
+/// Site page-id aliases → fund ticker used by distribution-call.php.
+pub fn roundhill_api_ticker(symbol: &str) -> String {
+    match symbol.trim().to_ascii_uppercase().as_str() {
+        "BIGT" => "MAGS".into(),
+        "TSW" => "TSLW".into(),
+        "NVW" => "NVDW".into(),
+        "WPAY" => "TOPW".into(),
+        "DRAG" => "MAGC".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Parse JSON from `distribution-call.php`: rows are
+/// `[Declaration, Ex Date, Record Date, Pay Date, Amount]`.
+pub fn parse_roundhill_distribution_api(body: &str) -> Vec<Value> {
+    let trimmed = body.trim();
+    if !trimmed.starts_with('[') {
+        return Vec::new();
+    }
+    let Ok(Value::Array(rows)) = serde_json::from_str::<Value>(trimmed) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        let Value::Array(cols) = row else {
+            continue;
+        };
+        if cols.len() < 5 {
+            continue;
+        }
+        let pay = cols
+            .get(3)
+            .and_then(|c| c.as_str())
+            .and_then(parse_issuer_date)
+            .or_else(|| {
+                cols.get(1)
+                    .and_then(|c| c.as_str())
+                    .and_then(parse_issuer_date)
+            });
+        let Some(pay) = pay else {
+            continue;
+        };
+        let amount = match cols.get(4) {
+            Some(Value::Number(n)) => parse_issuer_amount(&n.to_string()),
+            Some(Value::String(s)) if !s.trim().is_empty() => parse_issuer_amount(s),
+            _ => None,
+        };
+        out.push(distribution_candidate("roundhill", pay, amount, None));
+    }
+    sort_newest_first(&mut out);
+    out
+}
+
 pub fn parse_roundhill_distributions(html: &str) -> Vec<Value> {
+    let api = parse_roundhill_distribution_api(html);
+    if !api.is_empty() {
+        return api;
+    }
     let mut out = Vec::new();
     let lower = html.to_ascii_lowercase();
     for (idx, _) in lower.match_indices("<tr") {
@@ -71,7 +129,6 @@ pub fn parse_roundhill_distributions(html: &str) -> Vec<Value> {
             i += 1;
         }
     }
-    out.truncate(12);
     out
 }
 pub(crate) fn parse_roundhill_csv(text: &str) -> Vec<Value> {
@@ -97,7 +154,6 @@ pub(crate) fn parse_roundhill_csv(text: &str) -> Vec<Value> {
         }
         out.push(distribution_candidate("roundhill", pay, amount, None));
     }
-    out.truncate(12);
     out
 }
 
@@ -169,6 +225,9 @@ pub(crate) fn parse_vendor_distributions_with_csv(source: &str, html: &str) -> V
                     break;
                 }
             }
+        }
+        if cands.is_empty() {
+            cands = super::parse_generic_distributions(source, html);
         }
     }
     cands

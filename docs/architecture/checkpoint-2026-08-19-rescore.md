@@ -28,7 +28,7 @@ M1 macOS. M8 remainder (Axum, remote client, concurrency, snapshot import). M9 O
 
 ## What's next (pick one)
 
-Parked until named: remaining M8 server path, M1 on a Mac, more household SQLite workflows, or OIDC.
+Parked until named: remaining M8 server path, M1 on a Mac, more data SQLite workflows, or OIDC.
 
 ## Later same day
 

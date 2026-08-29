@@ -8,7 +8,16 @@ fn accessibility_primary_actions_have_accessible_names() {
         .expect("ui-components");
     let list = std::fs::read_to_string(repo_root().join("packages/ui-components/src/listTable.tsx"))
         .expect("listTable");
-    let sources = format!("{app}\n{ui}\n{list}");
+    let trends_capture =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/TrendsCapture.tsx"))
+            .expect("TrendsCapture.tsx");
+    let trends_charts =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/TrendsCharts.tsx"))
+            .expect("TrendsCharts.tsx");
+    let decl_chart =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/DeclarationPaymentsChart.tsx"))
+            .expect("DeclarationPaymentsChart.tsx");
+    let sources = format!("{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{decl_chart}");
     for name in [
         "aria-label=\"finos\"",
         "aria-label=\"Save device name\"",
@@ -27,7 +36,35 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"New Investment\"",
         "aria-label=\"Add Lot\"",
         "aria-label=\"Import\"",
+        "aria-label=\"Collectors\"",
         "aria-label=\"Settings\"",
+        "aria-label=\"Refresh collector fleet\"",
+        "aria-label=\"Run enabled collectors\"",
+        "aria-label=\"Run misses only\"",
+        "aria-label=\"Open exception log\"",
+        "aria-label=\"Open in Position Details\"",
+        "aria-label=\"Calculator snapshot\"",
+        "aria-label=\"Plan and yields\"",
+        "aria-label=\"Plan payment summary\"",
+        "aria-label=\"Future plan payment dates\"",
+        "aria-label=\"Holdings by account\"",
+        "aria-label=\"Declarations\"",
+        "aria-label=\"Lots by account\"",
+        "aria-label=\"Ledger income\"",
+        "aria-label=\"Position hub sections\"",
+        "aria-label=\"Position fleet compare\"",
+        "aria-label=\"Position hub summary\"",
+        "aria-label=\"Collector action status\"",
+        "aria-label=\"Collector run progress\"",
+        "aria-label=\"Collector run log\"",
+        "aria-label=\"Collector fleet\"",
+        "aria-label=\"Collector statistics\"",
+        "aria-label=\"Force refresh this symbol\"",
+        "aria-label=\"Retrieve runs\"",
+        "aria-label=\"Collector retrieve payload\"",
+        "aria-label=\"Collector symbol page\"",
+        "aria-label=\"Stored declarations\"",
+        "aria-label=\"Collector plan\"",
         "aria-label=\"Assign lot\"",
         "aria-label=\"Retrieve from market\"",
         "aria-label=\"Mandatory data checklist\"",
@@ -44,7 +81,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label={`Apply ${tier}`}",
         "aria-label=\"Position dossier\"",
         "aria-label=\"Confirm Plan\"",
-        "aria-label=\"Research ROC\"",
+        "aria-label=\"Validate current ROC estimate\"",
         "aria-label=\"Confirm ROC plan\"",
         "aria-label=\"Next wizard step\"",
         "aria-label=\"Previous wizard step\"",
@@ -57,6 +94,18 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Source analytics\"",
         "aria-label=\"Future declaration strategy\"",
         "aria-label=\"New investment underlying\"",
+        "aria-label=\"Look-through research\"",
+        "aria-label=\"New investment theme strategy\"",
+        "aria-label=\"New investment primary risk driver\"",
+        "aria-label=\"New investment concentration\"",
+        "aria-label=\"New investment volatility proxy\"",
+        "aria-label=\"New investment tax character\"",
+        "aria-label=\"Look-through risk suggestion\"",
+        "aria-label=\"Position theme strategy\"",
+        "aria-label=\"Position primary risk driver\"",
+        "aria-label=\"Position concentration\"",
+        "aria-label=\"Position volatility proxy\"",
+        "aria-label=\"Position tax character\"",
         "aria-label=\"Open first lot\"",
         "aria-label=\"Save remaining payment dates\"",
         "aria-label=\"Remaining-year payment dates\"",
@@ -72,13 +121,16 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Refresh last prices\"",
         "aria-label=\"Refresh last price for this symbol\"",
         "aria-label=\"Retrieve declarations for this symbol\"",
-        "aria-label=\"Research ROC for this symbol\"",
+        "aria-label=\"Validate current ROC estimate\"",
         "aria-label=\"Position ROC research status\"",
+        "aria-label=\"Position symbols\"",
+        "aria-label=\"Position information\"",
+        "aria-label=\"Declaration graphing period\"",
         "aria-label=\"Issuer retrieve\"",
-        "aria-label=\"Issuer retrieve status\"",
         "aria-label=\"Issuer retrieve miss summary\"",
+        "aria-label=\"Data screens\"",
+        "aria-label=\"Data position totals\"",
         "aria-label=\"Apply issuer sources from provider\"",
-        "aria-label=\"Lifetime distributions\"",
         "aria-label=\"Position div type\"",
         "aria-label=\"Needs ROC research\"",
         "aria-label=\"Position is active\"",
@@ -87,7 +139,6 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Ex-date weekday\"",
         "aria-label=\"Payday weekday\"",
         "aria-label=\"Price source\"",
-        "aria-label=\"Source symbol\"",
         "aria-label=\"Declaration source\"",
         "aria-label=\"Lookback count\"",
         "aria-label=\"Position completeness\"",
@@ -107,10 +158,20 @@ fn accessibility_primary_actions_have_accessible_names() {
         "label=\"Filter position lots\"",
         "label=\"Filter income plan drilldown\"",
         "label=\"Filter dashboard\"",
+        "aria-label=\"Trends weekly capture\"",
+        "aria-label=\"Save Trends week\"",
+        "aria-label=\"Correct Trends week\"",
+        "aria-label=\"Close Trends week\"",
+        "aria-label=\"Trends graphing period\"",
+        "aria-label=\"Portfolio summary\"",
         "aria-label={`Sort by ${label}`}",
     ] {
         assert!(sources.contains(name), "missing accessible name {name}");
     }
+    assert!(
+        app.contains("REGISTERED_DECLARATION_SOURCES"),
+        "declaration source select must list all registered issuer adapters"
+    );
     assert!(
         !app.contains("Load household seed"),
         "owner UI must not mention household seed"
@@ -118,5 +179,13 @@ fn accessibility_primary_actions_have_accessible_names() {
     assert!(
         !app.contains("ProductionSeedLoad"),
         "owner UI must not call ProductionSeedLoad"
+    );
+    assert!(
+        !app.contains("Data stays on this machine after seed"),
+        "owner UI must not show seed process prose"
+    );
+    assert!(
+        !app.contains("Checking data file"),
+        "owner UI must not mention data file loading"
     );
 }

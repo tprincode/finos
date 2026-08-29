@@ -34,7 +34,7 @@ const MENU_QUERIES: &[&str] = &[
     "DashboardBurndownGet",
     "HoldingsGet",
     "ExceptionList",
-    "HouseholdSummaryGet",
+    "DataSummaryGet",
     "CalculatorGet",
     "AccountList",
     "SecurityList",
@@ -66,15 +66,15 @@ fn app_execute_query_names_are_registered() {
 }
 
 #[tokio::test]
-async fn menu_queries_succeed_on_household_sqlite() {
+async fn menu_queries_succeed_on_data_sqlite() {
     let dir = profile_a_app_dir();
     let db = dir.join("local.sqlite");
     assert!(
         db.is_file(),
-        "household file missing at {}; run npm run household-seed",
+        "data file missing at {}; run npm run data-seed",
         db.display()
     );
-    let platform = LocalPlatform::open(&dir).await.expect("open household sqlite");
+    let platform = LocalPlatform::open(&dir).await.expect("open data sqlite");
     let mut failures = Vec::new();
     for name in MENU_QUERIES {
         let body = if matches!(*name, "IncomePlanWeekGet" | "DashboardBurndownGet") {
@@ -99,7 +99,7 @@ async fn menu_queries_succeed_on_household_sqlite() {
     let summary = execute_query_on(
         &platform,
         &platform,
-        qry("HouseholdSummaryGet", serde_json::json!({})),
+        qry("DataSummaryGet", serde_json::json!({})),
     )
     .await;
     let body: serde_json::Value =

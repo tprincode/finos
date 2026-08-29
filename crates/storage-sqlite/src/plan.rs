@@ -1,7 +1,8 @@
 //! Versioned Calculator Plan and cash burndown (table-isolated from MAGI and dividend actuals).
 
 use application_core::contracts::{
-    BurndownBody, CalculatorPlanBody, PlanHistoryRecord, PositionCharacteristicRecord,
+    BurndownBody, CalculatorPlanBody, LookthroughResearch, PlanHistoryRecord,
+    PositionCharacteristicRecord,
 };
 use application_core::ports::platform::PlatformError;
 use financial_domain::plan::{next_plan_version, project_burndown, sum_cash};
@@ -273,8 +274,9 @@ pub async fn position_characteristic_upsert(
         "INSERT INTO position_characteristic (
             security_id, payment_frequency, risk_tier, provider, underlying,
             roc_pct_2025_actual_minor, roc_pct_2026_estimate_minor, roc_pct_2026_actual_minor,
-            roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes, is_active
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes, is_active,
+            lookthrough_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(security_id) DO UPDATE SET
             payment_frequency = excluded.payment_frequency,
             risk_tier = excluded.risk_tier,
@@ -288,7 +290,8 @@ pub async fn position_characteristic_upsert(
             div_type = excluded.div_type,
             needs_roc_research = excluded.needs_roc_research,
             notes = excluded.notes,
-            is_active = excluded.is_active",
+            is_active = excluded.is_active,
+            lookthrough_json = excluded.lookthrough_json",
     )
     .bind(record.security_id.to_string())
     .bind(&record.payment_frequency)
@@ -304,6 +307,7 @@ pub async fn position_characteristic_upsert(
     .bind(if record.needs_roc_research { 1 } else { 0 })
     .bind(&record.notes)
     .bind(if record.is_active { 1 } else { 0 })
+    .bind(record.lookthrough.to_json_string())
     .execute(pool)
     .await
     .map_err(|e| map_err(e.into()))?;
@@ -353,6 +357,10 @@ fn characteristic_from_row(
             .try_get::<i64, _>("is_active")
             .map_err(|e| map_err(e.into()))?
             != 0,
+        lookthrough: LookthroughResearch::from_json_str(
+            &row.try_get::<String, _>("lookthrough_json")
+                .unwrap_or_else(|_| "{}".into()),
+        ),
     })
 }
 
@@ -362,7 +370,8 @@ pub async fn position_characteristic_list(
     let rows = sqlx::query(
         "SELECT security_id, payment_frequency, risk_tier, provider, underlying,
                 roc_pct_2025_actual_minor, roc_pct_2026_estimate_minor, roc_pct_2026_actual_minor,
-                roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes, is_active
+                roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes, is_active,
+                lookthrough_json
          FROM position_characteristic ORDER BY security_id",
     )
     .fetch_all(pool)

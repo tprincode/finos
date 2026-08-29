@@ -15,7 +15,8 @@ use crate::contracts::{
     RetrievalTemplateRecord, PriceRetrievalSetBody, BacktestPeriodRecord,
     PositionBacktestResultBody,
     RocResearchObservation, RemainingPaymentDateOverride, ExpectedPaymentPattern,
-    PositionTaxProfile,
+    PositionTaxProfile, RetrieveRunRecord, CollectorSetBody, CollectorStatsBody,
+    AccountBalanceSnapshotRecord, TrendsWeekSourceRecord,
 };
 use crate::ports::platform::PlatformError;
 
@@ -317,8 +318,26 @@ pub trait Canonical: Send + Sync {
         message: String,
         ran_at: String,
         content_hash: String,
+        source_url: &str,
     ) -> Result<(), PlatformError> { ni() }
     async fn price_retrieval_set(&self) -> Result<PriceRetrievalSetBody, PlatformError> { ni() }
+    async fn retrieve_run_record(
+        &self,
+        record: RetrieveRunRecord,
+    ) -> Result<RetrieveRunRecord, PlatformError> {
+        ni()
+    }
+    async fn retrieve_run_list(
+        &self,
+        security_id: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<RetrieveRunRecord>, PlatformError> {
+        ni()
+    }
+    async fn collector_set(&self) -> Result<CollectorSetBody, PlatformError> { ni() }
+    async fn collector_stats(&self, as_of_date: String) -> Result<CollectorStatsBody, PlatformError> {
+        ni()
+    }
 
     async fn backtest_period_record(
         &self,
@@ -417,6 +436,39 @@ pub trait Canonical: Send + Sync {
     async fn ai_analyze(&self, prompt: String) -> Result<AiRunRecord, PlatformError> { ni() }
     async fn ai_run_get(&self, run_id: Uuid) -> Result<AiRunRecord, PlatformError> { ni() }
     async fn analysis_run_list(&self) -> Result<AiRunListBody, PlatformError> { ni() }
+
+    async fn trends_week_upsert(
+        &self,
+        record: TrendsWeekSourceRecord,
+    ) -> Result<TrendsWeekSourceRecord, PlatformError> { ni() }
+    async fn trends_week_list(&self) -> Result<Vec<TrendsWeekSourceRecord>, PlatformError> { ni() }
+    async fn trends_week_get(
+        &self,
+        period_end: String,
+    ) -> Result<Option<TrendsWeekSourceRecord>, PlatformError> { ni() }
+    async fn trends_week_set_closed(
+        &self,
+        period_end: String,
+        closed: bool,
+    ) -> Result<(), PlatformError> { ni() }
+    async fn trends_series_clear(&self) -> Result<(), PlatformError> { ni() }
+    async fn aca_threshold_get(
+        &self,
+        coverage_year: i32,
+        household_size: i32,
+        location_code: String,
+    ) -> Result<Option<(i64, u8)>, PlatformError> { ni() }
+    async fn account_balance_snapshot_upsert(
+        &self,
+        account_id: Uuid,
+        period_end: String,
+        balance_minor: i64,
+        scale: u8,
+        captured_at: String,
+    ) -> Result<AccountBalanceSnapshotRecord, PlatformError> { ni() }
+    async fn account_balance_snapshot_list(
+        &self,
+    ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> { ni() }
 }
 
 /// Test double: every method returns not_implemented.
@@ -769,6 +821,55 @@ impl Canonical for UnimplementedCanonical {
         ni()
     }
     async fn analysis_run_list(&self) -> Result<AiRunListBody, PlatformError> {
+        ni()
+    }
+
+    async fn trends_week_upsert(
+        &self,
+        _record: TrendsWeekSourceRecord,
+    ) -> Result<TrendsWeekSourceRecord, PlatformError> {
+        ni()
+    }
+    async fn trends_week_list(&self) -> Result<Vec<TrendsWeekSourceRecord>, PlatformError> {
+        ni()
+    }
+    async fn trends_week_get(
+        &self,
+        _period_end: String,
+    ) -> Result<Option<TrendsWeekSourceRecord>, PlatformError> {
+        ni()
+    }
+    async fn trends_week_set_closed(
+        &self,
+        _period_end: String,
+        _closed: bool,
+    ) -> Result<(), PlatformError> {
+        ni()
+    }
+    async fn trends_series_clear(&self) -> Result<(), PlatformError> {
+        ni()
+    }
+    async fn aca_threshold_get(
+        &self,
+        _coverage_year: i32,
+        _household_size: i32,
+        _location_code: String,
+    ) -> Result<Option<(i64, u8)>, PlatformError> {
+        ni()
+    }
+    async fn account_balance_snapshot_upsert(
+        &self,
+        _account_id: Uuid,
+        _period_end: String,
+        _balance_minor: i64,
+        _scale: u8,
+        _captured_at: String,
+    ) -> Result<AccountBalanceSnapshotRecord, PlatformError> {
+        ni()
+    }
+    async fn account_balance_snapshot_list(
+        &self,
+    ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> {
         ni()
     }
 }

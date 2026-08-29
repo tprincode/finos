@@ -1,12 +1,14 @@
 //! Last Price quotes, issuer declarations, retrieval template (schema 15).
 
 use application_core::contracts::{
-    CurrentPriceBody, IssuerDeclarationRecord, PriceQuoteBody, PriceRetrievalItem,
-    PriceRetrievalSetBody, RetrievalTemplateRecord,
+    CollectorSetBody, CollectorSetItem, CollectorStatsBody, CurrentPriceBody,
+    IssuerDeclarationRecord, PriceQuoteBody, PriceRetrievalItem, PriceRetrievalSetBody,
+    RetrievalTemplateRecord, RetrieveRunRecord,
 };
 use application_core::ports::platform::PlatformError;
 use financial_domain::current_price::{
-    price_derived_valid, select_current_price, OverrideObservation, QuoteObservation,
+    cash_par_current_price, price_derived_valid, select_current_price, uses_cash_par,
+    OverrideObservation, QuoteObservation,
 };
 use financial_domain::error::DomainError;
 use sqlx::{Row, SqlitePool};
@@ -38,6 +40,68 @@ pub async fn issuer_declaration_record(
 ) -> Result<IssuerDeclarationRecord, PlatformError> {
     if source.trim().is_empty() {
         return Err(domain_err(DomainError::MissingDeclarationSource));
+    }
+    if let Some(existing_id) = sqlx::query_scalar::<_, String>(
+        "SELECT declaration_id FROM issuer_declaration
+         WHERE security_id = ? AND payment_period = ? AND superseded_by IS NULL
+         ORDER BY entered_at DESC
+         LIMIT 1",
+    )
+    .bind(security_id.to_string())
+    .bind(&payment_period)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?
+    {
+        let rows = sqlx::query(
+            "SELECT declaration_id, security_id, amount_per_share_minor, amount_scale,
+                    payment_period, source, entered_at
+             FROM issuer_declaration WHERE declaration_id = ?",
+        )
+        .bind(&existing_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        if let Some(row) = rows.first() {
+            let existing = IssuerDeclarationRecord {
+                declaration_id: parse_uuid(row, "declaration_id")?,
+                security_id: parse_uuid(row, "security_id")?,
+                amount_per_share_minor: row
+                    .try_get("amount_per_share_minor")
+                    .map_err(|e| map_err(e.into()))?,
+                amount_scale: row.try_get::<i64, _>("amount_scale").map_err(|e| map_err(e.into()))?
+                    as u8,
+                payment_period: row.try_get("payment_period").map_err(|e| map_err(e.into()))?,
+                source: row.try_get("source").map_err(|e| map_err(e.into()))?,
+                entered_at: row.try_get("entered_at").map_err(|e| map_err(e.into()))?,
+            };
+            let changed = existing.amount_per_share_minor != amount_per_share_minor
+                || existing.amount_scale != amount_scale
+                || existing.source != source;
+            if changed {
+                sqlx::query(
+                    "UPDATE issuer_declaration
+                     SET amount_per_share_minor = ?, amount_scale = ?, source = ?, entered_at = ?
+                     WHERE declaration_id = ?",
+                )
+                .bind(amount_per_share_minor)
+                .bind(amount_scale as i64)
+                .bind(&source)
+                .bind(&entered_at)
+                .bind(existing.declaration_id.to_string())
+                .execute(pool)
+                .await
+                .map_err(|e| map_err(e.into()))?;
+                return Ok(IssuerDeclarationRecord {
+                    amount_per_share_minor,
+                    amount_scale,
+                    source,
+                    entered_at,
+                    ..existing
+                });
+            }
+            return Ok(existing);
+        }
     }
     let record = IssuerDeclarationRecord {
         declaration_id: Uuid::new_v4(),
@@ -241,15 +305,45 @@ pub async fn current_price_get(
     security_id: Uuid,
     as_of_date: String,
 ) -> Result<CurrentPriceBody, PlatformError> {
+    let meta = sqlx::query(
+        "SELECT COALESCE(s.symbol, '') AS symbol,
+                COALESCE(pc.div_type, '') AS div_type
+         FROM security s
+         LEFT JOIN position_characteristic pc ON pc.security_id = s.security_id
+         WHERE s.security_id = ?",
+    )
+    .bind(security_id.to_string())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    if let Some(row) = meta {
+        let symbol: String = row.try_get("symbol").unwrap_or_default();
+        let div_type: String = row.try_get("div_type").unwrap_or_default();
+        if uses_cash_par(&div_type, &symbol) {
+            let selected = cash_par_current_price();
+            return Ok(CurrentPriceBody {
+                security_id,
+                price_minor: selected.price_minor,
+                scale: selected.scale,
+                freshness: "current".into(),
+                price_derived_valid: true,
+                as_of_at: Some(as_of_date),
+            });
+        }
+    }
     let over_row = sqlx::query(
-        "SELECT price_minor, scale, status FROM manual_price_override
+        "SELECT price_minor, scale, status, effective_from FROM manual_price_override
          WHERE security_id = ? AND status = 'active' ORDER BY effective_from DESC LIMIT 1",
     )
     .bind(security_id.to_string())
     .fetch_optional(pool)
     .await
     .map_err(|e| map_err(e.into()))?;
+    let over_effective_from = over_row
+        .as_ref()
+        .and_then(|row| row.try_get::<String, _>("effective_from").ok());
     let over = over_row
+        .as_ref()
         .map(|row| {
             Ok::<_, PlatformError>(OverrideObservation {
                 price_minor: row.try_get("price_minor").map_err(|e| map_err(e.into()))?,
@@ -269,6 +363,18 @@ pub async fn current_price_get(
         })
         .collect();
     let selected = select_current_price(over.as_ref(), &obs, &as_of_date);
+    let as_of_at = match selected.freshness {
+        financial_domain::current_price::PriceFreshness::ManualOverride => over_effective_from,
+        financial_domain::current_price::PriceFreshness::Current
+        | financial_domain::current_price::PriceFreshness::Stale => selected.price_minor.and_then(
+            |minor| {
+                obs.iter()
+                    .find(|q| q.accepted && q.price_minor == minor)
+                    .map(|q| q.as_of.clone())
+            },
+        ),
+        financial_domain::current_price::PriceFreshness::Unavailable => None,
+    };
     Ok(CurrentPriceBody {
         security_id,
         price_minor: selected.price_minor,
@@ -282,6 +388,7 @@ pub async fn current_price_get(
             financial_domain::current_price::PriceFreshness::Unavailable => "unavailable".into(),
         },
         price_derived_valid: price_derived_valid(selected.freshness),
+        as_of_at,
     })
 }
 
@@ -293,8 +400,8 @@ pub async fn retrieval_template_set(
         "INSERT INTO retrieval_template (
             security_id, price_source, source_symbol, declaration_source, lookback_count,
             payment_source, source_url, calendar_policy, last_run_at, last_run_ok, last_run_message,
-            last_content_hash
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_content_hash, collector_enabled, inception_on
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(security_id) DO UPDATE SET
             price_source = excluded.price_source,
             source_symbol = excluded.source_symbol,
@@ -306,7 +413,9 @@ pub async fn retrieval_template_set(
             last_run_at = CASE WHEN excluded.last_run_at = '' THEN retrieval_template.last_run_at ELSE excluded.last_run_at END,
             last_run_ok = CASE WHEN excluded.last_run_at = '' THEN retrieval_template.last_run_ok ELSE excluded.last_run_ok END,
             last_run_message = CASE WHEN excluded.last_run_at = '' THEN retrieval_template.last_run_message ELSE excluded.last_run_message END,
-            last_content_hash = CASE WHEN excluded.last_content_hash = '' THEN retrieval_template.last_content_hash ELSE excluded.last_content_hash END",
+            last_content_hash = CASE WHEN excluded.last_content_hash = '' THEN retrieval_template.last_content_hash ELSE excluded.last_content_hash END,
+            collector_enabled = excluded.collector_enabled,
+            inception_on = excluded.inception_on",
     )
     .bind(record.security_id.to_string())
     .bind(&record.price_source)
@@ -320,6 +429,8 @@ pub async fn retrieval_template_set(
     .bind(record.last_run_ok.map(|ok| if ok { 1i64 } else { 0 }))
     .bind(&record.last_run_message)
     .bind(&record.last_content_hash)
+    .bind(if record.collector_enabled { 1i64 } else { 0 })
+    .bind(&record.inception_on)
     .execute(pool)
     .await
     .map_err(|e| map_err(e.into()))?;
@@ -333,7 +444,8 @@ pub async fn retrieval_template_get(
     let row = sqlx::query(
         "SELECT security_id, price_source, source_symbol, declaration_source, lookback_count,
                 payment_source, source_url, calendar_policy, last_run_at, last_run_ok, last_run_message,
-                last_content_hash
+                last_content_hash, COALESCE(collector_enabled, 0) AS collector_enabled,
+                COALESCE(inception_on, '') AS inception_on
          FROM retrieval_template WHERE security_id = ?",
     )
     .bind(security_id.to_string())
@@ -363,6 +475,11 @@ pub async fn retrieval_template_get(
             last_content_hash: row
                 .try_get("last_content_hash")
                 .unwrap_or_else(|_| String::new()),
+            collector_enabled: row
+                .try_get::<i64, _>("collector_enabled")
+                .unwrap_or(0)
+                != 0,
+            inception_on: row.try_get("inception_on").unwrap_or_default(),
         })
     })
     .transpose()
@@ -375,11 +492,13 @@ pub async fn retrieval_template_touch_run(
     message: String,
     ran_at: String,
     content_hash: String,
+    source_url: &str,
 ) -> Result<(), PlatformError> {
     sqlx::query(
         "UPDATE retrieval_template
          SET last_run_at = ?, last_run_ok = ?, last_run_message = ?,
-             last_content_hash = CASE WHEN ? = '' THEN last_content_hash ELSE ? END
+             last_content_hash = CASE WHEN ? = '' THEN last_content_hash ELSE ? END,
+             source_url = CASE WHEN ? = '' THEN source_url ELSE ? END
          WHERE security_id = ?",
     )
     .bind(&ran_at)
@@ -387,6 +506,8 @@ pub async fn retrieval_template_touch_run(
     .bind(&message)
     .bind(&content_hash)
     .bind(&content_hash)
+    .bind(source_url)
+    .bind(source_url)
     .bind(security_id.to_string())
     .execute(pool)
     .await
@@ -402,7 +523,9 @@ pub async fn price_retrieval_set(pool: &SqlitePool) -> Result<PriceRetrievalSetB
                 COALESCE(rt.declaration_source, '') AS declaration_source,
                 COALESCE(rt.source_url, '') AS source_url,
                 COALESCE(rt.calendar_policy, '') AS calendar_policy,
-                COALESCE(rt.last_content_hash, '') AS last_content_hash
+                COALESCE(rt.last_content_hash, '') AS last_content_hash,
+                COALESCE(pc.div_type, '') AS div_type,
+                COALESCE(rt.collector_enabled, 0) AS collector_enabled
          FROM lot
          JOIN security s ON s.security_id = lot.security_id
          LEFT JOIN retrieval_template rt ON rt.security_id = lot.security_id
@@ -428,6 +551,11 @@ pub async fn price_retrieval_set(pool: &SqlitePool) -> Result<PriceRetrievalSetB
         let last_content_hash: String = row
             .try_get("last_content_hash")
             .unwrap_or_else(|_| String::new());
+        let div_type: String = row.try_get("div_type").unwrap_or_else(|_| String::new());
+        let collector_enabled: i64 = row.try_get("collector_enabled").unwrap_or(0);
+        if uses_cash_par(&div_type, &symbol) {
+            continue;
+        }
         security_ids.push(security_id);
         items.push(PriceRetrievalItem {
             security_id,
@@ -438,6 +566,8 @@ pub async fn price_retrieval_set(pool: &SqlitePool) -> Result<PriceRetrievalSetB
             source_url,
             calendar_policy,
             last_content_hash,
+            div_type,
+            collector_enabled: collector_enabled != 0,
         });
     }
     Ok(PriceRetrievalSetBody {
@@ -449,4 +579,256 @@ pub async fn price_retrieval_set(pool: &SqlitePool) -> Result<PriceRetrievalSetB
 fn parse_uuid(row: &sqlx::sqlite::SqliteRow, col: &str) -> Result<Uuid, PlatformError> {
     let raw: String = row.try_get(col).map_err(|e| map_err(e.into()))?;
     Uuid::parse_str(&raw).map_err(|e| PlatformError::new("parse_error", e.to_string()))
+}
+
+pub async fn retrieve_run_record(
+    pool: &SqlitePool,
+    record: RetrieveRunRecord,
+) -> Result<RetrieveRunRecord, PlatformError> {
+    sqlx::query(
+        "INSERT INTO retrieve_run (
+            run_id, security_id, kind, requested_at, ok, code, message,
+            attempted, recorded, skipped, unchanged, payload_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(record.run_id.to_string())
+    .bind(record.security_id.to_string())
+    .bind(&record.kind)
+    .bind(&record.requested_at)
+    .bind(if record.ok { 1i64 } else { 0 })
+    .bind(&record.code)
+    .bind(&record.message)
+    .bind(record.attempted as i64)
+    .bind(record.recorded as i64)
+    .bind(record.skipped as i64)
+    .bind(record.unchanged as i64)
+    .bind(&record.payload_json)
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    Ok(record)
+}
+
+pub async fn retrieve_run_list(
+    pool: &SqlitePool,
+    security_id: Option<Uuid>,
+    limit: u32,
+) -> Result<Vec<RetrieveRunRecord>, PlatformError> {
+    let limit = limit.clamp(1, 200) as i64;
+    let rows = if let Some(id) = security_id {
+        sqlx::query(
+            "SELECT run_id, security_id, kind, requested_at, ok, code, message,
+                    attempted, recorded, skipped, unchanged, payload_json
+             FROM retrieve_run
+             WHERE security_id = ?
+             ORDER BY requested_at DESC
+             LIMIT ?",
+        )
+        .bind(id.to_string())
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+    } else {
+        sqlx::query(
+            "SELECT run_id, security_id, kind, requested_at, ok, code, message,
+                    attempted, recorded, skipped, unchanged, payload_json
+             FROM retrieve_run
+             ORDER BY requested_at DESC
+             LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+    }
+    .map_err(|e| map_err(e.into()))?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(RetrieveRunRecord {
+                run_id: parse_uuid(&row, "run_id")?,
+                security_id: parse_uuid(&row, "security_id")?,
+                kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+                requested_at: row.try_get("requested_at").map_err(|e| map_err(e.into()))?,
+                ok: row.try_get::<i64, _>("ok").map_err(|e| map_err(e.into()))? != 0,
+                code: row.try_get("code").unwrap_or_default(),
+                message: row.try_get("message").unwrap_or_default(),
+                attempted: row.try_get::<i64, _>("attempted").unwrap_or(0) as u64,
+                recorded: row.try_get::<i64, _>("recorded").unwrap_or(0) as u64,
+                skipped: row.try_get::<i64, _>("skipped").unwrap_or(0) as u64,
+                unchanged: row.try_get::<i64, _>("unchanged").unwrap_or(0) as u64,
+                payload_json: row.try_get("payload_json").unwrap_or_else(|_| "{}".into()),
+            })
+        })
+        .collect()
+}
+
+pub async fn collector_set(pool: &SqlitePool) -> Result<CollectorSetBody, PlatformError> {
+    let rows = sqlx::query(
+        "SELECT s.security_id, s.symbol,
+                COALESCE(pc.provider, '') AS provider,
+                COALESCE(pc.div_type, '') AS div_type,
+                COALESCE(pc.payment_frequency, '') AS payment_frequency,
+                COALESCE(rt.declaration_source, '') AS declaration_source,
+                COALESCE(rt.price_source, '') AS price_source,
+                COALESCE(rt.source_symbol, '') AS source_symbol,
+                COALESCE(rt.source_url, '') AS source_url,
+                COALESCE(rt.calendar_policy, '') AS calendar_policy,
+                COALESCE(rt.collector_enabled, 0) AS collector_enabled,
+                COALESCE(rt.last_run_at, '') AS last_run_at,
+                rt.last_run_ok,
+                COALESCE(rt.last_run_message, '') AS last_run_message,
+                COALESCE(rt.last_content_hash, '') AS last_content_hash,
+                COALESCE(rt.inception_on, '') AS inception_on,
+                EXISTS(
+                    SELECT 1 FROM lot l
+                    WHERE l.security_id = s.security_id AND l.remaining_quantity_minor > 0
+                ) AS open_lots
+         FROM security s
+         LEFT JOIN position_characteristic pc ON pc.security_id = s.security_id
+         LEFT JOIN retrieval_template rt ON rt.security_id = s.security_id
+         WHERE pc.security_id IS NOT NULL
+            OR EXISTS(
+                SELECT 1 FROM lot l
+                WHERE l.security_id = s.security_id AND l.remaining_quantity_minor > 0
+            )
+            OR (
+                COALESCE(rt.collector_enabled, 0) = 1
+                AND TRIM(COALESCE(rt.source_url, '')) != ''
+            )
+         ORDER BY s.symbol",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    let mut items = Vec::new();
+    for row in rows {
+        let symbol: String = row.try_get("symbol").map_err(|e| map_err(e.into()))?;
+        let div_type: String = row.try_get("div_type").unwrap_or_default();
+        let payment_frequency: String = row.try_get("payment_frequency").unwrap_or_default();
+        let source_url: String = row.try_get("source_url").unwrap_or_default();
+        let collector_enabled: i64 = row.try_get("collector_enabled").unwrap_or(0);
+        let research_template =
+            collector_enabled != 0 && !source_url.trim().is_empty();
+        if !collector_symbol_pays(&div_type, &payment_frequency, &symbol) && !research_template {
+            continue;
+        }
+        items.push(CollectorSetItem {
+            security_id: parse_uuid(&row, "security_id")?,
+            symbol,
+            provider: row.try_get("provider").unwrap_or_default(),
+            div_type,
+            payment_frequency,
+            declaration_source: row.try_get("declaration_source").unwrap_or_default(),
+            price_source: row.try_get("price_source").unwrap_or_default(),
+            source_symbol: row.try_get("source_symbol").unwrap_or_default(),
+            source_url,
+            calendar_policy: row.try_get("calendar_policy").unwrap_or_default(),
+            collector_enabled: collector_enabled != 0,
+            last_run_at: row.try_get("last_run_at").unwrap_or_default(),
+            last_run_ok: row
+                .try_get::<Option<i64>, _>("last_run_ok")
+                .ok()
+                .flatten()
+                .map(|n| n != 0),
+            last_run_message: row.try_get("last_run_message").unwrap_or_default(),
+            last_content_hash: row.try_get("last_content_hash").unwrap_or_default(),
+            open_lots: row.try_get::<i64, _>("open_lots").unwrap_or(0) != 0,
+            inception_on: row.try_get("inception_on").unwrap_or_default(),
+        });
+    }
+    Ok(CollectorSetBody { items })
+}
+
+/// Collectors fleet is for income names only — exclude non-payers (cadence None / equity).
+fn collector_symbol_pays(div_type: &str, payment_frequency: &str, symbol: &str) -> bool {
+    if financial_domain::current_price::uses_cash_par(div_type, symbol) {
+        return true;
+    }
+    if financial_domain::div1::is_div1(div_type) {
+        return true;
+    }
+    matches!(
+        financial_domain::calculator::PaymentCadence::parse(payment_frequency),
+        Some(
+            financial_domain::calculator::PaymentCadence::Weekly
+                | financial_domain::calculator::PaymentCadence::Monthly
+                | financial_domain::calculator::PaymentCadence::Quarterly
+        )
+    )
+}
+
+pub async fn collector_stats(
+    pool: &SqlitePool,
+    as_of_date: &str,
+) -> Result<CollectorStatsBody, PlatformError> {
+    let set = collector_set(pool).await?;
+    let assigned = set
+        .items
+        .iter()
+        .filter(|i| {
+            financial_domain::div1::is_registered_declaration_source(&i.declaration_source)
+        })
+        .count() as u64;
+    let enabled = set.items.iter().filter(|i| i.collector_enabled).count() as u64;
+    let cash_par = set
+        .items
+        .iter()
+        .filter(|i| {
+            financial_domain::current_price::uses_cash_par(&i.div_type, &i.symbol)
+        })
+        .count() as u64;
+
+    let ran_today: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT security_id) FROM retrieve_run WHERE requested_at LIKE ?",
+    )
+    .bind(format!("{as_of_date}%"))
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let miss_today: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retrieve_run WHERE requested_at LIKE ? AND ok = 0",
+    )
+    .bind(format!("{as_of_date}%"))
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let unchanged_today: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(unchanged), 0) FROM retrieve_run WHERE requested_at LIKE ?",
+    )
+    .bind(format!("{as_of_date}%"))
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let open_exceptions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM app_exception WHERE acknowledged = 0")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+
+    // Price freshness from latest quotes for open-lot symbols.
+    let mut price_current = 0u64;
+    let mut price_stale = 0u64;
+    for item in set.items.iter().filter(|i| i.open_lots) {
+        let price = current_price_get(pool, item.security_id, as_of_date.to_string()).await?;
+        match price.freshness.as_str() {
+            "current" | "manual_override" => price_current += 1,
+            "stale" => price_stale += 1,
+            _ => {}
+        }
+    }
+
+    Ok(CollectorStatsBody {
+        assigned,
+        enabled,
+        ran_today: ran_today as u64,
+        miss_today: miss_today as u64,
+        unchanged_today: unchanged_today as u64,
+        cash_par,
+        price_current,
+        price_stale,
+        open_exceptions: open_exceptions as u64,
+        as_of_date: as_of_date.to_string(),
+    })
 }

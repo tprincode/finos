@@ -4,10 +4,14 @@
 mod adapters;
 mod edgar;
 mod html;
+mod lookthrough;
 
 pub use adapters::{
-    amplify_fund_page, parse_amplify_distributions, parse_neos_distributions,
-    parse_roundhill_distributions, parse_yieldmax_distributions, roundhill_fund_page,
+    amplify_fund_page, parse_amplify_distributions, parse_generic_distributions,
+    parse_moneymarket_distributions, parse_nasdaq_dividends, parse_neos_distributions,
+    parse_proshares_distribution_summary, parse_saba_distributions, parse_simplify_distributions,
+    parse_roundhill_distribution_api, parse_roundhill_distributions, parse_yieldmax_distributions,
+    roundhill_fund_page,
 };
 pub use edgar::{parse_edgar_offering_as_of, parse_edgar_offering_price};
 #[allow(unused_imports)]
@@ -21,10 +25,11 @@ pub(crate) use edgar::{
 pub(crate) use html::{
     candidate_amount, strip_html, upcoming_from_candidates,
 };
+use lookthrough::{empty_lookthrough, extract_lookthrough};
 
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{Datelike, TimeZone, Utc};
 use serde_json::{json, Value};
 
 use adapters::{hrefs_matching, neos_fund_page, page_is_not_found, yieldmax_fund_page};
@@ -39,7 +44,7 @@ pub fn price_quote_candidates(injected: Option<&Value>) -> Vec<Value> {
 /// Echo up to 12 injected declaration candidates. Empty means prompt/paste.
 pub fn declaration_candidates(injected: Option<&Value>) -> Vec<Value> {
     match injected {
-        Some(Value::Array(arr)) => arr.iter().take(12).cloned().collect(),
+        Some(Value::Array(arr)) => arr.clone(),
         Some(v) if v.is_object() => vec![v.clone()],
         _ => Vec::new(),
     }
@@ -105,35 +110,18 @@ fn iso_from_unix(ts: i64) -> String {
 }
 
 fn suggest_frequency(dates_newest_first: &[String]) -> String {
-    if dates_newest_first.len() < 2 {
-        return String::new();
-    }
-    let parsed: Vec<chrono::NaiveDate> = dates_newest_first
-        .iter()
-        .filter_map(|d| chrono::NaiveDate::parse_from_str(&d[..d.len().min(10)], "%Y-%m-%d").ok())
-        .collect();
-    if parsed.len() < 2 {
-        return String::new();
-    }
-    let mut gaps: Vec<i64> = parsed
-        .windows(2)
-        .map(|w| (w[0] - w[1]).num_days().abs())
-        .collect();
-    gaps.sort_unstable();
-    let med = gaps[gaps.len() / 2];
-    if med <= 10 {
-        "Weekly".into()
-    } else if med <= 40 {
-        "Monthly".into()
-    } else {
-        "Quarterly".into()
-    }
+    let periods: Vec<&str> = dates_newest_first.iter().map(String::as_str).collect();
+    financial_domain::calculator::infer_payment_cadence(&periods, None)
+        .map(|c| c.label().to_string())
+        .unwrap_or_default()
 }
+
+const HTTP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 pub(crate) fn http_get(url: &str) -> Result<String, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(12))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        .user_agent(HTTP_UA)
         .build();
     agent
         .get(url)
@@ -144,10 +132,67 @@ pub(crate) fn http_get(url: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+fn http_get_referer(url: &str, referer: &str) -> Result<String, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(12))
+        .user_agent(HTTP_UA)
+        .build();
+    agent
+        .get(url)
+        .set("Accept", "*/*")
+        .set("Referer", referer)
+        .set("Origin", "https://www.roundhillinvestments.com")
+        .set("X-Requested-With", "XMLHttpRequest")
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())
+}
+
+fn http_post_form_origin(
+    url: &str,
+    referer: &str,
+    origin: &str,
+    form: &[(&str, &str)],
+) -> Result<String, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(20))
+        .user_agent(HTTP_UA)
+        .build();
+    agent
+        .post(url)
+        .set("Accept", "*/*")
+        .set("Referer", referer)
+        .set("Origin", origin)
+        .set("X-Requested-With", "XMLHttpRequest")
+        .set("Content-Type", "application/x-www-form-urlencoded")
+        .send_form(form)
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())
+}
+
+fn http_post_form_body(url: &str, referer: &str, origin: &str, body: &str) -> Result<String, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(20))
+        .user_agent(HTTP_UA)
+        .build();
+    agent
+        .post(url)
+        .set("Accept", "text/html,*/*")
+        .set("Referer", referer)
+        .set("Origin", origin)
+        .set("Content-Type", "application/x-www-form-urlencoded")
+        .send_string(body)
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())
+}
+
 fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(6))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        .user_agent(HTTP_UA)
         .build();
     let mut reader = agent
         .get(url)
@@ -270,7 +315,7 @@ fn amplify_19a1_urls(symbol: &str) -> Vec<(String, String)> {
 
 /// Best-effort current-year 19a-1 candidates. Empty means unknown, not 0%.
 pub fn live_roc_candidates(symbol: &str) -> Vec<Value> {
-    live_roc_candidates_for(symbol, "")
+    live_roc_candidates_for(symbol, "", "")
 }
 
 fn roc_estimate(pct: i64, url: &str, as_of: &str, how: String, method: &str) -> Value {
@@ -288,7 +333,7 @@ fn roc_estimate(pct: i64, url: &str, as_of: &str, how: String, method: &str) -> 
     })
 }
 
-fn live_amplify_roc(symbol: &str) -> Vec<Value> {
+fn live_amplify_roc(symbol: &str, source_url: &str) -> Vec<Value> {
     let sym = yahoo_symbol(symbol);
     if sym.is_empty() {
         return Vec::new();
@@ -301,11 +346,61 @@ fn live_amplify_roc(symbol: &str) -> Vec<Value> {
             }
         }
     }
+    // Stored issuer URL + tax-center / fund page; follow tax / 19a-1 / Form 19a-1 links.
+    let mut pages: Vec<String> = Vec::new();
+    let stored = source_url.trim();
+    if !stored.is_empty() {
+        let base = stored.split('#').next().unwrap_or(stored).trim();
+        if !base.is_empty() {
+            pages.push(base.to_string());
+        }
+    }
+    pages.push("https://amplifyetfs.com/tax-center/".to_string());
+    pages.push(format!("https://amplifyetfs.com/{}/", sym.to_ascii_lowercase()));
+    pages.sort();
+    pages.dedup();
+
+    let sym_u = sym.to_ascii_uppercase();
+    let mut pdf_queue: Vec<String> = Vec::new();
+    let mut hub_queue: Vec<String> = pages.clone();
+    let mut seen_hubs = pages.iter().cloned().collect::<std::collections::HashSet<_>>();
+
+    while let Some(page) = hub_queue.pop() {
+        let Ok(html) = http_get(&page) else {
+            continue;
+        };
+        for needle in ["19a-1_Notice_", "19a-1", "form 19a-1", "tax-center", "tax center"] {
+            for href in hrefs_matching(&html, needle, "https://amplifyetfs.com") {
+                let lower = href.to_ascii_lowercase();
+                if lower.contains(".pdf") && href.to_ascii_uppercase().contains(&sym_u) {
+                    if !pdf_queue.iter().any(|u| u == &href) {
+                        pdf_queue.push(href);
+                    }
+                } else if (lower.contains("tax-center") || lower.contains("19a-1") || lower.contains("19a1"))
+                    && !lower.contains(".pdf")
+                    && seen_hubs.insert(href.clone())
+                {
+                    hub_queue.push(href);
+                }
+            }
+        }
+    }
+
+    for href in pdf_queue {
+        let Ok(bytes) = http_get_bytes(&href) else {
+            continue;
+        };
+        let text = pdf_ascii(&bytes);
+        if let Some((pct, how)) = parse_19a1_notice(&text) {
+            let as_of = Utc::now().date_naive().to_string();
+            return vec![roc_estimate(pct, &href, &as_of, how, "19a-1-current-year")];
+        }
+    }
     Vec::new()
 }
 
 fn live_neos_roc(symbol: &str) -> Vec<Value> {
-    let Some((page_url, html)) = fetch_adapter_page("neos", symbol, None) else {
+    let Some((page_url, html, _)) = fetch_adapter_page("neos", symbol, None) else {
         return Vec::new();
     };
     for href in hrefs_matching(&html, "19a1", "https://neosfunds.com") {
@@ -327,7 +422,7 @@ fn live_neos_roc(symbol: &str) -> Vec<Value> {
 }
 
 fn live_yieldmax_roc(symbol: &str) -> Vec<Value> {
-    let Some((url, html)) = fetch_adapter_page("yieldmax", symbol, None) else {
+    let Some((url, html, _)) = fetch_adapter_page("yieldmax", symbol, None) else {
         return Vec::new();
     };
     let cands = parse_yieldmax_distributions(&html);
@@ -350,7 +445,7 @@ fn live_yieldmax_roc(symbol: &str) -> Vec<Value> {
 }
 
 fn live_roundhill_roc(symbol: &str) -> Vec<Value> {
-    let Some((url, html)) = fetch_adapter_page("roundhill", symbol, None) else {
+    let Some((url, html, _)) = fetch_adapter_page("roundhill", symbol, None) else {
         return Vec::new();
     };
     if let Some(pct) = parse_roundhill_roc_html(&html) {
@@ -365,21 +460,28 @@ fn live_roundhill_roc(symbol: &str) -> Vec<Value> {
     Vec::new()
 }
 
-fn live_roc_candidates_for(symbol: &str, declaration_source: &str) -> Vec<Value> {
+fn live_roc_candidates_for(symbol: &str, declaration_source: &str, source_url: &str) -> Vec<Value> {
     let src = declaration_source.trim().to_ascii_lowercase();
     match src.as_str() {
         "neos" => live_neos_roc(symbol),
         "yieldmax" => live_yieldmax_roc(symbol),
         "roundhill" => live_roundhill_roc(symbol),
-        "amplify" => live_amplify_roc(symbol),
+        "amplify" => live_amplify_roc(symbol, source_url),
         "" => {
-            let amplify = live_amplify_roc(symbol);
+            let amplify = live_amplify_roc(symbol, source_url);
             if !amplify.is_empty() {
                 return amplify;
             }
             live_roundhill_roc(symbol)
         }
-        _ => Vec::new(),
+        _ => {
+            // Unknown vendor: still try Amplify-shaped notices when a stored Amplify URL is present.
+            if source_url.to_ascii_lowercase().contains("amplifyetfs.com") {
+                live_amplify_roc(symbol, source_url)
+            } else {
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -415,7 +517,6 @@ pub fn parse_yahoo_chart(symbol: &str, body: &str) -> Option<Value> {
         }
     }
     divs.sort_by(|a, b| b.0.cmp(&a.0));
-    divs.truncate(12);
     let declarations: Vec<Value> = divs
         .iter()
         .map(|(ts, amt)| {
@@ -468,8 +569,25 @@ fn suggested_provider_from_name(name: &str) -> String {
         ("innovator", "Innovator"),
         ("global x", "Global X"),
         ("first trust", "First Trust"),
+        ("ft vest", "FT Vest"),
         ("jpmorgan", "JPMorgan"),
         ("jp morgan", "JPMorgan"),
+        ("cornerstone", "Cornerstone"),
+        ("direxion", "Direxion"),
+        ("proshares", "ProShares"),
+        ("dividendinvestor", "DividendInvestor"),
+        ("saba", "Saba"),
+        ("ellington", "Ellington"),
+        ("enterprise", "Enterprise Products"),
+        ("energy transfer", "Energy Transfer"),
+        ("gladstone", "Gladstone"),
+        ("mplx", "MPLX LP"),
+        ("orchid", "Orchid Island"),
+        ("tappalpha", "TappAlpha"),
+        ("tapp alpha", "TappAlpha"),
+        ("trinity", "Trinity Capital"),
+        ("graniteshares", "T-Rex/GraniteShares"),
+        ("t-rex", "T-Rex/GraniteShares"),
     ];
     for (needle, label) in KNOWN {
         if lower == *needle
@@ -677,8 +795,8 @@ pub fn parse_yahoo_daily_closes(body: &str, start_on: &str, end_on: &str) -> Vec
         Some(c) => c,
         None => return Vec::new(),
     };
-    let start = if start_on.len() >= 10 { &start_on[..10] } else { start_on };
-    let end = if end_on.len() >= 10 { &end_on[..10] } else { end_on };
+    let start = iso_date_prefix(start_on);
+    let end = iso_date_prefix(end_on);
     timestamps
         .iter()
         .zip(closes.iter())
@@ -686,7 +804,7 @@ pub fn parse_yahoo_daily_closes(body: &str, start_on: &str, end_on: &str) -> Vec
             let unix = ts.as_i64()?;
             let on = iso_from_unix(unix);
             let px = close.as_f64().filter(|p| *p > 0.0)?;
-            if on.as_str() < start || on.as_str() > end {
+            if on.as_str() < start.as_str() || on.as_str() > end.as_str() {
                 return None;
             }
             Some(json!({
@@ -699,8 +817,18 @@ pub fn parse_yahoo_daily_closes(body: &str, start_on: &str, end_on: &str) -> Vec
         .collect()
 }
 
+fn iso_date_prefix(raw: &str) -> String {
+    let prefix: String = raw.trim().chars().take(10).collect();
+    if prefix.chars().count() == 10 {
+        prefix
+    } else {
+        raw.trim().to_string()
+    }
+}
+
 fn unix_date(on: &str) -> Option<i64> {
-    let d = chrono::NaiveDate::parse_from_str(&on[..on.len().min(10)], "%Y-%m-%d").ok()?;
+    let prefix = iso_date_prefix(on);
+    let d = chrono::NaiveDate::parse_from_str(&prefix, "%Y-%m-%d").ok()?;
     let ndt = d.and_hms_opt(0, 0, 0)?;
     Some(Utc.from_utc_datetime(&ndt).timestamp())
 }
@@ -733,32 +861,34 @@ fn live_period_series(symbol: &str, start_on: &str, end_on: &str) -> Vec<Value> 
 }
 
 
-const REGISTERED_VENDORS: &[&str] = &["roundhill", "amplify", "neos", "yieldmax"];
-
 /// Registered issuer adapters. Yahoo is never a declaration source.
 pub fn is_registered_declaration_source(source: &str) -> bool {
-    REGISTERED_VENDORS
-        .iter()
-        .any(|v| source.eq_ignore_ascii_case(v))
+    financial_domain::div1::is_registered_declaration_source(source)
+}
+
+pub fn registered_declaration_sources() -> &'static [&'static str] {
+    financial_domain::div1::REGISTERED_DECLARATION_SOURCES
 }
 
 fn adapter_label(source: &str) -> &'static str {
-    match source.trim().to_ascii_lowercase().as_str() {
-        "roundhill" => "Roundhill",
-        "amplify" => "Amplify",
-        "neos" => "NEOS",
-        "yieldmax" => "YieldMax",
-        _ => "",
-    }
+    financial_domain::div1::source_label(source)
 }
 
 fn adapter_is_fund_page(source: &str, html: &str, symbol: &str) -> bool {
+    let low = html.to_ascii_lowercase();
+    if low.contains("payout date") && low.contains("cash amount") {
+        return adapters::html_names_symbol(html, symbol)
+            || low.contains(&symbol.trim().to_ascii_lowercase());
+    }
     match source.trim().to_ascii_lowercase().as_str() {
         "roundhill" => roundhill_fund_page(html, symbol),
         "amplify" => amplify_fund_page(html, symbol),
         "neos" => neos_fund_page(html, symbol),
         "yieldmax" => yieldmax_fund_page(html, symbol),
-        _ => false,
+        "fidelity" | "schwab" => adapters::moneymarket_fund_page(source, html, symbol),
+        "saba" => adapters::saba_fund_page(html, symbol),
+        "dividendinvestor" => adapters::dividendinvestor_fund_page(html, symbol),
+        other => adapters::div1_fund_page(other, html, symbol),
     }
 }
 
@@ -767,7 +897,7 @@ fn adapter_probe_urls(source: &str, symbol: &str) -> Vec<String> {
     if sym.is_empty() {
         return Vec::new();
     }
-    match source.trim().to_ascii_lowercase().as_str() {
+    let mut urls = match source.trim().to_ascii_lowercase().as_str() {
         "roundhill" => vec![
             format!("https://www.roundhillinvestments.com/etf/{sym}"),
             format!("https://www.roundhillinvestments.com/etfs/{sym}"),
@@ -784,32 +914,313 @@ fn adapter_probe_urls(source: &str, symbol: &str) -> Vec<String> {
             format!("https://www.yieldmaxetfs.com/our-etfs/{sym}/"),
             format!("https://www.yieldmaxetfs.com/{sym}/"),
         ],
-        _ => Vec::new(),
+        "fidelity" | "schwab" => adapters::moneymarket_probe_urls(source, symbol),
+        other => adapters::div1_probe_urls(other, symbol),
+    };
+    let dh = adapters::dividendhistory_url(symbol);
+    if !urls.iter().any(|u| u == &dh) {
+        urls.push(dh);
+    }
+    urls
+}
+
+fn live_proshares_distribution_body(symbol: &str) -> Option<String> {
+    let sym = symbol.trim().to_ascii_uppercase();
+    if sym.is_empty() {
+        return None;
+    }
+    let year = Utc::now().year();
+    let mut all = Vec::new();
+    for y in [year, year - 1, year - 2] {
+        let url = format!("https://www.proshares.com/api/distributionsummary/?fund={sym}&year={y}");
+        let Ok(body) = http_get(&url) else {
+            continue;
+        };
+        let Ok(Value::Array(rows)) = serde_json::from_str::<Value>(&body) else {
+            continue;
+        };
+        all.extend(rows);
+    }
+    if all.is_empty() {
+        return None;
+    }
+    Some(Value::Array(all).to_string())
+}
+
+/// Roundhill fills distribution tables via JS; GET HTML has empty tbody.
+/// Flow mirrors site app.js: warm fund page → token from server.php → POST distribution-call.php.
+fn live_roundhill_distribution_body(symbol: &str) -> Option<String> {
+    let ticker = adapters::roundhill_api_ticker(symbol);
+    if ticker.is_empty() {
+        return None;
+    }
+    let page = format!(
+        "https://www.roundhillinvestments.com/etf/{}",
+        ticker.to_ascii_lowercase()
+    );
+    let _ = http_get(&page);
+    let token = http_get_referer(
+        "https://www.roundhillinvestments.com/assets/php/server.php",
+        &page,
+    )
+    .ok()?
+    .trim()
+    .to_string();
+    if token.is_empty() {
+        return None;
+    }
+    let lower = format!("{}/", ticker.to_ascii_lowercase());
+    let body = http_post_form_origin(
+        "https://www.roundhillinvestments.com/assets/php/distribution-call.php",
+        &page,
+        "https://www.roundhillinvestments.com",
+        &[
+            ("upperetf", ticker.as_str()),
+            ("loweretf", lower.as_str()),
+            ("token", token.as_str()),
+            ("is_ajax", "1"),
+        ],
+    )
+    .ok()?;
+    if adapters::parse_roundhill_distribution_api(&body).is_empty() {
+        return None;
+    }
+    Some(body)
+}
+
+/// Saba fund page embeds all years in Nuxt `__NUXT_DATA__` (year tabs are client-side).
+fn live_saba_distribution_body(symbol: &str) -> Option<String> {
+    let url = adapters::saba_fund_url(symbol);
+    let html = http_get(&url).ok()?;
+    if adapters::parse_saba_nuxt_distributions("saba", &html).is_empty() {
+        return None;
+    }
+    Some(html)
+}
+
+/// Simplify fund page links to `/etfs/{node_id}/distributions` (Drupal AJAX full history).
+fn live_simplify_distribution_body(symbol: &str) -> Option<(String, String, Option<String>)> {
+    let fund_url = adapters::simplify_fund_url(symbol);
+    let fund_html = http_get(&fund_url).ok()?;
+    let calendar_url =
+        crate::retrieve::html::distribution_calendar_url(&fund_html, "https://www.simplify.us");
+    let node_id = adapters::extract_simplify_node_id(&fund_html)?;
+    let dist_url = adapters::simplify_distributions_url(&node_id);
+    let body = http_get(&dist_url).ok()?;
+    if parse_simplify_distributions("simplify", &body).is_empty() {
+        return None;
+    }
+    Some((dist_url, body, calendar_url))
+}
+
+fn site_origin_from_url(url: &str) -> String {
+    let url = url.trim();
+    let Some(scheme) = url.find("://") else {
+        return String::new();
+    };
+    let rest = &url[scheme + 3..];
+    match rest.find('/') {
+        Some(0) => url[..scheme + 3].trim_end_matches('/').to_string(),
+        Some(slash) => url[..scheme + 3 + slash].to_string(),
+        None => url.to_string(),
     }
 }
 
-fn fetch_adapter_page(source: &str, symbol: &str, source_url: Option<&str>) -> Option<(String, String)> {
+/// DividendInvestor fallback when the issuer page is empty or unreachable.
+fn live_dividendinvestor_body(symbol: &str) -> Option<String> {
+    let sym = symbol.trim().to_ascii_uppercase();
+    if sym.is_empty() {
+        return None;
+    }
+    let url = adapters::DIVIDENDINVESTOR_HISTORY_URL;
+    let body = format!("newSymbol={sym}&btnAdd=btnAdd&history_show=1&ord=div_yield&da=1");
+    let html = http_post_form_body(url, url, "https://www.dividendinvestor.com", &body).ok()?;
+    let parsed = adapters::parse_dividendinvestor_distributions("dividendinvestor", &html);
+    if parsed.is_empty() {
+        return None;
+    }
+    Some(html)
+}
+
+fn live_nasdaq_dividends_body(symbol: &str) -> Option<String> {
+    let url = adapters::nasdaq_dividends_url(symbol);
+    let body = http_get(&url).ok()?;
+    if adapters::parse_nasdaq_dividends("nasdaq", &body).is_empty() {
+        return None;
+    }
+    Some(body)
+}
+
+/// Prefer Nasdaq JSON for ETF issuers where the API reliably has rows. BDCs / mREITs
+/// (EFC, ORC, CRF, …) use issuer HTML or dividendhistory — Nasdaq is often empty and slow.
+fn prefers_nasdaq_first(source: &str) -> bool {
+    matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "jpmorgan" | "tappalpha" | "globalx" | "direxion" | "trex"
+    )
+}
+
+fn pack_adapter_fetch(url: String, html: String, calendar_html: Option<&str>) -> (String, String, Option<String>) {
+    let cal_src = calendar_html.unwrap_or(html.as_str());
+    let calendar = crate::retrieve::html::distribution_calendar_url(
+        cal_src,
+        &site_origin_from_url(&url),
+    );
+    (url, html, calendar)
+}
+
+fn follow_distribution_press_links(
+    list_html: &str,
+    fund_page_url: &str,
+    source: &str,
+    symbol: &str,
+) -> Option<(String, String, Option<String>)> {
+    let calendar = crate::retrieve::html::distribution_calendar_url(
+        list_html,
+        &site_origin_from_url(fund_page_url),
+    );
+    let hrefs = adapters::hrefs_matching(list_html, "distribution", "");
+    let more = adapters::hrefs_matching(list_html, "dividend", "");
+    let mut seen = std::collections::HashSet::new();
+    for href in hrefs.into_iter().chain(more) {
+        let url = if href.starts_with("http") {
+            href
+        } else if href.starts_with('/') {
+            // absolute path without host — skip unless we know host
+            continue;
+        } else {
+            continue;
+        };
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        let Ok(html) = http_get(&url) else {
+            continue;
+        };
+        let cands = parse_vendor_distributions_with_csv(source, &html);
+        if !cands.is_empty() {
+            return Some((url, html, calendar));
+        }
+        // Cornerstone press often embeds a declaration table without needing fund-page needles.
+        if !parse_generic_distributions_pub(source, &html).is_empty() {
+            return Some((url, html, calendar));
+        }
+        let _ = symbol;
+    }
+    None
+}
+
+fn parse_generic_distributions_pub(source: &str, html: &str) -> Vec<Value> {
+    adapters::parse_generic_distributions(source, html)
+}
+
+fn declaration_candidates_useful(cands: &[Value], as_of: &str) -> bool {
+    cands
+        .iter()
+        .any(|c| candidate_amount(c).is_some())
+        || !upcoming_from_candidates(cands, as_of).is_empty()
+}
+
+fn fetch_adapter_page(source: &str, symbol: &str, source_url: Option<&str>) -> Option<(String, String, Option<String>)> {
+    let src = source.trim().to_ascii_lowercase();
+    if src == "proshares" {
+        if let Some(body) = live_proshares_distribution_body(symbol) {
+            let url = format!(
+                "https://www.proshares.com/api/distributionsummary/?fund={}",
+                symbol.trim().to_ascii_uppercase()
+            );
+            return Some(pack_adapter_fetch(url, body, None));
+        }
+    }
+    if src == "roundhill" {
+        if let Some(body) = live_roundhill_distribution_body(symbol) {
+            return Some(pack_adapter_fetch(
+                "https://www.roundhillinvestments.com/assets/php/distribution-call.php".into(),
+                body,
+                None,
+            ));
+        }
+        if let Some(body) = live_nasdaq_dividends_body(symbol) {
+            return Some(pack_adapter_fetch(adapters::nasdaq_dividends_url(symbol), body, None));
+        }
+    }
+    if src == "dividendinvestor" {
+        if let Some(body) = live_dividendinvestor_body(symbol) {
+            return Some(pack_adapter_fetch(
+                format!(
+                    "{url}?symbol={sym}",
+                    url = adapters::DIVIDENDINVESTOR_HISTORY_URL,
+                    sym = symbol.trim().to_ascii_uppercase()
+                ),
+                body,
+                None,
+            ));
+        }
+    }
+    if src == "saba" {
+        if let Some(body) = live_saba_distribution_body(symbol) {
+            let url = adapters::saba_fund_url(symbol);
+            return Some(pack_adapter_fetch(url, body.clone(), Some(&body)));
+        }
+        if let Some(body) = live_dividendinvestor_body(symbol) {
+            return Some(pack_adapter_fetch(
+                format!(
+                    "{}?symbol={}",
+                    adapters::DIVIDENDINVESTOR_HISTORY_URL,
+                    symbol.trim().to_ascii_uppercase()
+                ),
+                body,
+                None,
+            ));
+        }
+    }
+    if src == "simplify" {
+        if let Some(followed) = live_simplify_distribution_body(symbol) {
+            return Some(followed);
+        }
+    }
+    if prefers_nasdaq_first(&src) {
+        if let Some(body) = live_nasdaq_dividends_body(symbol) {
+            return Some(pack_adapter_fetch(adapters::nasdaq_dividends_url(symbol), body, None));
+        }
+    }
     let mut urls = Vec::new();
     if let Some(stored) = source_url.map(str::trim).filter(|s| !s.is_empty()) {
         urls.push(stored.to_string());
     }
     urls.extend(adapter_probe_urls(source, symbol));
     let mut seen = std::collections::HashSet::new();
+    let as_of = Utc::now().date_naive().to_string();
     for url in urls {
         if !seen.insert(url.clone()) {
             continue;
         }
         if let Ok(html) = http_get(&url) {
-            if adapter_is_fund_page(source, &html, symbol) {
-                return Some((url, html));
+            let cands = parse_vendor_distributions_with_csv(source, &html);
+            if declaration_candidates_useful(&cands, &as_of) {
+                return Some(pack_adapter_fetch(url, html, None));
             }
+            if adapter_is_fund_page(source, &html, symbol) {
+                if let Some(followed) =
+                    follow_distribution_press_links(&html, &url, source, symbol)
+                {
+                    return Some(followed);
+                }
+                // JS-rendered fund pages (Roundhill) may be empty on GET — try fallbacks.
+                continue;
+            }
+        }
+    }
+    if !prefers_nasdaq_first(&src) {
+        if let Some(body) = live_nasdaq_dividends_body(symbol) {
+            return Some(pack_adapter_fetch(adapters::nasdaq_dividends_url(symbol), body, None));
         }
     }
     None
 }
 
 fn live_vendor_page(source: &str, symbol: &str, source_url: Option<&str>) -> Option<String> {
-    fetch_adapter_page(source, symbol, source_url).map(|(_, html)| html)
+    fetch_adapter_page(source, symbol, source_url).map(|(_, html, _)| html)
 }
 
 fn live_vendor_declarations(source: &str, symbol: &str, source_url: Option<&str>) -> Vec<Value> {
@@ -825,10 +1236,10 @@ fn live_vendor_declarations(source: &str, symbol: &str, source_url: Option<&str>
 }
 
 fn suggest_calendar_policy(upcoming_count: usize, fund_page: bool) -> String {
-    if upcoming_count >= 2 {
+    if upcoming_count >= 1 && fund_page {
         "issuer_calendar".into()
     } else if fund_page {
-        "derived_walk".into()
+        "issuer_calendar".into()
     } else {
         String::new()
     }
@@ -984,12 +1395,14 @@ pub fn profile_from_vendor_htmls(
         let provider = adapter_label(vendor);
         let name = title_from_html(html);
         let underlying = extract_underlying(html, symbol);
+        let lookthrough = extract_lookthrough(html, symbol, &underlying);
         let calendar = suggest_calendar_policy(upcoming.len(), true);
         return json!({
             "symbol": yahoo_symbol(symbol),
             "name": name,
             "suggestedProvider": if provider.is_empty() { vendor } else { provider },
             "underlying": underlying,
+            "lookthrough": lookthrough,
             "declarationSource": vendor,
             "priceSource": "public",
             "paymentSource": "import",
@@ -1020,6 +1433,7 @@ pub fn profile_from_vendor_htmls(
         "name": "",
         "suggestedProvider": "",
         "underlying": "",
+        "lookthrough": empty_lookthrough(),
         "declarationSource": "",
         "priceSource": "public",
             "paymentSource": "import",
@@ -1037,59 +1451,56 @@ pub fn profile_from_vendor_htmls(
     })
 }
 
-fn live_research_profile(symbol: &str) -> Value {
+/// Probe only the hinted registered issuer. Do not spray every vendor site.
+fn live_research_profile(symbol: &str, provider_hint: &str) -> Value {
     let as_of = Utc::now().date_naive().to_string();
+    let source = financial_domain::div1::declaration_source_for_provider(provider_hint)
+        .map(|s| s.to_string())
+        .or_else(|| {
+            let raw = provider_hint.trim().to_ascii_lowercase();
+            if is_registered_declaration_source(&raw) {
+                Some(raw)
+            } else {
+                None
+            }
+        });
+    let Some(source) = source else {
+        return json!({
+            "symbol": yahoo_symbol(symbol),
+            "name": "",
+            "suggestedProvider": "",
+            "underlying": "",
+            "declarationSource": "",
+            "priceSource": "public",
+            "paymentSource": "import",
+            "lookbackCount": 12,
+            "sourceUrl": "",
+            "source": "miss",
+            "candidates": [],
+            "upcomingPays": [],
+            "suggestedCalendarPolicy": "",
+            "researchAttempts": [],
+            "sourceAnalytics": {
+                "htmlReturned": false,
+                "fundPage": false,
+                "tableOnGet": false,
+                "tableRowCount": 0,
+                "jsLikely": false,
+            },
+            "futureDeclarationStrategy": "No issuer hint. Choose a registered declaration source. Yahoo was not used for declarations.",
+            "missExplanation": "No issuer fund page probed. Yahoo was not used for declarations or provider.",
+            "suggestedFrequency": ""
+        });
+    };
     let mut probes: Vec<(String, String, String)> = Vec::new();
-    let rh_urls = [
-        format!(
-            "https://www.roundhillinvestments.com/etf/{}",
-            symbol.trim().to_ascii_lowercase()
-        ),
-        format!(
-            "https://www.roundhillinvestments.com/etfs/{}",
-            symbol.trim().to_ascii_lowercase()
-        ),
-    ];
-    for url in rh_urls {
+    for url in adapter_probe_urls(&source, symbol) {
         let html = http_get(&url).unwrap_or_default();
-        probes.push(("roundhill".into(), url, html));
-        if roundhill_fund_page(probes.last().map(|p| p.2.as_str()).unwrap_or(""), symbol) {
-            break;
-        }
-    }
-    let amp_urls = [
-        format!("https://amplifyetfs.com/{}/", symbol.trim().to_ascii_lowercase()),
-        format!("https://amplifyetfs.com/{}", symbol.trim().to_ascii_lowercase()),
-    ];
-    for url in amp_urls {
-        let html = http_get(&url).unwrap_or_default();
-        probes.push(("amplify".into(), url, html));
-        if amplify_fund_page(probes.last().map(|p| p.2.as_str()).unwrap_or(""), symbol) {
-            break;
-        }
-    }
-    let neos_urls = [
-        format!("https://neosfunds.com/{}/", symbol.trim().to_ascii_lowercase()),
-        format!("https://neosfunds.com/{}", symbol.trim().to_ascii_lowercase()),
-    ];
-    for url in neos_urls {
-        let html = http_get(&url).unwrap_or_default();
-        probes.push(("neos".into(), url, html));
-        if adapter_is_fund_page("neos", probes.last().map(|p| p.2.as_str()).unwrap_or(""), symbol) {
-            break;
-        }
-    }
-    let ym_urls = [
-        format!(
-            "https://www.yieldmaxetfs.com/our-etfs/{}/",
-            symbol.trim().to_ascii_lowercase()
-        ),
-        format!("https://www.yieldmaxetfs.com/{}/", symbol.trim().to_ascii_lowercase()),
-    ];
-    for url in ym_urls {
-        let html = http_get(&url).unwrap_or_default();
-        probes.push(("yieldmax".into(), url, html));
-        if adapter_is_fund_page("yieldmax", probes.last().map(|p| p.2.as_str()).unwrap_or(""), symbol) {
+        probes.push((source.clone(), url, html));
+        if adapter_is_fund_page(
+            &source,
+            probes.last().map(|p| p.2.as_str()).unwrap_or(""),
+            symbol,
+        ) {
             break;
         }
     }
@@ -1108,6 +1519,19 @@ pub struct DeclarationTarget {
     pub source_symbol: String,
     pub source_url: String,
     pub last_content_hash: String,
+    pub div_type: String,
+    /// When false and last run was ok today with a hash, skip network fetch.
+    pub force_refresh: bool,
+    pub last_run_ok: bool,
+    pub last_run_at: String,
+    /// ISO distribution inception (optional). Consulted only when paid count is under 12.
+    pub inception_on: String,
+    /// Cadence label or period count (Weekly/52, Monthly/12, Quarterly/4).
+    pub payment_frequency: String,
+    /// Paid declarations already stored before this collect.
+    pub paid_count: u8,
+    /// Payment periods already in DB — skip re-posting on incremental refresh.
+    pub known_payment_periods: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -1116,10 +1540,43 @@ pub struct DeclarationCollectOutcome {
     pub pay_dates: Vec<Value>,
     pub misses: Vec<Value>,
     pub unchanged: Vec<Value>,
+    /// Winning issuer URL from the last fetch in this batch.
+    pub fetched_source_url: String,
+    /// Issuer distribution calendar PDF/HTML when linked from the fund page.
+    pub fetched_payment_calendar_url: String,
 }
 
-const MISS_EMPTY: &str = "Issuer page empty — not using Yahoo.";
-const MISS_CHANGED: &str = "page changed, unparseable — not using Yahoo.";
+fn collector_run_is_fresh_today(target: &DeclarationTarget) -> bool {
+    if target.force_refresh {
+        return false;
+    }
+    if !target.last_run_ok || target.last_content_hash.is_empty() {
+        return false;
+    }
+    let as_of = Utc::now().date_naive().to_string();
+    use financial_domain::declaration_lookback::{
+        validate_paid_lookback, LookbackValidation,
+    };
+    if !matches!(
+        validate_paid_lookback(
+            target.paid_count,
+            &target.inception_on,
+            &as_of,
+            &target.payment_frequency,
+        ),
+        LookbackValidation::Complete | LookbackValidation::CompleteViaInception { .. }
+    ) {
+        return false;
+    }
+    let today = as_of;
+    target.last_run_at.starts_with(today.as_str())
+}
+
+const MISS_EMPTY: &str = "Issuer page empty.";
+const MISS_CHANGED: &str = "Issuer page changed; unparseable.";
+
+/// Documented short-history names are obsolete — use retrieval_template.inception_on
+/// so expected lookback is derived from cadence × age (capped at 12).
 
 fn fnv1a_hex(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -1153,7 +1610,7 @@ pub fn collect_from_fetched_page(
     html: Option<&str>,
 ) -> DeclarationCollectOutcome {
     let mut out = DeclarationCollectOutcome::default();
-    apply_fetched_page(&mut out, target, source, html);
+    apply_fetched_page(&mut out, target, source, html, "", None);
     out
 }
 
@@ -1162,6 +1619,8 @@ fn apply_fetched_page(
     target: &DeclarationTarget,
     source: &str,
     html: Option<&str>,
+    fetched_url: &str,
+    payment_calendar_url: Option<&str>,
 ) {
     let as_of = Utc::now().date_naive().to_string();
     let Some(html) = html else {
@@ -1184,17 +1643,37 @@ fn apply_fetched_page(
         return;
     }
     let mut cands = parse_vendor_distributions_with_csv(source, html);
+    let known: std::collections::HashSet<String> = target
+        .known_payment_periods
+        .iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
     for cand in &mut cands {
         cand["source"] = json!(source);
         attach_hash(cand, &hash);
     }
     let upcoming = upcoming_from_candidates(&cands, &as_of);
-    let paid: Vec<Value> = cands
-        .into_iter()
+    let paid_all: Vec<Value> = cands
+        .iter()
         .filter(|c| candidate_amount(c).is_some())
-        .take(12)
+        .cloned()
         .collect();
-    if paid.is_empty() && upcoming.is_empty() {
+    let paid_store: Vec<Value> = if known.is_empty() {
+        paid_all.clone()
+    } else {
+        paid_all
+            .iter()
+            .filter(|c| {
+                c.get("paymentPeriod")
+                    .and_then(|p| p.as_str())
+                    .map(|p| !known.contains(p))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect()
+    };
+    if paid_store.is_empty() && upcoming.is_empty() {
         out.misses.push(json!({
             "securityId": target.security_id,
             "symbol": target.symbol,
@@ -1212,15 +1691,79 @@ fn apply_fetched_page(
         if row.get("source").and_then(|s| s.as_str()).unwrap_or("").is_empty() {
             row["source"] = json!(source);
         }
+        if let Some(url) = payment_calendar_url.map(str::trim).filter(|u| !u.is_empty()) {
+            row["paymentCalendarUrl"] = json!(url);
+        }
         out.pay_dates.push(row);
     }
-    for mut cand in paid {
+    if !fetched_url.is_empty() {
+        out.fetched_source_url = fetched_url.to_string();
+    }
+    if let Some(url) = payment_calendar_url.map(str::trim).filter(|u| !u.is_empty()) {
+        out.fetched_payment_calendar_url = url.to_string();
+    }
+    let paid_count = if known.is_empty() {
+        paid_all.len() as u8
+    } else {
+        target
+            .paid_count
+            .saturating_add(paid_store.len() as u8)
+    };
+    for mut cand in paid_store {
         cand["securityId"] = json!(target.security_id);
         attach_hash(&mut cand, &hash);
         if cand.get("source").and_then(|s| s.as_str()).unwrap_or("").is_empty() {
             cand["source"] = json!(source);
         }
+        if !fetched_url.is_empty() {
+            cand["fetchedSourceUrl"] = json!(fetched_url);
+        }
         out.candidates.push(cand);
+    }
+    // Retrieve first; only when under 12 paid does optional inception decide completeness.
+    use financial_domain::declaration_lookback::{
+        validate_paid_lookback, LookbackValidation, DECLARATION_LOOKBACK_TARGET,
+    };
+    match validate_paid_lookback(
+        paid_count as u8,
+        &target.inception_on,
+        &as_of,
+        &target.payment_frequency,
+    ) {
+        LookbackValidation::Complete | LookbackValidation::CompleteViaInception { .. } => {}
+        LookbackValidation::ShortWithoutInception { paid } => {
+            out.misses.push(json!({
+                "securityId": target.security_id,
+                "symbol": target.symbol,
+                "declarationSource": source,
+                "reason": format!(
+                    "Adapter returned {paid} of {DECLARATION_LOOKBACK_TARGET} required paid declarations. Set optional inception on Settings only if this name is too new for a full lookback."
+                ),
+                "contentHash": hash,
+                "code": "declaration_lookback_short",
+                "paidCount": paid,
+                "requiredPaid": DECLARATION_LOOKBACK_TARGET,
+                "inceptionOn": "",
+                "inceptionApplied": false,
+            }));
+        }
+        LookbackValidation::ShortWithInception { paid, expected } => {
+            out.misses.push(json!({
+                "securityId": target.security_id,
+                "symbol": target.symbol,
+                "declarationSource": source,
+                "reason": format!(
+                    "Adapter returned {paid} of {expected} paid declarations expected since inception {}.",
+                    target.inception_on.trim()
+                ),
+                "contentHash": hash,
+                "code": "declaration_lookback_short",
+                "paidCount": paid,
+                "requiredPaid": expected,
+                "inceptionOn": target.inception_on,
+                "inceptionApplied": true,
+            }));
+        }
     }
 }
 
@@ -1239,6 +1782,16 @@ pub fn collect_declarations_for(targets: Vec<DeclarationTarget>) -> DeclarationC
             target.source_symbol.clone()
         };
         if !is_registered_declaration_source(&source) {
+            if financial_domain::div1::div1_adapter_missing(&target.div_type, &source) {
+                out.misses.push(json!({
+                    "securityId": target.security_id,
+                    "symbol": target.symbol,
+                    "declarationSource": target.declaration_source,
+                    "reason": "DIV-1 has no issuer adapter assigned.",
+                    "code": "div1_adapter_missing",
+                }));
+                continue;
+            }
             let reason = if source.is_empty()
                 || source == "unassigned"
                 || source == "public"
@@ -1258,10 +1811,68 @@ pub fn collect_declarations_for(targets: Vec<DeclarationTarget>) -> DeclarationC
             }));
             continue;
         }
-        let html = live_vendor_page(&source, &symbol, Some(target.source_url.as_str()));
-        apply_fetched_page(&mut out, &target, &source, html.as_deref());
+        if collector_run_is_fresh_today(&target) {
+            out.unchanged.push(json!({
+                "securityId": target.security_id,
+                "symbol": target.symbol,
+                "contentHash": target.last_content_hash,
+            }));
+            continue;
+        }
+        match fetch_adapter_page(&source, &symbol, Some(target.source_url.as_str())) {
+            Some((url, html, calendar_url)) => {
+                apply_fetched_page(
+                    &mut out,
+                    &target,
+                    &source,
+                    Some(html.as_str()),
+                    &url,
+                    calendar_url.as_deref(),
+                );
+            }
+            None => apply_fetched_page(&mut out, &target, &source, None, "", None),
+        }
     }
     out
+}
+
+/// Attach Yahoo/par quote to a collector payload without re-fetching declarations.
+pub fn enrich_collector_quote_only(body: &mut Value) {
+    let skip_quote = body
+        .get("unchanged")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if skip_quote {
+        return;
+    }
+    let symbol = body
+        .get("symbol")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    if symbol.is_empty() {
+        return;
+    }
+    let div_type = body
+        .get("divType")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    let sym_upper = symbol.to_ascii_uppercase();
+    if div_type.eq_ignore_ascii_case("CASH")
+        || matches!(sym_upper.as_str(), "SPAXX" | "FDRXX" | "SWVXX")
+    {
+        let today = Utc::now().date_naive().to_string();
+        body["quote"] = json!({
+            "priceMinor": 100,
+            "scale": 2,
+            "source": "par",
+            "asOfAt": today,
+        });
+        return;
+    }
+    if let Some(quote) = live_price_quote(&symbol) {
+        body["quote"] = quote;
+    }
 }
 
 fn array_injected(body: &Value, key: &str) -> bool {
@@ -1269,6 +1880,37 @@ fn array_injected(body: &Value, key: &str) -> bool {
         .and_then(|c| c.as_array())
         .map(|a| !a.is_empty())
         .unwrap_or(false)
+}
+
+fn known_payment_periods_from_body(body: &Value) -> std::collections::HashSet<String> {
+    body.get("knownPaymentPeriods")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn filter_new_declaration_candidates(
+    cands: Vec<Value>,
+    known: &std::collections::HashSet<String>,
+) -> Vec<Value> {
+    if known.is_empty() {
+        return cands;
+    }
+    cands
+        .into_iter()
+        .filter(|c| {
+            c.get("paymentPeriod")
+                .and_then(|p| p.as_str())
+                .map(|p| !known.contains(p))
+                .unwrap_or(true)
+        })
+        .collect()
 }
 
 /// Fill empty candidate lists on retrieve commands. Injected candidates win (CI).
@@ -1288,7 +1930,13 @@ pub fn enrich_retrieve_body(command_name: &str, body: &mut Value) {
             .and_then(|s| s.as_str())
             .unwrap_or("")
             .to_string();
-        body["candidates"] = json!(live_roc_candidates_for(&symbol, &declaration_source));
+        let source_url = body
+            .get("sourceUrl")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        body["candidates"] =
+            json!(live_roc_candidates_for(&symbol, &declaration_source, &source_url));
         return;
     }
     if command_name == "PeriodSeriesRetrieve" {
@@ -1358,7 +2006,21 @@ pub fn enrich_retrieve_body(command_name: &str, body: &mut Value) {
         .map(|a| !a.is_empty())
         .unwrap_or(false);
     if declaration_source.is_empty() && !research_injected {
-        let profile = live_research_profile(&symbol);
+        let name = body
+            .get("name")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let hint = body
+            .get("suggestedProvider")
+            .or_else(|| body.get("provider"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let hint = if hint.is_empty() {
+            suggested_provider_from_name(name)
+        } else {
+            hint.to_string()
+        };
+        let profile = live_research_profile(&symbol, &hint);
         if let Some(obj) = profile.as_object() {
             for (k, v) in obj {
                 if k == "quote" || k == "quoteCandidates" {
@@ -1392,7 +2054,10 @@ pub fn enrich_retrieve_body(command_name: &str, body: &mut Value) {
         };
         live_offering_snapshot(&symbol, cik)
     } else if registered {
-        let cands = live_vendor_declarations(&declaration_source, &symbol, Some(source_url.as_str()));
+        let mut cands =
+            live_vendor_declarations(&declaration_source, &symbol, Some(source_url.as_str()));
+        let known = known_payment_periods_from_body(body);
+        cands = filter_new_declaration_candidates(cands, &known);
         let as_of = Utc::now().date_naive().to_string();
         let upcoming = upcoming_from_candidates(&cands, &as_of);
         json!({
@@ -1405,7 +2070,7 @@ pub fn enrich_retrieve_body(command_name: &str, body: &mut Value) {
             "source": declaration_source,
             "priceSource": "public",
             "missExplanation": if cands.is_empty() {
-                "Issuer page empty — not using Yahoo.".to_string()
+                "Issuer page empty.".to_string()
             } else {
                 String::new()
             }
@@ -1684,7 +2349,7 @@ mod tests {
             .as_str()
             .unwrap_or("")
             .contains("GET roundhill"));
-        assert_eq!(profile["suggestedCalendarPolicy"], "derived_walk");
+        assert_eq!(profile["suggestedCalendarPolicy"], "issuer_calendar");
     }
 
     #[test]
@@ -1700,6 +2365,14 @@ mod tests {
             "2026-08-24",
         );
         assert_eq!(profile["underlying"], "HACK");
+        assert_eq!(profile["lookthrough"]["themeStrategy"], "Cybersecurity + Covered Call Equity");
+        assert_eq!(
+            profile["lookthrough"]["primaryRiskDriver"],
+            "Look-through cybersecurity equity basket (HACK)"
+        );
+        assert_eq!(profile["lookthrough"]["riskTierSuggestion"], "Risk On");
+        assert_eq!(profile["lookthrough"]["concentrationStatus"], "unknown");
+        assert!(profile["lookthrough"]["topHoldings"].as_array().unwrap().is_empty());
         assert_eq!(profile["suggestedProvider"], "Amplify");
         assert_eq!(profile["sourceAnalytics"]["fundPage"], true);
         assert_eq!(profile["sourceAnalytics"]["tableOnGet"], false);
@@ -1707,6 +2380,63 @@ mod tests {
             .as_str()
             .unwrap_or("")
             .contains("Keep declarationSource=amplify"));
+    }
+
+    #[test]
+    fn research_lookthrough_parses_labeled_top_holdings_not_a_full_book() {
+        let listed = r#"<html><title>HAKY – Amplify ETFs</title><body>
+Amplify HACK Cybersecurity Covered Call ETF HAKY
+<h3>Current Top Underlying Equity Positions</h3>
+<table>
+<tr><th>Ticker</th><th>Weight</th></tr>
+<tr><td>PANW</td><td>8.87%</td></tr>
+<tr><td>CRWD</td><td>8.10%</td></tr>
+<tr><td>FTNT</td><td>7.50%</td></tr>
+<tr><td>CSCO</td><td>6.20%</td></tr>
+<tr><td>AVGO</td><td>5.40%</td></tr>
+</table>
+<h3>Sector Breakdown</h3>
+<p>Information Technology 91.2%</p>
+</body></html>"#;
+        let profile = profile_from_vendor_htmls(
+            "HAKY",
+            &[(
+                "amplify",
+                "https://amplifyetfs.com/haky/",
+                listed,
+            )],
+            "2026-08-24",
+        );
+        let holdings = profile["lookthrough"]["topHoldings"].as_array().unwrap();
+        assert_eq!(profile["lookthrough"]["concentrationStatus"], "issuer_top_holdings");
+        assert_eq!(holdings.len(), 5);
+        assert_eq!(holdings[0]["ticker"], "PANW");
+        assert_eq!(holdings[0]["weightBps"], 887);
+        assert_eq!(profile["lookthrough"]["sectorWeights"][0]["label"], "Information Technology");
+        assert_eq!(profile["lookthrough"]["sectorWeights"][0]["weightBps"], 9120);
+    }
+
+    #[test]
+    fn research_lookthrough_ignores_unlabeled_holdings_list() {
+        let listed = r#"<html><title>HAKY – Amplify ETFs</title><body>
+Amplify HACK Cybersecurity Covered Call ETF HAKY
+<table>
+<tr><th>Ticker</th><th>Weight</th></tr>
+<tr><td>PANW</td><td>8.87%</td></tr>
+<tr><td>CRWD</td><td>8.10%</td></tr>
+</table>
+</body></html>"#;
+        let profile = profile_from_vendor_htmls(
+            "HAKY",
+            &[(
+                "amplify",
+                "https://amplifyetfs.com/haky/",
+                listed,
+            )],
+            "2026-08-24",
+        );
+        assert_eq!(profile["lookthrough"]["concentrationStatus"], "unknown");
+        assert!(profile["lookthrough"]["topHoldings"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1757,9 +2487,13 @@ mod tests {
         assert!(is_registered_declaration_source("Amplify"));
         assert!(is_registered_declaration_source("neos"));
         assert!(is_registered_declaration_source("yieldmax"));
+        assert!(is_registered_declaration_source("cornerstone"));
+        assert!(is_registered_declaration_source("globalx"));
+        assert!(is_registered_declaration_source("jpmorgan"));
         assert!(!is_registered_declaration_source("yahoo"));
         assert!(!is_registered_declaration_source("public"));
         assert!(!is_registered_declaration_source(""));
+        assert_eq!(registered_declaration_sources().len(), 23);
     }
 
     #[test]
@@ -1793,6 +2527,29 @@ mod tests {
         }]);
         assert!(unassigned.candidates.is_empty());
         assert!(unassigned.misses.is_empty());
+
+        let div1_gap = collect_declarations_for(vec![DeclarationTarget {
+            security_id: "sec-4".into(),
+            symbol: "QYLD".into(),
+            declaration_source: "unassigned".into(),
+            source_symbol: "QYLD".into(),
+            div_type: "DIV-1".into(),
+            ..Default::default()
+        }]);
+        assert!(div1_gap.candidates.is_empty());
+        assert_eq!(div1_gap.misses[0]["code"], "div1_adapter_missing");
+    }
+
+    #[test]
+    fn research_without_provider_hint_does_not_spray_issuer_sites() {
+        let mut body = json!({
+            "symbol": "HAKY",
+            "researchOnly": true
+        });
+        enrich_retrieve_body("MarketRetrieve", &mut body);
+        assert_eq!(body["declarationSource"], "");
+        assert_eq!(body["source"], "miss");
+        assert!(body["researchAttempts"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1976,7 +2733,7 @@ mod tests {
     }
 
     #[test]
-    fn paid_history_truncates_to_twelve() {
+    fn paid_history_keeps_all_rows() {
         let mut rows = String::from(
             "<table><tr><th>Ex-Date</th><th>Record Date</th><th>Payable Date</th><th>Amount (USD)</th></tr>",
         );
@@ -1989,7 +2746,149 @@ mod tests {
         let parsed = parse_amplify_distributions(&rows);
         assert_eq!(parsed.len(), 13);
         let out = collect_from_fetched_page(&target("HAKY", "amplify", ""), "amplify", Some(&rows));
-        assert_eq!(out.candidates.len(), 12);
+        assert_eq!(out.candidates.len(), 13);
         assert!(out.misses.is_empty());
+    }
+
+    #[test]
+    fn paid_history_under_twelve_is_lookback_miss() {
+        let mut rows = String::from(
+            "<table><tr><th>Ex-Date</th><th>Record Date</th><th>Payable Date</th><th>Amount (USD)</th></tr>",
+        );
+        for i in 1..=5 {
+            rows.push_str(&format!(
+                "<tr><td>01/{i:02}/2025</td><td>01/{i:02}/2025</td><td>01/{i:02}/2025</td><td>$0.10</td></tr>"
+            ));
+        }
+        rows.push_str("</table>");
+        let out = collect_from_fetched_page(
+            &DeclarationTarget {
+                payment_frequency: "Monthly".into(),
+                ..target("AMPX", "amplify", "")
+            },
+            "amplify",
+            Some(&rows),
+        );
+        assert_eq!(out.candidates.len(), 5);
+        assert_eq!(out.misses.len(), 1);
+        assert_eq!(out.misses[0]["code"], "declaration_lookback_short");
+        assert_eq!(out.misses[0]["paidCount"], 5);
+        assert_eq!(out.misses[0]["requiredPaid"], 12);
+    }
+
+    #[test]
+    fn inception_limits_required_paid_lookback() {
+        let mut rows = String::from(
+            "<table><tr><th>Ex-Date</th><th>Record Date</th><th>Payable Date</th><th>Amount (USD)</th></tr>",
+        );
+        for i in 1..=6 {
+            rows.push_str(&format!(
+                "<tr><td>01/{i:02}/2025</td><td>01/{i:02}/2025</td><td>01/{i:02}/2025</td><td>$0.10</td></tr>"
+            ));
+        }
+        rows.push_str("</table>");
+        let as_of = Utc::now().date_naive();
+        let inception = as_of
+            .checked_sub_months(chrono::Months::new(6))
+            .expect("inception");
+        let out = collect_from_fetched_page(
+            &DeclarationTarget {
+                inception_on: inception.to_string(),
+                payment_frequency: "Monthly".into(),
+                ..target("AMPX", "amplify", "")
+            },
+            "amplify",
+            Some(&rows),
+        );
+        assert_eq!(out.candidates.len(), 6);
+        assert!(
+            out.misses.is_empty(),
+            "expected complete short history, got {:?}",
+            out.misses
+        );
+        assert_eq!(
+            financial_domain::declaration_lookback::expected_declaration_lookback(
+                &inception.to_string(),
+                &as_of.to_string(),
+                "Monthly",
+            ),
+            6
+        );
+    }
+
+    #[test]
+    #[ignore = "live network probe"]
+    fn live_nvdw_roundhill_fund_page_does_not_block_fallback() {
+        let page = "https://www.roundhillinvestments.com/etf/nvdw";
+        let body = http_get(page).expect("roundhill page GET");
+        let cands = adapters::parse_vendor_distributions_with_csv("roundhill", &body);
+        let paid = cands
+            .iter()
+            .filter(|c| candidate_amount(c).is_some())
+            .count();
+        let upcoming = upcoming_from_candidates(&cands, &Utc::now().date_naive().to_string());
+        eprintln!(
+            "roundhill page len={} cands={} paid={} upcoming={}",
+            body.len(),
+            cands.len(),
+            paid,
+            upcoming.len()
+        );
+        assert_eq!(paid, 0, "fund page should not yield paid rows");
+    }
+
+    #[test]
+    #[ignore = "live network probe"]
+    fn live_nvdw_dividendhistory_fetch_parses() {
+        let url = "https://dividendhistory.org/payout/NVDW/";
+        let body = http_get(url).expect("dividendhistory GET");
+        assert!(body.len() > 10_000, "body too short: {}", body.len());
+        let cands = adapters::parse_vendor_distributions_with_csv("roundhill", &body);
+        let paid = cands
+            .iter()
+            .filter(|c| {
+                c.get("amountPerShareMinor")
+                    .and_then(|v| v.as_i64())
+                    .map(|a| a > 0)
+                    .unwrap_or(false)
+            })
+            .count();
+        eprintln!("NVDW dividendhistory paid={paid} total={}", cands.len());
+        assert!(paid >= 12, "expected >=12 paid, got {paid}");
+    }
+
+    #[test]
+    fn fresh_same_day_skips_network_collect() {
+        let today = Utc::now().date_naive().to_string();
+        let out = collect_declarations_for(vec![DeclarationTarget {
+            security_id: "sec-fresh".into(),
+            symbol: "EFC".into(),
+            declaration_source: "ellington".into(),
+            last_content_hash: "deadbeef".into(),
+            last_run_ok: true,
+            last_run_at: today,
+            force_refresh: false,
+            paid_count: 12,
+            ..Default::default()
+        }]);
+        assert_eq!(out.unchanged.len(), 1);
+        assert!(out.candidates.is_empty());
+        assert!(out.misses.is_empty());
+    }
+
+    #[test]
+    fn force_refresh_bypasses_same_day_skip() {
+        let today = Utc::now().date_naive().to_string();
+        let out = collect_declarations_for(vec![DeclarationTarget {
+            security_id: "sec-force".into(),
+            symbol: "EFC".into(),
+            declaration_source: "ellington".into(),
+            last_content_hash: "deadbeef".into(),
+            last_run_ok: true,
+            last_run_at: today,
+            force_refresh: true,
+            ..Default::default()
+        }]);
+        assert!(out.unchanged.is_empty());
     }
 }

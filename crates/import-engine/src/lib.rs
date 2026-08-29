@@ -11,13 +11,19 @@ pub use production::{
 pub use retrieve::{
     collect_declaration_candidates_for, collect_declarations_for, collect_from_fetched_page,
     collect_last_price_quotes, collect_last_price_quotes_for, declaration_candidates,
-    enrich_retrieve_body, is_registered_declaration_source, live_market_snapshot, live_price_quote,
+    enrich_collector_quote_only, enrich_retrieve_body, is_registered_declaration_source, live_market_snapshot, live_price_quote,
     live_roc_candidates, page_content_hash, parse_19a1_notice, parse_amplify_distributions,
-    parse_edgar_offering_as_of, parse_edgar_offering_price, parse_neos_distributions,
-    parse_roundhill_distributions, parse_yahoo_daily_closes, parse_yieldmax_distributions,
-    price_quote_candidates, profile_from_vendor_htmls, retrieve_result, roundhill_fund_page,
-    DeclarationCollectOutcome, DeclarationTarget, LastPriceTarget,
+    parse_edgar_offering_as_of, parse_edgar_offering_price, parse_generic_distributions,
+    parse_moneymarket_distributions, parse_nasdaq_dividends, parse_neos_distributions,
+    parse_proshares_distribution_summary, parse_roundhill_distribution_api,
+    parse_roundhill_distributions, parse_saba_distributions, parse_simplify_distributions,
+    parse_yahoo_daily_closes,
+    parse_yieldmax_distributions,
+    price_quote_candidates, profile_from_vendor_htmls, registered_declaration_sources,
+    retrieve_result, roundhill_fund_page, DeclarationCollectOutcome, DeclarationTarget,
+    LastPriceTarget,
 };
+pub use financial_domain::div1::{div1_adapter_missing, is_div1};
 
 use financial_domain::error::DomainError;
 use financial_domain::money::require_known_amount;

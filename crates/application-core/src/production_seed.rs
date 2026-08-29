@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 
 use crate::contracts::{
-    ActivityRecord, PositionCharacteristicRecord, ProductionSeedCharacteristic,
-    ProductionSeedDocument, ProductionSeedLoadBody, RetrievalTemplateRecord, RocResearchObservation,
+    ActivityRecord, LookthroughResearch, PositionCharacteristicRecord, ProductionSeedCharacteristic,
+    ProductionSeedDocument, ProductionSeedLoadBody, ProductionSeedTrendsWeek,
+    RetrievalTemplateRecord, RocResearchObservation, TrendsWeekSourceRecord,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
@@ -50,6 +51,7 @@ pub async fn apply_production_seed(
 
     if lots.lots.len() >= expected_lots && yield_n >= expected_yield && disb_n >= expected_disb {
         apply_calculator_seed(canonical, &doc).await?;
+        apply_trends_seed(canonical, &doc).await?;
         return Ok(ProductionSeedLoadBody {
             already_loaded: true,
             account_count: existing.len() as u64,
@@ -60,7 +62,7 @@ pub async fn apply_production_seed(
     if !lots.lots.is_empty() && lots.lots.len() < expected_lots {
         return Err(PlatformError::new(
             "partial_lots",
-            "household lots incomplete; delete local.sqlite and re-run household-seed",
+            "data lots incomplete; delete local.sqlite and re-run data-seed",
         ));
     }
     let skip_lots = lots.lots.len() >= expected_lots;
@@ -193,12 +195,93 @@ pub async fn apply_production_seed(
     let securities = canonical.security_list().await?;
     let lots = canonical.basis_get().await?;
     apply_calculator_seed(canonical, &doc).await?;
+    apply_trends_seed(canonical, &doc).await?;
     Ok(ProductionSeedLoadBody {
         already_loaded: false,
         account_count: accounts.len() as u64,
         security_count: securities.len() as u64,
         lot_count: lots.lots.len() as u64,
     })
+}
+
+async fn apply_trends_seed(
+    canonical: &dyn Canonical,
+    doc: &ProductionSeedDocument,
+) -> Result<(), PlatformError> {
+    if doc.trends_weeks.is_empty() {
+        return Ok(());
+    }
+    // Replace full series so prior synthetic/orphan weeks do not remain.
+    canonical.trends_series_clear().await?;
+    let accounts = canonical.account_list().await?;
+    let mut account_ids: HashMap<String, uuid::Uuid> = HashMap::new();
+    for account in &accounts {
+        account_ids.insert(account.name.clone(), account.account_id);
+    }
+    let captured_at = chrono::Utc::now().to_rfc3339();
+    for week in &doc.trends_weeks {
+        upsert_trends_week(canonical, week, &account_ids, &captured_at).await?;
+    }
+    Ok(())
+}
+
+async fn upsert_trends_week(
+    canonical: &dyn Canonical,
+    week: &ProductionSeedTrendsWeek,
+    account_ids: &HashMap<String, uuid::Uuid>,
+    captured_at: &str,
+) -> Result<(), PlatformError> {
+    canonical
+        .trends_week_upsert(TrendsWeekSourceRecord {
+            period_end: week.period_end.clone(),
+            period_start: {
+                // Derive Sat from Friday period_end when present.
+                financial_domain::trends::parse_iso_date(&week.period_end)
+                    .map(|d| {
+                        financial_domain::trends::trends_period_for_capture(d)
+                            .start
+                            .format("%Y-%m-%d")
+                            .to_string()
+                    })
+                    .unwrap_or_default()
+            },
+            profit_minor: week.profit_minor,
+            monthly_divs_minor: week.monthly_divs_minor,
+            fidelity_total_minor: week.fidelity_total_minor,
+            schwab_total_minor: week.schwab_total_minor,
+            income_cash_minor: week.income_cash_minor,
+            acct9_cash_minor: week.acct9_cash_minor,
+            acct9_etf_value_minor: week.acct9_etf_value_minor,
+            scale: week.scale,
+            captured_at: captured_at.to_string(),
+            closed: false,
+        })
+        .await?;
+    let balance_pairs: [(&str, Option<i64>); 5] = [
+        ("Car", week.car_balance_minor),
+        ("Income", week.income_balance_minor),
+        ("Health", week.health_balance_minor),
+        ("FI Roth", week.roth_balance_minor),
+        ("Speculation", week.speculation_balance_minor),
+    ];
+    for (account_name, balance) in balance_pairs {
+        let Some(balance_minor) = balance else {
+            continue;
+        };
+        let Some(account_id) = account_ids.get(account_name).copied() else {
+            continue;
+        };
+        canonical
+            .account_balance_snapshot_upsert(
+                account_id,
+                week.period_end.clone(),
+                balance_minor,
+                week.scale,
+                captured_at.to_string(),
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 async fn apply_calculator_seed(
@@ -229,6 +312,7 @@ async fn apply_calculator_seed(
                 needs_roc_research: row.needs_roc_research,
                 notes: row.notes.clone(),
                 is_active: row.is_active,
+                lookthrough: LookthroughResearch::default(),
             })
             .await?;
         seed_template_roc_observations(canonical, security_id, row).await?;
@@ -321,13 +405,16 @@ fn provider_retrieval_defaults(provider: &str, frequency: &str) -> (String, Stri
         .and_then(financial_domain::calculator::PaymentCadence::periods)
         .unwrap_or(0)
         > 0;
-    match p.as_str() {
-        "roundhill" => ("roundhill".into(), "derived_walk".into()),
-        "amplify" => ("amplify".into(), "issuer_calendar".into()),
-        "neos" => ("neos".into(), "issuer_calendar".into()),
-        "yieldmax" | "yield max" => ("yieldmax".into(), "derived_walk".into()),
-        _ if !pays => ("unassigned".into(), "none".into()),
-        _ => ("unassigned".into(), "derived_walk".into()),
+    if let Some(src) = financial_domain::div1::declaration_source_for_provider(&p) {
+        return (
+            src.to_string(),
+            financial_domain::div1::calendar_policy_for_source(src).to_string(),
+        );
+    }
+    if !pays {
+        ("unassigned".into(), "none".into())
+    } else {
+        ("unassigned".into(), "derived_walk".into())
     }
 }
 
@@ -338,6 +425,8 @@ fn fill_retrieval_template(
     calendar_policy: String,
     fallback_symbol: &str,
 ) -> RetrievalTemplateRecord {
+    let registered =
+        financial_domain::div1::is_registered_declaration_source(&declaration_source);
     RetrievalTemplateRecord {
         security_id,
         price_source: existing
@@ -360,6 +449,9 @@ fn fill_retrieval_template(
         last_run_ok: None,
         last_run_message: String::new(),
         last_content_hash: String::new(),
+        // Mapped vendor adapters start enabled so daily DeclarationRefresh probes them.
+        collector_enabled: registered,
+        inception_on: existing.map(|e| e.inception_on.clone()).unwrap_or_default(),
     }
 }
 
@@ -403,6 +495,7 @@ async fn apply_provider_retrieval_templates(
 
 /// Fill empty/public/unassigned declaration sources from live characteristics.
 /// Never overwrites edgar, sec-edgar, or a registered vendor adapter.
+/// Re-enables a registered vendor that is assigned but collector_enabled=0.
 pub async fn apply_provider_declaration_sources(
     canonical: &dyn Canonical,
 ) -> Result<u64, PlatformError> {
@@ -420,12 +513,19 @@ pub async fn apply_provider_declaration_sources(
         };
         let existing = skip_ni(canonical.retrieval_template_get(security.security_id).await)?
             .flatten();
-        if existing
-            .as_ref()
-            .map(|e| !declaration_source_is_fillable(&e.declaration_source, &e.price_source))
-            .unwrap_or(false)
-        {
-            continue;
+        if let Some(row) = existing.as_ref() {
+            if financial_domain::div1::is_registered_declaration_source(&row.declaration_source)
+                && !row.collector_enabled
+            {
+                let mut enabled = row.clone();
+                enabled.collector_enabled = true;
+                canonical.retrieval_template_set(enabled).await?;
+                updated += 1;
+                continue;
+            }
+            if !declaration_source_is_fillable(&row.declaration_source, &row.price_source) {
+                continue;
+            }
         }
         let (declaration_source, calendar_policy) =
             provider_retrieval_defaults(&ch.provider, &ch.payment_frequency);
@@ -464,6 +564,8 @@ async fn apply_private_issue_templates(
             last_run_ok: None,
             last_run_message: String::new(),
             last_content_hash: String::new(),
+            collector_enabled: false,
+            inception_on: String::new(),
         })
         .await?;
     Ok(())
@@ -478,7 +580,7 @@ fn skip_ni<T>(result: Result<T, PlatformError>) -> Result<Option<T>, PlatformErr
 }
 
 /// Grayscale BTC (~$34) and Robinhood crypto BTC-USD are different securities.
-/// Idempotent so already-loaded households split without reopening lots.
+/// Idempotent so already-loaded data split without reopening lots.
 pub async fn ensure_btc_usd_split(canonical: &dyn Canonical) -> Result<(), PlatformError> {
     const CRYPTO_USD_CENTS: i64 = 100_000;
     let securities = canonical.security_list().await?;
@@ -611,6 +713,8 @@ async fn set_public_quote_template(
                 last_run_ok: None,
                 last_run_message: String::new(),
                 last_content_hash: String::new(),
+                collector_enabled: false,
+                inception_on: String::new(),
             })
             .await,
     )?;
@@ -627,6 +731,8 @@ mod tests {
         assert!(declaration_source_is_fillable("public", "public"));
         assert!(declaration_source_is_fillable("unassigned", "public"));
         assert!(!declaration_source_is_fillable("amplify", "public"));
+        assert!(!declaration_source_is_fillable("cornerstone", "public"));
+        assert!(!declaration_source_is_fillable("globalx", "public"));
         assert!(!declaration_source_is_fillable("public", "edgar"));
         assert!(!declaration_source_is_fillable("sec-edgar", "edgar"));
         assert!(!declaration_source_is_fillable("roundhill", "public"));
@@ -644,15 +750,23 @@ mod tests {
         );
         assert_eq!(
             provider_retrieval_defaults("YieldMax", "Weekly"),
-            ("yieldmax".into(), "derived_walk".into())
+            ("yieldmax".into(), "issuer_calendar".into())
         );
         assert_eq!(
             provider_retrieval_defaults("Roundhill", "Weekly"),
-            ("roundhill".into(), "derived_walk".into())
+            ("roundhill".into(), "issuer_calendar".into())
         );
         assert_eq!(
             provider_retrieval_defaults("Global X", "Monthly"),
-            ("unassigned".into(), "derived_walk".into())
+            ("globalx".into(), "issuer_calendar".into())
+        );
+        assert_eq!(
+            provider_retrieval_defaults("Cornerstone", "Monthly"),
+            ("cornerstone".into(), "issuer_calendar".into())
+        );
+        assert_eq!(
+            provider_retrieval_defaults("Simplify", "Monthly"),
+            ("simplify".into(), "issuer_calendar".into())
         );
         assert_eq!(
             provider_retrieval_defaults("Tesla", "None"),

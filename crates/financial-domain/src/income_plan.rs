@@ -4,7 +4,7 @@
 pub const CONTROL_ACCOUNTS: [&str; 5] = ["Income", "Health", "Roth", "Account 9", "Car"];
 pub const BURNDOWN_ACCOUNTS: [&str; 4] = ["Income", "Car", "Health", "Roth"];
 
-/// Map a household account name onto the Income Plan control grid, if it belongs.
+/// Map an account name in the data file onto the Income Plan control grid, if it belongs.
 pub fn map_control_account(name: &str) -> Option<&'static str> {
     let n = name.trim().to_ascii_lowercase();
     if n == "income" {

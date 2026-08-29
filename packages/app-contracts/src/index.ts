@@ -1,6 +1,33 @@
 /** Shared FinanceClient contract version — must match Rust application-core. */
 export const FINANCE_CLIENT_CONTRACT_VERSION = "1.0.0-draft";
 
+/** Registered issuer declaration sources. Yahoo is never in this list. */
+export const REGISTERED_DECLARATION_SOURCES = [
+  "roundhill",
+  "amplify",
+  "neos",
+  "yieldmax",
+  "cornerstone",
+  "direxion",
+  "proshares",
+  "saba",
+  "ellington",
+  "enterprise",
+  "energytransfer",
+  "gladstone",
+  "jpmorgan",
+  "mplx",
+  "orchidisland",
+  "globalx",
+  "simplify",
+  "tappalpha",
+  "trinity",
+  "ftvest",
+  "trex",
+  "fidelity",
+  "schwab",
+] as const;
+
 /** Fixed-scale money DTO (ADR-0004). Scale is documented in schema metadata. */
 export type Money = {
   amountMinor: number;
@@ -163,7 +190,7 @@ export type IncomePlanWeekGet = {
   scale: number;
 };
 
-export type HouseholdSummaryGet = {
+export type DataSummaryGet = {
   accountCount: number;
   openLotCount: number;
   yieldCount: number;
@@ -176,6 +203,8 @@ export type HouseholdSummaryGet = {
   lastPriceCount: number;
   marketValueMinor: number | null;
   marketValueComplete: boolean;
+  /** Lifetime paid dividends (all yield actuals). */
+  incomeEarnedMinor: number;
   scale: number;
 };
 
@@ -192,6 +221,8 @@ export type CalculatorGet = {
     planPaymentMinor: number;
     remainingPerformanceMinor: number;
     rocPct2025ActualMinor: number | null;
+    rocPct2026EstimateMinor: number | null;
+    rocPct2026ActualMinor: number | null;
     rocScale: number | null;
     lastPriceMinor: number | null;
     lastPriceScale: number | null;
@@ -214,6 +245,8 @@ export type DashboardBurndownGet = {
     inflowMinor: number;
     outflowMinor: number;
     floorKnown: boolean;
+    endingBalanceMinor?: number | null;
+    endingBalanceKnown?: boolean;
     scale: number;
   }>;
   scale: number;
@@ -240,9 +273,64 @@ export type DashboardGet = {
   scale: number;
 };
 
+export type TrendsWeekPoint = {
+  periodEnd: string;
+  profitMinor: number;
+  monthlyDivsMinor: number;
+  divDeltaMinor: number;
+  fidelityTotalMinor: number;
+  schwabTotalMinor: number;
+  fidSchCombinedMinor: number;
+  wkToWkChangeMinor: number;
+  incomeCashMinor: number;
+  acct9CashMinor: number;
+  acct9EtfProxyMinor: number;
+  totalCashMinor: number;
+  carBalanceMinor: number | null;
+  incomeBalanceMinor: number | null;
+  healthBalanceMinor: number | null;
+  rothBalanceMinor: number | null;
+  speculationBalanceMinor: number | null;
+  closed?: boolean;
+  scale: number;
+};
+
 export type TrendsGet = {
   points: Array<{ occurredOn: string; amountMinor: number }>;
   totalMinor: number;
+  weeks?: TrendsWeekPoint[];
+  note?: string;
+  overview?: {
+    fidSchCombinedMinor?: number | null;
+    wkToWkChangeMinor?: number | null;
+    profitMinor?: number | null;
+    monthlyDivsMinor?: number | null;
+    divDeltaMinor?: number | null;
+    totalCashMinor?: number | null;
+    scale: number;
+  };
+  distributions?: {
+    grossMinor: number;
+    lines: Array<{
+      activityType: string;
+      accountName: string;
+      amountMinor: number;
+      occurredOn: string;
+      scale: number;
+    }>;
+    scale: number;
+  };
+  taxMonitor?: {
+    federalWithholdingMinor: number;
+    projectedLiabilityMinor?: number | null;
+    gapMinor?: number | null;
+    warning: boolean;
+    acaThresholdMinor?: number | null;
+    acaCoverageYear?: number | null;
+    note: string;
+    scale: number;
+  };
+  missingRequired?: string[];
   scale: number;
 };
 
@@ -380,11 +468,11 @@ export type PositionMasterGet = {
     bullCushionBps?: number | null;
     carMarketValueMinor?: number | null;
     carShareOfSymbolBps?: number | null;
-    carShareOfHouseholdBps?: number | null;
+    carShareOfDataBps?: number | null;
     rocResearchStatus?: string;
     declarationFreshness?: string;
   }>;
-  householdMarketValueMinor: number | null;
+  dataMarketValueMinor: number | null;
   marketValueComplete: boolean;
   scale: number;
 };
@@ -557,6 +645,31 @@ export type CurrentPriceGet = {
   scale: number;
   freshness: string;
   priceDerivedValid: boolean;
+  asOfAt?: string | null;
+};
+
+export type LookthroughHolding = {
+  ticker: string;
+  weightBps?: number | null;
+};
+
+export type LookthroughSectorWeight = {
+  label: string;
+  weightBps?: number | null;
+};
+
+/** Owner-confirmed look-through research. Unknown status is not 0%. */
+export type LookthroughResearch = {
+  themeStrategy?: string;
+  primaryRiskDriver?: string;
+  concentrationStatus?: string;
+  topHoldings?: LookthroughHolding[];
+  sectorWeights?: LookthroughSectorWeight[];
+  concentrationAsOf?: string | null;
+  volProxy?: string;
+  taxCharacter?: string;
+  riskTierSuggestion?: string;
+  riskTierSuggestionReason?: string;
 };
 
 export type InvestmentGet = {
@@ -608,6 +721,9 @@ export type InvestmentGet = {
     lastRunOk?: boolean | null;
     lastRunMessage?: string;
     lastContentHash?: string;
+    collectorEnabled?: boolean;
+    /** ISO date; optional — only used when paid decls are under 12. */
+    inceptionOn?: string;
   } | null;
   lots: Array<{
     lotId: string;
@@ -683,13 +799,15 @@ export type InvestmentGet = {
   distributionsScope?: string;
   carMarketValueMinor?: number | null;
   carShareOfSymbolBps?: number | null;
-  carShareOfHouseholdBps?: number | null;
+  carShareOfDataBps?: number | null;
   rocResearchStatus?: string;
   declarationFreshness?: string;
   rocEstimateMethod?: string;
   rocEstimateSourceUrl?: string;
   rocEstimateAsOf?: string;
   rocEstimateEstablishedHow?: string;
+  rocResearchCompletedAt?: string | null;
+  lookthrough?: LookthroughResearch;
   scale: number;
 };
 
@@ -710,6 +828,23 @@ export type PositionDetailsCoverageRow = {
 
 export type PositionDetailsCoverageGet = {
   rows: PositionDetailsCoverageRow[];
+};
+
+export type Div1ComplianceSummaryRow = {
+  securityId: string;
+  symbol: string;
+  futurePayDatesQty: number;
+  priorDeclarationsQty: number;
+  currentDeclarationAmountMinor: number | null;
+  currentDeclarationAmountScale: number | null;
+  currentDeclarationDate: string;
+  lastRunOk: boolean | null;
+  requiredPaid: number;
+};
+
+export type Div1ComplianceSummaryGet = {
+  rows: Div1ComplianceSummaryRow[];
+  asOfDate: string;
 };
 
 export type RocResearchGet = {

@@ -170,7 +170,7 @@ pub async fn production_seed_actual_counts(
             )
         })
         .count() as u64;
-    let household_accounts = account_val
+    let data_accounts = account_val
         .as_array()
         .map(|arr| {
             arr.iter()
@@ -179,7 +179,7 @@ pub async fn production_seed_actual_counts(
         })
         .unwrap_or(0);
     Ok(ProductionCounts {
-        accounts: household_accounts,
+        accounts: data_accounts,
         positions: position_symbols.len() as u64,
         lots_total: lots.len() as u64,
         lots_open,
@@ -258,9 +258,9 @@ pub async fn production_seed_actual_totals(
 }
 
 pub async fn production_seed_plan_count(platform: &LocalPlatform) -> Result<u64, String> {
-    let result = execute_query_on(platform, platform, qry("HouseholdSummaryGet")).await;
+    let result = execute_query_on(platform, platform, qry("DataSummaryGet")).await;
     if !result.ok {
-        return Err("HouseholdSummaryGet failed".into());
+        return Err("DataSummaryGet failed".into());
     }
     let val: Value =
         serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).map_err(|e| e.to_string())?;

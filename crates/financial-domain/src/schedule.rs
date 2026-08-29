@@ -30,7 +30,7 @@ impl CalendarPolicy {
         }
     }
 
-    /// Old template rows with a blank policy: walk if the cadence pays, else none.
+    /// Blank policy: prefer issuer calendar when the name pays; derived walk is fallback at schedule time.
     pub fn parse_or_infer(raw: &str, periods_per_year: u8) -> Self {
         if let Some(policy) = Self::parse(raw) {
             return policy;
@@ -38,8 +38,16 @@ impl CalendarPolicy {
         if periods_per_year == 0 {
             Self::None
         } else {
-            Self::DerivedWalk
+            Self::IssuerCalendar
         }
+    }
+
+    /// Stored policy plus live issuer pay rows — vendor dates win when present.
+    pub fn resolve(stored: &str, periods_per_year: u8, issuer_pay_count: usize) -> Self {
+        if issuer_pay_count > 0 {
+            return Self::IssuerCalendar;
+        }
+        Self::parse_or_infer(stored, periods_per_year)
     }
 }
 
@@ -331,7 +339,13 @@ pub fn remaining_year_from_spec(spec: RemainingYearSpec<'_>) -> RemainingYearSch
     let year_end = remaining_year_end(as_of_d);
     match spec.calendar_policy {
         CalendarPolicy::None => unknown("unknown — cadence is None"),
-        CalendarPolicy::IssuerCalendar => issuer_calendar_schedule(spec, as_of_d, year_end),
+        CalendarPolicy::IssuerCalendar => {
+            if spec.issuer_pay_ons.is_empty() && spec.periods_per_year > 0 {
+                derived_walk_schedule(spec, as_of_d, year_end)
+            } else {
+                issuer_calendar_schedule(spec, as_of_d, year_end)
+            }
+        }
         CalendarPolicy::DerivedWalk => derived_walk_schedule(spec, as_of_d, year_end),
     }
 }
@@ -577,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn issuer_calendar_empty_is_unknown_not_walk() {
+    fn issuer_calendar_empty_falls_back_to_derived_walk() {
         let lots = [single_lot(10, 0)];
         let schedule = remaining_year_from_spec(RemainingYearSpec {
             as_of: "2026-08-22",
@@ -590,9 +604,12 @@ mod tests {
             issuer_pay_ons: &[],
             calendar_policy: CalendarPolicy::IssuerCalendar,
         });
-        assert!(!schedule.known);
-        assert!(schedule.payments.is_empty());
-        assert!(schedule.provenance.contains("issuer calendar"));
+        assert!(schedule.known);
+        assert!(!schedule.payments.is_empty());
+        assert!(schedule
+            .payments
+            .iter()
+            .all(|p| p.date_provenance == "derived_walk"));
     }
 
     #[test]

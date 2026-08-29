@@ -18,6 +18,7 @@ mod pd_settings;
 mod payment_dates;
 mod platform;
 mod store;
+mod trends;
 
 pub use platform::LocalPlatform;
 pub use store::{LocalDatabase, StorageError};

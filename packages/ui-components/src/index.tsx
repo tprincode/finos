@@ -15,7 +15,7 @@ import {
 export { ClearFiltersButton, ListFilter, SortTh, sortHead, sortRows, textMatches, useListSort } from "./listTable";
 export type { CheckedFilters, SortDir } from "./listTable";
 
-/** Design tokens and Radix-based primitives used by the local desktop household screens. */
+/** Design tokens and Radix-based primitives used by the local desktop data screens. */
 export const DESIGN_SYSTEM_VERSION = "0.1.0-draft";
 
 const USD_SCALE = 2;
@@ -185,7 +185,7 @@ export function issuerRetrieveMissSummary(
 ): string | null {
   const misses = exceptions.filter(
     (e) =>
-      e.code === "declaration_retrieve_miss" &&
+      (e.code === "declaration_retrieve_miss" || e.code === "div1_adapter_missing") &&
       !e.acknowledged &&
       (e.createdAt ?? "").startsWith(today),
   );
@@ -363,7 +363,7 @@ export function PositionDetailsTable({
         uniqueFilterValues(lineValueMaps, lineFilter, key),
       ),
     );
-  const matched = afterSymbol.filter((line, index) =>
+  const matched = afterSymbol.filter((_line, index) =>
     matchesColFilters(lineFilter, lineValueMaps[index] ?? {}),
   );
   const lines = sortRows(matched, lineSort.sortKey, lineSort.sortDir, (line, key) => {
@@ -403,7 +403,7 @@ export function PositionDetailsTable({
       ),
     );
   const accountRows = sortRows(
-    (positions.accountTotals ?? []).filter((acct, index) =>
+    (positions.accountTotals ?? []).filter((_acct, index) =>
       matchesColFilters(accountFilter, accountValueMaps[index] ?? {}),
     ),
     accountSort.sortKey,
@@ -427,7 +427,7 @@ export function PositionDetailsTable({
       }
     },
   );
-  const householdMv =
+  const dataMv =
     positions.marketValueMinor != null
       ? positions.marketValueComplete
         ? formatUsd(positions.marketValueMinor, scale)
@@ -435,9 +435,9 @@ export function PositionDetailsTable({
       : "unknown";
   return (
     <div>
-      <h3>Household</h3>
+      <h3>Data</h3>
       <p>These totals do not change when you choose one symbol.</p>
-      <dl className="health" aria-label="Household position totals">
+      <dl className="health" aria-label="Data position totals">
         <dt>open symbols</dt>
         <dd>{formatCount(positions.symbolCount ?? 0)}</dd>
         <dt>open lots</dt>
@@ -449,7 +449,7 @@ export function PositionDetailsTable({
         <dt>tax basis</dt>
         <dd>{formatUsd(positions.openTaxMinor, scale)}</dd>
         <dt>market value</dt>
-        <dd>{householdMv}</dd>
+        <dd>{dataMv}</dd>
       </dl>
       <h3>Per account</h3>
       <p>
@@ -679,7 +679,7 @@ export type PositionMasterRowView = {
   bullCushionBps?: number | null;
   carMarketValueMinor?: number | null;
   carShareOfSymbolBps?: number | null;
-  carShareOfHouseholdBps?: number | null;
+  carShareOfDataBps?: number | null;
   rocResearchStatus?: string;
   declarationFreshness?: string;
 };
@@ -712,7 +712,7 @@ function masterColValues(row: PositionMasterRowView): Record<string, string> {
     alloc: formatBps(row.allocationBps),
     carMv: unknownMoney(row.carMarketValueMinor ?? null, row.scale),
     carSym: unknownOrBps(row.carShareOfSymbolBps ?? null),
-    carHh: unknownOrBps(row.carShareOfHouseholdBps ?? null),
+    carData: unknownOrBps(row.carShareOfDataBps ?? null),
     plan: row.planKnown ? `$${formatScaled(row.planPerShareMinor, row.planScale)}` : "N/A",
     annual: unknownMoney(row.annualPlanMinor, row.scale),
     yoc: formatBps(row.planYocBps),
@@ -813,8 +813,8 @@ export function PositionMasterTable({
         return row.carMarketValueMinor ?? null;
       case "carSym":
         return row.carShareOfSymbolBps ?? null;
-      case "carHh":
-        return row.carShareOfHouseholdBps ?? null;
+      case "carData":
+        return row.carShareOfDataBps ?? null;
       case "plan":
         return row.planKnown ? row.planPerShareMinor : null;
       case "annual":
@@ -897,7 +897,7 @@ export function PositionMasterTable({
               {sortHead(sort, "Alloc %", "alloc", true, f("alloc"))}
               {sortHead(sort, "Car MV", "carMv", true, f("carMv"))}
               {sortHead(sort, "Car % symbol", "carSym", true, f("carSym"))}
-              {sortHead(sort, "Car % household", "carHh", true, f("carHh"))}
+              {sortHead(sort, "Car % data", "carData", true, f("carData"))}
               {sortHead(sort, "Plan / share", "plan", true, f("plan"))}
               {sortHead(sort, "Annual Plan", "annual", true, f("annual"))}
               {sortHead(sort, "Plan YOC", "yoc", true, f("yoc"))}
@@ -974,7 +974,7 @@ export function PositionMasterTable({
                   {unknownMoney(row.carMarketValueMinor ?? null, row.scale)}
                 </td>
                 <td className="numeric">{unknownOrBps(row.carShareOfSymbolBps ?? null)}</td>
-                <td className="numeric">{unknownOrBps(row.carShareOfHouseholdBps ?? null)}</td>
+                <td className="numeric">{unknownOrBps(row.carShareOfDataBps ?? null)}</td>
                 <td className="numeric">
                   {row.planKnown
                     ? `$${formatScaled(row.planPerShareMinor, row.planScale)}`
@@ -1119,27 +1119,37 @@ export function AccountList({ accounts }: { accounts: AccountView[] }) {
   );
 }
 
-export function ExceptionList({ exceptions }: { exceptions: ExceptionView[] }) {
+export function ExceptionList({
+  exceptions,
+  onOpenLog,
+}: {
+  exceptions: ExceptionView[];
+  onOpenLog?: () => void;
+}) {
+  const open = exceptions.filter((e) => !e.acknowledged);
   const summary = issuerRetrieveMissSummary(exceptions);
-  if (exceptions.length === 0) {
-    return (
-      <>
-        {summary ? <p aria-label="Issuer retrieve miss summary">{summary}</p> : null}
-        <p>None</p>
-      </>
-    );
+  if (open.length === 0 && exceptions.length === 0) {
+    return <p aria-label="Exception summary">No open exceptions.</p>;
   }
+  const countLine =
+    open.length === 0
+      ? `${exceptions.length} acknowledged exception${exceptions.length === 1 ? "" : "s"}`
+      : `${open.length} open exception${open.length === 1 ? "" : "s"}`;
   return (
-    <>
+    <div aria-label="Exception summary">
       {summary ? <p aria-label="Issuer retrieve miss summary">{summary}</p> : null}
-      <ul>
-        {exceptions.map((e) => (
-          <li key={`${e.code}:${e.message}:${e.createdAt ?? ""}`}>
-            {e.code}: {e.message}
-          </li>
-        ))}
-      </ul>
-    </>
+      <p>
+        {countLine}
+        {onOpenLog ? (
+          <>
+            {" "}
+            <button type="button" aria-label="Open exception log" onClick={onOpenLog}>
+              Open exception log
+            </button>
+          </>
+        ) : null}
+      </p>
+    </div>
   );
 }
 
@@ -1359,7 +1369,7 @@ export function DisbursementPanel({
 
 export function MagiCard({ magi }: { magi: MagiView | null }) {
   if (!magi) {
-    return <p>MAGI not set. Load household facts through FinanceClient.</p>;
+    return <p>MAGI not set. Load MAGI facts through FinanceClient.</p>;
   }
   return (
     <dl className="health">
@@ -1432,7 +1442,7 @@ export function AllocationVsPositions({
           ))}
         </ul>
       ) : (
-        <p>No targets yet. Set a household target below.</p>
+        <p>No targets yet. Set a data target below.</p>
       )}
       {positions.positions.length === 0 ? (
         <p>No open positions to compare.</p>
@@ -1499,9 +1509,11 @@ export type IncomePlanWeekView = {
 export function IncomePlanWeekPanel({
   week,
   selectedAccount,
+  onOpenSymbol,
 }: {
   week: IncomePlanWeekView | null;
   selectedAccount?: string | null;
+  onOpenSymbol?: (symbol: string) => void;
 }) {
   const [drillFilter, setDrillFilter] = useState("");
   const weekSort = useListSort("account");
@@ -1555,7 +1567,7 @@ export function IncomePlanWeekPanel({
       <p>
         Saturday {week.start} through Friday {week.end}. Status {week.status}. Plan is
         unknown until Calculator exists — not shown as $0.00.
-        {week.yieldCount != null ? ` Household yield rows: ${formatCount(week.yieldCount)}.` : ""}
+        {week.yieldCount != null ? ` Data yield rows: ${formatCount(week.yieldCount)}.` : ""}
         {week.latestActualOn ? ` Last yield ${week.latestActualOn}.` : ""}
       </p>
       {totalActual === 0 ? (
@@ -1641,7 +1653,19 @@ export function IncomePlanWeekPanel({
               {drill.map((row, i) => (
                 <tr key={`${row.accountName}-${row.symbol}-${row.occurredOn}-${i}`}>
                   <td>{row.accountName}</td>
-                  <td>{row.symbol}</td>
+                  <td>
+                    {onOpenSymbol ? (
+                      <button
+                        type="button"
+                        aria-label={`Open ${row.symbol} position`}
+                        onClick={() => onOpenSymbol(row.symbol)}
+                      >
+                        {row.symbol}
+                      </button>
+                    ) : (
+                      row.symbol
+                    )}
+                  </td>
                   <td>{row.occurredOn}</td>
                   <td className="numeric">{formatUsd(row.amountMinor, row.scale)}</td>
                 </tr>
@@ -1677,6 +1701,8 @@ export type DashboardBurndownView = {
     inflowMinor: number;
     outflowMinor: number;
     floorKnown: boolean;
+    endingBalanceMinor?: number | null;
+    endingBalanceKnown?: boolean;
     scale: number;
   }>;
   scale?: number;
@@ -1707,6 +1733,8 @@ export function DashboardBurndownPanel({
         return line.inflowMinor - line.outflowMinor;
       case "floor":
         return line.floorKnown ? 0 : null;
+      case "ending":
+        return line.endingBalanceKnown ? (line.endingBalanceMinor ?? null) : null;
       default:
         return line.accountName;
     }
@@ -1730,6 +1758,7 @@ export function DashboardBurndownPanel({
               {sortHead(sort, "Dividend inflow", "inflow", true)}
               {sortHead(sort, "Disbursement outflow", "outflow", true)}
               {sortHead(sort, "Net", "net", true)}
+              {sortHead(sort, "Ending balance", "ending", true)}
               {sortHead(sort, "Floor", "floor", true)}
             </tr>
           </thead>
@@ -1741,6 +1770,11 @@ export function DashboardBurndownPanel({
                 <td className="numeric">{formatUsd(line.outflowMinor, line.scale)}</td>
                 <td className="numeric">
                   {formatUsd(line.inflowMinor - line.outflowMinor, line.scale)}
+                </td>
+                <td className="numeric">
+                  {line.endingBalanceKnown
+                    ? formatUsd(line.endingBalanceMinor ?? 0, line.scale)
+                    : "unknown"}
                 </td>
                 <td className="numeric">{line.floorKnown ? formatUsd(0, line.scale) : "N/A"}</td>
               </tr>
@@ -1766,6 +1800,14 @@ export function DashboardBurndownPanel({
                   shown.map((line) => line.inflowMinor - line.outflowMinor),
                   scale,
                 )}
+              </td>
+              <td className="numeric">
+                {shown.every((line) => line.endingBalanceKnown)
+                  ? moneyTotal(
+                      shown.map((line) => line.endingBalanceMinor ?? 0),
+                      scale,
+                    )
+                  : "unknown"}
               </td>
               <td className="numeric">
                 {shown.some((line) => !line.floorKnown) ? "N/A" : formatUsd(0, scale)}
@@ -1809,9 +1851,11 @@ function unitTaxMinor(lot: HoldingsLotView): number | null {
 export function HoldingsPanel({
   lots,
   filter = "",
+  onOpenSymbol,
 }: {
   lots: HoldingsLotView[] | null;
   filter?: string;
+  onOpenSymbol?: (symbol: string) => void;
 }) {
   const sort = useListSort("symbol");
   if (!lots) {
@@ -1882,7 +1926,19 @@ export function HoldingsPanel({
               return (
                 <tr key={lot.lotId}>
                   <td>{lot.accountName}</td>
-                  <td>{lot.symbol}</td>
+                  <td>
+                    {onOpenSymbol ? (
+                      <button
+                        type="button"
+                        aria-label={`Open ${lot.symbol} position`}
+                        onClick={() => onOpenSymbol(lot.symbol)}
+                      >
+                        {lot.symbol}
+                      </button>
+                    ) : (
+                      lot.symbol
+                    )}
+                  </td>
                   <td>{lot.openedOn}</td>
                   <td className="numeric">
                     {formatScaled(lot.remainingQuantityMinor, lot.quantityScale)}
@@ -2048,7 +2104,13 @@ export function SymbolLotsTable({ lots }: { lots: SymbolLotView[] }) {
   );
 }
 
-export function CalculatorPanel({ rows }: { rows: CalculatorRowView[] | null }) {
+export function CalculatorPanel({
+  rows,
+  onOpenSymbol,
+}: {
+  rows: CalculatorRowView[] | null;
+  onOpenSymbol?: (symbol: string) => void;
+}) {
   const [listFilter, setListFilter] = useState("");
   const sort = useListSort("symbol");
   if (!rows) {
@@ -2131,7 +2193,19 @@ export function CalculatorPanel({ rows }: { rows: CalculatorRowView[] | null }) 
           <tbody>
             {shown.map((row) => (
               <tr key={row.symbol}>
-                <td>{row.symbol}</td>
+                <td>
+                  {onOpenSymbol ? (
+                    <button
+                      type="button"
+                      aria-label={`Open ${row.symbol} position`}
+                      onClick={() => onOpenSymbol(row.symbol)}
+                    >
+                      {row.symbol}
+                    </button>
+                  ) : (
+                    row.symbol
+                  )}
+                </td>
                 <td>{row.paymentFrequency || "—"}</td>
                 <td className="numeric">
                   {row.planKnown

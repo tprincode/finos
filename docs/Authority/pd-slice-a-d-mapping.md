@@ -72,8 +72,8 @@ Denominator = sum of lot performance_basis (opened original cost). Never remaini
 
 | Deliverable | IDs |
 |-------------|-----|
-| household `allocationBps` | TR-PD-15 |
-| `carMarketValueMinor`, `carShareOfSymbolBps`, `carShareOfHouseholdBps` | AC-PD-07, AC-PD-03 |
+| data `allocationBps` | TR-PD-15 |
+| `carMarketValueMinor`, `carShareOfSymbolBps`, `carShareOfDataBps` | AC-PD-07, AC-PD-03 |
 | Account splits remain on `PositionDetailsGet` only | AC-PD-03, TR-PD-12 |
 
 Car = account name **Car**. MV = Car lots × last price (cents).
@@ -110,6 +110,6 @@ Car = account name **Car**. MV = Car lots × last price (cents).
 
 1. Fully quit finos  
 2. `npm run desktop`  
-3. Re-run `npm run household-seed` so the live household picks up ROC observations and Roundhill templates  
+3. Re-run `npm run data-seed` so the live data picks up ROC observations and Roundhill templates  
 
 Roundhill public fund HTML often has no parseable amounts. A miss stays **unknown**, never $0. TOPW retrieve looks empty until the page exposes parseable rows.
