@@ -703,7 +703,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [deviceName, setDeviceName] = useState("");
-  const [asOfDate, setAsOfDate] = useState("");
+  const [asOfDate, setAsOfDate] = useState(() =>
+    saturdayOfWeek(new Date().toISOString().slice(0, 10)),
+  );
   const [incomeWeek, setIncomeWeek] = useState<IncomePlanWeekGet | null>(null);
   const [burndown, setBurndown] = useState<DashboardBurndownGet | null>(null);
   const [trends, setTrends] = useState<TrendsGet | null>(null);
@@ -1760,7 +1762,6 @@ export default function App() {
         ]);
         if (cancelled) return;
         if (!summaryResult.ok || !summaryResult.bodyJson) {
-          setAsOfDate("");
           return;
         }
         const body = JSON.parse(summaryResult.bodyJson) as DataSummaryGet;
@@ -1768,10 +1769,8 @@ export default function App() {
         if (dividendResult.ok && dividendResult.bodyJson) {
           setDividendLifetime(JSON.parse(dividendResult.bodyJson) as DividendGet);
         }
-        const today = new Date().toISOString().slice(0, 10);
-        setAsOfDate(saturdayOfWeek(today));
       } catch {
-        if (!cancelled) setAsOfDate("");
+        /* keep calendar this week */
       }
     })();
     return () => {

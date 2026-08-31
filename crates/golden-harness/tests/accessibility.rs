@@ -207,4 +207,8 @@ fn accessibility_primary_actions_have_accessible_names() {
         !app.contains("Checking data file"),
         "owner UI must not mention data file loading"
     );
+    assert!(
+        app.contains("saturdayOfWeek(new Date().toISOString().slice(0, 10))"),
+        "Income Plan as-of must default to calendar this week, not last yield"
+    );
 }

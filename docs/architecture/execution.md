@@ -2,9 +2,9 @@
 
 Profile A product only. Local data SQLite is the system of record. Seed is a separate CLI, not an owner screen.
 
-**Now:** Income Plan week forecast (By position lists scheduled payers for the selected Sat–Fri week; Actual N/A until cash posts)
-**Next:** owner-named (August dual-entry post into live Finos when owner says so)
-**Done this turn:** Dividend capture (CSV + manual table), CRF drip lots, missing cash flags, shared duplicate skip, capture process log.
+**Now:** Income Plan week forecast (open on calendar this week; By position lists scheduled payers; Actual N/A until cash posts)
+**Next:** owner-named (August dual-entry post into live Finos — do not post until owner says so)
+**Done this turn:** Dividend capture committed (`2fa6632`). Week membership goldens green. Live HAKY 70×$0.38 and NVDW 215×$0.35 belong in Sat 2026-08-29 – Fri 2026-09-04.
 **Parked:** M1 macOS; SQLite→Postgres cutover; live OIDC; public CA; Python connectors posting; Shopping Cart; MAGI oracle rewrite; M8/M9 theater; watchlist; live collector inventory fix until gate green (slice E); full position-liquidity classification replacing Acct9 interim heuristic
 
 `App.tsx` stays `LocalTauriFinanceClient`. No UI SQL. Never regenerate MAGI oracles.
