@@ -135,20 +135,42 @@ pub fn roc_in_scope(
     needs_roc_research || any_roc_year_percent || has_open_car_lots
 }
 
+/// True when any lot opened on or before 31 Dec of `year` (YYYY).
+pub fn held_in_calendar_year(opened_on: &[&str], year: i32) -> bool {
+    let y = format!("{year:04}");
+    opened_on.iter().any(|on| {
+        let stamp = on.trim();
+        stamp.len() >= 4 && &stamp[..4] <= y.as_str()
+    })
+}
+
 /// Derived research strip. `needsRocResearch` alone is never complete.
+/// 1099 actual for year Y is only missing when the name was held in Y.
+/// A year not held is N/A — never missing-1099. 2026 actual is not required in 2026.
 pub fn roc_research_status(
     in_scope: bool,
     observations: &[RocObservationView<'_>],
+    held_in_2025: bool,
 ) -> &'static str {
     if !in_scope {
         return "not-in-scope";
     }
     let has_2025 = actual_2025_with_source(observations);
-    if has_2025 && actual_or_estimate_2026(observations) {
+    let has_2026 = actual_or_estimate_2026(observations) || estimate_2026_or_19a1(observations);
+    if held_in_2025 && has_2025 && has_2026 {
         return "complete";
     }
-    if estimate_2026_or_19a1(observations) && !has_2025 {
+    if estimate_2026_or_19a1(observations) {
+        if !held_in_2025 {
+            return "estimate-only · N/A 2025";
+        }
+        if !has_2025 {
+            return "estimate-only · missing-1099";
+        }
         return "estimate-only";
+    }
+    if !held_in_2025 {
+        return "N/A 2025";
     }
     "missing-1099"
 }
@@ -224,10 +246,12 @@ mod tests {
 
     #[test]
     fn roc_strip_needs_source_and_years() {
-        let none = roc_research_status(false, &[]);
+        let none = roc_research_status(false, &[], true);
         assert_eq!(none, "not-in-scope");
-        let missing = roc_research_status(true, &[]);
+        let missing = roc_research_status(true, &[], true);
         assert_eq!(missing, "missing-1099");
+        let na_prior = roc_research_status(true, &[], false);
+        assert_eq!(na_prior, "N/A 2025");
         let estimate = [RocObservationView {
             tax_year: "2026",
             kind: "estimate",
@@ -235,7 +259,14 @@ mod tests {
             roc_pct_minor: Some(8_000),
             established_how: "",
         }];
-        assert_eq!(roc_research_status(true, &estimate), "estimate-only");
+        assert_eq!(
+            roc_research_status(true, &estimate, false),
+            "estimate-only · N/A 2025"
+        );
+        assert_eq!(
+            roc_research_status(true, &estimate, true),
+            "estimate-only · missing-1099"
+        );
         let complete = [
             RocObservationView {
                 tax_year: "2025",
@@ -252,7 +283,11 @@ mod tests {
                 established_how: "",
             },
         ];
-        assert_eq!(roc_research_status(true, &complete), "complete");
+        assert_eq!(roc_research_status(true, &complete, true), "complete");
+        assert_eq!(
+            roc_research_status(true, &complete, false),
+            "estimate-only · N/A 2025"
+        );
         let no_source = [RocObservationView {
             tax_year: "2025",
             kind: "actual",
@@ -260,7 +295,9 @@ mod tests {
             roc_pct_minor: Some(9_000),
             established_how: "",
         }];
-        assert_eq!(roc_research_status(true, &no_source), "missing-1099");
+        assert_eq!(roc_research_status(true, &no_source, true), "missing-1099");
+        assert!(!held_in_calendar_year(&["2026-08-15"], 2025));
+        assert!(held_in_calendar_year(&["2026-08-15"], 2026));
     }
 
     #[test]

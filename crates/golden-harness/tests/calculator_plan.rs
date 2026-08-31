@@ -56,6 +56,21 @@ async fn calculator_plan_sets_income_plan_week_not_actuals() {
     .await;
     must_ok(
         &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security["securityId"],
+            "priceSource": "public",
+            "sourceSymbol": "AMDW",
+            "declarationSource": "issuer",
+            "sourceUrl": "https://example.test/amdw/distributions",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
         "LotOpen",
         serde_json::json!({
             "accountId": income["accountId"],

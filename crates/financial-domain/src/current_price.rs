@@ -50,6 +50,11 @@ pub fn uses_cash_par(div_type: &str, symbol: &str) -> bool {
     is_cash(div_type) || is_cash_par_symbol(symbol)
 }
 
+/// Stable exception text for BR-CASH-01 (account + symbol + YYYY-MM).
+pub fn missing_cash_dividend_message(account_name: &str, symbol: &str, month: &str) -> String {
+    format!("missing cash dividend: {account_name} {symbol} {month}")
+}
+
 pub fn cash_par_current_price() -> CurrentPrice {
     CurrentPrice {
         price_minor: Some(CASH_PAR_MINOR),

@@ -534,6 +534,7 @@ impl Canonical for PostgresPlatform {
             amount_minor: posted.amount_minor,
             scale: posted.scale,
             activity_id: Some(posted.activity_id),
+            already_posted: false,
         })
     }
 
@@ -556,6 +557,7 @@ impl Canonical for PostgresPlatform {
                     amount_minor: row.try_get("amount_minor").map_err(|e| map_err(e.into()))?,
                     scale: row.try_get::<i32, _>("scale").map_err(|e| map_err(e.into()))? as u8,
                     activity_id: opt_uuid(row, "activity_id")?,
+                    already_posted: false,
                 })
             })
             .collect();

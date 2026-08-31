@@ -1494,6 +1494,15 @@ export type IncomePlanWeekView = {
     planKnown: boolean;
     scale: number;
   }>;
+  positions?: Array<{
+    symbol: string;
+    cadence?: string;
+    payOn?: string;
+    actualMinor: number;
+    plannedMinor?: number;
+    planKnown: boolean;
+    scale: number;
+  }>;
   drilldown: Array<{
     accountName: string;
     symbol: string;
@@ -1517,6 +1526,7 @@ export function IncomePlanWeekPanel({
 }) {
   const [drillFilter, setDrillFilter] = useState("");
   const weekSort = useListSort("account");
+  const positionSort = useListSort("symbol");
   const drillSort = useListSort("date");
   if (!week) {
     return <p>Loading week…</p>;
@@ -1536,6 +1546,38 @@ export function IncomePlanWeekPanel({
     }
   });
   const totalActual = week.lines.reduce((sum, line) => sum + line.actualMinor, 0);
+  const today = new Date().toISOString().slice(0, 10);
+  const weekOpen = week.end >= today;
+  const actualText = (amount: number, scale: number | undefined) => {
+    if (weekOpen && amount === 0) return "N/A";
+    return formatUsd(amount, scale);
+  };
+  const derivedPositions = Array.isArray(week.positions)
+    ? week.positions
+    : [];
+  const positionRows = sortRows(
+    derivedPositions,
+    positionSort.sortKey,
+    positionSort.sortDir,
+    (row, key) => {
+      switch (key) {
+        case "symbol":
+          return row.symbol;
+        case "cadence":
+          return row.cadence ?? "";
+        case "payOn":
+          return row.payOn ?? "";
+        case "plan":
+          return row.planKnown ? (row.plannedMinor ?? 0) : null;
+        case "actual":
+          return row.actualMinor;
+        case "variance":
+          return row.planKnown ? row.actualMinor - (row.plannedMinor ?? 0) : null;
+        default:
+          return row.symbol;
+      }
+    },
+  );
   const scoped = selectedAccount
     ? week.drilldown.filter((row) => row.accountName === selectedAccount)
     : week.drilldown;
@@ -1565,19 +1607,109 @@ export function IncomePlanWeekPanel({
   return (
     <div>
       <p>
-        Saturday {week.start} through Friday {week.end}. Status {week.status}. Plan is
-        unknown until Calculator exists — not shown as $0.00.
+        Status {week.status}. Plan is unknown until Calculator exists — not shown as $0.00.
         {week.yieldCount != null ? ` Data yield rows: ${formatCount(week.yieldCount)}.` : ""}
         {week.latestActualOn ? ` Last yield ${week.latestActualOn}.` : ""}
       </p>
-      {totalActual === 0 ? (
+      {totalActual === 0 && positionRows.length === 0 ? (
         <p>
-          No dividend cash in this week. That is not unpaid and not an empty database — use
-          previous week if the last yield is earlier.
+          No dividend cash and no scheduled payers in this week. That is not unpaid and not
+          an empty database.
         </p>
       ) : null}
+      <h3>By position for the week</h3>
+      {positionRows.length === 0 ? (
+        <p>No positions scheduled or paid in this week.</p>
+      ) : (
+        <div className="table-wrap">
+          <table aria-label="Income plan by position">
+            <thead>
+              <tr>
+                {sortHead(positionSort, "Symbol", "symbol")}
+                {sortHead(positionSort, "Cadence", "cadence")}
+                {sortHead(positionSort, "Pay-on", "payOn")}
+                {sortHead(positionSort, "Plan", "plan", true)}
+                {sortHead(positionSort, "Actual", "actual", true)}
+                {sortHead(positionSort, "Variance", "variance", true)}
+              </tr>
+            </thead>
+            <tbody>
+              {positionRows.map((row) => {
+                const actualOpen = weekOpen && row.actualMinor === 0;
+                return (
+                <tr key={row.symbol}>
+                  <td>
+                    {onOpenSymbol ? (
+                      <button
+                        type="button"
+                        aria-label={`Open ${row.symbol} position`}
+                        onClick={() => onOpenSymbol(row.symbol)}
+                      >
+                        {row.symbol}
+                      </button>
+                    ) : (
+                      row.symbol
+                    )}
+                  </td>
+                  <td>{row.cadence?.trim() || "—"}</td>
+                  <td>{row.payOn?.trim() || "—"}</td>
+                  <td className="numeric">
+                    {row.planKnown
+                      ? formatUsd(row.plannedMinor ?? 0, row.scale)
+                      : "N/A"}
+                  </td>
+                  <td className="numeric">{actualText(row.actualMinor, row.scale)}</td>
+                  <td className="numeric">
+                    {row.planKnown && !actualOpen
+                      ? formatUsd(row.actualMinor - (row.plannedMinor ?? 0), row.scale)
+                      : "N/A"}
+                  </td>
+                </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td>Total</td>
+                <td>{formatCount(positionRows.length)}</td>
+                <td></td>
+                <td className="numeric">
+                  {moneyTotal(
+                    positionRows.map((row) =>
+                      row.planKnown ? (row.plannedMinor ?? 0) : null,
+                    ),
+                    week.scale,
+                  )}
+                </td>
+                <td className="numeric">
+                  {weekOpen &&
+                  positionRows.every((row) => row.actualMinor === 0)
+                    ? "N/A"
+                    : formatUsd(
+                        positionRows.reduce((sum, row) => sum + row.actualMinor, 0),
+                        week.scale,
+                      )}
+                </td>
+                <td className="numeric">
+                  {weekOpen
+                    ? "N/A"
+                    : moneyTotal(
+                        positionRows.map((row) =>
+                          row.planKnown
+                            ? row.actualMinor - (row.plannedMinor ?? 0)
+                            : null,
+                        ),
+                        week.scale,
+                      )}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+      <h3>By account for the week</h3>
       <div className="table-wrap">
-        <table aria-label="Income plan week">
+        <table aria-label="Income plan by account">
           <thead>
             <tr>
               {sortHead(weekSort, "Account", "account")}
@@ -1595,9 +1727,9 @@ export function IncomePlanWeekPanel({
                     ? formatUsd(line.plannedMinor ?? 0, line.scale)
                     : "N/A"}
                 </td>
-                <td className="numeric">{formatUsd(line.actualMinor, line.scale)}</td>
+                <td className="numeric">{actualText(line.actualMinor, line.scale)}</td>
                 <td className="numeric">
-                  {line.planKnown
+                  {line.planKnown && !(weekOpen && line.actualMinor === 0)
                     ? formatUsd(line.actualMinor - (line.plannedMinor ?? 0), line.scale)
                     : "N/A"}
                 </td>
@@ -1613,20 +1745,26 @@ export function IncomePlanWeekPanel({
                   week.scale,
                 )}
               </td>
-              <td className="numeric">{formatUsd(totalActual, week.scale)}</td>
               <td className="numeric">
-                {moneyTotal(
-                  week.lines.map((line) =>
-                    line.planKnown ? line.actualMinor - (line.plannedMinor ?? 0) : null,
-                  ),
-                  week.scale,
-                )}
+                {weekOpen && totalActual === 0
+                  ? "N/A"
+                  : formatUsd(totalActual, week.scale)}
+              </td>
+              <td className="numeric">
+                {weekOpen
+                  ? "N/A"
+                  : moneyTotal(
+                      week.lines.map((line) =>
+                        line.planKnown ? line.actualMinor - (line.plannedMinor ?? 0) : null,
+                      ),
+                      week.scale,
+                    )}
               </td>
             </tr>
           </tfoot>
         </table>
       </div>
-      <h3>Symbol drilldown{selectedAccount ? ` — ${selectedAccount}` : ""}</h3>
+      <h3>Yield rows{selectedAccount ? ` — ${selectedAccount}` : ""}</h3>
       <ListFilter
         label="Filter income plan drilldown"
         value={drillFilter}
@@ -2020,6 +2158,16 @@ export type SymbolLotView = {
   scale: number;
 };
 
+/** Unit cost in USD cents from lot-total cents and qty. */
+function unitFromLotTotal(
+  totalCents: number,
+  qtyMinor: number,
+  qtyScale: number,
+): number | null {
+  if (qtyMinor <= 0) return null;
+  return Math.trunc((totalCents * 10 ** qtyScale) / qtyMinor);
+}
+
 export function SymbolLotsTable({ lots }: { lots: SymbolLotView[] }) {
   const [listFilter, setListFilter] = useState("");
   const sort = useListSort("opened");
@@ -2034,9 +2182,25 @@ export function SymbolLotsTable({ lots }: { lots: SymbolLotView[] }) {
         return lot.openedOn;
       case "qty":
         return lot.remainingQuantityMinor;
-      case "cost":
+      case "unitOrig":
+        return (
+          unitFromLotTotal(
+            lot.remainingPerformanceMinor,
+            lot.remainingQuantityMinor,
+            lot.quantityScale,
+          ) ?? 0
+        );
+      case "unitTax":
+        return (
+          unitFromLotTotal(
+            lot.remainingTaxMinor,
+            lot.remainingQuantityMinor,
+            lot.quantityScale,
+          ) ?? 0
+        );
+      case "lotOrig":
         return lot.remainingPerformanceMinor;
-      case "tax":
+      case "lotTax":
         return lot.remainingTaxMinor;
       default:
         return lot.openedOn;
@@ -2047,7 +2211,7 @@ export function SymbolLotsTable({ lots }: { lots: SymbolLotView[] }) {
       <ListFilter label="Filter position lots" value={listFilter} onChange={setListFilter} />
       <p>
         Showing {formatCount(shown.length)} of {formatCount(lots.length)} lots. Click a
-        column heading to sort. Footer totals are the shown rows.
+        column heading to sort. Footer totals Lot orig $ and Lot tax $ only — never unit prices.
       </p>
       <div className="table-wrap">
         <table aria-label="Position lots">
@@ -2056,30 +2220,54 @@ export function SymbolLotsTable({ lots }: { lots: SymbolLotView[] }) {
               {sortHead(sort, "Account", "account")}
               {sortHead(sort, "Opened", "opened")}
               {sortHead(sort, "Qty", "qty", true)}
-              {sortHead(sort, "Cost", "cost", true)}
-              {sortHead(sort, "Tax", "tax", true)}
+              {sortHead(sort, "Unit orig $", "unitOrig", true)}
+              {sortHead(sort, "Unit tax $", "unitTax", true)}
+              {sortHead(sort, "Lot orig $", "lotOrig", true)}
+              {sortHead(sort, "Lot tax $", "lotTax", true)}
             </tr>
           </thead>
           <tbody>
-            {shown.map((lot) => (
-              <tr key={lot.lotId}>
-                <td>{lot.accountName}</td>
-                <td>{lot.openedOn}</td>
-                <td className="numeric">
-                  {formatScaled(lot.remainingQuantityMinor, lot.quantityScale)}
-                </td>
-                <td className="numeric">
-                  {formatUsd(lot.remainingPerformanceMinor, lot.scale)}
-                </td>
-                <td className="numeric">{formatUsd(lot.remainingTaxMinor, lot.scale)}</td>
-              </tr>
-            ))}
+            {shown.map((lot) => {
+              const unitOrig = unitFromLotTotal(
+                lot.remainingPerformanceMinor,
+                lot.remainingQuantityMinor,
+                lot.quantityScale,
+              );
+              const unitTax = unitFromLotTotal(
+                lot.remainingTaxMinor,
+                lot.remainingQuantityMinor,
+                lot.quantityScale,
+              );
+              return (
+                <tr key={lot.lotId}>
+                  <td>{lot.accountName}</td>
+                  <td>{lot.openedOn}</td>
+                  <td className="numeric">
+                    {formatScaled(lot.remainingQuantityMinor, lot.quantityScale)}
+                  </td>
+                  <td className="numeric">
+                    {unitOrig == null ? "—" : formatUsd(unitOrig, 2)}
+                  </td>
+                  <td className="numeric">
+                    {unitTax == null ? "—" : formatUsd(unitTax, 2)}
+                  </td>
+                  <td className="numeric">
+                    {formatUsd(lot.remainingPerformanceMinor, lot.scale)}
+                  </td>
+                  <td className="numeric">
+                    {formatUsd(lot.remainingTaxMinor, lot.scale)}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
           <tfoot>
             <tr>
               <td>Total</td>
               <td>{formatCount(shown.length)}</td>
               <td className="numeric">{qtyTotal(shown)}</td>
+              <td className="numeric">—</td>
+              <td className="numeric">—</td>
               <td className="numeric">
                 {moneyTotal(
                   shown.map((lot) => ({

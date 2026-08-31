@@ -83,6 +83,9 @@ async fn finance_command(
     if request.command_name == "DeclarationRefresh" {
         fill_declaration_refresh(platform.inner().as_ref(), &mut request).await;
     }
+    if request.command_name == "PositionResearchRefresh" {
+        return Ok(run_position_research_refresh(&app, platform.inner().as_ref(), request).await);
+    }
     if request.command_name == "PositionResearchSeed" {
         return Ok(run_position_research_seed(&app, platform.inner().as_ref(), request).await);
     }
@@ -108,13 +111,13 @@ fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
     }
 }
 
-/// Process A desktop path: seed identity+URL template, then live CollectorRetrieve / LastPriceRefresh.
-/// Injected candidates/misses/quotes (tests) skip live fill.
+/// Process A desktop path: seed identity+URL template, then live PositionResearchRefresh.
+/// Injected candidates/misses/quotes (tests) skip live fill and use nested refresh.
 /// Emits `position-research-progress` for the Research activity indicator (steps 1–3 of 4).
 async fn run_position_research_seed(
     app: &AppHandle,
     platform: &LocalPlatform,
-    request: CommandRequest,
+    mut request: CommandRequest,
 ) -> CommandResult {
     let body: serde_json::Value = request
         .body_json
@@ -127,14 +130,66 @@ async fn run_position_research_seed(
         || body.get("payDates").is_some()
         || body.get("upcomingPays").is_some()
         || body.get("quote").is_some()
-        || body.get("quotes").is_some();
-    emit_position_research_progress(app, 1, "retrieving declarations");
-    let mut result = execute_command_on(platform, platform, request).await;
-    if !result.ok || injected {
-        return result;
+        || body.get("quotes").is_some()
+        || body.get("rocCandidates").is_some();
+    let mut merged = body;
+    // Live issuer page → name / provider / underlying / lookthrough before seed persists them.
+    if !injected {
+        let symbol = merged
+            .get("symbol")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let source_url = merged
+            .get("sourceUrl")
+            .or_else(|| merged.get("distributionUrl"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let declaration_source = merged
+            .get("declarationSource")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !symbol.is_empty() && !source_url.is_empty() {
+            let profile = tauri::async_runtime::spawn_blocking({
+                let symbol = symbol.clone();
+                let source_url = source_url.clone();
+                let declaration_source = declaration_source.clone();
+                move || {
+                    import_engine::live_research_identity(
+                        &symbol,
+                        &source_url,
+                        &declaration_source,
+                    )
+                }
+            })
+            .await
+            .unwrap_or_else(|_| serde_json::json!({}));
+            merge_research_identity_into(&mut merged, &profile);
+        }
     }
-    let mut seed: serde_json::Value =
-        serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+    if injected {
+        request.body_json = Some(merged.to_string());
+        return execute_command_on(platform, platform, request).await;
+    }
+
+    // Live path: write template only, then shared PositionResearchRefresh with enrichers.
+    let mut refresh_carry = serde_json::json!({});
+    for key in ["name", "provider", "suggestedProvider", "underlying", "lookthrough"] {
+        if let Some(v) = merged.get(key) {
+            refresh_carry[key] = v.clone();
+        }
+    }
+    merged["skipRefresh"] = serde_json::json!(true);
+    request.body_json = Some(merged.to_string());
+    emit_position_research_progress(app, 1, "retrieving declarations");
+    let seed_result = execute_command_on(platform, platform, request).await;
+    if !seed_result.ok {
+        return seed_result;
+    }
+    let seed: serde_json::Value =
+        serde_json::from_str(seed_result.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
     let security_id = seed
         .get("securityId")
         .and_then(|v| v.as_str())
@@ -146,179 +201,354 @@ async fn run_position_research_seed(
         .unwrap_or("")
         .to_string();
     if security_id.is_empty() || symbol.is_empty() {
-        return result;
+        return seed_result;
     }
-    let declaration_source = seed
+    let mut refresh_body = refresh_carry;
+    refresh_body["securityId"] = serde_json::json!(security_id);
+    refresh_body["symbol"] = serde_json::json!(symbol);
+    refresh_body["declarationSource"] = seed
+        .get("declarationSource")
+        .cloned()
+        .unwrap_or(serde_json::json!(""));
+    refresh_body["sourceUrl"] = seed
+        .get("sourceUrl")
+        .cloned()
+        .unwrap_or(serde_json::json!(""));
+    let refresh = run_position_research_refresh(
+        app,
+        platform,
+        cmd("PositionResearchRefresh", refresh_body),
+    )
+    .await;
+    if !refresh.ok {
+        return refresh;
+    }
+    let refreshed: serde_json::Value =
+        serde_json::from_str(refresh.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+    let mut out = seed;
+    for key in [
+        "paymentFrequency",
+        "retrieveOk",
+        "retrieveCode",
+        "retrieveMessage",
+        "rocPctMinor",
+        "rocScale",
+        "rocSourceUrl",
+        "rocMethod",
+        "rocKind",
+        "rocAsOf",
+        "rocEstablishedHow",
+        "rocComplete",
+        "rocProbes",
+    ] {
+        if let Some(v) = refreshed.get(key) {
+            out[key] = v.clone();
+        }
+    }
+    out["rocComplete"] = serde_json::json!(false);
+    CommandResult {
+        body_json: Some(out.to_string()),
+        ..seed_result
+    }
+}
+
+fn merge_research_identity_into(merged: &mut serde_json::Value, profile: &serde_json::Value) {
+    for key in [
+        "name",
+        "suggestedProvider",
+        "provider",
+        "underlying",
+        "lookthrough",
+    ] {
+        if let Some(v) = profile.get(key) {
+            if key == "suggestedProvider" {
+                if merged
+                    .get("provider")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("")
+                    .is_empty()
+                    && v.as_str().map(|s| !s.is_empty()).unwrap_or(false)
+                {
+                    merged["provider"] = v.clone();
+                }
+            } else if merged.get(key).is_none()
+                || merged
+                    .get(key)
+                    .and_then(|p| p.as_str())
+                    .map(|s| s.is_empty())
+                    .unwrap_or(false)
+            {
+                merged[key] = v.clone();
+            }
+        }
+    }
+    if merged
+        .get("provider")
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        if let Some(v) = profile.get("suggestedProvider") {
+            merged["provider"] = v.clone();
+        }
+    }
+}
+
+/// Shared live research hole-fill (Complete research / Fill research gaps / Process A after seed).
+async fn run_position_research_refresh(
+    app: &AppHandle,
+    platform: &LocalPlatform,
+    mut request: CommandRequest,
+) -> CommandResult {
+    let body: serde_json::Value = request
+        .body_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let injected = body.get("candidates").is_some()
+        || body.get("declarations").is_some()
+        || body.get("misses").is_some()
+        || body.get("payDates").is_some()
+        || body.get("upcomingPays").is_some()
+        || body.get("quote").is_some()
+        || body.get("quotes").is_some()
+        || body.get("rocCandidates").is_some();
+    if injected {
+        return execute_command_on(platform, platform, request).await;
+    }
+
+    let mut work = body.clone();
+    // Resolve template URL / source when only securityId/symbol supplied.
+    fill_research_refresh_from_template(platform, &mut work).await;
+
+    let symbol = work
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let source_url = work
+        .get("sourceUrl")
+        .or_else(|| work.get("distributionUrl"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let declaration_source = work
         .get("declarationSource")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let source_url = seed
-        .get("sourceUrl")
+    let security_id = work
+        .get("securityId")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    let mut retrieve_body = serde_json::json!({
-        "securityId": security_id,
-        "symbol": symbol,
-        "declarationSource": declaration_source,
-        "sourceUrl": source_url,
-        "sourceSymbol": symbol,
-    });
+    if !symbol.is_empty() && !source_url.is_empty() {
+        let profile = tauri::async_runtime::spawn_blocking({
+            let symbol = symbol.clone();
+            let source_url = source_url.clone();
+            let declaration_source = declaration_source.clone();
+            move || {
+                import_engine::live_research_identity(&symbol, &source_url, &declaration_source)
+            }
+        })
+        .await
+        .unwrap_or_else(|_| serde_json::json!({}));
+        merge_research_identity_into(&mut work, &profile);
+    }
+
+    emit_position_research_progress(app, 1, "retrieving declarations");
+    let mut retrieve_body = work.clone();
     fill_collector_retrieve(platform, &mut retrieve_body).await;
-    let retrieve = execute_command_on(
-        platform,
-        platform,
-        cmd("CollectorRetrieve", retrieve_body),
-    )
-    .await;
-    if retrieve.ok {
-        if let Ok(body) =
-            serde_json::from_str::<serde_json::Value>(retrieve.body_json.as_deref().unwrap_or("{}"))
-        {
-            seed["retrieveOk"] = body.get("ok").cloned().unwrap_or(serde_json::json!(false));
-            seed["retrieveCode"] = body
-                .get("code")
-                .cloned()
-                .unwrap_or(serde_json::json!(""));
-            seed["retrieveMessage"] = body
-                .get("message")
-                .cloned()
-                .unwrap_or(serde_json::json!(""));
+    for key in [
+        "candidates",
+        "declarations",
+        "misses",
+        "upcomingPays",
+        "payDates",
+        "quote",
+        "contentHash",
+        "unchanged",
+        "missExplanation",
+        "suggestedFrequency",
+        "fetchedSourceUrl",
+        "fetchedPaymentCalendarUrl",
+        "sourceAnalytics",
+        "researchAttempts",
+    ] {
+        if let Some(v) = retrieve_body.get(key) {
+            work[key] = v.clone();
         }
-        let inv = execute_query_on(
-            platform,
-            platform,
-            qry(
-                "InvestmentGet",
-                serde_json::json!({ "securityId": security_id }),
-            ),
-        )
-        .await;
-        if inv.ok {
-            if let Ok(inv_body) =
-                serde_json::from_str::<serde_json::Value>(inv.body_json.as_deref().unwrap_or("{}"))
-            {
-                if let Some(freq) = inv_body.get("paymentFrequency").and_then(|v| v.as_str()) {
-                    if !freq.is_empty() {
-                        seed["paymentFrequency"] = serde_json::json!(freq);
-                    }
-                }
-            }
-        }
-        // Live Amplify/etc 19a-1 after declarations — propose estimate only (not complete).
-        emit_position_research_progress(app, 2, "retrieving 19a-1");
-        let paid = serde_json::from_str::<serde_json::Value>(inv.body_json.as_deref().unwrap_or("{}"))
-            .ok()
-            .and_then(|b| b.get("declarationCount").and_then(|c| c.as_u64()))
-            .unwrap_or(0);
-        if inv.ok && paid > 0 {
-            let name = "RocResearchRetrieve".to_string();
-            let filled = tauri::async_runtime::spawn_blocking({
-                let mut body = serde_json::json!({
-                    "securityId": security_id,
-                    "symbol": symbol,
-                    "declarationSource": declaration_source,
-                });
-                move || {
-                    import_engine::enrich_retrieve_body(&name, &mut body);
-                    body
-                }
-            })
-            .await
-            .unwrap_or_else(|_| {
-                serde_json::json!({
-                    "securityId": security_id,
-                    "symbol": symbol,
-                    "declarationSource": declaration_source,
-                })
+    }
+
+    emit_position_research_progress(app, 2, "retrieving 19a-1");
+    {
+        let name = "RocResearchRetrieve".to_string();
+        let filled = tauri::async_runtime::spawn_blocking({
+            let mut roc_body = serde_json::json!({
+                "securityId": security_id,
+                "symbol": symbol,
+                "declarationSource": declaration_source,
+                "sourceUrl": source_url,
+                "asOfDate": chrono::Utc::now().date_naive().to_string(),
             });
-            let roc = execute_command_on(
-                platform,
-                platform,
-                cmd("RocResearchRetrieve", filled),
-            )
-            .await;
-            if roc.ok {
-                if let Ok(rb) = serde_json::from_str::<serde_json::Value>(
-                    roc.body_json.as_deref().unwrap_or("{}"),
-                ) {
-                    if let Some(arr) = rb.get("candidates").and_then(|c| c.as_array()) {
-                        if let Some(c) = arr.iter().find(|row| {
-                            row.get("rocPctMinor").and_then(|v| v.as_i64()).is_some()
-                                && row.get("ownerOverride").and_then(|v| v.as_bool()) != Some(true)
-                                && (row.get("source").and_then(|s| s.as_str()) == Some("19a-1")
-                                    || row.get("method").and_then(|s| s.as_str())
-                                        == Some("19a-1-current-year"))
-                        }) {
-                            seed["rocPctMinor"] = c.get("rocPctMinor").cloned().unwrap_or_default();
-                            seed["rocScale"] = c.get("scale").cloned().unwrap_or(serde_json::json!(2));
-                            seed["rocSourceUrl"] =
-                                c.get("sourceUrl").cloned().unwrap_or(serde_json::json!(""));
-                            seed["rocMethod"] =
-                                c.get("method").cloned().unwrap_or(serde_json::json!(""));
-                            seed["rocKind"] = c
-                                .get("kind")
-                                .cloned()
-                                .unwrap_or(serde_json::json!("estimate"));
-                            seed["rocAsOf"] = c.get("asOf").cloned().unwrap_or(serde_json::json!(""));
-                            seed["rocEstablishedHow"] = c
-                                .get("establishedHow")
-                                .cloned()
-                                .unwrap_or(serde_json::json!(""));
-                            seed["rocComplete"] = serde_json::json!(false);
-                        }
-                    }
-                }
+            move || {
+                import_engine::enrich_retrieve_body(&name, &mut roc_body);
+                roc_body
             }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            serde_json::json!({
+                "securityId": security_id,
+                "symbol": symbol,
+                "declarationSource": declaration_source,
+                "sourceUrl": source_url,
+            })
+        });
+        if let Some(c) = filled.get("candidates") {
+            work["rocCandidates"] = c.clone();
         }
-    } else {
-        seed["retrieveOk"] = serde_json::json!(false);
-        seed["retrieveCode"] = serde_json::json!(retrieve
-            .error_code
-            .clone()
-            .unwrap_or_else(|| "retrieve_failed".into()));
-        // Still advance through known steps so the UI progress bar does not stall.
-        emit_position_research_progress(app, 2, "retrieving 19a-1");
+        if let Some(p) = filled.get("rocProbes") {
+            work["rocProbes"] = p.clone();
+        }
     }
 
     emit_position_research_progress(app, 3, "retrieving price");
-    let targets = vec![import_engine::LastPriceTarget {
-        security_id: security_id.clone(),
-        symbol: symbol.clone(),
-        price_source: "public".into(),
-        source_symbol: symbol.clone(),
-    }];
-    let quotes = tauri::async_runtime::spawn_blocking(move || {
-        import_engine::collect_last_price_quotes_for(targets)
-    })
-    .await
-    .unwrap_or_default();
-    let mut misses = Vec::new();
-    if quotes.is_empty() {
-        misses.push(serde_json::json!({
-            "securityId": security_id,
-            "symbol": symbol,
-            "code": "price_retrieve_miss",
-            "reason": format!(
-                "Last price miss for {}. Stored price still displays; never $0.",
-                symbol
-            )
-        }));
+    if work.get("quote").is_none()
+        && work
+            .get("unchanged")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            == false
+        && !security_id.is_empty()
+        && !symbol.is_empty()
+    {
+        let targets = vec![import_engine::LastPriceTarget {
+            security_id: security_id.clone(),
+            symbol: symbol.clone(),
+            price_source: "public".into(),
+            source_symbol: symbol.clone(),
+        }];
+        let quotes = tauri::async_runtime::spawn_blocking(move || {
+            import_engine::collect_last_price_quotes_for(targets)
+        })
+        .await
+        .unwrap_or_default();
+        if let Some(q) = quotes.first() {
+            work["quote"] = q.clone();
+        } else if let Some(q) = work.get("quote").cloned() {
+            work["quote"] = q;
+        }
     }
-    let _ = execute_command_on(
-        platform,
-        platform,
-        cmd(
-            "LastPriceRefresh",
-            serde_json::json!({ "quotes": quotes, "misses": misses }),
-        ),
-    )
-    .await;
 
-    result.body_json = Some(seed.to_string());
-    result
+    emit_position_research_progress(app, 4, "drafting overview");
+    request.body_json = Some(work.to_string());
+    execute_command_on(platform, platform, request).await
+}
+
+async fn fill_research_refresh_from_template(
+    platform: &LocalPlatform,
+    body: &mut serde_json::Value,
+) {
+    let has_url = body
+        .get("sourceUrl")
+        .and_then(|s| s.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    let has_source = body
+        .get("declarationSource")
+        .and_then(|s| s.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if has_url && has_source && body.get("securityId").is_some() {
+        return;
+    }
+    let inv_body = if let Some(sid) = body.get("securityId").and_then(|s| s.as_str()) {
+        serde_json::json!({ "securityId": sid })
+    } else if let Some(symbol) = body.get("symbol").and_then(|s| s.as_str()) {
+        serde_json::json!({ "symbol": symbol })
+    } else {
+        return;
+    };
+    let inv = execute_query_on(platform, platform, qry("InvestmentGet", inv_body)).await;
+    if !inv.ok {
+        return;
+    }
+    let inv_val: serde_json::Value =
+        serde_json::from_str(inv.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+    if body.get("securityId").is_none() {
+        if let Some(id) = inv_val.get("securityId") {
+            body["securityId"] = id.clone();
+        }
+    }
+    if body
+        .get("symbol")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        if let Some(s) = inv_val.get("symbol") {
+            body["symbol"] = s.clone();
+        }
+    }
+    if let Some(t) = inv_val.get("template") {
+        if !has_source {
+            if let Some(s) = t.get("declarationSource") {
+                body["declarationSource"] = s.clone();
+            }
+        }
+        if !has_url {
+            if let Some(u) = t.get("sourceUrl") {
+                body["sourceUrl"] = u.clone();
+            }
+        }
+        if body.get("sourceSymbol").is_none() {
+            if let Some(s) = t.get("sourceSymbol") {
+                body["sourceSymbol"] = s.clone();
+            }
+        }
+        if body.get("lastContentHash").is_none() {
+            if let Some(h) = t.get("lastContentHash") {
+                body["lastContentHash"] = h.clone();
+            }
+        }
+        if body.get("lastRunOk").is_none() {
+            if let Some(ok) = t.get("lastRunOk") {
+                body["lastRunOk"] = ok.clone();
+            }
+        }
+        if body.get("lastRunAt").is_none() {
+            if let Some(at) = t.get("lastRunAt") {
+                body["lastRunAt"] = at.clone();
+            }
+        }
+        if body.get("inceptionOn").is_none() {
+            if let Some(i) = t.get("inceptionOn") {
+                body["inceptionOn"] = i.clone();
+            }
+        }
+    }
+    if body
+        .get("paymentFrequency")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        if let Some(f) = inv_val.get("paymentFrequency") {
+            body["paymentFrequency"] = f.clone();
+        }
+    }
+    if body
+        .get("divType")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        if let Some(d) = inv_val.get("divType") {
+            body["divType"] = d.clone();
+        }
+    }
 }
 
 async fn last_price_is_current(platform: &LocalPlatform, security_id: &str, today: &str) -> bool {
@@ -1147,6 +1377,7 @@ async fn fill_declaration_refresh(platform: &LocalPlatform, request: &mut Comman
 fn open_exception_log(
     app: AppHandle,
     exceptions: Vec<serde_json::Value>,
+    process_lines: Option<Vec<String>>,
 ) -> Result<String, String> {
     let preferred = app
         .path()
@@ -1155,10 +1386,16 @@ fn open_exception_log(
     let dir = resolve_app_data_dir(preferred).join("logs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let today = chrono::Utc::now().date_naive().to_string();
-    let path = dir.join(format!("exceptions-{today}.log"));
+    let path = dir.join(format!("capture-{today}.log"));
     let mut lines = Vec::new();
-    lines.push(format!("# finos exceptions {today}"));
+    lines.push(format!("# finos capture log {today}"));
     lines.push(format!("# written_at {}", chrono::Utc::now().to_rfc3339()));
+    if let Some(process) = process_lines.as_ref().filter(|p| !p.is_empty()) {
+        lines.push("# process".into());
+        lines.extend(process.iter().cloned());
+        lines.push(String::new());
+    }
+    lines.push("# exceptions".into());
     for row in &exceptions {
         let created = row
             .get("createdAt")

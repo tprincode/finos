@@ -22,13 +22,14 @@ use financial_domain::activity::{idempotency_key, prepare_activity};
 use financial_domain::advisory::prepare_advisory;
 use financial_domain::error::DomainError;
 use financial_domain::lot::{
-    automatic_drip_capture_allowed, consume_lot, prepare_lot_open, recommend_lowest_cost_first,
-    require_explicit_lot, zero_cost_drip_allowed, LotCostView, LotOrigin,
+    automatic_drip_capture_allowed, consume_lot, drip_quantity_from_cash, prepare_lot_open,
+    recommend_lowest_cost_first, require_explicit_lot, zero_cost_drip_allowed, LotCostView,
+    LotOrigin,
 };
 use financial_domain::money::Money;
 use financial_domain::position::{rollup_open_positions, LotPositionInput};
 use financial_domain::week::week_containing;
-use import_engine::{detect_broker, document_key, parse_broker_csv, require_candidate_amount};
+use import_engine::{document_key, parse_broker_csv, require_candidate_amount};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
@@ -159,6 +160,55 @@ fn activity_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ActivityRecord, Pl
     })
 }
 
+async fn find_duplicate_dividend(
+    pool: &SqlitePool,
+    account_id: Uuid,
+    security_id: Option<Uuid>,
+    occurred_on: &str,
+    amount_minor: Option<i64>,
+    activity_type: &str,
+) -> Result<Option<ActivityRecord>, PlatformError> {
+    if !activity_type.eq_ignore_ascii_case("dividend") {
+        return Ok(None);
+    }
+    let Some(amount_minor) = amount_minor else {
+        return Ok(None);
+    };
+    let row = if let Some(sec) = security_id {
+        sqlx::query(
+            "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
+                    occurred_on, corrects_activity_id, import_batch_id, idempotency_key
+             FROM activity_event
+             WHERE account_id = ? AND security_id = ? AND occurred_on = ? AND amount_minor = ?
+               AND lower(activity_type) = 'dividend'
+             LIMIT 1",
+        )
+        .bind(account_id.to_string())
+        .bind(sec.to_string())
+        .bind(occurred_on)
+        .bind(amount_minor)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?
+    } else {
+        sqlx::query(
+            "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
+                    occurred_on, corrects_activity_id, import_batch_id, idempotency_key
+             FROM activity_event
+             WHERE account_id = ? AND security_id IS NULL AND occurred_on = ? AND amount_minor = ?
+               AND lower(activity_type) = 'dividend'
+             LIMIT 1",
+        )
+        .bind(account_id.to_string())
+        .bind(occurred_on)
+        .bind(amount_minor)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?
+    };
+    row.map(|r| activity_from_row(&r)).transpose()
+}
+
 fn lot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<LotRecord, PlatformError> {
     let parse = |col: &str| -> Result<Uuid, PlatformError> {
         Uuid::parse_str(&row.try_get::<String, _>(col).map_err(|e| map_err(e.into()))?)
@@ -238,7 +288,37 @@ async fn fetch_batch(pool: &SqlitePool, batch_id: Uuid) -> Result<ImportBatchRec
         content_hash: row.try_get("content_hash").map_err(|e| map_err(e.into()))?,
         status: row.try_get("status").map_err(|e| map_err(e.into()))?,
         candidate_count: count as u64,
+        posted_count: 0,
+        skipped_duplicate_count: 0,
+        error_count: 0,
+        process_lines: Vec::new(),
     })
+}
+
+fn capture_process_line(
+    outcome: &str,
+    account: &str,
+    symbol: &str,
+    occurred_on: &str,
+    amount_minor: Option<i64>,
+) -> String {
+    let amount = amount_minor
+        .map(|n| format!("${:.2}", n as f64 / 100.0))
+        .unwrap_or_else(|| "unknown".into());
+    format!("{outcome}  {account}  {symbol}  {occurred_on}  {amount}")
+}
+
+fn activity_to_dividend_actual(posted: &ActivityRecord, already_posted: bool) -> DividendActual {
+    DividendActual {
+        actual_id: posted.activity_id,
+        account_id: posted.account_id,
+        security_id: posted.security_id,
+        occurred_on: posted.occurred_on.clone(),
+        amount_minor: posted.amount_minor,
+        scale: posted.scale,
+        activity_id: Some(posted.activity_id),
+        already_posted,
+    }
 }
 
 async fn remember_dividend_actual(
@@ -529,10 +609,14 @@ impl Canonical for LocalPlatform {
     ) -> Result<ImportBatchRecord, PlatformError> {
         if candidates.is_empty() {
             let text = String::from_utf8_lossy(&content);
-            if let Some(layout) = detect_broker(text.lines().next().unwrap_or("")) {
+            if let Some((layout, _)) = import_engine::find_broker_header(&text) {
                 candidates = parse_broker_csv(layout, &text, default_account.as_deref())
                     .map_err(domain_err)?;
             }
+        }
+        for candidate in &mut candidates {
+            candidate.account_name =
+                import_engine::resolve_account_name(&candidate.account_name, default_account.as_deref());
         }
         let evidence = self.evidence_store(filename, content).await?;
         let _ = document_key(&source_id, &evidence.content_hash);
@@ -741,9 +825,57 @@ impl Canonical for LocalPlatform {
             }
             pending
         };
+        let mut posted_count = 0u64;
+        let mut skipped_duplicate_count = 0u64;
+        let mut error_count = 0u64;
+        let mut process_lines = Vec::new();
         for (index, item) in pending.iter().enumerate() {
+            let account_name = self
+                .account_get(item.account_id)
+                .await
+                .map(|a| a.name)
+                .unwrap_or_else(|_| item.account_id.to_string());
+            let symbol = match item.security_id {
+                Some(id) => self
+                    .security_get(id)
+                    .await
+                    .map(|s| s.symbol)
+                    .unwrap_or_else(|_| "?".into()),
+                None => "?".into(),
+            };
+            if let Some(existing) = {
+                let pool = self.pool.read().await;
+                find_duplicate_dividend(
+                    &pool,
+                    item.account_id,
+                    item.security_id,
+                    &item.occurred_on,
+                    item.amount_minor,
+                    &item.activity_type,
+                )
+                .await?
+            } {
+                let pool = self.pool.read().await;
+                sqlx::query(
+                    "UPDATE import_candidate SET posted_activity_id = ? WHERE candidate_id = ?",
+                )
+                .bind(existing.activity_id.to_string())
+                .bind(&item.candidate_id)
+                .execute(&*pool)
+                .await
+                .map_err(|e| map_err(e.into()))?;
+                skipped_duplicate_count += 1;
+                process_lines.push(capture_process_line(
+                    "skipped duplicate",
+                    &account_name,
+                    &symbol,
+                    &item.occurred_on,
+                    item.amount_minor,
+                ));
+                continue;
+            }
             let key = idempotency_key(&item.source_id, &item.content_hash, index as u32);
-            let posted = self
+            match self
                 .activity_post(
                     item.account_id,
                     item.security_id,
@@ -755,17 +887,38 @@ impl Canonical for LocalPlatform {
                     Some(batch_id),
                     Some(key),
                 )
-                .await?;
-            let pool = self.pool.read().await;
-            sqlx::query("UPDATE import_candidate SET posted_activity_id = ? WHERE candidate_id = ?")
-                .bind(posted.activity_id.to_string())
-                .bind(&item.candidate_id)
-                .execute(&*pool)
                 .await
-                .map_err(|e| map_err(e.into()))?;
-            drop(pool);
-            if item.activity_type.eq_ignore_ascii_case("drip") {
-                self.maybe_import_drip_lot(&posted).await?;
+            {
+                Ok(posted) => {
+                    let pool = self.pool.read().await;
+                    sqlx::query(
+                        "UPDATE import_candidate SET posted_activity_id = ? WHERE candidate_id = ?",
+                    )
+                    .bind(posted.activity_id.to_string())
+                    .bind(&item.candidate_id)
+                    .execute(&*pool)
+                    .await
+                    .map_err(|e| map_err(e.into()))?;
+                    drop(pool);
+                    if item.activity_type.eq_ignore_ascii_case("drip") {
+                        self.maybe_import_drip_lot(&posted).await?;
+                    }
+                    posted_count += 1;
+                    process_lines.push(capture_process_line(
+                        "posted",
+                        &account_name,
+                        &symbol,
+                        &item.occurred_on,
+                        item.amount_minor,
+                    ));
+                }
+                Err(err) => {
+                    error_count += 1;
+                    process_lines.push(format!(
+                        "error  {account_name}  {symbol}  {}  {}",
+                        item.occurred_on, err.code
+                    ));
+                }
             }
         }
         let pool = self.pool.read().await;
@@ -775,7 +928,12 @@ impl Canonical for LocalPlatform {
             .await
             .map_err(|e| map_err(e.into()))?;
         audit(&pool, "ImportPost", "import_batch", &batch_id.to_string()).await?;
-        fetch_batch(&pool, batch_id).await
+        let mut batch = fetch_batch(&pool, batch_id).await?;
+        batch.posted_count = posted_count;
+        batch.skipped_duplicate_count = skipped_duplicate_count;
+        batch.error_count = error_count;
+        batch.process_lines = process_lines;
+        Ok(batch)
     }
 
     async fn import_batch_get(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> {
@@ -806,6 +964,22 @@ impl Canonical for LocalPlatform {
         )
         .map_err(domain_err)?;
         let key = idempotency_key_opt.unwrap_or_else(|| Uuid::new_v4().to_string());
+        if prepared.activity_type.eq_ignore_ascii_case("dividend") {
+            let pool = self.pool.read().await;
+            if let Some(existing) = find_duplicate_dividend(
+                &pool,
+                prepared.account_id,
+                prepared.security_id,
+                &prepared.occurred_on,
+                Some(prepared.amount.amount_minor),
+                &prepared.activity_type,
+            )
+            .await?
+            {
+                remember_dividend_actual(&pool, &existing).await?;
+                return Ok(existing);
+            }
+        }
         let record = ActivityRecord {
             activity_id: Uuid::new_v4(),
             account_id: prepared.account_id,
@@ -1109,6 +1283,22 @@ impl Canonical for LocalPlatform {
         scale: u8,
         idempotency_key: Option<String>,
     ) -> Result<DividendActual, PlatformError> {
+        {
+            let pool = self.pool.read().await;
+            if let Some(existing) = find_duplicate_dividend(
+                &pool,
+                account_id,
+                security_id,
+                &occurred_on,
+                amount_minor,
+                "dividend",
+            )
+            .await?
+            {
+                remember_dividend_actual(&pool, &existing).await?;
+                return Ok(activity_to_dividend_actual(&existing, true));
+            }
+        }
         let posted = self
             .activity_post(
                 account_id,
@@ -1122,15 +1312,7 @@ impl Canonical for LocalPlatform {
                 idempotency_key,
             )
             .await?;
-        Ok(DividendActual {
-            actual_id: posted.activity_id,
-            account_id: posted.account_id,
-            security_id: posted.security_id,
-            occurred_on: posted.occurred_on,
-            amount_minor: posted.amount_minor,
-            scale: posted.scale,
-            activity_id: Some(posted.activity_id),
-        })
+        Ok(activity_to_dividend_actual(&posted, false))
     }
 
     async fn dividend_get(&self) -> Result<DividendGetBody, PlatformError> {
@@ -1164,6 +1346,7 @@ impl Canonical for LocalPlatform {
                     amount_minor: row.try_get("amount_minor").map_err(|e| map_err(e.into()))?,
                     scale: row.try_get::<i64, _>("scale").map_err(|e| map_err(e.into()))? as u8,
                     activity_id: opt_uuid("activity_id")?,
+                    already_posted: false,
                 })
             })
             .collect();
@@ -2292,7 +2475,10 @@ impl LocalPlatform {
             .await?;
             return Ok(());
         }
-        if posted.amount_minor == 0 && automatic_drip_capture_allowed(&account.kind) {
+        if !automatic_drip_capture_allowed(&account.kind) {
+            return Ok(());
+        }
+        if posted.amount_minor == 0 {
             self.lot_open(
                 posted.account_id,
                 security_id,
@@ -2307,7 +2493,51 @@ impl LocalPlatform {
                 true,
             )
             .await?;
+            return Ok(());
         }
+        if !zero_cost_drip_allowed(security.crf) {
+            let pool = self.pool.read().await;
+            raise_exception(
+                &pool,
+                "zero_cost_drip_not_crf",
+                "zero-cost DRIP is not allowed unless the security is CRF",
+            )
+            .await?;
+            return Ok(());
+        }
+        let price = self
+            .current_price_get(security_id, posted.occurred_on.clone())
+            .await?;
+        let qty = drip_quantity_from_cash(
+            posted.amount_minor,
+            posted.scale,
+            price.price_minor.filter(|_| price.price_derived_valid),
+            price.scale,
+        );
+        let Ok((quantity_minor, quantity_scale)) = qty else {
+            let pool = self.pool.read().await;
+            raise_exception(
+                &pool,
+                "drip_qty_unknown",
+                "CRF DRIP quantity needs a known close; lot not opened",
+            )
+            .await?;
+            return Ok(());
+        };
+        self.lot_open(
+            posted.account_id,
+            security_id,
+            posted.occurred_on.clone(),
+            "drip".into(),
+            quantity_minor,
+            quantity_scale,
+            0,
+            0,
+            posted.scale,
+            Some(posted.activity_id),
+            true,
+        )
+        .await?;
         Ok(())
     }
 }

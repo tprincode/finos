@@ -222,7 +222,7 @@ async fn wz_first_lot_then_calculator_and_income_plan() {
         .unwrap();
     assert!(
         income["plannedMinor"].as_i64().unwrap_or(0) > 0,
-        "WZ-first-lot Income Plan future week has Plan × qty: {income}"
+        "WZ-first-lot Income Plan future week has Plan x qty: {income}"
     );
     let set = query_json(&platform, "PriceRetrievalSetGet", serde_json::json!({})).await;
     let ids = set["securityIds"].as_array().cloned().unwrap_or_default();
@@ -721,6 +721,17 @@ async fn wz_monthly_remaining_year_without_actuals_schedules_income_plan() {
         income["plannedMinor"].as_i64().unwrap_or(0) > 0,
         "monthly new position with declarations and no actuals is scheduled: {income}"
     );
+    let haky2 = week["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "HAKY2")
+        .expect("HAKY2 in by-position week");
+    assert_eq!(haky2["cadence"], "Monthly");
+    assert_eq!(haky2["payOn"], "2026-08-30");
+    assert_eq!(haky2["planKnown"], true);
+    assert!(haky2["plannedMinor"].as_i64().unwrap_or(0) > 0);
+    assert_eq!(haky2["actualMinor"].as_i64().unwrap(), 0);
     let empty_week = query_json(
         &platform,
         "IncomePlanWeekGet",
@@ -1400,7 +1411,8 @@ async fn process_a_seed_symbol_and_url_only() {
     assert_eq!(inv["remainingQuantityMinor"], 0);
     assert_eq!(inv["paymentFrequency"], "");
     assert_eq!(inv["riskTier"], "");
-    assert_eq!(inv["provider"], "");
+    assert_eq!(inv["provider"], "Amplify");
+    assert_eq!(inv["needsRocResearch"], true);
 
     let set = query_json(&platform, "CollectorSetGet", serde_json::json!({})).await;
     let items = set["items"].as_array().unwrap();
@@ -1411,7 +1423,7 @@ async fn process_a_seed_symbol_and_url_only() {
     assert_eq!(haky["sourceUrl"], url);
     assert_eq!(haky["declarationSource"], "amplify");
 
-    // Injected miss stays unknown — seed command still succeeds; no $0 declaration invented.
+    // Injected miss stays unknown - seed command still succeeds; no $0 declaration invented.
     let seeded_miss = must_ok(
         &platform,
         "PositionResearchSeed",
@@ -1439,7 +1451,7 @@ async fn process_a_seed_symbol_and_url_only() {
     assert!(inv2["lots"].as_array().unwrap().is_empty());
 }
 
-/// Process A: ≥2 paid monthly declarations (or issuer Monthly label) → frequency Monthly.
+/// Process A: ?2 paid monthly declarations (or issuer Monthly label) ? frequency Monthly.
 /// Owner does not type frequency. No lots. No auto Plan confirm.
 #[tokio::test]
 async fn process_a_infers_monthly_from_seven_paid_haky_decls() {
@@ -1492,11 +1504,11 @@ async fn process_a_infers_monthly_from_seven_paid_haky_decls() {
     assert_eq!(inv["planKnown"], false);
     assert!(inv["lots"].as_array().unwrap().is_empty());
     assert_eq!(inv["riskTier"], "");
-    // No 19a-1 injected → ROC estimate stays unknown (never 0%).
+    // No 19a-1 injected -> ROC estimate stays unknown (never 0%).
     assert_eq!(inv["rocPct2026EstimateMinor"], serde_json::Value::Null);
     assert_eq!(inv["rocPct2026ActualMinor"], serde_json::Value::Null);
 
-    // Spacing alone (no page label) still yields Monthly for ≥2 paid monthly rows.
+    // Spacing alone (no page label) still yields Monthly for ?2 paid monthly rows.
     let seed2 = must_ok(
         &platform,
         "PositionResearchSeed",
@@ -1591,7 +1603,7 @@ async fn process_a_proposes_19a1_roc_estimate_not_complete() {
     assert_eq!(inv["rocPct2026EstimateMinor"], 10000);
     assert_eq!(inv["rocPct2026ActualMinor"], serde_json::Value::Null);
     assert_eq!(inv["rocEstimateSourceUrl"], notice);
-    assert_eq!(inv["rocResearchStatus"], "estimate-only");
+    assert_eq!(inv["rocResearchStatus"], "estimate-only · N/A 2025");
     assert_eq!(inv["needsRocResearch"], true);
     assert_eq!(inv["planKnown"], false);
     assert!(inv["lots"].as_array().unwrap().is_empty());
@@ -1665,7 +1677,7 @@ async fn validate_current_roc_estimate_fills_hole_without_reasking() {
     assert_eq!(before["rocPct2026EstimateMinor"], serde_json::Value::Null);
     assert_eq!(before["template"]["sourceUrl"], url);
 
-    // Same stored identity + URL — no re-ask. Injected 19a-1 stands in for live notice.
+    // Same stored identity + URL x no re-ask. Injected 19a-1 stands in for live notice.
     let retrieved = must_ok(
         &platform,
         "RocResearchRetrieve",
@@ -1702,7 +1714,7 @@ async fn validate_current_roc_estimate_fills_hole_without_reasking() {
     assert_eq!(inv["rocPct2026EstimateMinor"], 8750);
     assert_eq!(inv["rocPct2026ActualMinor"], serde_json::Value::Null);
     assert_eq!(inv["rocEstimateSourceUrl"], notice);
-    assert_eq!(inv["rocResearchStatus"], "estimate-only");
+    assert_eq!(inv["rocResearchStatus"], "estimate-only · N/A 2025");
     assert_eq!(inv["needsRocResearch"], true);
     assert_eq!(inv["planKnown"], false);
     assert!(inv["lots"].as_array().unwrap().is_empty());
@@ -1721,4 +1733,251 @@ async fn validate_current_roc_estimate_fills_hole_without_reasking() {
     assert_eq!(research["systemRocPctMinor"], 8750);
     assert_eq!(research["sourceUrl"], notice);
     assert_eq!(research["kind"], "estimate");
+}
+
+/// PositionResearchRefresh fills holes on HAKY with template + 7 decls + lots.
+/// Never wipes lots or declaration periods. Provider Amplify; ROC estimate or visible probes.
+#[tokio::test]
+async fn position_research_refresh_fills_haky_holes_preserves_lots_and_decls() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let url = "https://amplifyetfs.com/haky/#distributions";
+    let notice = "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_04-30-26_HAKY.pdf";
+    let periods = [
+        "2026-01-30",
+        "2026-02-27",
+        "2026-03-31",
+        "2026-04-30",
+        "2026-05-29",
+        "2026-06-30",
+        "2026-07-31",
+    ];
+    let candidates: Vec<serde_json::Value> = periods
+        .iter()
+        .enumerate()
+        .map(|(i, pay)| {
+            serde_json::json!({
+                "amountPerShareMinor": 10 + i as i64,
+                "amountScale": 2,
+                "paymentPeriod": pay,
+                "source": "amplify"
+            })
+        })
+        .collect();
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": url,
+            "candidates": candidates.clone(),
+            "suggestedFrequency": "Monthly",
+            "provider": "",
+            "name": "HAKY"
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap().to_string();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "provider": "",
+            "underlying": "",
+            "needsRocResearch": true,
+            "isActive": true,
+            "divType": "DIV-1"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-08-15",
+            "quantityMinor": 100,
+            "quantityScale": 0,
+            "performanceCostMinor": 250000,
+            "taxCostMinor": 250000,
+            "scale": 2
+        }),
+    )
+    .await;
+
+    let before = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-29" }),
+    )
+    .await;
+    assert_eq!(before["declarationCount"], 7);
+    assert_eq!(before["lots"].as_array().unwrap().len(), 1);
+    assert_ne!(
+        before["rocResearchStatus"],
+        "missing-1099",
+        "2026-08 lots are not a 2025 1099 miss: {}",
+        before["rocResearchStatus"]
+    );
+    assert_eq!(before["rocResearchStatus"], "N/A 2025");
+    let before_periods: Vec<String> = before["declarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["paymentPeriod"].as_str().unwrap().to_string())
+        .collect();
+
+    let gaps_before = query_json(&platform, "ResearchGapsGet", serde_json::json!({})).await;
+    let gap_syms: Vec<_> = gaps_before["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["symbol"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        gap_syms.iter().any(|s| s == "HAKY"),
+        "HAKY should be on research gap list before refresh: {gaps_before}"
+    );
+
+    let refresh = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "HAKY",
+            "provider": "Amplify",
+            "underlying": "HACK",
+            "suggestedFrequency": "Monthly",
+            "candidates": candidates,
+            "rocCandidates": [{
+                "rocPctMinor": 9200,
+                "scale": 2,
+                "taxYear": "2026",
+                "source": "19a-1",
+                "sourceUrl": notice,
+                "method": "19a-1-current-year",
+                "asOf": "2026-04-30",
+                "kind": "estimate",
+                "establishedHow": "current distribution 19a-1 estimate",
+                "ownerOverride": false
+            }],
+            "rocProbes": [{
+                "url": notice,
+                "status": 200
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(refresh["provider"], "Amplify");
+    assert_eq!(refresh["underlying"], "HACK");
+    assert_eq!(refresh["rocPctMinor"], 9200);
+    assert_eq!(refresh["rocSourceUrl"], notice);
+    assert_eq!(refresh["needsRocResearch"], true);
+    assert_eq!(refresh["rocComplete"], false);
+
+    let after = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-29" }),
+    )
+    .await;
+    assert_eq!(after["provider"], "Amplify");
+    assert_eq!(after["underlying"], "HACK");
+    assert_eq!(after["declarationCount"], 7);
+    assert_eq!(after["lots"].as_array().unwrap().len(), 1);
+    assert_eq!(after["rocPct2026EstimateMinor"], 9200);
+    assert_eq!(after["needsRocResearch"], true);
+    assert_eq!(after["rocResearchStatus"], "estimate-only · N/A 2025");
+    assert_ne!(after["rocResearchStatus"].as_str().unwrap_or(""), "missing-1099");
+    let after_periods: Vec<String> = after["declarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["paymentPeriod"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(before_periods, after_periods);
+
+    let gaps_after = query_json(&platform, "ResearchGapsGet", serde_json::json!({})).await;
+    let gap_after: Vec<_> = gaps_after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["symbol"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        !gap_after.iter().any(|s| s == "HAKY"),
+        "HAKY must leave gap list after ROC observation: {gaps_after}"
+    );
+}
+
+#[tokio::test]
+async fn position_research_refresh_19a1_miss_lists_probes_never_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let url = "https://amplifyetfs.com/haky/#distributions";
+    let tried = "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_04-30-26_HAKY.pdf";
+    let periods = ["2026-06-30", "2026-07-31"];
+    let candidates: Vec<serde_json::Value> = periods
+        .iter()
+        .enumerate()
+        .map(|(i, pay)| {
+            serde_json::json!({
+                "amountPerShareMinor": 11 + i as i64,
+                "amountScale": 2,
+                "paymentPeriod": pay,
+                "source": "amplify"
+            })
+        })
+        .collect();
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": url,
+            "candidates": candidates,
+            "suggestedFrequency": "Monthly",
+            "provider": "Amplify",
+            "underlying": "HACK"
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    let refresh = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "HAKY",
+            "rocProbes": [
+                {"url": tried, "status": 404},
+                {"url": "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_05-29-26_HAKY.pdf", "status": 404}
+            ]
+        }),
+    )
+    .await;
+    assert!(
+        refresh["rocPctMinor"].is_null(),
+        "miss must not invent 0%: {refresh}"
+    );
+    let probes = refresh["rocProbes"].as_array().expect("probes");
+    assert!(probes.len() >= 2, "tried URLs must be visible: {refresh}");
+    assert_eq!(refresh["needsRocResearch"], true);
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-29" }),
+    )
+    .await;
+    assert!(inv["rocPct2026EstimateMinor"].is_null());
+    assert_eq!(inv["needsRocResearch"], true);
 }

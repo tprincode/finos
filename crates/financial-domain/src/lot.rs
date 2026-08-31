@@ -3,7 +3,10 @@
 use uuid::Uuid;
 
 use crate::error::DomainError;
-use crate::money::Money;
+use crate::money::{rescale, Money};
+
+/// Fractional share scale for estimated CRF DRIP lots (cash ÷ close).
+pub const DRIP_QUANTITY_SCALE: u8 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LotOrigin {
@@ -84,6 +87,48 @@ pub fn automatic_drip_capture_allowed(account_kind: &str) -> bool {
 
 pub fn is_zero_cost(basis: DualBasis) -> bool {
     basis.performance.amount_minor == 0 && basis.tax.amount_minor == 0
+}
+
+/// Share quantity for a cash-amount CRF DRIP: cash ÷ close at [`DRIP_QUANTITY_SCALE`].
+/// Unknown or non-positive price stays unknown (never a silent zero qty).
+pub fn drip_quantity_from_cash(
+    cash_minor: i64,
+    cash_scale: u8,
+    price_minor: Option<i64>,
+    price_scale: u8,
+) -> Result<(i64, u8), DomainError> {
+    if cash_minor <= 0 {
+        return Err(DomainError::InsufficientLotQuantity);
+    }
+    let Some(price_minor) = price_minor else {
+        return Err(DomainError::UnknownAmount);
+    };
+    if price_minor <= 0 {
+        return Err(DomainError::NonpositivePrice);
+    }
+    let common = cash_scale.max(price_scale);
+    let cash = i128::from(rescale(cash_minor, cash_scale, common));
+    let price = i128::from(rescale(price_minor, price_scale, common));
+    if price <= 0 {
+        return Err(DomainError::NonpositivePrice);
+    }
+    let factor = 10i128.pow(u32::from(DRIP_QUANTITY_SCALE));
+    let num = cash.saturating_mul(factor);
+    let q = num / price;
+    let r = (num % price).abs();
+    let qty = if r.saturating_mul(2) >= price.abs() {
+        if num >= 0 {
+            q.saturating_add(1)
+        } else {
+            q.saturating_sub(1)
+        }
+    } else {
+        q
+    };
+    if qty <= 0 || qty > i128::from(i64::MAX) {
+        return Err(DomainError::InsufficientLotQuantity);
+    }
+    Ok((qty as i64, DRIP_QUANTITY_SCALE))
 }
 
 pub fn prepare_lot_open(
@@ -225,6 +270,27 @@ mod tests {
         let (perf_gain, tax_gain) = lifetime_gains(60_000, used.performance_minor, used.tax_minor);
         assert_eq!(perf_gain, 10_000);
         assert_eq!(tax_gain, 20_000);
+    }
+
+    #[test]
+    fn drip_quantity_from_cash_uses_close_and_fractional_scale() {
+        let (qty, scale) = drip_quantity_from_cash(318, 2, Some(636), 2).unwrap();
+        assert_eq!(scale, DRIP_QUANTITY_SCALE);
+        assert_eq!(qty, 5_000);
+        let (rounded, _) = drip_quantity_from_cash(318, 2, Some(700), 2).unwrap();
+        assert_eq!(rounded, 4_543);
+        assert_eq!(
+            drip_quantity_from_cash(318, 2, None, 2).unwrap_err(),
+            DomainError::UnknownAmount
+        );
+        assert_eq!(
+            drip_quantity_from_cash(318, 2, Some(0), 2).unwrap_err(),
+            DomainError::NonpositivePrice
+        );
+        assert_eq!(
+            drip_quantity_from_cash(0, 2, Some(636), 2).unwrap_err(),
+            DomainError::InsufficientLotQuantity
+        );
     }
 
     #[test]

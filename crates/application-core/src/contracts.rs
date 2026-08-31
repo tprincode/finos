@@ -305,6 +305,14 @@ pub struct ImportBatchRecord {
     pub content_hash: String,
     pub status: String,
     pub candidate_count: u64,
+    #[serde(default)]
+    pub posted_count: u64,
+    #[serde(default)]
+    pub skipped_duplicate_count: u64,
+    #[serde(default)]
+    pub error_count: u64,
+    #[serde(default)]
+    pub process_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -384,6 +392,8 @@ pub struct DividendActual {
     pub amount_minor: i64,
     pub scale: u8,
     pub activity_id: Option<Uuid>,
+    #[serde(default)]
+    pub already_posted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -393,6 +403,27 @@ pub struct DividendGetBody {
     pub declarations: Vec<DividendDeclaration>,
     pub actual_total_minor: i64,
     pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashDividendCoverageRow {
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub security_id: Uuid,
+    pub symbol: String,
+    pub present: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashDividendCoverageBody {
+    pub as_of_date: String,
+    pub month: String,
+    pub missing_count: u64,
+    pub raised_count: u64,
+    pub acknowledged_count: u64,
+    pub positions: Vec<CashDividendCoverageRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -859,12 +890,27 @@ pub struct IncomePlanDrillBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct IncomePlanPositionBody {
+    pub symbol: String,
+    #[serde(default)]
+    pub cadence: String,
+    #[serde(default)]
+    pub pay_on: String,
+    pub actual_minor: i64,
+    pub planned_minor: i64,
+    pub plan_known: bool,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct IncomePlanWeekBody {
     pub as_of_date: String,
     pub start: String,
     pub end: String,
     pub status: String,
     pub lines: Vec<IncomePlanLineBody>,
+    pub positions: Vec<IncomePlanPositionBody>,
     pub drilldown: Vec<IncomePlanDrillBody>,
     pub latest_actual_on: Option<String>,
     pub yield_count: u64,
@@ -1821,6 +1867,73 @@ pub struct PositionResearchSeedBody {
     /// Always false on Process A propose — estimate is not research-complete.
     #[serde(default)]
     pub roc_complete: bool,
+    /// 19a-1 URL probes (url + HTTP status) when live retrieve ran.
+    #[serde(default)]
+    pub roc_probes: Vec<serde_json::Value>,
+}
+
+/// Shared hole-fill research path (Process A after seed, Position Details Complete research,
+/// Collectors Fill research gaps). Writes only blanks; never wipes lots / PlanHistory / decls.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionResearchRefreshBody {
+    pub security_id: Uuid,
+    pub symbol: String,
+    pub declaration_source: String,
+    pub source_url: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub underlying: String,
+    #[serde(default)]
+    pub payment_frequency: String,
+    pub retrieve_ok: bool,
+    #[serde(default)]
+    pub retrieve_code: String,
+    #[serde(default)]
+    pub retrieve_message: String,
+    #[serde(default)]
+    pub roc_pct_minor: Option<i64>,
+    #[serde(default)]
+    pub roc_scale: u8,
+    #[serde(default)]
+    pub roc_source_url: String,
+    #[serde(default)]
+    pub roc_method: String,
+    #[serde(default)]
+    pub roc_kind: String,
+    #[serde(default)]
+    pub roc_as_of: String,
+    #[serde(default)]
+    pub roc_established_how: String,
+    /// Always false — estimate is not research-complete / not 1099.
+    #[serde(default)]
+    pub roc_complete: bool,
+    #[serde(default)]
+    pub roc_probes: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub needs_roc_research: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchGapItem {
+    pub security_id: Uuid,
+    pub symbol: String,
+    #[serde(default)]
+    pub provider_blank: bool,
+    #[serde(default)]
+    pub underlying_blank: bool,
+    #[serde(default)]
+    pub frequency_blank: bool,
+    #[serde(default)]
+    pub roc_observation_blank: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchGapsGetBody {
+    pub items: Vec<ResearchGapItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

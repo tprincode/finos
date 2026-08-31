@@ -189,20 +189,80 @@ fn http_post_form_body(url: &str, referer: &str, origin: &str, body: &str) -> Re
         .map_err(|e| e.to_string())
 }
 
+fn http_probe(url: &str, status: Option<u16>, error: Option<&str>) -> Value {
+    json!({
+        "url": url,
+        "status": status,
+        "error": error,
+    })
+}
+
+fn http_status_from_err(err: &ureq::Error) -> (Option<u16>, String) {
+    match err {
+        ureq::Error::Status(code, _) => (Some(*code), format!("http_{code}")),
+        other => (None, other.to_string()),
+    }
+}
+
+#[allow(dead_code)]
 fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
+    http_get_bytes_probed(url).0
+}
+
+fn http_get_bytes_probed(url: &str) -> (Result<Vec<u8>, String>, Value) {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(6))
         .user_agent(HTTP_UA)
         .build();
-    let mut reader = agent
+    match agent
         .get(url)
         .set("Accept", "application/pdf,text/html,*/*")
         .call()
-        .map_err(|e| e.to_string())?
-        .into_reader();
-    let mut buf = Vec::new();
-    std::io::Read::read_to_end(&mut reader, &mut buf).map_err(|e| e.to_string())?;
-    Ok(buf)
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let mut reader = resp.into_reader();
+            let mut buf = Vec::new();
+            match std::io::Read::read_to_end(&mut reader, &mut buf) {
+                Ok(_) => (Ok(buf), http_probe(url, Some(status), None)),
+                Err(e) => (
+                    Err(e.to_string()),
+                    http_probe(url, Some(status), Some(&e.to_string())),
+                ),
+            }
+        }
+        Err(e) => {
+            let (status, msg) = http_status_from_err(&e);
+            (Err(msg.clone()), http_probe(url, status, Some(&msg)))
+        }
+    }
+}
+
+fn http_get_probed(url: &str) -> (Result<String, String>, Value) {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(12))
+        .user_agent(HTTP_UA)
+        .build();
+    match agent
+        .get(url)
+        .set("Accept", "application/json,text/csv,*/*")
+        .call()
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            match resp.into_string() {
+                Ok(body) => (Ok(body), http_probe(url, Some(status), None)),
+                Err(e) => (
+                    Err(e.to_string()),
+                    http_probe(url, Some(status), Some(&e.to_string())),
+                ),
+            }
+        }
+        Err(e) => {
+            let (status, msg) = http_status_from_err(&e);
+            (Err(msg.clone()), http_probe(url, status, Some(&msg)))
+        }
+    }
 }
 
 fn pdf_ascii(bytes: &[u8]) -> String {
@@ -313,9 +373,16 @@ fn amplify_19a1_urls(symbol: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Live 19a-1 fill: candidates (empty = unknown, never 0%) plus URL/HTTP probes.
+#[derive(Debug, Clone, Default)]
+pub struct LiveRocFill {
+    pub candidates: Vec<Value>,
+    pub probes: Vec<Value>,
+}
+
 /// Best-effort current-year 19a-1 candidates. Empty means unknown, not 0%.
 pub fn live_roc_candidates(symbol: &str) -> Vec<Value> {
-    live_roc_candidates_for(symbol, "", "")
+    live_roc_candidates_for(symbol, "", "").candidates
 }
 
 fn roc_estimate(pct: i64, url: &str, as_of: &str, how: String, method: &str) -> Value {
@@ -333,16 +400,25 @@ fn roc_estimate(pct: i64, url: &str, as_of: &str, how: String, method: &str) -> 
     })
 }
 
-fn live_amplify_roc(symbol: &str, source_url: &str) -> Vec<Value> {
+fn live_amplify_roc(symbol: &str, source_url: &str) -> LiveRocFill {
+    let mut probes = Vec::new();
     let sym = yahoo_symbol(symbol);
     if sym.is_empty() {
-        return Vec::new();
+        return LiveRocFill {
+            candidates: Vec::new(),
+            probes,
+        };
     }
     for (as_of, url) in amplify_19a1_urls(&sym) {
-        if let Ok(bytes) = http_get_bytes(&url) {
+        let (got, probe) = http_get_bytes_probed(&url);
+        probes.push(probe);
+        if let Ok(bytes) = got {
             let text = pdf_ascii(&bytes);
             if let Some((pct, how)) = parse_19a1_notice(&text) {
-                return vec![roc_estimate(pct, &url, &as_of, how, "19a-1-current-year")];
+                return LiveRocFill {
+                    candidates: vec![roc_estimate(pct, &url, &as_of, how, "19a-1-current-year")],
+                    probes,
+                };
             }
         }
     }
@@ -366,7 +442,9 @@ fn live_amplify_roc(symbol: &str, source_url: &str) -> Vec<Value> {
     let mut seen_hubs = pages.iter().cloned().collect::<std::collections::HashSet<_>>();
 
     while let Some(page) = hub_queue.pop() {
-        let Ok(html) = http_get(&page) else {
+        let (got, probe) = http_get_probed(&page);
+        probes.push(probe);
+        let Ok(html) = got else {
             continue;
         };
         for needle in ["19a-1_Notice_", "19a-1", "form 19a-1", "tax-center", "tax center"] {
@@ -387,44 +465,61 @@ fn live_amplify_roc(symbol: &str, source_url: &str) -> Vec<Value> {
     }
 
     for href in pdf_queue {
-        let Ok(bytes) = http_get_bytes(&href) else {
+        let (got, probe) = http_get_bytes_probed(&href);
+        probes.push(probe);
+        let Ok(bytes) = got else {
             continue;
         };
         let text = pdf_ascii(&bytes);
         if let Some((pct, how)) = parse_19a1_notice(&text) {
             let as_of = Utc::now().date_naive().to_string();
-            return vec![roc_estimate(pct, &href, &as_of, how, "19a-1-current-year")];
+            return LiveRocFill {
+                candidates: vec![roc_estimate(pct, &href, &as_of, how, "19a-1-current-year")],
+                probes,
+            };
         }
     }
-    Vec::new()
+    LiveRocFill {
+        candidates: Vec::new(),
+        probes,
+    }
 }
 
-fn live_neos_roc(symbol: &str) -> Vec<Value> {
+fn live_neos_roc(symbol: &str) -> LiveRocFill {
     let Some((page_url, html, _)) = fetch_adapter_page("neos", symbol, None) else {
-        return Vec::new();
+        return LiveRocFill::default();
     };
+    let mut probes = vec![http_probe(&page_url, Some(200), None)];
     for href in hrefs_matching(&html, "19a1", "https://neosfunds.com") {
-        if let Ok(bytes) = http_get_bytes(&href) {
+        let (got, probe) = http_get_bytes_probed(&href);
+        probes.push(probe);
+        if let Ok(bytes) = got {
             let text = pdf_ascii(&bytes);
             if let Some((pct, how)) = parse_19a1_notice(&text) {
-                return vec![roc_estimate(
-                    pct,
-                    &href,
-                    &Utc::now().date_naive().to_string(),
-                    how,
-                    "19a-1-current-year",
-                )];
+                return LiveRocFill {
+                    candidates: vec![roc_estimate(
+                        pct,
+                        &href,
+                        &Utc::now().date_naive().to_string(),
+                        how,
+                        "19a-1-current-year",
+                    )],
+                    probes,
+                };
             }
         }
     }
-    let _ = page_url;
-    Vec::new()
+    LiveRocFill {
+        candidates: Vec::new(),
+        probes,
+    }
 }
 
-fn live_yieldmax_roc(symbol: &str) -> Vec<Value> {
+fn live_yieldmax_roc(symbol: &str) -> LiveRocFill {
     let Some((url, html, _)) = fetch_adapter_page("yieldmax", symbol, None) else {
-        return Vec::new();
+        return LiveRocFill::default();
     };
+    let probes = vec![http_probe(&url, Some(200), None)];
     let cands = parse_yieldmax_distributions(&html);
     for c in &cands {
         if let Some(pct) = c.get("rocPctMinor").and_then(|x| x.as_i64()) {
@@ -432,35 +527,48 @@ fn live_yieldmax_roc(symbol: &str) -> Vec<Value> {
                 .get("paymentPeriod")
                 .and_then(|p| p.as_str())
                 .unwrap_or("");
-            return vec![roc_estimate(
-                pct,
-                &url,
-                on,
-                "latest distribution table ROC percent".into(),
-                "table-roc-current",
-            )];
+            return LiveRocFill {
+                candidates: vec![roc_estimate(
+                    pct,
+                    &url,
+                    on,
+                    "latest distribution table ROC percent".into(),
+                    "table-roc-current",
+                )],
+                probes,
+            };
         }
     }
-    Vec::new()
-}
-
-fn live_roundhill_roc(symbol: &str) -> Vec<Value> {
-    let Some((url, html, _)) = fetch_adapter_page("roundhill", symbol, None) else {
-        return Vec::new();
-    };
-    if let Some(pct) = parse_roundhill_roc_html(&html) {
-        return vec![roc_estimate(
-            pct,
-            &url,
-            &Utc::now().date_naive().to_string(),
-            "issuer page 19a-1 sentence".into(),
-            "19a-1-current-year",
-        )];
+    LiveRocFill {
+        candidates: Vec::new(),
+        probes,
     }
-    Vec::new()
 }
 
-fn live_roc_candidates_for(symbol: &str, declaration_source: &str, source_url: &str) -> Vec<Value> {
+fn live_roundhill_roc(symbol: &str) -> LiveRocFill {
+    let Some((url, html, _)) = fetch_adapter_page("roundhill", symbol, None) else {
+        return LiveRocFill::default();
+    };
+    let probes = vec![http_probe(&url, Some(200), None)];
+    if let Some(pct) = parse_roundhill_roc_html(&html) {
+        return LiveRocFill {
+            candidates: vec![roc_estimate(
+                pct,
+                &url,
+                &Utc::now().date_naive().to_string(),
+                "issuer page 19a-1 sentence".into(),
+                "19a-1-current-year",
+            )],
+            probes,
+        };
+    }
+    LiveRocFill {
+        candidates: Vec::new(),
+        probes,
+    }
+}
+
+pub fn live_roc_candidates_for(symbol: &str, declaration_source: &str, source_url: &str) -> LiveRocFill {
     let src = declaration_source.trim().to_ascii_lowercase();
     match src.as_str() {
         "neos" => live_neos_roc(symbol),
@@ -469,7 +577,7 @@ fn live_roc_candidates_for(symbol: &str, declaration_source: &str, source_url: &
         "amplify" => live_amplify_roc(symbol, source_url),
         "" => {
             let amplify = live_amplify_roc(symbol, source_url);
-            if !amplify.is_empty() {
+            if !amplify.candidates.is_empty() {
                 return amplify;
             }
             live_roundhill_roc(symbol)
@@ -479,7 +587,7 @@ fn live_roc_candidates_for(symbol: &str, declaration_source: &str, source_url: &
             if source_url.to_ascii_lowercase().contains("amplifyetfs.com") {
                 live_amplify_roc(symbol, source_url)
             } else {
-                Vec::new()
+                LiveRocFill::default()
             }
         }
     }
@@ -1452,6 +1560,23 @@ pub fn profile_from_vendor_htmls(
 }
 
 /// Probe only the hinted registered issuer. Do not spray every vendor site.
+pub fn live_research_identity(symbol: &str, source_url: &str, declaration_source: &str) -> Value {
+    let hint = {
+        let label = financial_domain::div1::source_label(declaration_source);
+        if !label.is_empty() {
+            label.to_string()
+        } else if let Some(src) = financial_domain::div1::declaration_source_from_url(source_url) {
+            financial_domain::div1::source_label(src).to_string()
+        } else if is_registered_declaration_source(declaration_source) {
+            declaration_source.to_string()
+        } else {
+            String::new()
+        }
+    };
+    live_research_profile(symbol, &hint)
+}
+
+/// Probe only the hinted registered issuer. Do not spray every vendor site.
 fn live_research_profile(symbol: &str, provider_hint: &str) -> Value {
     let as_of = Utc::now().date_naive().to_string();
     let source = financial_domain::div1::declaration_source_for_provider(provider_hint)
@@ -1913,10 +2038,11 @@ fn filter_new_declaration_candidates(
         .collect()
 }
 
-/// Fill empty candidate lists on retrieve commands. Injected candidates win (CI).
+/// Fill empty candidate lists on retrieve commands. Injected non-empty candidates win (CI).
 pub fn enrich_retrieve_body(command_name: &str, body: &mut Value) {
     if command_name == "RocResearchRetrieve" {
-        if body.get("candidates").is_some() {
+        // Missing or empty candidates → live fill. Non-empty arrays stay injected.
+        if array_injected(body, "candidates") {
             return;
         }
         let symbol = body
@@ -1935,8 +2061,9 @@ pub fn enrich_retrieve_body(command_name: &str, body: &mut Value) {
             .and_then(|s| s.as_str())
             .unwrap_or("")
             .to_string();
-        body["candidates"] =
-            json!(live_roc_candidates_for(&symbol, &declaration_source, &source_url));
+        let fill = live_roc_candidates_for(&symbol, &declaration_source, &source_url);
+        body["candidates"] = json!(fill.candidates);
+        body["rocProbes"] = json!(fill.probes);
         return;
     }
     if command_name == "PeriodSeriesRetrieve" {
@@ -2250,10 +2377,7 @@ mod tests {
     }
 
     #[test]
-    fn roc_retrieve_keeps_injected_including_empty() {
-        let mut empty = json!({"symbol": "HAKY", "candidates": []});
-        enrich_retrieve_body("RocResearchRetrieve", &mut empty);
-        assert!(empty["candidates"].as_array().unwrap().is_empty());
+    fn roc_retrieve_keeps_nonempty_injected() {
         let mut filled = json!({
             "symbol": "HAKY",
             "candidates": [{

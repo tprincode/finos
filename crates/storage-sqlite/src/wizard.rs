@@ -175,6 +175,41 @@ pub async fn price_quote_record(
     if price_minor <= 0 {
         return Err(domain_err(DomainError::NonpositivePrice));
     }
+    // Do not stack duplicate quotes for the same as-of + source.
+    if let Some(existing_id) = sqlx::query_scalar::<_, String>(
+        "SELECT price_quote_id FROM price_quote
+         WHERE security_id = ? AND as_of_at = ? AND source = ?
+           AND validation_status = 'accepted'
+         ORDER BY retrieved_at DESC
+         LIMIT 1",
+    )
+    .bind(security_id.to_string())
+    .bind(&as_of_at)
+    .bind(&source)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?
+    {
+        let row = sqlx::query(
+            "SELECT price_quote_id, security_id, price_minor, scale, as_of_at, source, validation_status
+             FROM price_quote WHERE price_quote_id = ?",
+        )
+        .bind(&existing_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        return Ok(PriceQuoteBody {
+            price_quote_id: parse_uuid(&row, "price_quote_id")?,
+            security_id: parse_uuid(&row, "security_id")?,
+            price_minor: row.try_get("price_minor").map_err(|e| map_err(e.into()))?,
+            scale: row.try_get::<i64, _>("scale").map_err(|e| map_err(e.into()))? as u8,
+            as_of_at: row.try_get("as_of_at").map_err(|e| map_err(e.into()))?,
+            source: row.try_get("source").map_err(|e| map_err(e.into()))?,
+            validation_status: row
+                .try_get("validation_status")
+                .map_err(|e| map_err(e.into()))?,
+        });
+    }
     let record = PriceQuoteBody {
         price_quote_id: Uuid::new_v4(),
         security_id,

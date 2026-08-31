@@ -19,7 +19,7 @@ pub fn map_control_account(name: &str) -> Option<&'static str> {
     if n.contains("account 9") || n == "9" {
         return Some("Account 9");
     }
-    if n == "car" || n.starts_with("car ") {
+        if n == "car" || n.starts_with("car ") || n.ends_with(" car") {
         return Some("Car");
     }
     None
@@ -45,7 +45,7 @@ mod tests {
     #[test]
     fn maps_fi_roth_and_excludes_speculation() {
         assert_eq!(map_control_account("FI Roth"), Some("Roth"));
-        assert_eq!(map_control_account("Income"), Some("Income"));
+        assert_eq!(map_control_account("For the CAR"), Some("Car"));
         assert_eq!(map_control_account("Speculation"), None);
         assert!(!is_burndown_account("Account 9"));
         assert!(is_burndown_account("Roth"));

@@ -1,0 +1,11 @@
+Account History
+Downloaded — redacted fixture (no account numbers)
+
+Run Date,Account,Account Number,Action,Symbol,Description,Type,Price ($),Quantity,Commission ($),Fees ($),Accrued Interest ($),Amount ($),Settlement Date
+
+08-29-2026,Income,XXXXX,DIVIDEND RECEIVED ROUNDHILL ETF TRUST NVDW (NVDW) (Cash),NVDW,ROUNDHILL ETF TRUST NVDW,Cash,"",0,"","","",75.25,""
+08-31-2026,Income,XXXXX,DIVIDEND RECEIVED FIDELITY GOVERNMENT MONEY MARKET (SPAXX) (Cash),SPAXX,FIDELITY GOVERNMENT MONEY MARKET,Cash,"",0,"","","",1.12,""
+08-31-2026,For the CAR,XXXXXX,YOU BOUGHT HAKY (Cash),HAKY,AMPLIFY ETF TR,Cash,12.00,10,"","","",-120.00,""
+08-30-2026,Income,XXXXX,JOURNALED JNL VS A/C TYPES (Cash),,No Description,Cash,"",0,"","","",41.64,""
+08-30-2026,Income,XXXXX,FED TAX W/H RET (Cash),,No Description,Cash,"",0,"","","",-12.00,""
+08-31-2026,Income,XXXXX,REINVESTMENT FIDELITY GOVERNMENT MONEY MARKET (SPAXX) (Cash),SPAXX,FIDELITY GOVERNMENT MONEY MARKET,Cash,"",0,"","","",-1.12,""

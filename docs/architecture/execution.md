@@ -2,9 +2,9 @@
 
 Profile A product only. Local data SQLite is the system of record. Seed is a separate CLI, not an owner screen.
 
-**Now:** HAKY re-add (Amplify collector standing order + remaining-year Plan path)
-**Next:** Owner-named item after HAKY gate
-**Done this turn:** Process A research — after paid decls, Amplify 19a-1 propose (2026 estimate, kind=19a-1/estimate, source=notice URL) on seed/panel; not research-complete; not 1099; miss stays unknown (never 0%). Frequency Monthly from ≥2 paid. No lots / auto Plan / auto tier. Trends T1–T7 previously.
+**Now:** Income Plan week forecast (By position lists scheduled payers for the selected Sat–Fri week; Actual N/A until cash posts)
+**Next:** owner-named (August dual-entry post into live Finos when owner says so)
+**Done this turn:** Dividend capture (CSV + manual table), CRF drip lots, missing cash flags, shared duplicate skip, capture process log.
 **Parked:** M1 macOS; SQLite→Postgres cutover; live OIDC; public CA; Python connectors posting; Shopping Cart; MAGI oracle rewrite; M8/M9 theater; watchlist; live collector inventory fix until gate green (slice E); full position-liquidity classification replacing Acct9 interim heuristic
 
 `App.tsx` stays `LocalTauriFinanceClient`. No UI SQL. Never regenerate MAGI oracles.

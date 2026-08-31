@@ -7,8 +7,8 @@ use uuid::Uuid;
 use crate::contracts::{
     AllocationGetBody, CalculatorGetBody, CalculatorRowBody, CommandRequest, CommandResult,
     DashboardBody, DashboardBurndownBody, DashboardBurndownLineBody, HoldingsGetBody,
-    HoldingsLotBody, DataSummaryBody, ImportCandidate, IncomePlanDrillBody,
-    IncomePlanLineBody, IncomePlanWeekBody, ProductionSeedDocument, QueryRequest, QueryResult,
+    HoldingsLotBody, DataSummaryBody, ImportCandidate,     IncomePlanDrillBody,
+    IncomePlanLineBody, IncomePlanPositionBody, IncomePlanWeekBody, ProductionSeedDocument, QueryRequest, QueryResult,
     RoiBody, TrendPoint, TrendsBody, TrendsWeekPoint, UpdaterCheckBody, FINANCE_CLIENT_CONTRACT_VERSION,
     PlanReviewBody, PositionCharacteristicRecord, LookthroughResearch, RetrievalTemplateRecord, InvestmentGetBody,
     InvestmentLotBody, InvestmentDeclarationBody, AccountPositionTotalBody, PositionDetailsBody,
@@ -21,7 +21,8 @@ use crate::contracts::{
     Div1ComplianceSummaryRow, AccountRecord, ActivityRecord,
     DistributionRecord, LotRecord, IssuerDeclarationRecord, IssuerPayDateRecord,
     ProviderDeclarationSourcesApplyBody, RetrieveRunRecord, CollectorRetrieveBody,
-    PositionResearchSeedBody, RetrieveRunListBody,
+    PositionResearchSeedBody, PositionResearchRefreshBody, ResearchGapItem, ResearchGapsGetBody,
+    RetrieveRunListBody, CashDividendCoverageBody, CashDividendCoverageRow,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::{Platform, PlatformError};
@@ -78,6 +79,7 @@ const ORDINARY_WRITES: &[&str] = &[
     "ProviderDeclarationSourcesApply",
     "CollectorRetrieve",
     "PositionResearchSeed",
+    "PositionResearchRefresh",
     "ExpectedPaymentPatternUpsert",
     "PositionTaxProfileUpsert",
     "TrendsWeekSave",
@@ -745,6 +747,8 @@ async fn income_plan_week_view(
         .iter()
         .map(|name| (*name, 0i64))
         .collect();
+    let mut position_actuals: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
     let mut drilldown = Vec::new();
     for actual in &dividend.actuals {
         if !financial_domain::income_plan::occurred_in_week(
@@ -773,6 +777,7 @@ async fn income_plan_week_view(
                     .map(|s| s.symbol.clone())
             })
             .unwrap_or_else(|| "—".into());
+        *position_actuals.entry(symbol.clone()).or_insert(0) += actual.amount_minor;
         drilldown.push(IncomePlanDrillBody {
             account_name: control.to_string(),
             symbol,
@@ -800,10 +805,25 @@ async fn income_plan_week_view(
                 .or_insert_with(|| actual.occurred_on.clone());
         }
     }
-    let mut planned: std::collections::HashMap<&'static str, i64> = financial_domain::income_plan::CONTROL_ACCOUNTS
-        .iter()
-        .map(|name| (*name, 0i64))
-        .collect();
+    struct AccountWeek {
+        planned: i64,
+        scheduled: u32,
+        unknown_plan: u32,
+    }
+    let mut account_week: std::collections::HashMap<&'static str, AccountWeek> =
+        financial_domain::income_plan::CONTROL_ACCOUNTS
+            .iter()
+            .map(|name| {
+                (
+                    *name,
+                    AccountWeek {
+                        planned: 0,
+                        scheduled: 0,
+                        unknown_plan: 0,
+                    },
+                )
+            })
+            .collect();
     let plan_catalog: std::collections::HashMap<uuid::Uuid, _> = plans
         .iter()
         .map(|p| (p.security_id, p))
@@ -812,6 +832,8 @@ async fn income_plan_week_view(
         .iter()
         .map(|c| (c.security_id, c.payment_frequency.clone()))
         .collect();
+    let mut lots_by_security: std::collections::HashMap<uuid::Uuid, Vec<&LotRecord>> =
+        std::collections::HashMap::new();
     for lot in &basis.lots {
         if lot.remaining_quantity_minor <= 0 {
             continue;
@@ -820,56 +842,133 @@ async fn income_plan_week_view(
         if opened > week.end.as_str() {
             continue;
         }
-        let Some(plan) = plan_catalog.get(&lot.security_id) else {
-            continue;
-        };
+        lots_by_security
+            .entry(lot.security_id)
+            .or_default()
+            .push(lot);
+    }
+    let mut positions: Vec<IncomePlanPositionBody> = Vec::new();
+    let mut listed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (security_id, lots) in &lots_by_security {
         let freq = freq_catalog
-            .get(&lot.security_id)
+            .get(security_id)
             .map(|s| s.as_str())
             .unwrap_or("");
-        let Some(periods) = cadence_periods(freq) else {
-            continue;
-        };
-        let has_actual = last_actual.contains_key(&lot.security_id);
-        let scheduled = if has_actual || periods == 52 {
-            financial_domain::calculator::expected_in_week(
-                last_actual.get(&lot.security_id).map(|s| s.as_str()),
-                periods,
-                &week.start,
-                &week.end,
-            )
-        } else {
-            remaining_pay_dates_for(canonical, lot.security_id, &week.start, periods, &mut decl_dates)
-                .await?
-                .iter()
-                .any(|d| financial_domain::schedule::pay_on_in_week(d, &week.start, &week.end))
-        };
-        if !scheduled {
+        let cadence = financial_domain::calculator::PaymentCadence::parse(freq);
+        if cadence == Some(financial_domain::calculator::PaymentCadence::None) {
             continue;
         }
-        let account = accounts.iter().find(|a| a.account_id == lot.account_id);
-        let Some(account) = account else {
+        let Some(periods) = cadence.and_then(|c| c.periods()) else {
             continue;
         };
-        let Some(control) = financial_domain::income_plan::map_control_account(&account.name) else {
-            continue;
-        };
-        *planned.entry(control).or_insert(0) += financial_domain::calculator::plan_payment_cents(
-            lot.remaining_quantity_minor,
-            lot.quantity_scale,
-            plan.amount_per_share_minor,
-            plan.amount_scale,
+        let remaining =
+            remaining_pay_dates_for(canonical, *security_id, &week.start, periods, &mut decl_dates)
+                .await?;
+        let remaining_refs: Vec<&str> = remaining.iter().map(|s| s.as_str()).collect();
+        let last = last_actual.get(security_id).map(|s| s.as_str());
+        let calendar_pay = financial_domain::schedule::pay_on_for_week(
+            periods,
+            &week.start,
+            &week.end,
+            &remaining_refs,
+            last,
         );
+        let Some(sec) = securities.iter().find(|s| s.security_id == *security_id) else {
+            continue;
+        };
+        let actual = *position_actuals.get(&sec.symbol).unwrap_or(&0);
+        if calendar_pay.is_none() && actual == 0 {
+            continue;
+        }
+        let pay_on = calendar_pay.unwrap_or_else(|| {
+            drilldown
+                .iter()
+                .filter(|d| d.symbol == sec.symbol)
+                .map(|d| d.occurred_on.clone())
+                .min()
+                .unwrap_or_default()
+        });
+        let plan = plan_catalog.get(security_id);
+        let plan_known = plan.is_some();
+        let mut planned_minor = 0i64;
+        for lot in lots {
+            let Some(account) = accounts.iter().find(|a| a.account_id == lot.account_id) else {
+                continue;
+            };
+            let Some(control) = financial_domain::income_plan::map_control_account(&account.name)
+            else {
+                continue;
+            };
+            let entry = account_week.entry(control).or_insert(AccountWeek {
+                planned: 0,
+                scheduled: 0,
+                unknown_plan: 0,
+            });
+            entry.scheduled = entry.scheduled.saturating_add(1);
+            if let Some(p) = plan {
+                let pay = financial_domain::calculator::plan_payment_cents(
+                    lot.remaining_quantity_minor,
+                    lot.quantity_scale,
+                    p.amount_per_share_minor,
+                    p.amount_scale,
+                );
+                planned_minor += pay;
+                entry.planned += pay;
+            } else {
+                entry.unknown_plan = entry.unknown_plan.saturating_add(1);
+            }
+        }
+        listed.insert(sec.symbol.clone());
+        positions.push(IncomePlanPositionBody {
+            symbol: sec.symbol.clone(),
+            cadence: cadence
+                .map(|c| c.label().to_string())
+                .unwrap_or_default(),
+            pay_on,
+            actual_minor: actual,
+            planned_minor,
+            plan_known,
+            scale: 2,
+        });
     }
-    let plan_known = !plans.is_empty();
+    for (symbol, actual) in &position_actuals {
+        if *actual == 0 || listed.contains(symbol) {
+            continue;
+        }
+        positions.push(IncomePlanPositionBody {
+            symbol: symbol.clone(),
+            cadence: String::new(),
+            pay_on: drilldown
+                .iter()
+                .filter(|d| d.symbol == *symbol)
+                .map(|d| d.occurred_on.clone())
+                .min()
+                .unwrap_or_default(),
+            actual_minor: *actual,
+            planned_minor: 0,
+            plan_known: false,
+            scale: 2,
+        });
+    }
+    positions.sort_by(|a, b| a.symbol.cmp(&b.symbol));
     let lines = financial_domain::income_plan::CONTROL_ACCOUNTS
         .iter()
-        .map(|name| IncomePlanLineBody {
-            account_name: (*name).to_string(),
-            actual_minor: *actuals.get(name).unwrap_or(&0),
-            plan_known,
-            planned_minor: *planned.get(name).unwrap_or(&0),
-            scale: 2,
+        .map(|name| {
+            let row = account_week.get(name);
+            let scheduled = row.map(|r| r.scheduled).unwrap_or(0);
+            let unknown = row.map(|r| r.unknown_plan).unwrap_or(0);
+            let plan_known = scheduled > 0 && unknown == 0;
+            IncomePlanLineBody {
+                account_name: (*name).to_string(),
+                actual_minor: *actuals.get(name).unwrap_or(&0),
+                plan_known,
+                planned_minor: if plan_known {
+                    row.map(|r| r.planned).unwrap_or(0)
+                } else {
+                    0
+                },
+                scale: 2,
+            }
         })
         .collect();
     Ok(IncomePlanWeekBody {
@@ -878,6 +977,7 @@ async fn income_plan_week_view(
         end: week.end,
         status: "Open".into(),
         lines,
+        positions,
         drilldown,
         latest_actual_on,
         yield_count,
@@ -1091,6 +1191,112 @@ fn is_data_account(name: &str) -> bool {
 
 fn today_iso() -> String {
     chrono::Utc::now().date_naive().to_string()
+}
+
+fn calendar_month_prefix(as_of: &str) -> Option<String> {
+    let trimmed = as_of.trim();
+    if trimmed.len() >= 7 && trimmed.as_bytes()[4] == b'-' {
+        Some(trimmed[..7].to_string())
+    } else {
+        None
+    }
+}
+
+fn is_broker_sourced_dividend(activity: &ActivityRecord) -> bool {
+    activity.activity_type.eq_ignore_ascii_case("dividend")
+        && activity.amount_minor > 0
+        && !activity.idempotency_key.starts_with("mm-")
+}
+
+async fn as_of_from_import_batch(canonical: &dyn Canonical, batch_id: Uuid) -> String {
+    let Ok(activities) = canonical.activity_list().await else {
+        return today_iso();
+    };
+    activities
+        .iter()
+        .filter(|a| a.import_batch_id == Some(batch_id))
+        .map(|a| a.occurred_on.as_str())
+        .max()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(today_iso)
+}
+
+/// BR-CASH-01: flag open SPAXX/FDRXX/SWVXX lots with no broker cash in the as-of month.
+async fn cash_dividend_coverage_refresh(
+    canonical: &dyn Canonical,
+    as_of: &str,
+) -> Result<CashDividendCoverageBody, PlatformError> {
+    let month = calendar_month_prefix(as_of).unwrap_or_else(|| as_of.to_string());
+    let lots = canonical.basis_get().await?.lots;
+    let activities = canonical.activity_list().await.unwrap_or_default();
+    let exceptions = canonical.exception_list().await.unwrap_or_default();
+    let mut seen = std::collections::HashSet::<(Uuid, Uuid)>::new();
+    let mut positions = Vec::new();
+    let mut missing_count = 0u64;
+    let mut raised_count = 0u64;
+    let mut acknowledged_count = 0u64;
+
+    for lot in lots.iter().filter(|l| l.remaining_quantity_minor > 0) {
+        if !seen.insert((lot.account_id, lot.security_id)) {
+            continue;
+        }
+        let Ok(security) = canonical.security_get(lot.security_id).await else {
+            continue;
+        };
+        if !financial_domain::current_price::is_cash_par_symbol(&security.symbol) {
+            continue;
+        }
+        let Ok(account) = canonical.account_get(lot.account_id).await else {
+            continue;
+        };
+        let present = activities.iter().any(|a| {
+            is_broker_sourced_dividend(a)
+                && a.account_id == lot.account_id
+                && a.security_id == Some(lot.security_id)
+                && a.occurred_on.starts_with(&month)
+        });
+        let message = financial_domain::current_price::missing_cash_dividend_message(
+            &account.name,
+            &security.symbol,
+            &month,
+        );
+        if present {
+            for ex in exceptions
+                .iter()
+                .filter(|e| !e.acknowledged && e.code == "missing_cash_dividend" && e.message == message)
+            {
+                if canonical.exception_acknowledge(ex.exception_id).await.is_ok() {
+                    acknowledged_count += 1;
+                }
+            }
+        } else {
+            missing_count += 1;
+            let already = exceptions.iter().any(|e| {
+                !e.acknowledged && e.code == "missing_cash_dividend" && e.message == message
+            });
+            if !already && canonical.exception_raise("missing_cash_dividend".into(), message).await.is_ok()
+            {
+                raised_count += 1;
+            }
+        }
+        positions.push(CashDividendCoverageRow {
+            account_id: lot.account_id,
+            account_name: account.name,
+            security_id: lot.security_id,
+            symbol: security.symbol,
+            present,
+        });
+    }
+
+    Ok(CashDividendCoverageBody {
+        as_of_date: as_of.to_string(),
+        month,
+        missing_count,
+        raised_count,
+        acknowledged_count,
+        positions,
+    })
 }
 
 fn count_paid_declarations(decls: &[IssuerDeclarationRecord]) -> u8 {
@@ -1780,6 +1986,7 @@ async fn investment_view(
         ch,
         &observations,
         has_open_car_lots(security_id, &basis.lots, car_id),
+        held_in_2025_from_lots(security_id, &basis.lots),
     );
     let declaration_freshness = freshness_for(&decls, &as_of, template.as_ref());
     let roc_est = latest_roc_estimate(&observations);
@@ -2022,6 +2229,88 @@ fn empty_characteristic(security_id: Uuid) -> PositionCharacteristicRecord {
     }
 }
 
+/// Process A / Validate: keep needs_roc_research true even when 19a-1 misses (unknown ≠ 0%).
+async fn mark_needs_roc_research(canonical: &dyn Canonical, security_id: Uuid) {
+    let Ok(list) = canonical.position_characteristic_list().await else {
+        return;
+    };
+    let mut rec = list
+        .into_iter()
+        .find(|c| c.security_id == security_id)
+        .unwrap_or_else(|| empty_characteristic(security_id));
+    if rec.needs_roc_research {
+        return;
+    }
+    rec.needs_roc_research = true;
+    let _ = canonical.position_characteristic_upsert(rec).await;
+}
+
+/// Persist provider from URL/vendor, optional page title name, underlying + lookthrough.
+/// Writes only holes — never overwrites set provider/underlying/lookthrough or applies risk_tier.
+/// Sets needs_roc_research true.
+async fn persist_process_a_identity(
+    canonical: &dyn Canonical,
+    security: &crate::contracts::SecurityRecord,
+    symbol: &str,
+    declaration_source: &str,
+    json: &Value,
+) {
+    let provider = jstr(json, "provider")
+        .or_else(|| jstr(json, "suggestedProvider"))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            let label = financial_domain::div1::source_label(declaration_source);
+            if label.is_empty() {
+                String::new()
+            } else {
+                label.to_string()
+            }
+        });
+    let underlying_raw = jstr(json, "underlying").unwrap_or_default();
+    // Never persist ticker-as-underlying (HAKY ≠ HACK).
+    let underlying = if underlying_raw.eq_ignore_ascii_case(symbol) {
+        String::new()
+    } else {
+        underlying_raw
+    };
+    let lookthrough = jlookthrough_keep(json, "lookthrough", LookthroughResearch::default());
+    let page_name = jstr(json, "name")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if let Some(name) = page_name.as_ref() {
+        let ticker_as_name = security.name.eq_ignore_ascii_case(symbol) || security.name.is_empty();
+        if ticker_as_name && !name.eq_ignore_ascii_case(symbol) {
+            let _ = canonical
+                .security_update(security.security_id, Some(name.clone()), None)
+                .await;
+        }
+    }
+
+    let existing = match canonical.position_characteristic_list().await {
+        Ok(list) => list.into_iter().find(|c| c.security_id == security.security_id),
+        Err(_) => None,
+    };
+    let mut rec = existing.unwrap_or_else(|| empty_characteristic(security.security_id));
+    // Fill blanks only. Correct ticker-as-underlying hole.
+    if rec.provider.trim().is_empty() && !provider.is_empty() {
+        rec.provider = provider;
+    }
+    if rec.underlying.eq_ignore_ascii_case(symbol) {
+        rec.underlying.clear();
+    }
+    if rec.underlying.trim().is_empty() && !underlying.is_empty() {
+        rec.underlying = underlying;
+    }
+    if rec.lookthrough == LookthroughResearch::default()
+        && lookthrough != LookthroughResearch::default()
+    {
+        rec.lookthrough = lookthrough;
+    }
+    rec.needs_roc_research = true;
+    let _ = canonical.position_characteristic_upsert(rec).await;
+}
+
 /// Process A: persist suggested frequency when paid history or issuer label supports 52/12/4.
 /// Does not overwrite an already-set cadence. Does not confirm Plan or open lots.
 async fn persist_inferred_frequency_if_unknown(
@@ -2233,11 +2522,21 @@ fn car_metrics(
     (mv, share_symbol, share_data)
 }
 
+fn held_in_2025_from_lots(security_id: Uuid, lots: &[LotRecord]) -> bool {
+    let opened: Vec<&str> = lots
+        .iter()
+        .filter(|l| l.security_id == security_id)
+        .map(|l| l.opened_on.as_str())
+        .collect();
+    financial_domain::lifetime::held_in_calendar_year(&opened, 2025)
+}
+
 fn roc_status_for(
     needs_roc: bool,
     ch: Option<&PositionCharacteristicRecord>,
     observations: &[RocResearchObservation],
     has_open_car: bool,
+    held_in_2025: bool,
 ) -> String {
     let any_pct = ch
         .map(|c| {
@@ -2258,7 +2557,7 @@ fn roc_status_for(
             established_how: o.established_how.as_str(),
         })
         .collect();
-    financial_domain::lifetime::roc_research_status(in_scope, &views).to_string()
+    financial_domain::lifetime::roc_research_status(in_scope, &views, held_in_2025).to_string()
 }
 
 fn freshness_for(
@@ -2295,15 +2594,20 @@ fn roc_research_completed_at(
     status: &str,
     observations: &[RocResearchObservation],
 ) -> Option<String> {
-    if status != "complete" {
-        return None;
-    }
-    observations
+    // Owner hub "ROC last update": latest observation write (estimate or complete), not only owner-complete.
+    let latest_obs = observations
         .iter()
         .map(|o| o.recorded_at.as_str())
         .filter(|s| !s.is_empty())
         .max()
-        .map(|s| s.to_string())
+        .map(|s| s.to_string());
+    if latest_obs.is_some() {
+        return latest_obs;
+    }
+    if status == "complete" {
+        return None;
+    }
+    None
 }
 
 fn has_open_car_lots(security_id: Uuid, lots: &[LotRecord], car_id: Option<Uuid>) -> bool {
@@ -2516,6 +2820,7 @@ async fn position_master_view(
             ch,
             &observations,
             has_open_car_lots(security_id, &basis.lots, car_id),
+            held_in_2025_from_lots(security_id, &basis.lots),
         );
         let declaration_freshness = freshness_for(&decls, &today, template.as_ref());
         let roc_known = ch.map(|c| {
@@ -2676,6 +2981,7 @@ async fn position_details_coverage(
                 ch,
                 &observations,
                 has_open_car_lots(security_id, &basis.lots, car_id),
+                held_in_2025_from_lots(security_id, &basis.lots),
             ),
             declaration_freshness: freshness_for(&decls, &today, template.as_ref()),
             distributions_scope: lifetime.distributions_scope,
@@ -3545,8 +3851,7 @@ async fn roi_view(canonical: &dyn Canonical, request: &QueryRequest) -> QueryRes
 
 /// Process A: owner supplies symbol + distribution URL only.
 /// Persists investment identity and the standing issuer-declaration retrieval template,
-/// then runs CollectorRetrieve (pass-through candidates/misses/quote when present).
-/// Infers Weekly/Monthly/Quarterly from paid spacing or issuer label when supported.
+/// then runs PositionResearchRefresh (same path as Complete research / Fill research gaps).
 /// Does not write PlanHistory, ClassificationApply, LotOpen, or RocPlanConfirm.
 async fn position_research_seed(
     platform: &dyn Platform,
@@ -3629,17 +3934,179 @@ async fn position_research_seed(
         return command_err(request, &err.code);
     }
 
+    // Provider from URL/vendor; name/underlying/lookthrough when present (live profile).
+    persist_process_a_identity(canonical, &security, &symbol, &declaration_source, json).await;
+
+    // Desktop host runs live enrichers via PositionResearchRefresh after template write.
+    if jbool(json, "skipRefresh", false) {
+        return command_ok(
+            request,
+            serde_json::to_string(&PositionResearchSeedBody {
+                security_id: security.security_id,
+                symbol,
+                declaration_source,
+                source_url,
+                calendar_policy,
+                payment_frequency: String::new(),
+                retrieve_ok: false,
+                retrieve_code: String::new(),
+                retrieve_message: String::new(),
+                roc_pct_minor: None,
+                roc_scale: financial_domain::roc::ROC_PCT_SCALE,
+                roc_source_url: String::new(),
+                roc_method: String::new(),
+                roc_kind: String::new(),
+                roc_as_of: String::new(),
+                roc_established_how: String::new(),
+                roc_complete: false,
+                roc_probes: Vec::new(),
+            })
+            .unwrap_or_else(|_| "{}".into()),
+        );
+    }
+
+    // Same hole-fill path as Complete research / Fill research gaps.
+    let mut refresh_json = json.clone();
+    if let Some(obj) = refresh_json.as_object_mut() {
+        obj.insert(
+            "securityId".into(),
+            serde_json::json!(security.security_id),
+        );
+        obj.insert("symbol".into(), serde_json::json!(symbol));
+        obj.insert(
+            "declarationSource".into(),
+            serde_json::json!(declaration_source),
+        );
+        obj.insert("sourceUrl".into(), serde_json::json!(source_url));
+    }
+    let refresh = Box::pin(position_research_refresh(
+        platform,
+        canonical,
+        request,
+        &refresh_json,
+    ))
+    .await;
+    if !refresh.ok {
+        return refresh;
+    }
+    let body: PositionResearchRefreshBody =
+        serde_json::from_str(refresh.body_json.as_deref().unwrap_or("{}")).unwrap_or(
+            PositionResearchRefreshBody {
+                security_id: security.security_id,
+                symbol: symbol.clone(),
+                declaration_source: declaration_source.clone(),
+                source_url: source_url.clone(),
+                provider: String::new(),
+                underlying: String::new(),
+                payment_frequency: String::new(),
+                retrieve_ok: false,
+                retrieve_code: String::new(),
+                retrieve_message: String::new(),
+                roc_pct_minor: None,
+                roc_scale: financial_domain::roc::ROC_PCT_SCALE,
+                roc_source_url: String::new(),
+                roc_method: String::new(),
+                roc_kind: String::new(),
+                roc_as_of: String::new(),
+                roc_established_how: String::new(),
+                roc_complete: false,
+                roc_probes: Vec::new(),
+                needs_roc_research: true,
+            },
+        );
+
+    command_ok(
+        request,
+        serde_json::to_string(&PositionResearchSeedBody {
+            security_id: body.security_id,
+            symbol: body.symbol,
+            declaration_source: body.declaration_source,
+            source_url: body.source_url,
+            calendar_policy,
+            payment_frequency: body.payment_frequency,
+            retrieve_ok: body.retrieve_ok,
+            retrieve_code: body.retrieve_code,
+            retrieve_message: body.retrieve_message,
+            roc_pct_minor: body.roc_pct_minor,
+            roc_scale: body.roc_scale,
+            roc_source_url: body.roc_source_url,
+            roc_method: body.roc_method,
+            roc_kind: body.roc_kind,
+            roc_as_of: body.roc_as_of,
+            roc_established_how: body.roc_established_how,
+            roc_complete: false,
+            roc_probes: body.roc_probes,
+        })
+        .unwrap_or_else(|_| "{}".into()),
+    )
+}
+
+/// Shared research hole-fill: provider / name / underlying / frequency / last price / 19a-1 ROC.
+/// Inputs: securityId or symbol. Writes blanks only; never wipes lots, PlanHistory, or decls.
+/// Does not auto-apply tier. Nested command path accepts injected payloads (golden); live
+/// enrichers run in the Tauri host before this dispatch.
+async fn position_research_refresh(
+    platform: &dyn Platform,
+    canonical: &dyn Canonical,
+    request: &CommandRequest,
+    json: &Value,
+) -> CommandResult {
+    let security = match resolve_security(canonical, json).await {
+        Ok(s) => s,
+        Err(code) => return command_err(request, &code),
+    };
+    let symbol = security.symbol.clone();
+
+    let template = match canonical.retrieval_template_get(security.security_id).await {
+        Ok(t) => t,
+        Err(err) => return command_err(request, &err.code),
+    };
+
+    let source_url = jstr(json, "sourceUrl")
+        .or_else(|| jstr(json, "distributionUrl"))
+        .or_else(|| template.as_ref().map(|t| t.source_url.clone()))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_default();
+    let declaration_source = jstr(json, "declarationSource")
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| template.as_ref().map(|t| t.declaration_source.clone()))
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            if source_url.is_empty() {
+                None
+            } else {
+                financial_domain::div1::declaration_source_from_url(&source_url)
+                    .map(|s| s.to_string())
+            }
+        })
+        .unwrap_or_else(|| "issuer".into());
+
+    persist_process_a_identity(canonical, &security, &symbol, &declaration_source, json).await;
+
     let mut retrieve_body = serde_json::json!({
         "securityId": security.security_id,
         "symbol": symbol,
         "declarationSource": declaration_source,
         "sourceUrl": source_url,
-        "sourceSymbol": jstr(json, "sourceSymbol").unwrap_or_else(|| symbol.clone()),
-        "inceptionOn": jstr(json, "inceptionOn").unwrap_or_default(),
+        "sourceSymbol": jstr(json, "sourceSymbol")
+            .or_else(|| template.as_ref().map(|t| t.source_symbol.clone()))
+            .unwrap_or_else(|| symbol.clone()),
+        "inceptionOn": jstr(json, "inceptionOn")
+            .or_else(|| template.as_ref().map(|t| t.inception_on.clone()))
+            .unwrap_or_default(),
         "paymentFrequency": jstr(json, "paymentFrequency").unwrap_or_default(),
         "divType": jstr(json, "divType").unwrap_or_default(),
+        "forceRefresh": jbool(json, "forceRefresh", false),
+        "lastContentHash": template
+            .as_ref()
+            .map(|t| t.last_content_hash.clone())
+            .unwrap_or_default(),
+        "lastRunOk": template.as_ref().and_then(|t| t.last_run_ok).unwrap_or(false),
+        "lastRunAt": template
+            .as_ref()
+            .map(|t| t.last_run_at.clone())
+            .unwrap_or_default(),
     });
-    // Pass-through injected retrieve payloads (golden / desktop fill); never invent $0 amounts.
     for key in [
         "candidates",
         "declarations",
@@ -3649,20 +4116,18 @@ async fn position_research_seed(
         "quote",
         "contentHash",
         "unchanged",
-        "forceRefresh",
-        "lastContentHash",
-        "lastRunOk",
-        "lastRunAt",
         "knownPaymentPeriods",
         "missExplanation",
         "suggestedFrequency",
+        "sourceAnalytics",
+        "researchAttempts",
+        "fetchedSourceUrl",
+        "fetchedPaymentCalendarUrl",
     ] {
         if let Some(v) = json.get(key) {
             retrieve_body[key] = v.clone();
         }
     }
-    // No invented amounts: empty candidates leave declarations unknown (never $0).
-    // Desktop fill / golden injects candidates or misses when available.
 
     let retrieve = Box::pin(execute_command_on(
         platform,
@@ -3678,25 +4143,30 @@ async fn position_research_seed(
     .await;
 
     let (retrieve_ok, retrieve_code, retrieve_message) = if retrieve.ok {
-        let body: CollectorRetrieveBody = serde_json::from_str(retrieve.body_json.as_deref().unwrap_or("{}"))
-            .unwrap_or(CollectorRetrieveBody {
-                security_id: security.security_id,
-                symbol: symbol.clone(),
-                run_id: Uuid::nil(),
-                attempted: 0,
-                recorded: 0,
-                skipped: 0,
-                unchanged: 0,
-                ok: false,
-                code: "retrieve_parse_failed".into(),
-                message: String::new(),
-                payload_json: String::new(),
-            });
+        let body: CollectorRetrieveBody =
+            serde_json::from_str(retrieve.body_json.as_deref().unwrap_or("{}")).unwrap_or(
+                CollectorRetrieveBody {
+                    security_id: security.security_id,
+                    symbol: symbol.clone(),
+                    run_id: Uuid::nil(),
+                    attempted: 0,
+                    recorded: 0,
+                    skipped: 0,
+                    unchanged: 0,
+                    ok: false,
+                    code: "retrieve_parse_failed".into(),
+                    message: String::new(),
+                    payload_json: String::new(),
+                },
+            );
         (body.ok, body.code, body.message)
     } else {
         (
             false,
-            retrieve.error_code.clone().unwrap_or_else(|| "retrieve_failed".into()),
+            retrieve
+                .error_code
+                .clone()
+                .unwrap_or_else(|| "retrieve_failed".into()),
             String::new(),
         )
     };
@@ -3711,7 +4181,6 @@ async fn position_research_seed(
     )
     .await;
 
-    // After declarations: propose current-year 19a-1 ROC estimate (not complete, not 1099).
     let roc = process_a_propose_roc_estimate(
         platform,
         canonical,
@@ -3722,8 +4191,28 @@ async fn position_research_seed(
         json,
     )
     .await;
+    let mut roc_probes = roc.roc_probes.clone();
+    if roc_probes.is_empty() {
+        if let Some(arr) = json.get("rocProbes").and_then(|v| v.as_array()) {
+            roc_probes = arr.clone();
+        }
+    }
+    if roc_probes.is_empty() {
+        if let Ok(runs) = canonical
+            .retrieve_run_list(Some(security.security_id), 20)
+            .await
+        {
+            if let Some(run) = runs.iter().find(|r| r.kind == "roc-19a1") {
+                if let Ok(payload) = serde_json::from_str::<Value>(run.payload_json.as_str()) {
+                    if let Some(arr) = payload.get("probes").and_then(|p| p.as_array()) {
+                        roc_probes = arr.clone();
+                    }
+                }
+            }
+        }
+    }
+    mark_needs_roc_research(canonical, security.security_id).await;
 
-    // LastPriceRefresh when a quote was injected; otherwise no-op empty set (miss stays unknown).
     if json.get("quote").is_some() || json.get("quotes").is_some() {
         let mut price_body = serde_json::json!({});
         if let Some(quotes) = json.get("quotes") {
@@ -3752,15 +4241,40 @@ async fn position_research_seed(
         .await;
     }
 
+    let chars = canonical
+        .position_characteristic_list()
+        .await
+        .unwrap_or_default();
+    let ch = chars
+        .into_iter()
+        .find(|c| c.security_id == security.security_id);
+    let provider = ch
+        .as_ref()
+        .map(|c| c.provider.clone())
+        .unwrap_or_default();
+    let underlying = ch
+        .as_ref()
+        .map(|c| c.underlying.clone())
+        .unwrap_or_default();
+    let freq = if payment_frequency.is_empty() {
+        ch.as_ref()
+            .map(|c| c.payment_frequency.clone())
+            .unwrap_or_default()
+    } else {
+        payment_frequency
+    };
+    let needs = ch.map(|c| c.needs_roc_research).unwrap_or(true);
+
     command_ok(
         request,
-        serde_json::to_string(&PositionResearchSeedBody {
+        serde_json::to_string(&PositionResearchRefreshBody {
             security_id: security.security_id,
             symbol,
             declaration_source,
             source_url,
-            calendar_policy,
-            payment_frequency,
+            provider,
+            underlying,
+            payment_frequency: freq,
             retrieve_ok,
             retrieve_code,
             retrieve_message,
@@ -3772,9 +4286,77 @@ async fn position_research_seed(
             roc_as_of: roc.roc_as_of,
             roc_established_how: roc.roc_established_how,
             roc_complete: false,
+            roc_probes,
+            needs_roc_research: needs,
         })
         .unwrap_or_else(|_| "{}".into()),
     )
+}
+
+async fn resolve_security(
+    canonical: &dyn Canonical,
+    json: &Value,
+) -> Result<crate::contracts::SecurityRecord, String> {
+    if let Some(id) = juuid(json, "securityId") {
+        return canonical
+            .security_get(id)
+            .await
+            .map_err(|e| e.code.clone());
+    }
+    let symbol = jstr(json, "symbol")
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "missing_security_id".to_string())?;
+    let list = canonical
+        .security_list()
+        .await
+        .map_err(|e| e.code.clone())?;
+    list.into_iter()
+        .find(|s| s.symbol.eq_ignore_ascii_case(&symbol))
+        .ok_or_else(|| "security_not_found".to_string())
+}
+
+async fn research_gaps_get(canonical: &dyn Canonical) -> Result<ResearchGapsGetBody, PlatformError> {
+    let set = canonical.collector_set().await?;
+    let chars = canonical.position_characteristic_list().await?;
+    let mut items = Vec::new();
+    for item in set.items {
+        if !item.collector_enabled {
+            continue;
+        }
+        let ch = chars.iter().find(|c| c.security_id == item.security_id);
+        let provider = ch
+            .map(|c| c.provider.trim().to_string())
+            .unwrap_or_else(|| item.provider.trim().to_string());
+        let underlying = ch
+            .map(|c| c.underlying.trim().to_string())
+            .unwrap_or_default();
+        let frequency = ch
+            .map(|c| c.payment_frequency.trim().to_string())
+            .unwrap_or_else(|| item.payment_frequency.trim().to_string());
+        let freq_ok = financial_domain::calculator::PaymentCadence::parse(&frequency)
+            .and_then(financial_domain::calculator::PaymentCadence::periods)
+            .is_some();
+        let obs = canonical
+            .roc_observation_list(item.security_id)
+            .await
+            .unwrap_or_default();
+        let provider_blank = provider.is_empty();
+        let underlying_blank = underlying.is_empty();
+        let frequency_blank = !freq_ok;
+        let roc_observation_blank = obs.is_empty();
+        if provider_blank || underlying_blank || frequency_blank || roc_observation_blank {
+            items.push(ResearchGapItem {
+                security_id: item.security_id,
+                symbol: item.symbol,
+                provider_blank,
+                underlying_blank,
+                frequency_blank,
+                roc_observation_blank,
+            });
+        }
+    }
+    Ok(ResearchGapsGetBody { items })
 }
 
 #[derive(Default)]
@@ -3786,6 +4368,7 @@ struct ProcessARocPropose {
     roc_kind: String,
     roc_as_of: String,
     roc_established_how: String,
+    roc_probes: Vec<Value>,
 }
 
 /// Retrieve / persist a current-year 19a-1 estimate after declarations.
@@ -3823,9 +4406,15 @@ async fn process_a_propose_roc_estimate(
         "symbol": symbol,
         "declarationSource": declaration_source,
         "asOfDate": today_iso(),
+        "sourceUrl": jstr(json, "sourceUrl")
+            .or_else(|| jstr(json, "distributionUrl"))
+            .unwrap_or_default(),
     });
     if let Some(c) = injected {
         roc_body["candidates"] = c;
+    }
+    if let Some(probes) = json.get("rocProbes") {
+        roc_body["rocProbes"] = probes.clone();
     }
 
     let retrieve = Box::pin(execute_command_on(
@@ -3845,6 +4434,13 @@ async fn process_a_propose_roc_estimate(
     }
     let body: Value =
         serde_json::from_str(retrieve.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+    if let Some(arr) = body
+        .get("rocProbes")
+        .or_else(|| body.get("probes"))
+        .and_then(|p| p.as_array())
+    {
+        out.roc_probes = arr.clone();
+    }
     let parsed = parse_roc_candidates(body.get("candidates").unwrap_or(&Value::Null));
     let Some(system) = parsed.iter().find(|c| is_system_19a1(c)).cloned() else {
         return out;
@@ -3884,8 +4480,13 @@ async fn propose_characteristic_roc_estimate(
     if financial_domain::calculator::PaymentCadence::parse(&rec.payment_frequency).is_none() {
         return;
     }
-    // Do not overwrite a confirmed 2026 actual.
+    // Do not overwrite a confirmed 2026 actual or an existing estimate (holes only).
     if rec.roc_pct_2026_actual_minor.is_some() {
+        return;
+    }
+    if rec.roc_pct_2026_estimate_minor.is_some() {
+        rec.needs_roc_research = true;
+        let _ = canonical.position_characteristic_upsert(rec).await;
         return;
     }
     rec.roc_pct_2026_estimate_minor = system.roc_pct_minor;
@@ -3972,6 +4573,10 @@ pub async fn execute_query_on(
         "ActivityList" => map_q(&request, canonical.activity_list().await),
         "AuditList" => map_q(&request, canonical.audit_list().await),
         "ExceptionList" => map_q(&request, canonical.exception_list().await),
+        "CashDividendCoverageGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            map_q(&request, cash_dividend_coverage_refresh(canonical, &as_of).await)
+        }
         "CanonicalWeekGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
             map_q(&request, canonical.canonical_week_get(as_of).await)
@@ -3998,6 +4603,10 @@ pub async fn execute_query_on(
             }
             None => query_err(&request, "missing_security_id"),
         },
+        "PriceQuoteList" => match juuid(&json, "securityId") {
+            Some(id) => map_q(&request, canonical.price_quote_list(id).await),
+            None => query_err(&request, "missing_security_id"),
+        },
         "InvestmentGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
             if let Some(id) = juuid(&json, "securityId") {
@@ -4021,6 +4630,7 @@ pub async fn execute_query_on(
         },
         "PriceRetrievalSetGet" => map_q(&request, canonical.price_retrieval_set().await),
         "CollectorSetGet" => map_q(&request, canonical.collector_set().await),
+        "ResearchGapsGet" => map_q(&request, research_gaps_get(canonical).await),
         "CollectorStatsGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
             map_q(&request, canonical.collector_stats(as_of).await)
@@ -4234,6 +4844,9 @@ pub async fn execute_command_on(
         "PositionResearchSeed" => {
             position_research_seed(platform, canonical, &request, &json).await
         }
+        "PositionResearchRefresh" => {
+            position_research_refresh(platform, canonical, &request, &json).await
+        }
         "SecurityUpdate" => match juuid(&json, "securityId") {
             Some(id) => map_c(
                 &request,
@@ -4275,7 +4888,17 @@ pub async fn execute_command_on(
             None => command_err(&request, "missing_batch_id"),
         },
         "ImportPost" => match juuid(&json, "batchId") {
-            Some(id) => map_c(&request, canonical.import_post(id).await),
+            Some(id) => {
+                let posted = canonical.import_post(id).await;
+                match posted {
+                    Ok(batch) => {
+                        let as_of = as_of_from_import_batch(canonical, id).await;
+                        let _ = cash_dividend_coverage_refresh(canonical, &as_of).await;
+                        map_c(&request, Ok(batch))
+                    }
+                    Err(err) => command_err(&request, &err.code),
+                }
+            }
             None => command_err(&request, "missing_batch_id"),
         },
         "ActivityPost" => match juuid(&json, "accountId") {
@@ -4341,6 +4964,12 @@ pub async fn execute_command_on(
                 match recorded {
                     Ok(actual) => {
                         let _ = roc_on_dividend(canonical, &actual).await;
+                        let as_of = if actual.occurred_on.trim().is_empty() {
+                            today_iso()
+                        } else {
+                            actual.occurred_on.clone()
+                        };
+                        let _ = cash_dividend_coverage_refresh(canonical, &as_of).await;
                         map_c(&request, Ok(actual))
                     }
                     Err(err) => command_err(&request, &err.code),
@@ -4859,6 +5488,10 @@ pub async fn execute_command_on(
                 .cloned()
                 .unwrap_or(serde_json::json!([]));
             let parsed = parse_roc_candidates(&candidates);
+            let probes = json
+                .get("rocProbes")
+                .cloned()
+                .unwrap_or(serde_json::json!([]));
             if let Some(security_id) = juuid(&json, "securityId") {
                 let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
                 if let Err(err) =
@@ -4868,11 +5501,45 @@ pub async fn execute_command_on(
                 }
                 // Process A propose: mirror 19a-1 onto 2026 estimate without completing research.
                 propose_characteristic_roc_estimate(canonical, security_id, &parsed).await;
+                // Hit or miss: research still needs ROC (unknown ≠ 0%).
+                mark_needs_roc_research(canonical, security_id).await;
+                let hit = parsed.iter().any(|c| is_system_19a1(c));
+                let probe_count = probes.as_array().map(|a| a.len() as u64).unwrap_or(0);
+                persist_retrieve_run(
+                    canonical,
+                    security_id,
+                    "roc-19a1",
+                    &as_of,
+                    hit,
+                    if hit {
+                        "roc_estimate"
+                    } else {
+                        "roc_retrieve_miss"
+                    },
+                    if hit {
+                        "19a-1 estimate proposed"
+                    } else {
+                        "19a-1 miss — unknown, not 0%"
+                    },
+                    probe_count,
+                    if hit { 1 } else { 0 },
+                    if hit { 0 } else { probe_count },
+                    0,
+                    &serde_json::json!({
+                        "symbol": jstr(&json, "symbol").unwrap_or_default(),
+                        "declarationSource": jstr(&json, "declarationSource").unwrap_or_default(),
+                        "sourceUrl": jstr(&json, "sourceUrl").unwrap_or_default(),
+                        "candidates": candidates,
+                        "probes": probes,
+                    }),
+                )
+                .await;
             }
             command_ok(
                 &request,
                 serde_json::json!({
                     "candidates": candidates,
+                    "rocProbes": probes,
                     "posted": false
                 })
                 .to_string(),
@@ -5442,20 +6109,24 @@ pub async fn execute_command_on(
                 }
 
                 if let Some(quote) = json.get("quote") {
-                    if let Some(price_minor) = ji64(quote, "priceMinor").filter(|p| *p > 0) {
-                        let source = jstr(quote, "source").unwrap_or_else(|| "yahoo".into());
-                        // CASH par is authoritative via CurrentPriceGet; skip writing Yahoo-style quotes.
-                        if source != "par" {
-                            let _ = canonical
-                                .price_quote_record(
-                                    security_id,
-                                    price_minor,
-                                    ju8(quote, "scale", 2),
-                                    jstr(quote, "asOfAt").unwrap_or_else(|| ran_at.clone()),
-                                    source,
-                                )
-                                .await;
-                            recorded = recorded.saturating_add(1);
+                    // Fresh-today / unchanged retrieve must not append another Yahoo quote.
+                    let skip_quote = is_unchanged;
+                    if !skip_quote {
+                        if let Some(price_minor) = ji64(quote, "priceMinor").filter(|p| *p > 0) {
+                            let source = jstr(quote, "source").unwrap_or_else(|| "yahoo".into());
+                            // CASH par is authoritative via CurrentPriceGet; skip writing Yahoo-style quotes.
+                            if source != "par" {
+                                let _ = canonical
+                                    .price_quote_record(
+                                        security_id,
+                                        price_minor,
+                                        ju8(quote, "scale", 2),
+                                        jstr(quote, "asOfAt").unwrap_or_else(|| ran_at.clone()),
+                                        source,
+                                    )
+                                    .await;
+                                recorded = recorded.saturating_add(1);
+                            }
                         }
                     }
                 }

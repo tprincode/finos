@@ -143,6 +143,7 @@ export type DividendActual = {
   amountMinor: number;
   scale: number;
   activityId: string | null;
+  alreadyPosted?: boolean;
 };
 
 export type DividendDeclaration = {
@@ -160,6 +161,21 @@ export type DividendGet = {
   scale: number;
 };
 
+export type CashDividendCoverageGet = {
+  asOfDate: string;
+  month: string;
+  missingCount: number;
+  raisedCount: number;
+  acknowledgedCount: number;
+  positions: Array<{
+    accountId: string;
+    accountName: string;
+    securityId: string;
+    symbol: string;
+    present: boolean;
+  }>;
+};
+
 export type IncomePlanGet = {
   plannedMinor: number;
   actualMinor: number;
@@ -173,6 +189,15 @@ export type IncomePlanWeekGet = {
   status: string;
   lines: Array<{
     accountName: string;
+    actualMinor: number;
+    plannedMinor: number;
+    planKnown: boolean;
+    scale: number;
+  }>;
+  positions?: Array<{
+    symbol: string;
+    cadence?: string;
+    payOn?: string;
     actualMinor: number;
     plannedMinor: number;
     planKnown: boolean;

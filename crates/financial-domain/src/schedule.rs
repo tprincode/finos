@@ -137,6 +137,61 @@ pub fn pay_on_in_week(pay_on: &str, week_start: &str, week_end: &str) -> bool {
     d >= start && d <= end
 }
 
+/// Pay date in the Sat–Fri week, if this cadence pays that week.
+/// Remaining / issuer dates win. Weekly is every week (same weekday as last actual or a remaining date).
+/// Monthly / quarterly only when a remaining pay-on falls in the week.
+pub fn pay_on_for_week(
+    periods_per_year: u8,
+    week_start: &str,
+    week_end: &str,
+    remaining_pay_ons: &[&str],
+    last_actual_on: Option<&str>,
+) -> Option<String> {
+    let mut in_week: Vec<String> = remaining_pay_ons
+        .iter()
+        .copied()
+        .filter(|d| pay_on_in_week(d, week_start, week_end))
+        .map(|d| {
+            let t = d.trim();
+            if t.len() >= 10 {
+                t[..10].to_string()
+            } else {
+                t.to_string()
+            }
+        })
+        .collect();
+    in_week.sort();
+    if let Some(d) = in_week.first() {
+        return Some(d.clone());
+    }
+    if periods_per_year == 52 {
+        return weekly_pay_on_in_week(week_start, week_end, last_actual_on, remaining_pay_ons);
+    }
+    None
+}
+
+fn weekly_pay_on_in_week(
+    week_start: &str,
+    week_end: &str,
+    last_actual_on: Option<&str>,
+    remaining_pay_ons: &[&str],
+) -> Option<String> {
+    let start = parse_iso_day(week_start)?;
+    let end = parse_iso_day(week_end)?;
+    let anchor = last_actual_on
+        .and_then(parse_iso_day)
+        .or_else(|| remaining_pay_ons.iter().copied().find_map(parse_iso_day));
+    let weekday = anchor.map(|d| d.weekday()).unwrap_or(chrono::Weekday::Fri);
+    let mut d = start;
+    while d <= end {
+        if d.weekday() == weekday {
+            return Some(d.format("%Y-%m-%d").to_string());
+        }
+        d += Duration::days(1);
+    }
+    Some(end.format("%Y-%m-%d").to_string())
+}
+
 /// Quantity still owned on `pay_on`: lots opened on or before that date.
 pub fn qty_open_on(lots: &[OpenLotQty], pay_on: &str) -> (i64, u8) {
     let Some(pay) = parse_iso_day(pay_on) else {
@@ -708,5 +763,31 @@ mod tests {
         assert_eq!(first.payments[0].pay_on, "2026-08-30");
         assert_eq!(second.payments[0].pay_on, "2026-09-14");
         assert_ne!(first.payments[0].pay_on, second.payments[0].pay_on);
+    }
+
+    #[test]
+    fn pay_on_for_week_weekly_every_week_and_monthly_uses_remaining() {
+        assert_eq!(
+            pay_on_for_week(52, "2026-08-29", "2026-09-04", &[], Some("2026-07-28")),
+            Some("2026-09-01".into())
+        );
+        assert_eq!(
+            pay_on_for_week(
+                52,
+                "2026-08-29",
+                "2026-09-04",
+                &["2026-09-01"],
+                Some("2026-07-28")
+            ),
+            Some("2026-09-01".into())
+        );
+        assert_eq!(
+            pay_on_for_week(12, "2026-08-29", "2026-09-04", &["2026-08-31"], None),
+            Some("2026-08-31".into())
+        );
+        assert_eq!(
+            pay_on_for_week(12, "2026-08-22", "2026-08-28", &["2026-08-31"], Some("2026-07-31")),
+            None
+        );
     }
 }

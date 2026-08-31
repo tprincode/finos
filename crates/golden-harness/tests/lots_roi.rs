@@ -444,3 +444,122 @@ async fn option_close_requires_explicit_lot() {
     let roi = query_json(&platform, "RoiGet", None).await;
     assert_eq!(roi["performanceGainMinor"].as_i64().unwrap(), 2_000);
 }
+
+#[tokio::test]
+async fn fi_roth_crf_cash_drip_opens_zero_cost_lot_from_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "FI Roth", "kind": "fi_roth"}),
+    )
+    .await;
+    let crf = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "CRF", "name": "Cornerstone Total Return", "crf": true}),
+    )
+    .await;
+    let crf_id = crf["securityId"].as_str().unwrap();
+    research_template(&platform, crf_id, "CRF").await;
+    must_ok(
+        &platform,
+        "PriceQuoteRecord",
+        serde_json::json!({
+            "securityId": crf_id,
+            "priceMinor": 636,
+            "scale": 2,
+            "asOfAt": "2026-08-06",
+            "source": "fixture"
+        }),
+    )
+    .await;
+    let csv = "History: All Accounts\n\
+From: 08/01/2026\n\
+\n\
+\"Date\",\"Account\",\"Symbol\",\"Description\",\"Quantity\",\"Price\",\"Amount\",\"Commission\",\"Fees\",\"Type\"\n\
+\"08/06/2026\",\"ROTH IRA (00000)\",\"CRF\",\"DIVIDEND RECEIVED\",\"0\",\"$0.00\",\"$3.18\",\"$0.00\",\"$0.00\",\"Cash\"\n";
+    let staged = must_ok(
+        &platform,
+        "ImportStage",
+        serde_json::json!({
+            "sourceId": "fi-roth-crf-drip",
+            "filename": "crf.csv",
+            "content": csv,
+        }),
+    )
+    .await;
+    let batch_id = staged["batchId"].as_str().unwrap();
+    for name in ["ImportValidate", "ImportApprove", "ImportPost"] {
+        must_ok(&platform, name, serde_json::json!({"batchId": batch_id})).await;
+    }
+    let basis = query_json(&platform, "BasisGet", None).await;
+    let drip = basis["lots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["origin"] == "drip")
+        .expect("CRF drip lot");
+    assert_eq!(drip["crfZeroCost"].as_bool(), Some(true));
+    assert_eq!(drip["quantityMinor"].as_i64(), Some(5_000));
+    assert_eq!(drip["quantityScale"].as_u64(), Some(4));
+    assert_eq!(drip["performanceBasisMinor"].as_i64(), Some(0));
+    assert_eq!(drip["taxBasisMinor"].as_i64(), Some(0));
+    let dividend = query_json(&platform, "DividendGet", None).await;
+    assert_eq!(dividend["actuals"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn fi_roth_crf_drip_without_price_raises_drip_qty_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "FI Roth", "kind": "fi_roth"}),
+    )
+    .await;
+    let crf = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "CRF", "name": "Cornerstone Total Return", "crf": true}),
+    )
+    .await;
+    research_template(&platform, crf["securityId"].as_str().unwrap(), "CRF").await;
+    let staged = must_ok(
+        &platform,
+        "ImportStage",
+        serde_json::json!({
+            "sourceId": "fi-roth-crf-no-px",
+            "filename": "crf.txt",
+            "content": "drip",
+            "candidates": [{
+                "accountName": "FI Roth",
+                "symbol": "CRF",
+                "activityType": "drip",
+                "amountMinor": 318,
+                "scale": 2,
+                "occurredOn": "2026-08-06"
+            }]
+        }),
+    )
+    .await;
+    let batch_id = staged["batchId"].as_str().unwrap();
+    for name in ["ImportValidate", "ImportApprove", "ImportPost"] {
+        must_ok(&platform, name, serde_json::json!({"batchId": batch_id})).await;
+    }
+    let basis = query_json(&platform, "BasisGet", None).await;
+    assert!(basis["lots"].as_array().unwrap().is_empty());
+    let exceptions = query_json(&platform, "ExceptionList", None).await;
+    let hit = exceptions
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["code"].as_str() == Some("drip_qty_unknown"));
+    assert!(hit, "{exceptions}");
+}

@@ -45,6 +45,7 @@ import {
 import "./App.css";
 
 const RISK_TIERS = ["Foundation", "Core", "Risk On"];
+const OWNER_RISK_CHOICES = ["Foundation", "Core", "Risk On", "Undecided"];
 
 const emptyLookthrough = (): LookthroughResearch => ({
   themeStrategy: "",
@@ -359,10 +360,41 @@ function rocResearchLabel(inv: InvestmentGet): string {
   return status;
 }
 
+function heldInCalendarYear(
+  lots: Array<{ openedOn?: string }> | undefined,
+  year: number,
+): boolean {
+  const y = String(year).padStart(4, "0");
+  return (lots ?? []).some((lot) => {
+    const stamp = (lot.openedOn || "").trim();
+    return stamp.length >= 4 && stamp.slice(0, 4) <= y;
+  });
+}
+
+/** 1099 actual for year Y is only researchable in Y+1. A year not held is N/A. */
+function rocActualUnavailable(
+  lots: Array<{ openedOn?: string }> | undefined,
+  year: number,
+  asOf: string,
+): string | null {
+  if (!heldInCalendarYear(lots, year)) {
+    return `N/A — not held in ${year}`;
+  }
+  const asOfYear = Number.parseInt((asOf || "").slice(0, 4), 10);
+  if (Number.isFinite(asOfYear) && asOfYear < year + 1) {
+    return `N/A — 1099 not researchable until ${year + 1}`;
+  }
+  return null;
+}
+
 function rocResearchUpdated(inv: InvestmentGet): string {
   const completed = inv.rocResearchCompletedAt?.trim();
   if (completed) {
     return completed.length >= 10 ? completed.slice(0, 10) : completed;
+  }
+  const asOf = inv.rocEstimateAsOf?.trim();
+  if (asOf) {
+    return asOf.length >= 10 ? asOf.slice(0, 10) : asOf;
   }
   return "—";
 }
@@ -590,6 +622,79 @@ function shiftIso(date: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Saturday that starts the Sat–Fri Income Plan week containing `iso`. */
+function saturdayOfWeek(iso: string): string {
+  const d = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime())) {
+    return iso;
+  }
+  const daysSinceSaturday = (d.getDay() + 1) % 7;
+  d.setDate(d.getDate() - daysSinceSaturday);
+  return d.toISOString().slice(0, 10);
+}
+
+function incomePlanWeekChoices(asOf: string, latestActualOn?: string | null): string[] {
+  const today = new Date().toISOString().slice(0, 10);
+  const anchor = saturdayOfWeek(asOf || latestActualOn || today);
+  const todaySat = saturdayOfWeek(today);
+  const latestSat = latestActualOn ? saturdayOfWeek(latestActualOn) : anchor;
+  const start = [anchor, todaySat, latestSat].reduce((min, sat) =>
+    sat < min ? sat : min,
+  );
+  const end = [anchor, todaySat, shiftIso(todaySat, 16 * 7)].reduce((max, sat) =>
+    sat > max ? sat : max,
+  );
+  const pastStart = shiftIso(start, -52 * 7);
+  const weeks: string[] = [];
+  for (let sat = pastStart; sat <= end; sat = shiftIso(sat, 7)) {
+    weeks.push(sat);
+  }
+  if (!weeks.includes(anchor)) {
+    weeks.push(anchor);
+    weeks.sort();
+  }
+  return weeks;
+}
+
+function incomePlanWeekOptionLabel(saturday: string, thisWeekSaturday: string): string {
+  const friday = shiftIso(saturday, 6);
+  const mark = saturday === thisWeekSaturday ? " · this week" : "";
+  return `Sat ${saturday} – Fri ${friday}${mark}`;
+}
+
+type ManualDividendRow = {
+  id: string;
+  accountId: string;
+  ticker: string;
+  occurredOn: string;
+  amount: string;
+};
+
+let manualDividendSeq = 0;
+
+type CaptureProcess = {
+  running: boolean;
+  title: string;
+  current: number;
+  total: number;
+  detail: string;
+  lines: string[];
+  posted: number;
+  skipped: number;
+  errors: number;
+};
+
+function blankManualDividendRow(): ManualDividendRow {
+  manualDividendSeq += 1;
+  return {
+    id: `md-${manualDividendSeq}`,
+    accountId: "",
+    ticker: "",
+    occurredOn: "",
+    amount: "",
+  };
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>("income-plan");
   const [health, setHealth] = useState<HealthView | null>(null);
@@ -615,6 +720,12 @@ export default function App() {
   const [pdLedger, setPdLedger] = useState<DividendGet | null>(null);
   const [pendingBatchId, setPendingBatchId] = useState<string | null>(null);
   const [pendingBatchStatus, setPendingBatchStatus] = useState<string>("none");
+  const [manualDividendRows, setManualDividendRows] = useState<ManualDividendRow[]>(() => [
+    blankManualDividendRow(),
+    blankManualDividendRow(),
+    blankManualDividendRow(),
+  ]);
+  const [captureProcess, setCaptureProcess] = useState<CaptureProcess | null>(null);
   const [holdingsFilter, setHoldingsFilter] = useState("");
   const [lotId, setLotId] = useState("");
   const [assignActivityId, setAssignActivityId] = useState("");
@@ -711,12 +822,23 @@ export default function App() {
   const [wizResearchDone, setWizResearchDone] = useState(false);
   /** Process A: owner Save → explicit completion screen (not a blank wizard). */
   const [wizProcessASaved, setWizProcessASaved] = useState(false);
-  /** Process A activity indicator — known steps use a progress bar. */
-  const [wizResearchProgress, setWizResearchProgress] = useState<{
+  /** Shared long-action indicator for Complete research / Add Position / Fill gaps. */
+  const [researchActivity, setResearchActivity] = useState<{
+    running: boolean;
     step: number;
     total: number;
     label: string;
+    resultLine: string | null;
   } | null>(null);
+  /** Research notes overview (issuer + AiAnalyze draft). Suggestion only for tier. */
+  const [researchNotes, setResearchNotes] = useState<{
+    overview: string;
+    suggestedTier: string;
+    suggestedReason: string;
+    source: string;
+  } | null>(null);
+  /** Post–Complete research owner risk; never auto-applied. */
+  const [ownerRiskChoice, setOwnerRiskChoice] = useState("Undecided");
   const [addLotQuery, setAddLotQuery] = useState("");
   const [addLotSymbolOpen, setAddLotSymbolOpen] = useState(false);
   const [wizTierSuggestion, setWizTierSuggestion] = useState<{
@@ -725,6 +847,10 @@ export default function App() {
     reason: string;
     complete: boolean;
   } | null>(null);
+  /** Process A: advisory AI thesis (never auto-applies). */
+  const [wizAiThesis, setWizAiThesis] = useState<string | null>(null);
+  /** Process A: when ClassificationSuggest needs backtest dates. */
+  const [wizBacktestNeeded, setWizBacktestNeeded] = useState(false);
   const [pdDraft, setPdDraft] = useState<PdDraft | null>(null);
   const [pdBaseline, setPdBaseline] = useState("");
   const [pdPeriod, setPdPeriod] = useState<PdPeriodDraft>(() => emptyPeriod());
@@ -1172,14 +1298,16 @@ export default function App() {
     try {
       const path = await invoke<string>("open_exception_log", {
         exceptions,
+        processLines: captureProcess?.lines ?? [],
       });
-      setActionMessage(`Exception log opened: ${path}`);
+      setActionMessage(`Log opened: ${path}`);
     } catch (err: unknown) {
-      setActionMessage(`Could not open exception log: ${String(err)}`);
+      setActionMessage(`Could not open log: ${String(err)}`);
     }
-  }, [exceptions]);
+  }, [exceptions, captureProcess]);
 
   const refreshData = useCallback(async (asOf: string) => {
+    await client.executeQuery("CashDividendCoverageGet", { asOfDate: asOf });
     const [weekResult, burnResult, trendsResult, trendsWeekResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, accountResult, securityResult, positionResult, masterResult, coverageResult] =
       await Promise.all([
         client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf }),
@@ -1432,6 +1560,23 @@ export default function App() {
       setPdPeriod(emptyPeriod());
       setPdPeriodBaseline(JSON.stringify(emptyPeriod()));
       setSavedPeriodId(body.periods?.at(-1)?.periodId ?? "");
+      if ((body.notes || "").trim()) {
+        setResearchNotes((prev) =>
+          prev?.overview
+            ? prev
+            : {
+                overview: body.notes.trim(),
+                suggestedTier:
+                  body.suggestion?.suggestedTier ||
+                  body.lookthrough?.riskTierSuggestion ||
+                  "",
+                suggestedReason:
+                  body.suggestion?.reason ||
+                  "Suggestion only — owner sets risk manually.",
+                source: "stored notes",
+              },
+        );
+      }
     };
     let body = await fetchInvestment();
     if (!body) return;
@@ -1623,7 +1768,8 @@ export default function App() {
         if (dividendResult.ok && dividendResult.bodyJson) {
           setDividendLifetime(JSON.parse(dividendResult.bodyJson) as DividendGet);
         }
-        setAsOfDate(body.latestYieldOn ?? "");
+        const today = new Date().toISOString().slice(0, 10);
+        setAsOfDate(saturdayOfWeek(today));
       } catch {
         if (!cancelled) setAsOfDate("");
       }
@@ -1794,6 +1940,32 @@ export default function App() {
   };
 
   const dollarsToMinor = (raw: string) => Math.round(Number(raw) * 100);
+
+  const totalDollarsToMinor = (raw: string): number | null => {
+    const n = Number(raw.replace(/[$,\s]/g, ""));
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.round(n * 100);
+  };
+
+  /** Lot total USD cents from unit price cents and qty (quantity_scale 0 for Add Lot). */
+  const lotTotalFromUnitCents = (
+    qtyMinor: number,
+    quantityScale: number,
+    unitCents: number,
+  ) => {
+    if (qtyMinor <= 0 || unitCents < 0) return 0;
+    const den = 10 ** quantityScale;
+    return Math.trunc((qtyMinor * unitCents) / den);
+  };
+
+  const formatMoneyInput = (raw: string) => {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return raw.trim();
+    return n.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  };
 
   const currentWizEdit = (): WizEditDraft => ({
     symbol: wizSymbol,
@@ -2435,12 +2607,17 @@ export default function App() {
     setWizResearchDone(false);
     setWizProcessASaved(false);
     setWizTierSuggestion(null);
+    setWizAiThesis(null);
+    setWizBacktestNeeded(false);
     setWizMiss("");
     setWizRetrieveNote("");
-    setWizResearchProgress({
+    setResearchNotes(null);
+    setResearchActivity({
       step: 1,
       total: PROCESS_A_TOTAL,
       label: "retrieving declarations",
+      running: true,
+      resultLine: null,
     });
     let unlistenProgress: (() => void) | undefined;
     try {
@@ -2453,22 +2630,38 @@ export default function App() {
         }>("position-research-progress", (event) => {
           const p = event.payload;
           if (!p?.label) return;
-          setWizResearchProgress({
+          setResearchActivity({
+            running: true,
             step: p.step ?? 1,
             total: p.total > 0 ? p.total : PROCESS_A_TOTAL,
             label: p.label,
+            resultLine: null,
           });
         });
       } catch {
         /* browser preview without Tauri events — keep client status line */
       }
 
+      setResearchActivity({
+        running: true,
+        step: 1,
+        total: PROCESS_A_TOTAL,
+        label: "retrieving declarations",
+        resultLine: null,
+      });
       const seedResult = await client.executeCommand("PositionResearchSeed", {
         symbol,
         sourceUrl,
       });
       if (!seedResult.ok || !seedResult.bodyJson) {
         setActionMessage(`Research seed failed: ${seedResult.errorCode ?? "error"}`);
+        setResearchActivity({
+          running: false,
+          step: 0,
+          total: PROCESS_A_TOTAL,
+          label: "",
+          resultLine: `Research failed: ${seedResult.errorCode ?? "error"}`,
+        });
         return;
       }
       const seed = JSON.parse(seedResult.bodyJson) as {
@@ -2489,11 +2682,14 @@ export default function App() {
         rocAsOf?: string;
         rocEstablishedHow?: string;
         rocComplete?: boolean;
+        rocProbes?: { url?: string; status?: number; httpStatus?: number }[];
       };
-      setWizResearchProgress({
+      setResearchActivity({
+        running: true,
         step: 4,
         total: PROCESS_A_TOTAL,
-        label: "drafting suggestions",
+        label: "drafting overview",
+        resultLine: null,
       });
       setWizSecurityId(seed.securityId);
       setWizSymbol(seed.symbol || symbol);
@@ -2590,7 +2786,57 @@ export default function App() {
         };
         if (body.suggestedTier?.trim()) {
           setWizTierSuggestion(body);
+          setWizBacktestNeeded(false);
+        } else if (
+          !body.complete ||
+          body.reason === "no calculated window" ||
+          /no calculated window/i.test(body.reason || "")
+        ) {
+          setWizTierSuggestion(body);
+          setWizBacktestNeeded(true);
         }
+      }
+
+      // Optional advisory thesis — does not post facts or apply tier.
+      try {
+        const thesisPrompt = [
+          `Write a 4-8 sentence investment overview for ${seed.symbol}.`,
+          inv.name ? `Legal name: ${inv.name}.` : "",
+          inv.provider ? `Provider: ${inv.provider}.` : "",
+          inv.underlying
+            ? `Underlying/look-through is ${inv.underlying} (not the ticker ${seed.symbol}).`
+            : "",
+          inv.paymentFrequency ? `Pays ${inv.paymentFrequency}.` : "",
+          inv.lookthrough?.themeStrategy
+            ? `Theme: ${inv.lookthrough.themeStrategy}.`
+            : "",
+          inv.lookthrough?.primaryRiskDriver
+            ? `Primary risk: ${inv.lookthrough.primaryRiskDriver}.`
+            : "",
+          "Cover what it is, how it pays, main risks, and that underlying is not the sleeve ticker.",
+          "Advisory only; do not post facts or apply classification.",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const ai = await client.executeCommand("AiAnalyze", { prompt: thesisPrompt });
+        if (ai.ok && ai.bodyJson) {
+          const run = JSON.parse(ai.bodyJson) as { recommendation?: string };
+          if (run.recommendation?.trim()) {
+            setWizAiThesis(run.recommendation.trim());
+            setResearchNotes({
+              overview: run.recommendation.trim(),
+              suggestedTier: inv.suggestion?.suggestedTier || wizTierSuggestion?.suggestedTier || "",
+              suggestedReason:
+                inv.suggestion?.reason ||
+                wizTierSuggestion?.reason ||
+                inv.lookthrough?.riskTierSuggestion ||
+                "",
+              source: "issuer page + AiAnalyze draft",
+            });
+          }
+        }
+      } catch {
+        /* advisory miss stays blank */
       }
 
       // Process A proposes 19a-1 estimate only — never marks research complete, never 0%.
@@ -2638,127 +2884,385 @@ export default function App() {
           ? scaledDollars(inv.review.mostCurrentMinor, inv.review.amountScale)
           : "",
       });
+      const filledBits = [
+        inv.provider ? `provider ${inv.provider}` : null,
+        inv.underlying ? `underlying ${inv.underlying}` : null,
+        (seed.paymentFrequency || inv.paymentFrequency)
+          ? `frequency ${seed.paymentFrequency || inv.paymentFrequency}`
+          : null,
+        seed.rocPctMinor != null && seed.rocPctMinor > 0
+          ? `ROC estimate ${(seed.rocPctMinor / 10 ** (seed.rocScale ?? 2)).toFixed(seed.rocScale ?? 2)}%`
+          : null,
+      ].filter(Boolean);
+      const unknownBits = [
+        !inv.provider ? "provider" : null,
+        !inv.underlying ? "underlying" : null,
+        !(seed.paymentFrequency || inv.paymentFrequency) ? "frequency" : null,
+        !(seed.rocPctMinor != null && seed.rocPctMinor > 0) ? "ROC estimate" : null,
+      ].filter(Boolean);
       const retrieveNote = seed.retrieveOk
         ? "Retrieve finished."
         : `Retrieve miss${seed.retrieveCode ? ` (${seed.retrieveCode})` : ""}${seed.retrieveMessage ? `: ${seed.retrieveMessage}` : ""}. Unknown stays unknown — never $0.`;
-      setWizRetrieveNote(retrieveNote);
-      setActionMessage(
-        `Researched ${seed.symbol}. ${retrieveNote} Confirm Plan and Apply tier are owner actions when research exists.`,
-      );
+      const resultLine = `Filled: ${filledBits.join(", ") || "none"}. Unknown: ${unknownBits.join(", ") || "none"}. ${retrieveNote}`;
+      setWizRetrieveNote(resultLine);
+      setActionMessage(`Researched ${seed.symbol}. ${resultLine}`);
+      setResearchActivity({
+        running: false,
+        step: PROCESS_A_TOTAL,
+        total: PROCESS_A_TOTAL,
+        label: "",
+        resultLine,
+      });
       await refreshData(asOf);
     } catch (err: unknown) {
       setActionMessage(String(err));
       setWizResearchDone(false);
+      setResearchActivity({
+        running: false,
+        step: 0,
+        total: 4,
+        label: "",
+        resultLine: String(err),
+      });
     } finally {
       unlistenProgress?.();
-      setWizResearchProgress(null);
       setBusy(false);
     }
   };
 
-  const validateCurrentRocEstimate = async (opts: {
+  const completePositionResearch = async (opts: {
     securityId: string;
     symbol: string;
-    sourceUrl?: string;
-    declarationSource?: string;
-    forProcessA?: boolean;
-  }): Promise<RocResearchGet | null> => {
+    listenProgress?: boolean;
+    /** When true, leave researchActivity.running for the caller (Fill research gaps). */
+    keepActivityRunning?: boolean;
+  }) => {
     const symbol = opts.symbol.trim().toUpperCase();
-    const sourceUrl = (opts.sourceUrl || "").trim();
-    const declarationSource = (opts.declarationSource || "").trim();
     if (!opts.securityId || !symbol) {
       setActionMessage("Choose a researched symbol first.");
       return null;
     }
-    if (!sourceUrl && !declarationSource) {
-      setActionMessage(
-        "Validate current ROC estimate needs a stored distribution URL (or issuer source). Unknown stays unknown — never $0.",
-      );
-      return null;
-    }
-    const asOf = asOfDate || new Date().toISOString().slice(0, 10);
-    const retrieved = await client.executeCommand("RocResearchRetrieve", {
-      symbol,
-      securityId: opts.securityId,
-      asOfDate: asOf,
-      sourceUrl: sourceUrl || undefined,
-      declarationSource: declarationSource || undefined,
+    const TOTAL = 4;
+    setResearchActivity({
+      running: true,
+      step: 1,
+      total: TOTAL,
+      label: "retrieving declarations",
+      resultLine: null,
     });
-    const candidates =
-      retrieved.ok && retrieved.bodyJson
-        ? ((JSON.parse(retrieved.bodyJson) as { candidates?: unknown[] }).candidates ?? [])
-        : [];
-    const result = await client.executeQuery("RocResearchGet", {
-      securityId: opts.securityId,
-      accountId: opts.forProcessA ? wizAccountId || undefined : undefined,
-      asOfDate: asOf,
-      candidates,
-    });
-    if (!result.ok || !result.bodyJson) {
-      setActionMessage("ROC estimate miss. Unknown is not 0%.");
-      return null;
-    }
-    const body = JSON.parse(result.bodyJson) as RocResearchGet;
-    const system =
-      body.candidates?.find(
-        (c) =>
-          c.rocPctMinor != null &&
-          !c.ownerOverride &&
-          (c.source === "19a-1" || c.method === "19a-1-current-year" || c.kind === "estimate"),
-      ) ?? null;
-    const pct = system?.rocPctMinor ?? body.systemRocPctMinor ?? null;
-    const scale = system?.scale ?? body.scale ?? 2;
-    if (pct == null || pct <= 0) {
-      if (opts.forProcessA) {
-        setWizRoc(null);
-        setWizRocPct("");
+    setActionMessage("Complete research: retrieving declarations…");
+    let unlistenProgress: (() => void) | undefined;
+    try {
+      if (opts.listenProgress !== false) {
+        try {
+          const { listen } = await import("@tauri-apps/api/event");
+          unlistenProgress = await listen<{
+            step: number;
+            total: number;
+            label: string;
+          }>("position-research-progress", (event) => {
+            const p = event.payload;
+            if (!p?.label) return;
+            setResearchActivity({
+              running: true,
+              step: p.step ?? 1,
+              total: p.total > 0 ? p.total : TOTAL,
+              label: p.label,
+              resultLine: null,
+            });
+            setActionMessage(`Complete research: ${p.label}`);
+          });
+        } catch {
+          /* no Tauri events in browser preview */
+        }
       }
-      setActionMessage("ROC estimate unknown — not 0%. No 19a-1 notice parsed.");
+
+      const result = await client.executeCommand("PositionResearchRefresh", {
+        securityId: opts.securityId,
+        symbol,
+      });
+      if (!result.ok || !result.bodyJson) {
+        const fail = `Complete research failed: ${result.errorCode ?? "error"}`;
+        setActionMessage(fail);
+        setResearchActivity({
+          running: false,
+          step: 0,
+          total: TOTAL,
+          label: "",
+          resultLine: fail,
+        });
+        return null;
+      }
+      const body = JSON.parse(result.bodyJson) as {
+        provider?: string;
+        underlying?: string;
+        paymentFrequency?: string;
+        name?: string;
+        retrieveOk?: boolean;
+        retrieveCode?: string;
+        retrieveMessage?: string;
+        rocPctMinor?: number | null;
+        rocScale?: number;
+        rocSourceUrl?: string;
+        rocProbes?: { url?: string; status?: number; httpStatus?: number }[];
+        needsRocResearch?: boolean;
+      };
+      // Never treat ticker as underlying on the result line.
+      if ((body.underlying || "").toUpperCase() === symbol) {
+        body.underlying = "";
+      }
+      const scale = body.rocScale ?? 2;
+      const probes = body.rocProbes ?? [];
+
+      setResearchActivity({
+        running: true,
+        step: 4,
+        total: TOTAL,
+        label: "drafting overview",
+        resultLine: null,
+      });
+      setActionMessage("Complete research: drafting overview…");
+
+      const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+      const invResult = await client.executeQuery("InvestmentGet", {
+        securityId: opts.securityId,
+        asOfDate: asOf,
+      });
+      let inv: InvestmentGet | null = null;
+      if (invResult.ok && invResult.bodyJson) {
+        inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+      }
+
+      let suggestedTier = "";
+      let suggestedReason = "";
+      try {
+        const sug = await client.executeQuery("ClassificationSuggestGet", {
+          securityId: opts.securityId,
+        });
+        if (sug.ok && sug.bodyJson) {
+          const s = JSON.parse(sug.bodyJson) as {
+            suggestedTier?: string;
+            reason?: string;
+          };
+          suggestedTier = s.suggestedTier?.trim() || "";
+          suggestedReason = s.reason?.trim() || "";
+        }
+      } catch {
+        /* suggestion miss stays blank */
+      }
+
+      const provider = body.provider || inv?.provider || "";
+      const underlying =
+        body.underlying ||
+        (inv?.underlying && inv.underlying.toUpperCase() !== symbol
+          ? inv.underlying
+          : "") ||
+        "";
+      const freq = body.paymentFrequency || inv?.paymentFrequency || "";
+      const fundName =
+        inv?.name && inv.name.toUpperCase() !== symbol ? inv.name : "";
+
+      let overview = "";
+      try {
+        const thesisPrompt = [
+          `Write a 4-8 sentence investment overview for ${symbol}.`,
+          fundName ? `Legal name: ${fundName}.` : "",
+          provider ? `Provider: ${provider}.` : "",
+          underlying
+            ? `Underlying/look-through is ${underlying} (not the ticker ${symbol}).`
+            : "",
+          freq ? `Pays ${freq}.` : "",
+          inv?.lookthrough?.themeStrategy
+            ? `Theme: ${inv.lookthrough.themeStrategy}.`
+            : "",
+          inv?.lookthrough?.primaryRiskDriver
+            ? `Primary risk: ${inv.lookthrough.primaryRiskDriver}.`
+            : "",
+          "Cover what it is, how it pays, main risks, and that underlying is not the sleeve ticker.",
+          suggestedTier
+            ? `Also suggest risk tier ${suggestedTier} with a short reason (suggestion only).`
+            : "Also suggest a risk tier with a short reason (suggestion only).",
+          "Advisory only; do not post facts or apply classification.",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const ai = await client.executeCommand("AiAnalyze", {
+          prompt: thesisPrompt,
+        });
+        if (ai.ok && ai.bodyJson) {
+          const run = JSON.parse(ai.bodyJson) as { recommendation?: string };
+          overview = run.recommendation?.trim() || "";
+        }
+      } catch {
+        /* overview miss — still show issuer facts */
+      }
+      if (!overview) {
+        overview = [
+          fundName || symbol,
+          provider ? `is an ${provider} product` : "is an income ETF",
+          underlying
+            ? `with look-through to ${underlying} (not ${symbol})`
+            : "",
+          freq ? `paying ${freq}` : "",
+          "Distributions and ROC estimates stay unknown until issuer notices parse; never invent 0%.",
+          "Risk tier is owner-set; any AI tier below is a suggestion only.",
+        ]
+          .filter(Boolean)
+          .join(". ")
+          .replace(/\.\./g, ".");
+      }
+
+      const nextSuggested =
+        suggestedTier ||
+        inv?.lookthrough?.riskTierSuggestion ||
+        inv?.suggestion?.suggestedTier ||
+        "";
+      setResearchNotes({
+        overview,
+        suggestedTier: nextSuggested,
+        suggestedReason:
+          suggestedReason ||
+          inv?.suggestion?.reason ||
+          "Suggestion only — owner sets risk.",
+        source: "issuer page + AiAnalyze draft",
+      });
+      setOwnerRiskChoice(
+        RISK_TIERS.includes(nextSuggested) ? nextSuggested : "Undecided",
+      );
+      setWizAiThesis(overview);
+
+      // Persist overview into blank notes only (holes); never wipe owner notes or lots/plan.
+      if (inv && !(inv.notes || "").trim() && overview) {
+        try {
+          await client.executeCommand("PositionCharacteristicUpsert", {
+            securityId: opts.securityId,
+            notes: overview,
+            paymentFrequency: inv.paymentFrequency || freq || undefined,
+            provider: inv.provider || provider || undefined,
+            underlying: inv.underlying || underlying || undefined,
+            needsRocResearch: true,
+            isActive: inv.isActive !== false,
+          });
+        } catch {
+          /* notes persist miss is non-fatal */
+        }
+      }
+
+      const filledBits = [
+        provider ? `provider ${provider}` : null,
+        underlying ? `underlying ${underlying}` : null,
+        freq ? `frequency ${freq}` : null,
+        body.rocPctMinor != null && body.rocPctMinor > 0
+          ? `ROC estimate ${(body.rocPctMinor / 10 ** scale).toFixed(scale)}%`
+          : null,
+        overview ? "research notes" : null,
+      ].filter(Boolean);
+      const unknownBits = [
+        !provider ? "provider" : null,
+        !underlying ? "underlying" : null,
+        !freq ? "frequency" : null,
+        !(body.rocPctMinor != null && body.rocPctMinor > 0)
+          ? "ROC estimate"
+          : null,
+      ].filter(Boolean);
+
+      let resultLine = `Filled: ${filledBits.join(", ") || "none"}. Unknown: ${unknownBits.join(", ") || "none"}.`;
+      if (body.rocPctMinor != null && body.rocPctMinor > 0) {
+        resultLine += ` ROC ${(body.rocPctMinor / 10 ** scale).toFixed(scale)}%${
+          body.rocSourceUrl ? ` — ${body.rocSourceUrl}` : ""
+        }. needsRocResearch stays true.`;
+      } else {
+        const tried =
+          probes.length > 0
+            ? probes
+                .map(
+                  (p) =>
+                    `${p.url ?? "url"} → ${p.status ?? p.httpStatus ?? "?"}`,
+                )
+                .join("; ")
+            : body.retrieveMessage || "no 19a-1 notice";
+        resultLine += ` ROC estimate unknown — not 0%. Tried: ${tried}`;
+      }
+      setActionMessage(resultLine);
+      setResearchActivity({
+        running: Boolean(opts.keepActivityRunning),
+        step: TOTAL,
+        total: TOTAL,
+        label: opts.keepActivityRunning ? `Fill research gaps: ${symbol}` : "",
+        resultLine,
+      });
       return body;
-    }
-    // Propose only — not research-complete, not 1099 actual.
-    if (opts.forProcessA) {
-      setWizRoc({
-        ...body,
-        rocPctMinor: pct,
-        scale,
-        complete: false,
-        source: system?.source || body.source || "19a-1",
-        sourceUrl: system?.sourceUrl || body.sourceUrl || "",
-        method: system?.method || body.method || "19a-1-current-year",
-        kind: system?.kind || body.kind || "estimate",
-        systemRocPctMinor: pct,
+    } catch (err: unknown) {
+      const fail = String(err);
+      setActionMessage(fail);
+      setResearchActivity({
+        running: false,
+        step: 0,
+        total: TOTAL,
+        label: "",
+        resultLine: fail,
       });
-      setWizRocPct((pct / 10 ** scale).toFixed(scale));
-    } else if (pdDraft) {
-      patchDraft({
-        roc2026e: (pct / 10 ** scale).toFixed(scale),
-        needsRoc: true,
-      });
+      return null;
+    } finally {
+      unlistenProgress?.();
     }
-    setActionMessage(
-      `Proposed ${ (pct / 10 ** scale).toFixed(scale) }% current-year ROC estimate (${system?.kind || "estimate"})${
-        system?.sourceUrl || body.sourceUrl ? ` — ${system?.sourceUrl || body.sourceUrl}` : ""
-      }. Not research-complete; not 1099 actual.`,
-    );
-    return body;
   };
 
   const researchRoc = async () => {
     if (!wizSecurityId) {
-      setActionMessage("Save Part 1 before ROC research.");
+      setActionMessage("Save Part 1 before complete research.");
       return;
     }
     setBusy(true);
     setActionMessage(null);
     try {
-      await validateCurrentRocEstimate({
+      const body = await completePositionResearch({
         securityId: wizSecurityId,
         symbol: wizSymbol,
-        sourceUrl: wizSourceUrl,
-        declarationSource: wizDeclSource,
-        forProcessA: true,
       });
+      if (!body) return;
+      const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+      const invResult = await client.executeQuery("InvestmentGet", {
+        securityId: wizSecurityId,
+        asOfDate: asOf,
+      });
+      if (invResult.ok && invResult.bodyJson) {
+        const inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+        setWizProvider(inv.provider || "");
+        const und =
+          inv.underlying &&
+          inv.underlying.toUpperCase() !== (wizSymbol || "").toUpperCase()
+            ? inv.underlying
+            : body.underlying || "";
+        setWizUnderlying(und);
+        setWizFreq(inv.paymentFrequency || wizFreq);
+        if (inv.name && inv.name.toUpperCase() !== wizSymbol.toUpperCase()) {
+          setWizName(inv.name);
+        }
+        setWizLookthrough(mergeLookthrough(inv.lookthrough));
+        setWizPriceState(inv.price);
+        if (inv.suggestion?.suggestedTier) {
+          setWizTierSuggestion(inv.suggestion);
+        }
+      }
+      if (body.rocPctMinor != null && body.rocPctMinor > 0) {
+        const scale = body.rocScale ?? 2;
+        setWizRoc({
+          securityId: wizSecurityId,
+          accountId: wizAccountId || null,
+          rocPctMinor: body.rocPctMinor,
+          scale,
+          complete: false,
+          source: "19a-1",
+          sourceUrl: body.rocSourceUrl || "",
+          method: "19a-1-current-year",
+          kind: "estimate",
+          systemRocPctMinor: body.rocPctMinor,
+          candidates: [],
+          observations: [],
+        } as RocResearchGet);
+        setWizRocPct((body.rocPctMinor / 10 ** scale).toFixed(scale));
+      }
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -3104,6 +3608,62 @@ export default function App() {
     }
   };
 
+  const setOwnerRisk = async () => {
+    if (!investment) {
+      return;
+    }
+    if (!RISK_TIERS.includes(ownerRiskChoice)) {
+      setActionMessage(
+        "Choose Foundation, Core, or Risk On to set risk. Or Leave undecided.",
+      );
+      return;
+    }
+    await applySuggestedTier(ownerRiskChoice);
+    setPdDraft((prev) => (prev ? { ...prev, risk: ownerRiskChoice } : prev));
+  };
+
+  const leaveRiskUndecided = async () => {
+    if (!investment) {
+      return;
+    }
+    const cadence =
+      parseCadence(pdDraft?.freq || investment.paymentFrequency || "")?.label ||
+      investment.paymentFrequency ||
+      "";
+    if (!cadence) {
+      setActionMessage("Frequency must be set before leaving risk undecided.");
+      return;
+    }
+    setBusy(true);
+    setActionMessage(null);
+    try {
+      const result = await client.executeCommand("PositionCharacteristicUpsert", {
+        securityId: investment.securityId,
+        paymentFrequency: cadence,
+        riskTier: "Undecided",
+        provider: investment.provider || pdDraft?.provider || undefined,
+        underlying: investment.underlying || pdDraft?.underlying || undefined,
+        needsRocResearch: true,
+        isActive: investment.isActive !== false,
+      });
+      if (!result.ok) {
+        setActionMessage(
+          `Leave undecided failed: ${result.errorCode ?? "error"}`,
+        );
+        return;
+      }
+      setOwnerRiskChoice("Undecided");
+      setPdDraft((prev) => (prev ? { ...prev, risk: "Undecided" } : prev));
+      setActionMessage("Risk left undecided. Overview stays; not auto-applied.");
+      await refreshData(asOfDate);
+      await loadInvestment(investment.symbol, { skipPriceRefresh: true });
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const leaveWithoutSaving = (next: () => void, target?: Screen) => {
     if (
       (pdDirty || wizDirty || addLotDirty) &&
@@ -3134,8 +3694,10 @@ export default function App() {
       setActionMessage("Choose a symbol first.");
       return;
     }
-    if (!RISK_TIERS.includes(pdDraft.risk)) {
-      setActionMessage("Choose Foundation, Core, or Risk On before saving.");
+    if (!OWNER_RISK_CHOICES.includes(pdDraft.risk)) {
+      setActionMessage(
+        "Choose Foundation, Core, Risk On, or Undecided before saving.",
+      );
       return;
     }
     const cadence = parseCadence(pdDraft.freq);
@@ -3180,10 +3742,28 @@ export default function App() {
         divType: pdDraft.divType.trim(),
         needsRocResearch: pdDraft.needsRoc,
         isActive: pdDraft.isActive,
-        rocPct2024ActualMinor: rocMinor(pdDraft.roc2024),
-        rocPct2025ActualMinor: rocMinor(pdDraft.roc2025),
+        rocPct2024ActualMinor: rocActualUnavailable(
+          investment.lots,
+          2024,
+          asOfDate,
+        )
+          ? null
+          : rocMinor(pdDraft.roc2024),
+        rocPct2025ActualMinor: rocActualUnavailable(
+          investment.lots,
+          2025,
+          asOfDate,
+        )
+          ? null
+          : rocMinor(pdDraft.roc2025),
         rocPct2026EstimateMinor: rocMinor(pdDraft.roc2026e),
-        rocPct2026ActualMinor: rocMinor(pdDraft.roc2026a),
+        rocPct2026ActualMinor: rocActualUnavailable(
+          investment.lots,
+          2026,
+          asOfDate,
+        )
+          ? null
+          : rocMinor(pdDraft.roc2026a),
         rocScale: 2,
       });
       if (!chars.ok) {
@@ -3431,25 +4011,180 @@ export default function App() {
     setBusy(true);
     setActionMessage(null);
     try {
-      const sourceUrl =
-        pdDraft?.sourceUrl?.trim() ||
-        investment.template?.sourceUrl?.trim() ||
-        "";
-      const declarationSource =
-        pdDraft?.declarationSource?.trim() ||
-        investment.template?.declarationSource?.trim() ||
-        "";
-      const body = await validateCurrentRocEstimate({
+      await completePositionResearch({
         securityId: investment.securityId,
         symbol: investment.symbol,
-        sourceUrl,
-        declarationSource,
-        forProcessA: false,
       });
-      if (!body) return;
       await loadInvestment(investment.symbol, { skipPriceRefresh: true });
     } catch (err: unknown) {
       setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fillResearchGaps = async () => {
+    setBusy(true);
+    setCollectorAction("Loading research gaps…");
+    setActionMessage("Loading research gaps…");
+    setResearchActivity({
+      running: true,
+      step: 0,
+      total: 1,
+      label: "loading research gaps",
+      resultLine: null,
+    });
+    try {
+      const gapsResult = await client.executeQuery("ResearchGapsGet", {});
+      if (!gapsResult.ok || !gapsResult.bodyJson) {
+        const msg = `Research gaps query failed: ${gapsResult.errorCode ?? "error"}`;
+        setCollectorAction(msg);
+        setActionMessage(msg);
+        setResearchActivity({
+          running: false,
+          step: 0,
+          total: 1,
+          label: "",
+          resultLine: msg,
+        });
+        return;
+      }
+      const gaps = JSON.parse(gapsResult.bodyJson) as {
+        items: { securityId: string; symbol: string }[];
+      };
+      const targets = gaps.items ?? [];
+      if (targets.length === 0) {
+        const msg = "No research gaps — enabled income names have provider, underlying, frequency, and ROC observation.";
+        setCollectorAction(msg);
+        setActionMessage(msg);
+        setCollectorRunProgress(null);
+        setResearchActivity({
+          running: false,
+          step: 0,
+          total: 1,
+          label: "",
+          resultLine: msg,
+        });
+        return;
+      }
+      setCollectorRunProgress({
+        running: true,
+        total: targets.length,
+        current: 0,
+        symbol: "",
+        ok: 0,
+        miss: 0,
+        lines: [],
+      });
+      setResearchActivity({
+        running: true,
+        step: 0,
+        total: targets.length,
+        label: `Fill research gaps (0 of ${targets.length})`,
+        resultLine: null,
+      });
+      let ok = 0;
+      let miss = 0;
+      const lines: string[] = [];
+      const { flushSync } = await import("react-dom");
+      for (let i = 0; i < targets.length; i++) {
+        const row = targets[i];
+        flushSync(() => {
+          setCollectorRunProgress({
+            running: true,
+            total: targets.length,
+            current: i + 1,
+            symbol: row.symbol,
+            ok,
+            miss,
+            lines: [...lines],
+          });
+          setResearchActivity({
+            running: true,
+            step: i + 1,
+            total: targets.length,
+            label: `Fill research gaps: ${row.symbol}`,
+            resultLine: null,
+          });
+          setCollectorAction(
+            `Fill research gaps ${formatCount(i + 1)} of ${formatCount(targets.length)}: ${row.symbol}…`,
+          );
+        });
+        await new Promise<void>((resolve) => {
+          window.setTimeout(() => resolve(), 0);
+        });
+        try {
+          const body = await completePositionResearch({
+            securityId: row.securityId,
+            symbol: row.symbol,
+            listenProgress: true,
+            keepActivityRunning: true,
+          });
+          if (!body) {
+            miss += 1;
+            lines.push(`${row.symbol}: fail`);
+          } else {
+            ok += 1;
+            let note = "ok";
+            if (body.rocPctMinor != null && body.rocPctMinor > 0) {
+              note = `ROC ${body.rocSourceUrl || "estimate"}`;
+            } else if ((body.rocProbes?.length ?? 0) > 0) {
+              note = `19a-1 miss (${body.rocProbes!.length} URLs)`;
+            } else {
+              note = `provider ${body.provider || "—"}`;
+            }
+            lines.push(`${row.symbol}: ${note}`);
+          }
+        } catch (err: unknown) {
+          miss += 1;
+          lines.push(`${row.symbol}: ${String(err)}`);
+        }
+        if (lines.length > 40) {
+          lines.splice(0, lines.length - 40);
+        }
+        flushSync(() => {
+          setCollectorRunProgress({
+            running: true,
+            total: targets.length,
+            current: i + 1,
+            symbol: row.symbol,
+            ok,
+            miss,
+            lines: [...lines],
+          });
+        });
+      }
+      await refreshCollectors(asOfDate);
+      const done = `Fill research gaps finished: ${formatCount(ok)} ok, ${formatCount(miss)} miss of ${formatCount(targets.length)}.`;
+      setCollectorAction(done);
+      setActionMessage(done);
+      setResearchActivity({
+        running: false,
+        step: targets.length,
+        total: targets.length,
+        label: "",
+        resultLine: done,
+      });
+      setCollectorRunProgress({
+        running: false,
+        total: targets.length,
+        current: targets.length,
+        symbol: "",
+        ok,
+        miss,
+        lines: [...lines],
+      });
+    } catch (err: unknown) {
+      const msg = String(err);
+      setCollectorAction(msg);
+      setActionMessage(msg);
+      setResearchActivity({
+        running: false,
+        step: 0,
+        total: 1,
+        label: "",
+        resultLine: msg,
+      });
     } finally {
       setBusy(false);
     }
@@ -3468,26 +4203,123 @@ export default function App() {
       setActionMessage("Choose origin: purchase, drip, or transfer.");
       return;
     }
-    const performance = dollarsToMinor(addLotCost);
-    const tax = addLotTaxDifferent ? dollarsToMinor(addLotTaxCost) : performance;
-    await runCommand("LotOpen", {
-      accountId: addLotAccountId,
-      securityId: addLotSecurityId,
-      openedOn: addLotOpenedOn,
-      origin: addLotOrigin,
-      quantityMinor: Number(addLotQty),
-      quantityScale: 0,
-      performanceBasisMinor: performance,
-      taxBasisMinor: tax,
-      scale: 2,
-      isOpen: true,
+    if (!addLotQty.trim() || !addLotCost.trim()) {
+      setActionMessage("Enter quantity and unit original $.");
+      return;
+    }
+    if (addLotTaxDifferent && !addLotTaxCost.trim()) {
+      setActionMessage("Enter unit tax $, or uncheck Unit tax $ different.");
+      return;
+    }
+    const qtyMinor = Number(addLotQty);
+    const quantityScale = 0;
+    if (!Number.isFinite(qtyMinor) || qtyMinor <= 0) {
+      setActionMessage("Quantity must be a positive number.");
+      return;
+    }
+    const unitOrigCents = dollarsToMinor(addLotCost);
+    const unitTaxCents = addLotTaxDifferent
+      ? dollarsToMinor(addLotTaxCost)
+      : unitOrigCents;
+    if (!Number.isFinite(unitOrigCents) || unitOrigCents < 0) {
+      setActionMessage("Unit original $ is not a number.");
+      return;
+    }
+    if (!Number.isFinite(unitTaxCents) || unitTaxCents < 0) {
+      setActionMessage("Unit tax $ is not a number.");
+      return;
+    }
+    const performance = lotTotalFromUnitCents(qtyMinor, quantityScale, unitOrigCents);
+    const tax = lotTotalFromUnitCents(qtyMinor, quantityScale, unitTaxCents);
+    const symbol =
+      securities.find((s) => s.securityId === addLotSecurityId)?.symbol ||
+      addLotQuery.split("—")[0]?.trim() ||
+      "symbol";
+    const accountName =
+      accounts.find((a) => a.accountId === addLotAccountId)?.name || "account";
+    const qtyLabel = formatScaled(qtyMinor, quantityScale);
+    const unitOrigLabel = formatMoneyInput(addLotCost);
+    const lotOrigLabel = (performance / 100).toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
     });
-    setAddLotBaseline(JSON.stringify(currentAddLot()));
+    const unitTaxLabel = addLotTaxDifferent
+      ? formatMoneyInput(addLotTaxCost)
+      : unitOrigLabel;
+    const lotTaxLabel = (tax / 100).toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    setBusy(true);
+    setActionMessage(null);
+    try {
+      const result = await client.executeCommand("LotOpen", {
+        accountId: addLotAccountId,
+        securityId: addLotSecurityId,
+        openedOn: addLotOpenedOn,
+        origin: addLotOrigin,
+        quantityMinor: qtyMinor,
+        quantityScale,
+        performanceBasisMinor: performance,
+        taxBasisMinor: tax,
+        scale: 2,
+        isOpen: true,
+      });
+      if (!result.ok) {
+        setActionMessage(
+          `LotOpen failed: ${result.errorCode ?? "error"}. Fields kept — fix and retry.`,
+        );
+        await refreshHandoff();
+        return;
+      }
+      // Success: keep symbol (and account/origin); clear qty/cost/date so submit is not a duplicate.
+      setAddLotOpenedOn("");
+      setAddLotQty("");
+      setAddLotCost("");
+      setAddLotTaxCost("");
+      setAddLotTaxDifferent(false);
+      const cleared: AddLotDraft = {
+        securityId: addLotSecurityId,
+        accountId: addLotAccountId,
+        openedOn: "",
+        qty: "",
+        cost: "",
+        taxCost: "",
+        taxCostDifferent: false,
+        origin: addLotOrigin,
+      };
+      setAddLotBaseline(JSON.stringify(cleared));
+      setActionMessage(
+        `Opened lot: ${symbol} in ${accountName}, qty ${qtyLabel} × $${unitOrigLabel} = $${lotOrigLabel} lot orig` +
+          (addLotTaxDifferent
+            ? `; unit tax $${unitTaxLabel} → lot tax $${lotTaxLabel}`
+            : "") +
+          `. Enter qty and unit $ again for another lot on ${symbol}.`,
+      );
+      await refreshHandoff();
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const importBrokerCsv = async (file: File) => {
     setBusy(true);
     setActionMessage(null);
+    const lines: string[] = [`CSV  ${file.name}`];
+    setCaptureProcess({
+      running: true,
+      title: "CSV import",
+      current: 0,
+      total: 3,
+      detail: `Staging ${file.name}`,
+      lines: [...lines],
+      posted: 0,
+      skipped: 0,
+      errors: 0,
+    });
     try {
       const content = await file.text();
       const staged = await client.executeCommand("ImportStage", {
@@ -3496,31 +4328,228 @@ export default function App() {
         content,
       });
       if (!staged.ok || !staged.bodyJson) {
-        setActionMessage(`ImportStage failed: ${staged.errorCode ?? "error"}`);
+        const msg = `ImportStage failed: ${staged.errorCode ?? "error"}`;
+        lines.push(msg);
+        setCaptureProcess((p) =>
+          p ? { ...p, running: false, errors: 1, detail: msg, lines: [...lines] } : p,
+        );
+        setActionMessage(msg);
         return;
       }
-      const batchId = (JSON.parse(staged.bodyJson) as { batchId?: string }).batchId;
+      const stagedBody = JSON.parse(staged.bodyJson) as {
+        batchId?: string;
+        candidateCount?: number;
+        status?: string;
+      };
+      const batchId = stagedBody.batchId;
       if (!batchId) {
-        setActionMessage("ImportStage failed: missing batchId");
+        const msg = "ImportStage failed: missing batchId";
+        lines.push(msg);
+        setCaptureProcess((p) =>
+          p ? { ...p, running: false, errors: 1, detail: msg, lines: [...lines] } : p,
+        );
+        setActionMessage(msg);
         return;
       }
       setPendingBatchId(batchId);
+      const n = stagedBody.candidateCount ?? 0;
+      lines.push(`staged  ${n} candidate${n === 1 ? "" : "s"}  ${batchId}`);
+      setCaptureProcess((p) =>
+        p
+          ? { ...p, current: 1, detail: "Validating", lines: [...lines] }
+          : p,
+      );
       const validated = await client.executeCommand("ImportValidate", { batchId });
       const status =
         validated.bodyJson != null
           ? (JSON.parse(validated.bodyJson) as { status?: string }).status ?? "unknown"
           : "unknown";
       setPendingBatchStatus(status);
+      lines.push(`validate  ${status}`);
       await refreshData(asOfDate);
       if (!validated.ok || status !== "validated") {
-        setActionMessage(
-          `Staged ${batchId}; status ${status}. Review exceptions before approve/post.`,
+        const msg = `Staged ${batchId}; status ${status}. Review exceptions before approve/post.`;
+        lines.push(msg);
+        setCaptureProcess((p) =>
+          p
+            ? { ...p, running: false, current: 2, errors: 1, detail: msg, lines: [...lines] }
+            : p,
         );
+        setActionMessage(msg);
         return;
       }
+      setCaptureProcess((p) =>
+        p
+          ? {
+              ...p,
+              running: false,
+              current: 2,
+              detail: "Validated. Approve, then post.",
+              lines: [...lines],
+            }
+          : p,
+      );
       setActionMessage(`Staged and validated ${batchId}. Approve, then post.`);
     } catch (err: unknown) {
-      setActionMessage(String(err));
+      const msg = String(err);
+      lines.push(msg);
+      setCaptureProcess((p) =>
+        p ? { ...p, running: false, errors: 1, detail: msg, lines: [...lines] } : p,
+      );
+      setActionMessage(msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateManualDividendRow = (id: string, patch: Partial<ManualDividendRow>) => {
+    setManualDividendRows((rows) =>
+      rows.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
+  };
+
+  const postManualDividends = async () => {
+    const started = manualDividendRows.filter(
+      (row) =>
+        row.accountId ||
+        row.ticker.trim() ||
+        row.occurredOn ||
+        row.amount.trim(),
+    );
+    const complete = started.filter(
+      (row) =>
+        row.accountId &&
+        row.ticker.trim() &&
+        row.occurredOn &&
+        row.amount.trim(),
+    );
+    if (complete.length !== started.length) {
+      setActionMessage("Fill account, ticker, date, and amount on each started row.");
+      return;
+    }
+    if (complete.length === 0) {
+      setActionMessage("Enter at least one dividend row.");
+      return;
+    }
+    setBusy(true);
+    setActionMessage(null);
+    const lines: string[] = [];
+    let posted = 0;
+    let skipped = 0;
+    let errorCount = 0;
+    const postedIds: string[] = [];
+    setCaptureProcess({
+      running: true,
+      title: "Manual dividend",
+      current: 0,
+      total: complete.length,
+      detail: "Starting",
+      lines: [],
+      posted: 0,
+      skipped: 0,
+      errors: 0,
+    });
+    try {
+      for (let i = 0; i < complete.length; i += 1) {
+        const row = complete[i];
+        const ticker = row.ticker.trim().toUpperCase();
+        const accountName =
+          accounts.find((a) => a.accountId === row.accountId)?.name || "account";
+        const amountMinor = totalDollarsToMinor(row.amount);
+        const amountLabel =
+          amountMinor == null ? row.amount.trim() : `$${(amountMinor / 100).toFixed(2)}`;
+        setCaptureProcess((p) =>
+          p
+            ? {
+                ...p,
+                current: i + 1,
+                detail: `${accountName}  ${ticker}  ${row.occurredOn}  ${amountLabel}`,
+              }
+            : p,
+        );
+        const security = securities.find((s) => s.symbol.toUpperCase() === ticker);
+        if (!security) {
+          errorCount += 1;
+          const line = `error  ${accountName}  ${ticker}  ${row.occurredOn}  unknown ticker`;
+          lines.push(line);
+          setCaptureProcess((p) =>
+            p ? { ...p, errors: errorCount, lines: [...lines] } : p,
+          );
+          continue;
+        }
+        if (amountMinor == null) {
+          errorCount += 1;
+          const line = `error  ${accountName}  ${ticker}  ${row.occurredOn}  amount must be the positive cash total`;
+          lines.push(line);
+          setCaptureProcess((p) =>
+            p ? { ...p, errors: errorCount, lines: [...lines] } : p,
+          );
+          continue;
+        }
+        const result = await client.executeCommand("DividendActualRecord", {
+          accountId: row.accountId,
+          securityId: security.securityId,
+          occurredOn: row.occurredOn,
+          amountMinor,
+          scale: 2,
+          idempotencyKey: `manual-${row.accountId}-${security.securityId}-${row.occurredOn}-${amountMinor}`,
+        });
+        if (!result.ok) {
+          errorCount += 1;
+          const line = `error  ${accountName}  ${ticker}  ${row.occurredOn}  ${result.errorCode ?? "error"}`;
+          lines.push(line);
+          setCaptureProcess((p) =>
+            p ? { ...p, errors: errorCount, lines: [...lines] } : p,
+          );
+          continue;
+        }
+        let already = false;
+        if (result.bodyJson) {
+          try {
+            already = Boolean(
+              (JSON.parse(result.bodyJson) as { alreadyPosted?: boolean }).alreadyPosted,
+            );
+          } catch {
+            already = false;
+          }
+        }
+        if (already) {
+          skipped += 1;
+          lines.push(
+            `skipped duplicate  ${accountName}  ${ticker}  ${row.occurredOn}  ${amountLabel}`,
+          );
+        } else {
+          posted += 1;
+          lines.push(`posted  ${accountName}  ${ticker}  ${row.occurredOn}  ${amountLabel}`);
+        }
+        postedIds.push(row.id);
+        setCaptureProcess((p) =>
+          p
+            ? { ...p, posted, skipped, errors: errorCount, lines: [...lines] }
+            : p,
+        );
+      }
+      setManualDividendRows((rows) => {
+        const kept = rows.filter((row) => !postedIds.includes(row.id));
+        while (kept.length < 3) {
+          kept.push(blankManualDividendRow());
+        }
+        return kept;
+      });
+      const summary = `Posted ${posted}, skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}, ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
+      setCaptureProcess((p) =>
+        p ? { ...p, running: false, detail: summary, lines: [...lines] } : p,
+      );
+      setActionMessage(summary);
+      await refreshHandoff();
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      const msg = String(err);
+      lines.push(msg);
+      setCaptureProcess((p) =>
+        p ? { ...p, running: false, errors: errorCount + 1, detail: msg, lines: [...lines] } : p,
+      );
+      setActionMessage(msg);
     } finally {
       setBusy(false);
     }
@@ -3533,23 +4562,72 @@ export default function App() {
     }
     setBusy(true);
     setActionMessage(null);
+    if (name === "ImportPost") {
+      setCaptureProcess((p) => ({
+        running: true,
+        title: p?.title || "CSV import",
+        current: p?.current ?? 0,
+        total: Math.max(p?.total ?? 3, 3),
+        detail: "Posting",
+        lines: [...(p?.lines ?? []), "post  starting"],
+        posted: 0,
+        skipped: 0,
+        errors: 0,
+      }));
+    }
     try {
       const result = await client.executeCommand(name, { batchId: pendingBatchId });
+      let body: {
+        status?: string;
+        postedCount?: number;
+        skippedDuplicateCount?: number;
+        errorCount?: number;
+        processLines?: string[];
+        candidateCount?: number;
+      } = {};
       if (result.bodyJson) {
         try {
-          const body = JSON.parse(result.bodyJson) as { status?: string };
+          body = JSON.parse(result.bodyJson) as typeof body;
           if (body.status) setPendingBatchStatus(body.status);
         } catch {
           /* ignore */
         }
       }
-      setActionMessage(
-        result.ok ? `${name} ok` : `${name} failed: ${result.errorCode ?? "error"}`,
-      );
+      if (name === "ImportPost") {
+        const posted = body.postedCount ?? 0;
+        const skipped = body.skippedDuplicateCount ?? 0;
+        const errors = body.errorCount ?? 0;
+        const report = body.processLines ?? [];
+        const summary = result.ok
+          ? `Posted ${posted}, skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}, ${errors} error${errors === 1 ? "" : "s"}.`
+          : `ImportPost failed: ${result.errorCode ?? "error"}`;
+        setCaptureProcess((p) => ({
+          running: false,
+          title: p?.title || "CSV import",
+          current: p?.total || 3,
+          total: p?.total || 3,
+          detail: summary,
+          lines: [...(p?.lines ?? []), ...report, summary],
+          posted,
+          skipped,
+          errors: result.ok ? errors : errors + 1,
+        }));
+        setActionMessage(summary);
+      } else {
+        const msg = result.ok ? `${name} ok` : `${name} failed: ${result.errorCode ?? "error"}`;
+        setCaptureProcess((p) =>
+          p ? { ...p, detail: msg, lines: [...p.lines, msg] } : p,
+        );
+        setActionMessage(msg);
+      }
       await refreshHandoff();
       await refreshData(asOfDate);
     } catch (err: unknown) {
-      setActionMessage(String(err));
+      const msg = String(err);
+      setCaptureProcess((p) =>
+        p ? { ...p, running: false, errors: p.errors + 1, detail: msg, lines: [...p.lines, msg] } : p,
+      );
+      setActionMessage(msg);
     } finally {
       setBusy(false);
     }
@@ -3963,24 +5041,59 @@ export default function App() {
             Dividend cash only. Current and future week Plan comes from Calculator Plan ×
             eligible quantity × expected pay week. Status Open; not official Dashboard close.
           </p>
-          <div className="buttons">
-            <button
-              type="button"
-              aria-label="Previous week"
-              disabled={!asOfDate}
-              onClick={() => setAsOfDate(shiftIso(asOfDate, -7))}
-            >
-              Previous week
-            </button>
-            <button
-              type="button"
-              aria-label="Next week"
-              disabled={!asOfDate}
-              onClick={() => setAsOfDate(shiftIso(asOfDate, 7))}
-            >
-              Next week
-            </button>
-          </div>
+          {(() => {
+            const todaySat = saturdayOfWeek(new Date().toISOString().slice(0, 10));
+            const selectedSat = saturdayOfWeek(
+              incomeWeek?.start || asOfDate || todaySat,
+            );
+            const selectedFri = incomeWeek?.end || shiftIso(selectedSat, 6);
+            const weekChoices = incomePlanWeekChoices(
+              selectedSat,
+              incomeWeek?.latestActualOn,
+            );
+            return (
+              <>
+                <div className="income-week-bar">
+                  <label className="income-week-label">
+                    Week
+                    <select
+                      aria-label="Select week"
+                      value={selectedSat}
+                      onChange={(e) => setAsOfDate(e.target.value)}
+                    >
+                      {weekChoices.map((sat) => (
+                        <option key={sat} value={sat}>
+                          {incomePlanWeekOptionLabel(sat, todaySat)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    aria-label="Previous week"
+                    disabled={!selectedSat}
+                    onClick={() => setAsOfDate(shiftIso(selectedSat, -7))}
+                  >
+                    Previous week
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Next week"
+                    disabled={!selectedSat}
+                    onClick={() => setAsOfDate(shiftIso(selectedSat, 7))}
+                  >
+                    Next week
+                  </button>
+                </div>
+                <p className="income-current-week" aria-label="Current week">
+                  Current week: Saturday {selectedSat} through Friday {selectedFri}
+                  {selectedSat === todaySat ? (
+                    <span className="this-week-mark"> · this week</span>
+                  ) : null}
+                </p>
+              </>
+            );
+          })()}
           <label>
             Drill account
             <select
@@ -4172,22 +5285,150 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  aria-label="Validate current ROC estimate"
+                  aria-label="Complete research"
                   disabled={
                     busy ||
                     writesBlocked ||
-                    !(
-                      pdDraft?.sourceUrl?.trim() ||
-                      investment.template?.sourceUrl?.trim() ||
-                      pdDraft?.declarationSource?.trim() ||
-                      investment.template?.declarationSource?.trim()
-                    )
+                    !investment.securityId ||
+                    Boolean(researchActivity?.running)
                   }
                   onClick={() => void researchPdRoc()}
                 >
-                  Validate current ROC estimate
+                  {researchActivity?.running ? "Completing research…" : "Complete research"}
                 </button>
               </div>
+              {researchActivity?.running ? (
+                <section
+                  className="process-a-research-progress"
+                  aria-label="Research progress"
+                  aria-busy="true"
+                >
+                  <p role="status" aria-live="polite">
+                    {researchActivity.label}
+                  </p>
+                  {researchActivity.total > 0 ? (
+                    <progress
+                      max={researchActivity.total}
+                      value={Math.min(
+                        researchActivity.step,
+                        researchActivity.total,
+                      )}
+                    />
+                  ) : (
+                    <div
+                      className="process-a-research-spinner"
+                      aria-hidden="true"
+                    />
+                  )}
+                </section>
+              ) : null}
+              {researchActivity?.resultLine && !researchActivity.running ? (
+                <p role="status" aria-label="Research result">
+                  {researchActivity.resultLine}
+                </p>
+              ) : null}
+              {(() => {
+                const finished =
+                  Boolean(researchActivity?.resultLine) &&
+                  !researchActivity?.running &&
+                  !(researchActivity?.resultLine || "").startsWith(
+                    "Complete research failed",
+                  );
+                const storedNotes = (
+                  pdDraft?.notes ||
+                  investment.notes ||
+                  ""
+                ).trim();
+                const suggested = (
+                  researchNotes?.suggestedTier ||
+                  investment.suggestion?.suggestedTier ||
+                  pdDraft?.lookthrough?.riskTierSuggestion ||
+                  ""
+                ).trim();
+                if (!researchNotes && !storedNotes && !finished) {
+                  return null;
+                }
+                return (
+                <section
+                  className="hub-panel research-notes-panel"
+                  aria-label="Research notes"
+                >
+                  <h3>Research notes</h3>
+                  <p className="research-notes-overview">
+                    {researchNotes?.overview ||
+                      pdDraft?.notes ||
+                      investment.notes}
+                  </p>
+                  {researchNotes?.source ? (
+                    <p className="muted">Source: {researchNotes.source}</p>
+                  ) : null}
+                  {finished || researchNotes ? (
+                    <fieldset
+                      className="research-risk-control"
+                      aria-label="Owner risk choice"
+                    >
+                      <legend>Risk (required)</legend>
+                      <label>
+                        Owner tier
+                        <select
+                          aria-label="Owner risk choice"
+                          value={ownerRiskChoice}
+                          onChange={(e) => setOwnerRiskChoice(e.target.value)}
+                          disabled={busy || writesBlocked}
+                        >
+                          {OWNER_RISK_CHOICES.map((tier) => (
+                            <option key={tier} value={tier}>
+                              {suggested && tier === suggested
+                                ? `${tier} (suggestion)`
+                                : tier}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {suggested ? (
+                        <p role="note" aria-label="Suggested risk tier">
+                          Suggested: {suggested}
+                          {researchNotes?.suggestedReason ||
+                          investment.suggestion?.reason
+                            ? ` — ${
+                                researchNotes?.suggestedReason ||
+                                investment.suggestion?.reason
+                              }`
+                            : ""}
+                          . Not applied until you Set risk.
+                        </p>
+                      ) : (
+                        <p role="note">
+                          No suggested tier. Choose one or Leave undecided.
+                        </p>
+                      )}
+                      <div className="buttons">
+                        <button
+                          type="button"
+                          aria-label="Set risk"
+                          disabled={
+                            busy ||
+                            writesBlocked ||
+                            !RISK_TIERS.includes(ownerRiskChoice)
+                          }
+                          onClick={() => void setOwnerRisk()}
+                        >
+                          Set risk
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Leave undecided"
+                          disabled={busy || writesBlocked}
+                          onClick={() => void leaveRiskUndecided()}
+                        >
+                          Leave undecided
+                        </button>
+                      </div>
+                    </fieldset>
+                  ) : null}
+                </section>
+                );
+              })()}
               <dl className="hub-hero" aria-label="Position hub summary">
                 <div>
                   <dt>Symbol</dt>
@@ -4304,7 +5545,9 @@ export default function App() {
                       </tr>
                       <tr>
                         <th scope="row">Risk</th>
-                        <td>{pdDraft.risk.trim() || investment.riskTier || "—"}</td>
+                        <td>
+                          {pdDraft.risk.trim() || investment.riskTier || "—"}
+                        </td>
                       </tr>
                       <tr>
                         <th scope="row">Frequency</th>
@@ -4418,9 +5661,18 @@ export default function App() {
                           <tr>
                             <th scope="row">ROC 2025</th>
                             <td className="numeric">
-                              {calc.rocPct2025ActualMinor == null || calc.rocScale == null
-                                ? "N/A"
-                                : formatPercentScaled(calc.rocPct2025ActualMinor, calc.rocScale)}
+                              {rocActualUnavailable(
+                                investment.lots,
+                                2025,
+                                asOfDate,
+                              ) ??
+                                (calc.rocPct2025ActualMinor == null ||
+                                calc.rocScale == null
+                                  ? "missing-1099"
+                                  : formatPercentScaled(
+                                      calc.rocPct2025ActualMinor,
+                                      calc.rocScale,
+                                    ))}
                             </td>
                           </tr>
                           <tr>
@@ -4437,9 +5689,18 @@ export default function App() {
                           <tr>
                             <th scope="row">ROC 2026 actual</th>
                             <td className="numeric">
-                              {calc.rocPct2026ActualMinor == null || calc.rocScale == null
-                                ? "N/A"
-                                : formatPercentScaled(calc.rocPct2026ActualMinor, calc.rocScale)}
+                              {rocActualUnavailable(
+                                investment.lots,
+                                2026,
+                                asOfDate,
+                              ) ??
+                                (calc.rocPct2026ActualMinor == null ||
+                                calc.rocScale == null
+                                  ? "missing-1099"
+                                  : formatPercentScaled(
+                                      calc.rocPct2026ActualMinor,
+                                      calc.rocScale,
+                                    ))}
                             </td>
                           </tr>
                         </tbody>
@@ -4776,7 +6037,7 @@ export default function App() {
                           disabled={busy || writesBlocked}
                         >
                           <option value="">Choose owner tier</option>
-                          {RISK_TIERS.map((tier) => (
+                          {OWNER_RISK_CHOICES.map((tier) => (
                             <option key={tier} value={tier}>
                               {tier}
                             </option>
@@ -5236,14 +6497,29 @@ export default function App() {
                     <tr>
                       <th scope="row">ROC 2025 actual %</th>
                       <td>
-                        <input
-                          aria-label="ROC 2025 actual"
-                          value={pdDraft.roc2025}
-                          onChange={(e) => patchDraft({ roc2025: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
+                        {rocActualUnavailable(investment.lots, 2025, asOfDate) ? (
+                          <p aria-label="ROC 2025 actual">
+                            {rocActualUnavailable(
+                              investment.lots,
+                              2025,
+                              asOfDate,
+                            )}
+                          </p>
+                        ) : (
+                          <input
+                            aria-label="ROC 2025 actual"
+                            value={pdDraft.roc2025}
+                            onChange={(e) =>
+                              patchDraft({ roc2025: e.target.value })
+                            }
+                            disabled={busy || writesBlocked}
+                          />
+                        )}
                       </td>
-                      <td>editable</td>
+                      <td>
+                        {rocActualUnavailable(investment.lots, 2025, asOfDate) ||
+                          "editable after 2025 1099"}
+                      </td>
                     </tr>
                     <tr>
                       <th scope="row">ROC 2026 estimate %</th>
@@ -5260,14 +6536,29 @@ export default function App() {
                     <tr>
                       <th scope="row">ROC 2026 actual %</th>
                       <td>
-                        <input
-                          aria-label="ROC 2026 actual"
-                          value={pdDraft.roc2026a}
-                          onChange={(e) => patchDraft({ roc2026a: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
+                        {rocActualUnavailable(investment.lots, 2026, asOfDate) ? (
+                          <p aria-label="ROC 2026 actual">
+                            {rocActualUnavailable(
+                              investment.lots,
+                              2026,
+                              asOfDate,
+                            )}
+                          </p>
+                        ) : (
+                          <input
+                            aria-label="ROC 2026 actual"
+                            value={pdDraft.roc2026a}
+                            onChange={(e) =>
+                              patchDraft({ roc2026a: e.target.value })
+                            }
+                            disabled={busy || writesBlocked}
+                          />
+                        )}
                       </td>
-                      <td>editable</td>
+                      <td>
+                        {rocActualUnavailable(investment.lots, 2026, asOfDate) ||
+                          "editable after 2026 1099"}
+                      </td>
                     </tr>
                     <tr>
                       <th scope="row">Notes</th>
@@ -6249,15 +7540,16 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  aria-label="Validate current ROC estimate"
+                  aria-label="Complete research"
                   disabled={
                     busy ||
                     writesBlocked ||
+                    Boolean(researchActivity?.running) ||
                     !(wizSourceUrl.trim() || wizDeclSource.trim())
                   }
                   onClick={() => void researchRoc()}
                 >
-                  Validate current ROC estimate
+                  {researchActivity?.running ? "Completing research…" : "Complete research"}
                 </button>
                 <button
                   type="button"
@@ -6322,7 +7614,7 @@ export default function App() {
               aria-label="Research"
               disabled={
                 busy ||
-                Boolean(wizResearchProgress) ||
+                Boolean(researchActivity?.running) ||
                 writesBlocked ||
                 !wizSymbol.trim() ||
                 !wizSourceUrl.trim()
@@ -6342,27 +7634,34 @@ export default function App() {
               </button>
             ) : null}
           </div>
-          {wizResearchProgress ? (
+          {researchActivity?.running ? (
             <section
               className="process-a-research-progress"
               aria-label="Research progress"
               aria-busy="true"
             >
               <p role="status" aria-live="polite">
-                {wizResearchProgress.label}
+                {researchActivity.label}
               </p>
-              {wizResearchProgress.total > 0 ? (
+              {researchActivity.total > 0 ? (
                 <progress
-                  max={wizResearchProgress.total}
-                  value={Math.min(wizResearchProgress.step, wizResearchProgress.total)}
+                  max={researchActivity.total}
+                  value={Math.min(researchActivity.step, researchActivity.total)}
                 />
               ) : (
                 <div className="process-a-research-spinner" aria-hidden="true" />
               )}
             </section>
           ) : null}
-          {wizRetrieveNote ? <p role="status">{wizRetrieveNote}</p> : null}
-          {wizResearchDone && !wizResearchProgress ? (
+          {researchActivity?.resultLine && !researchActivity.running ? (
+            <p role="status" aria-label="Research result">
+              {researchActivity.resultLine}
+            </p>
+          ) : null}
+          {wizRetrieveNote && !researchActivity?.resultLine ? (
+            <p role="status">{wizRetrieveNote}</p>
+          ) : null}
+          {wizResearchDone && !researchActivity?.running ? (
             <section aria-label="Research results">
               <h3>Research results</h3>
               <table aria-label="Retrieved versus unknown">
@@ -6452,15 +7751,52 @@ export default function App() {
                               : ""
                           }`
                         : "—"}
+                      {wizBacktestNeeded ? (
+                        <p role="status" aria-label="Backtest dates required for tier suggest">
+                          Backtest start/end (and method/source) are required to complete
+                          ClassificationSuggest. Other research continues without a backtest.
+                          Accept tier remains owner-only.
+                        </p>
+                      ) : null}
+                      {wizAiThesis ? (
+                        <p role="status" aria-label="AI thesis narrative">
+                          Thesis (advisory): {wizAiThesis}
+                        </p>
+                      ) : null}
                     </td>
                     <td>
                       {(wizTierSuggestion?.suggestedTier || wizLookthrough.riskTierSuggestion || "").trim()
                         ? "retrieved"
-                        : "unknown"}
+                        : wizBacktestNeeded
+                          ? "needs backtest"
+                          : "unknown"}
                     </td>
                   </tr>
                 </tbody>
               </table>
+
+              {(researchNotes || wizAiThesis) ? (
+                <section
+                  className="research-notes-panel"
+                  aria-label="Research notes"
+                >
+                  <h4>Research notes</h4>
+                  <p className="research-notes-overview">
+                    {researchNotes?.overview || wizAiThesis}
+                  </p>
+                  {(researchNotes?.suggestedTier ||
+                    wizTierSuggestion?.suggestedTier ||
+                    wizLookthrough.riskTierSuggestion) ? (
+                    <p role="note" aria-label="Suggested risk tier">
+                      Suggested risk (not applied):{" "}
+                      {researchNotes?.suggestedTier ||
+                        wizTierSuggestion?.suggestedTier ||
+                        wizLookthrough.riskTierSuggestion}
+                      . Owner sets Risk manually — never auto-applied.
+                    </p>
+                  ) : null}
+                </section>
+              ) : null}
 
               <section aria-label="ROC research strip" className="roc-research-strip">
                 <h4>ROC research</h4>
@@ -6468,17 +7804,24 @@ export default function App() {
                   {wizRoc && wizRoc.rocPctMinor != null
                     ? `Proposed ${((wizRoc.rocPctMinor as number) / 10 ** wizRoc.scale).toFixed(wizRoc.scale)}% (2026 estimate, ${wizRoc.kind || "estimate"})${
                         wizRoc.sourceUrl ? ` — ${wizRoc.sourceUrl}` : ""
-                      }. Not research-complete; not 1099 actual.`
-                    : "unknown — not 0%"}
+                      }. Not research-complete.`
+                    : "2026 estimate unknown — not 0%. 2025 actual stays N/A when the position was not held that year."}
                 </p>
                 {wizSourceUrl.trim() || wizDeclSource.trim() ? (
                   <button
                     type="button"
-                    aria-label="Validate current ROC estimate"
-                    disabled={busy || writesBlocked || !wizSecurityId}
+                    aria-label="Complete research"
+                    disabled={
+                      busy ||
+                      writesBlocked ||
+                      !wizSecurityId ||
+                      Boolean(researchActivity?.running)
+                    }
                     onClick={() => void researchRoc()}
                   >
-                    Validate current ROC estimate
+                    {researchActivity?.running
+                      ? "Completing research…"
+                      : "Complete research"}
                   </button>
                 ) : null}
               </section>
@@ -6787,12 +8130,13 @@ export default function App() {
               />
             </label>
             <label>
-              Original cost
+              Unit original $
               <input
-                aria-label="Add lot original cost"
+                aria-label="Add lot unit original cost"
                 value={addLotCost}
                 onChange={(e) => setAddLotCost(e.target.value)}
                 disabled={busy || writesBlocked}
+                placeholder="29.46"
               />
             </label>
             <label>
@@ -6804,15 +8148,57 @@ export default function App() {
                   onChange={(e) => setAddLotTaxDifferent(e.target.checked)}
                   disabled={busy || writesBlocked}
                 />{" "}
-                Tax cost different
+                Unit tax $ different
               </span>
               <input
-                aria-label="Add lot tax cost"
+                aria-label="Add lot unit tax cost"
                 value={addLotTaxDifferent ? addLotTaxCost : addLotCost}
                 onChange={(e) => setAddLotTaxCost(e.target.value)}
                 disabled={busy || writesBlocked || !addLotTaxDifferent}
               />
             </label>
+            {(() => {
+              const qty = Number(addLotQty);
+              const unit = Number(addLotCost);
+              if (
+                !Number.isFinite(qty) ||
+                qty <= 0 ||
+                !Number.isFinite(unit) ||
+                unit < 0 ||
+                !addLotQty.trim() ||
+                !addLotCost.trim()
+              ) {
+                return (
+                  <p role="status" aria-label="Add lot total confirmation">
+                    Enter qty and unit original $ — lot total = qty × unit.
+                  </p>
+                );
+              }
+              const totalCents = lotTotalFromUnitCents(qty, 0, dollarsToMinor(addLotCost));
+              const totalLabel = (totalCents / 100).toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              });
+              const unitLabel = formatMoneyInput(addLotCost);
+              return (
+                <p role="status" aria-label="Add lot total confirmation">
+                  Confirm: {formatScaled(qty, 0)} × ${unitLabel} = ${totalLabel} lot
+                  original (saved as performance basis total).
+                  {addLotTaxDifferent && addLotTaxCost.trim()
+                    ? (() => {
+                        const taxUnit = Number(addLotTaxCost);
+                        if (!Number.isFinite(taxUnit) || taxUnit < 0) return "";
+                        const taxTotal = lotTotalFromUnitCents(
+                          qty,
+                          0,
+                          dollarsToMinor(addLotTaxCost),
+                        );
+                        return ` Tax: ${formatScaled(qty, 0)} × $${formatMoneyInput(addLotTaxCost)} = $${(taxTotal / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`;
+                      })()
+                    : ""}
+                </p>
+              );
+            })()}
             <label>
               Origin
               <select
@@ -6855,6 +8241,49 @@ export default function App() {
             <h3>Exceptions</h3>
             <ExceptionList exceptions={exceptions} onOpenLog={() => void openExceptionLog()} />
           </section>
+          {captureProcess ? (
+            <section className="capture-process" aria-label="Capture process">
+              <h3>{captureProcess.title}</h3>
+              <p role="status" aria-live="polite">
+                {captureProcess.running
+                  ? `${captureProcess.detail} (${captureProcess.current} of ${captureProcess.total})`
+                  : captureProcess.detail}
+              </p>
+              {captureProcess.running && captureProcess.total > 0 ? (
+                <progress
+                  max={captureProcess.total}
+                  value={Math.min(captureProcess.current, captureProcess.total)}
+                />
+              ) : null}
+              {captureProcess.lines.length > 0 ? (
+                <pre aria-label="Capture process lines">
+                  {captureProcess.lines.slice(-8).join("\n")}
+                </pre>
+              ) : null}
+              <p>
+                Posted {captureProcess.posted}, skipped {captureProcess.skipped} duplicate
+                {captureProcess.skipped === 1 ? "" : "s"}, {captureProcess.errors} error
+                {captureProcess.errors === 1 ? "" : "s"}.
+              </p>
+              <div className="buttons">
+                <button
+                  type="button"
+                  aria-label="Open process log"
+                  onClick={() => void openExceptionLog()}
+                >
+                  Open process log
+                </button>
+                <button
+                  type="button"
+                  aria-label="Dismiss capture process"
+                  disabled={captureProcess.running}
+                  onClick={() => setCaptureProcess(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </section>
+          ) : null}
           <div className="buttons">
             <label>
               Fidelity or Schwab CSV
@@ -6897,6 +8326,112 @@ export default function App() {
               Post import
             </button>
           </div>
+          <section aria-label="Manual dividend">
+            <h3>Enter missing dividend</h3>
+            <p>
+              Cash positions (SPAXX, FDRXX, SWVXX) and Account 9. Qty is 1. Description is
+              Dividend. Amount is the cash total, not per share.
+            </p>
+            <div className="table-wrap">
+              <table aria-label="Manual dividend rows">
+                <thead>
+                  <tr>
+                    <th scope="col">Account</th>
+                    <th scope="col">Ticker</th>
+                    <th scope="col">Date</th>
+                    <th scope="col">Qty</th>
+                    <th scope="col">Description</th>
+                    <th scope="col">Amount $</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {manualDividendRows.map((row, index) => (
+                    <tr key={row.id}>
+                      <td>
+                        <select
+                          aria-label={`Manual dividend account ${index + 1}`}
+                          value={row.accountId}
+                          onChange={(e) =>
+                            updateManualDividendRow(row.id, { accountId: e.target.value })
+                          }
+                          disabled={busy || writesBlocked}
+                        >
+                          <option value="">Account</option>
+                          {accounts.map((a) => (
+                            <option key={a.accountId} value={a.accountId}>
+                              {a.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <input
+                          aria-label={`Manual dividend ticker ${index + 1}`}
+                          value={row.ticker}
+                          onChange={(e) =>
+                            updateManualDividendRow(row.id, { ticker: e.target.value })
+                          }
+                          disabled={busy || writesBlocked}
+                          list="manual-dividend-tickers"
+                          autoComplete="off"
+                        />
+                      </td>
+                      <td>
+                        <input
+                          aria-label={`Manual dividend date ${index + 1}`}
+                          type="date"
+                          value={row.occurredOn}
+                          onChange={(e) =>
+                            updateManualDividendRow(row.id, { occurredOn: e.target.value })
+                          }
+                          disabled={busy || writesBlocked}
+                        />
+                      </td>
+                      <td className="numeric">1</td>
+                      <td>Dividend</td>
+                      <td>
+                        <input
+                          aria-label={`Manual dividend amount ${index + 1}`}
+                          inputMode="decimal"
+                          value={row.amount}
+                          onChange={(e) =>
+                            updateManualDividendRow(row.id, { amount: e.target.value })
+                          }
+                          disabled={busy || writesBlocked}
+                          placeholder="21.27"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <datalist id="manual-dividend-tickers">
+              {securities.map((s) => (
+                <option key={s.securityId} value={s.symbol} />
+              ))}
+            </datalist>
+            <div className="buttons">
+              <button
+                type="button"
+                aria-label="Add manual dividend row"
+                disabled={busy || writesBlocked}
+                onClick={() =>
+                  setManualDividendRows((rows) => [...rows, blankManualDividendRow()])
+                }
+              >
+                Add row
+              </button>
+              <button
+                type="button"
+                aria-label="Post manual dividends"
+                disabled={busy || writesBlocked}
+                onClick={() => void postManualDividends()}
+              >
+                Post dividends
+              </button>
+            </div>
+          </section>
         </section>
       ) : null}
 
@@ -6942,6 +8477,16 @@ export default function App() {
             </button>
             <button
               type="button"
+              aria-label="Fill research gaps"
+              disabled={busy || writesBlocked || Boolean(researchActivity?.running)}
+              onClick={() => void fillResearchGaps()}
+            >
+              {researchActivity?.running && screen === "collectors"
+                ? "Filling research gaps…"
+                : "Fill research gaps"}
+            </button>
+            <button
+              type="button"
               aria-label="Apply issuer sources from provider"
               disabled={busy || writesBlocked}
               onClick={() => void applyIssuerSources()}
@@ -6949,6 +8494,32 @@ export default function App() {
               Apply issuer sources from provider
             </button>
           </div>
+          {researchActivity?.running && screen === "collectors" ? (
+            <section
+              className="process-a-research-progress"
+              aria-label="Research progress"
+              aria-busy="true"
+            >
+              <p role="status" aria-live="polite">
+                {researchActivity.label}
+              </p>
+              {researchActivity.total > 0 ? (
+                <progress
+                  max={researchActivity.total}
+                  value={Math.min(researchActivity.step, researchActivity.total)}
+                />
+              ) : (
+                <div className="process-a-research-spinner" aria-hidden="true" />
+              )}
+            </section>
+          ) : null}
+          {researchActivity?.resultLine &&
+          !researchActivity.running &&
+          screen === "collectors" ? (
+            <p role="status" aria-label="Research result">
+              {researchActivity.resultLine}
+            </p>
+          ) : null}
           {writesBlocked ? (
             <p role="status">
               Writes are blocked on this device, so Apply and Run enabled are
@@ -6963,9 +8534,11 @@ export default function App() {
             <p aria-label="Collector action status" role="status">
               Reload fleet refreshes this list from the database. Run enabled
               collectors hits issuer sites one symbol at a time with live
-              progress. Run misses only skips symbols already ok today.
-              Apply fills empty templates from provider (0 updated
-              means already assigned).
+              progress. Run misses only skips symbols already ok today
+              (declarations only). Fill research gaps runs Complete research
+              for enabled names missing provider, underlying, frequency, or
+              ROC observation. Apply fills empty templates from provider (0
+              updated means already assigned).
             </p>
           )}
           {collectorRunProgress ? (

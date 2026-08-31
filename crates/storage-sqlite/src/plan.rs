@@ -262,6 +262,63 @@ pub async fn position_characteristic_upsert(
 ) -> Result<PositionCharacteristicRecord, PlatformError> {
     let mut record = record;
     record.risk_tier = financial_domain::plan_review::normalize_risk_tier(&record.risk_tier);
+    // Process A may persist provider / lookthrough / needs_roc before cadence is known.
+    // Owner PositionCharacteristicUpsert still requires cadence via locked_cadence in queries.
+    if record.payment_frequency.trim().is_empty() {
+        sqlx::query(
+            "INSERT INTO position_characteristic (
+                security_id, payment_frequency, risk_tier, provider, underlying,
+                roc_pct_2025_actual_minor, roc_pct_2026_estimate_minor, roc_pct_2026_actual_minor,
+                roc_pct_2024_actual_minor, roc_scale, div_type, needs_roc_research, notes, is_active,
+                lookthrough_json
+             ) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(security_id) DO UPDATE SET
+                risk_tier = excluded.risk_tier,
+                provider = CASE
+                    WHEN excluded.provider != '' THEN excluded.provider
+                    ELSE position_characteristic.provider
+                END,
+                underlying = CASE
+                    WHEN excluded.underlying != '' THEN excluded.underlying
+                    ELSE position_characteristic.underlying
+                END,
+                roc_pct_2025_actual_minor = COALESCE(excluded.roc_pct_2025_actual_minor, position_characteristic.roc_pct_2025_actual_minor),
+                roc_pct_2026_estimate_minor = COALESCE(excluded.roc_pct_2026_estimate_minor, position_characteristic.roc_pct_2026_estimate_minor),
+                roc_pct_2026_actual_minor = COALESCE(excluded.roc_pct_2026_actual_minor, position_characteristic.roc_pct_2026_actual_minor),
+                roc_pct_2024_actual_minor = COALESCE(excluded.roc_pct_2024_actual_minor, position_characteristic.roc_pct_2024_actual_minor),
+                roc_scale = COALESCE(excluded.roc_scale, position_characteristic.roc_scale),
+                div_type = CASE
+                    WHEN excluded.div_type != '' THEN excluded.div_type
+                    ELSE position_characteristic.div_type
+                END,
+                needs_roc_research = excluded.needs_roc_research,
+                notes = excluded.notes,
+                is_active = excluded.is_active,
+                lookthrough_json = CASE
+                    WHEN excluded.lookthrough_json != '{}' AND excluded.lookthrough_json != ''
+                    THEN excluded.lookthrough_json
+                    ELSE position_characteristic.lookthrough_json
+                END",
+        )
+        .bind(record.security_id.to_string())
+        .bind(financial_domain::plan_review::normalize_risk_tier(&record.risk_tier))
+        .bind(&record.provider)
+        .bind(&record.underlying)
+        .bind(record.roc_pct_2025_actual_minor)
+        .bind(record.roc_pct_2026_estimate_minor)
+        .bind(record.roc_pct_2026_actual_minor)
+        .bind(record.roc_pct_2024_actual_minor)
+        .bind(record.roc_scale.map(|s| s as i64))
+        .bind(&record.div_type)
+        .bind(if record.needs_roc_research { 1 } else { 0 })
+        .bind(&record.notes)
+        .bind(if record.is_active { 1 } else { 0 })
+        .bind(record.lookthrough.to_json_string())
+        .execute(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        return Ok(record);
+    }
     let cadence = financial_domain::calculator::PaymentCadence::parse(&record.payment_frequency)
         .ok_or_else(|| {
             PlatformError::new(

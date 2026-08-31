@@ -46,6 +46,36 @@
   min-width: 9rem;
 }
 
+.income-week-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem 1rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.income-week-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+
+.income-week-label select {
+  font-weight: 400;
+  min-width: 18rem;
+}
+
+.income-current-week {
+  font-size: 1.15rem;
+  font-weight: 650;
+  margin: 0 0 0.85rem;
+}
+
+.income-current-week .this-week-mark {
+  font-weight: 600;
+}
+
 .trends-overview {
   display: flex;
   flex-wrap: wrap;
@@ -116,6 +146,78 @@
   border-top-color: #2a2a2a;
   border-radius: 50%;
   animation: process-a-spin 0.7s linear infinite;
+}
+
+.capture-process {
+  margin: 0.75rem 0 1rem;
+  max-width: 46rem;
+  padding: 0.75rem 0;
+}
+
+.capture-process h3 {
+  margin: 0 0 0.4rem;
+}
+
+.capture-process p {
+  margin: 0 0 0.4rem;
+}
+
+.capture-process progress {
+  display: block;
+  width: 100%;
+  max-width: 28rem;
+  height: 0.65rem;
+  margin-bottom: 0.5rem;
+}
+
+.capture-process pre {
+  margin: 0 0 0.5rem;
+  max-height: 9rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.85rem;
+}
+
+.research-notes-panel {
+  margin: 0.75rem 0 1rem;
+  max-width: 42rem;
+}
+
+.research-notes-panel h3,
+.research-notes-panel h4 {
+  margin: 0 0 0.4rem;
+}
+
+.research-notes-overview {
+  white-space: pre-wrap;
+  line-height: 1.45;
+  margin: 0 0 0.5rem;
+}
+
+.research-notes-panel .muted {
+  opacity: 0.75;
+  font-size: 0.9em;
+}
+
+.research-risk-control {
+  margin: 0.75rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #c8c8c8;
+}
+
+.research-risk-control legend {
+  font-weight: 600;
+}
+
+.research-risk-control label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.research-risk-control select {
+  max-width: 16rem;
 }
 
 @keyframes process-a-spin {

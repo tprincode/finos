@@ -1,10 +1,19 @@
 //! Import pipeline: stage, validate, approve, post (Capture component group).
 
 mod broker;
+mod gap;
 mod production;
 mod retrieve;
 
-pub use broker::{detect_broker, parse_broker_csv, BrokerLayout};
+pub use broker::{
+    classify_action, crf_drip_class, detect_broker, find_broker_header, parse_broker_csv,
+    parse_broker_csv_detail, parse_broker_day, resolve_account_name, ActionClass, BrokerLayout,
+    BrokerParse, CrfDripClass, DEFAULT_ACCOUNT_ALIASES,
+};
+pub use gap::{
+    dividend_gap, is_account_9, parse_roi_dividend_update, parse_yield_sheet_csv, DividendFact,
+    GapKind, GapRow,
+};
 pub use production::{
     parse_production_templates, production_template_basis_totals, production_template_totals,
 };
@@ -12,7 +21,7 @@ pub use retrieve::{
     collect_declaration_candidates_for, collect_declarations_for, collect_from_fetched_page,
     collect_last_price_quotes, collect_last_price_quotes_for, declaration_candidates,
     enrich_collector_quote_only, enrich_retrieve_body, is_registered_declaration_source, live_market_snapshot, live_price_quote,
-    live_roc_candidates, page_content_hash, parse_19a1_notice, parse_amplify_distributions,
+    live_research_identity, live_roc_candidates, live_roc_candidates_for, page_content_hash, parse_19a1_notice, parse_amplify_distributions,
     parse_edgar_offering_as_of, parse_edgar_offering_price, parse_generic_distributions,
     parse_moneymarket_distributions, parse_nasdaq_dividends, parse_neos_distributions,
     parse_proshares_distribution_summary, parse_roundhill_distribution_api,
@@ -21,7 +30,7 @@ pub use retrieve::{
     parse_yieldmax_distributions,
     price_quote_candidates, profile_from_vendor_htmls, registered_declaration_sources,
     retrieve_result, roundhill_fund_page, DeclarationCollectOutcome, DeclarationTarget,
-    LastPriceTarget,
+    LastPriceTarget, LiveRocFill,
 };
 pub use financial_domain::div1::{div1_adapter_missing, is_div1};
 

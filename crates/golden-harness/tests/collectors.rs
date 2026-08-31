@@ -837,3 +837,176 @@ async fn collector_fleet_zero_misses_after_injected_refresh() {
     );
 }
 
+
+/// forceRefresh false + last run ok today must not duplicate declaration periods
+/// or append another identical Yahoo quote for the same as-of/source.
+#[tokio::test]
+async fn collector_retrieve_fresh_today_does_not_duplicate_decls_or_quotes() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .expect("open sqlite");
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "HAKY", "name": "HAKY"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap().to_string();
+    research_template(&platform, &security_id, "HAKY").await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-01-02",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceCostMinor": 10000,
+            "taxCostMinor": 10000,
+            "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "provider": "Amplify",
+            "underlying": "HACK",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "declarationSource": "amplify",
+            "calendarPolicy": "issuer_calendar",
+            "collectorEnabled": true,
+            "sourceUrl": "https://amplifyetfs.com/haky/#distributions"
+        }),
+    )
+    .await;
+
+    let periods = [
+        "2026-04-30",
+        "2026-05-29",
+        "2026-06-30",
+        "2026-07-31",
+    ];
+    let candidates: Vec<serde_json::Value> = periods
+        .iter()
+        .map(|pay| {
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": 12,
+                "amountScale": 2,
+                "paymentPeriod": pay,
+                "source": "amplify",
+                "contentHash": "hash-haky-fresh"
+            })
+        })
+        .collect();
+    let quote = serde_json::json!({
+        "securityId": security_id,
+        "priceMinor": 2550,
+        "scale": 2,
+        "source": "yahoo",
+        "asOfAt": "2026-08-30"
+    });
+
+    let first = must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "HAKY",
+            "declarationSource": "amplify",
+            "candidates": candidates.clone(),
+            "quote": quote.clone(),
+            "contentHash": "hash-haky-fresh",
+            "forceRefresh": false
+        }),
+    )
+    .await;
+    assert_eq!(first["ok"], true);
+
+    // Second run: forceRefresh false + unchanged (fresh today) — no duplicate periods / quotes.
+    let second = must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "HAKY",
+            "declarationSource": "amplify",
+            "candidates": candidates.clone(),
+            "quote": quote.clone(),
+            "contentHash": "hash-haky-fresh",
+            "unchanged": true,
+            "forceRefresh": false,
+            "lastRunOk": true,
+            "lastRunAt": "2026-08-30T12:00:00Z",
+            "lastContentHash": "hash-haky-fresh"
+        }),
+    )
+    .await;
+    assert!(
+        second["unchanged"].as_u64().unwrap_or(0) >= 1,
+        "expected unchanged: {second}"
+    );
+
+    // Identical LastPriceRefresh rows must not stack for same as-of/source.
+    for _ in 0..3 {
+        must_ok(
+            &platform,
+            "LastPriceRefresh",
+            serde_json::json!({
+                "quotes": [quote.clone()]
+            }),
+        )
+        .await;
+    }
+
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-30" }),
+    )
+    .await;
+    assert_eq!(inv["declarationCount"], 4, "periods must not duplicate: {inv}");
+
+    let quotes = query_json(
+        &platform,
+        "PriceQuoteList",
+        serde_json::json!({ "securityId": security_id }),
+    )
+    .await;
+    let empty: Vec<serde_json::Value> = Vec::new();
+    let quote_rows = quotes.as_array().unwrap_or(&empty);
+    let yahoo_same: Vec<_> = quote_rows
+        .iter()
+        .filter(|q| {
+            q["source"] == "yahoo"
+                && q["asOfAt"].as_str().unwrap_or("").starts_with("2026-08-30")
+                && q["validationStatus"] == "accepted"
+        })
+        .collect();
+    assert_eq!(
+        yahoo_same.len(),
+        1,
+        "identical yahoo as-of/source must not stack: {quotes}"
+    );
+}
