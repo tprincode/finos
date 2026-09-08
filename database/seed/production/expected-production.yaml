@@ -1,0 +1,32 @@
+# Production seed expectations — Finance Management System
+# Authority: FMS templates locked in project artifacts / Build Package v2.0
+# Counts and owner-approved money totals. Do not auto-regenerate from code under test.
+
+schema_version: 1
+source: FMS_Development_Include_Package / Template_*.xlsx
+as_of: "2026-08-19"
+
+counts:
+  accounts: 8
+  positions: 75
+  lots_total: 1679
+  lots_open: 1250
+  transactions_yield: 5862
+  transactions_disbursement: 129
+
+totals:
+  yield_amount_minor: 16768338
+  disbursement_gross_minor: 14982155
+  disbursement_net_minor: 13905294
+  open_performance_minor: 46694666
+  open_tax_minor: 46135629
+  scale: 2
+
+notes:
+  - "lots_open 1250 is the frozen Template_Lots working foundation (2026-08-12)."
+  - "Yield row count may be 5862 or 5863 depending on append history; reconcile to template file in this folder."
+  - "Unknown/blank amounts must remain unknown — never coerce to zero."
+  - "CRF zero-cost DRIP: legitimate on CRF DRIP lots; automatic capture only FI Roth."
+  - "Money totals are owner-approved from the locked templates (scale 2 USD cents). Do not auto-write from code under test."
+  - "open_performance_minor / open_tax_minor are USD-cent sums of open lots in Template_Lots.xlsx (per-lot half-up). production_seed compares template, yaml, and posted BasisGet."
+  - "counts.positions is distinct open-lot symbols from PositionDetailsGet (BTC Grayscale and BTC-USD crypto are separate)."

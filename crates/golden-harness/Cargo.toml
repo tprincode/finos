@@ -1,0 +1,51 @@
+[package]
+name = "golden-harness"
+description = "Golden Business Outcome Harness runner and architecture invariant tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+magi-gate = []
+
+[dependencies]
+application-core = { path = "../application-core" }
+financial-domain = { path = "../financial-domain" }
+import-engine = { path = "../import-engine" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+storage-sqlite = { path = "../storage-sqlite" }
+storage-postgres = { path = "../storage-postgres" }
+finos-server = { path = "../../services/server" }
+tempfile.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "data-seed"
+path = "src/bin/data_seed.rs"
+
+[[bin]]
+name = "div1-adapter-audit"
+path = "src/bin/div1_adapter_audit.rs"
+
+[[bin]]
+name = "roc-19a1-fill"
+path = "src/bin/roc_19a1_fill.rs"
+
+[[bin]]
+name = "collector-miss-loop"
+path = "src/bin/collector_miss_loop.rs"
+
+[[bin]]
+name = "owner-lock-apply"
+path = "src/bin/owner_lock_apply.rs"
+
+[dev-dependencies]
+financial-domain = { path = "../financial-domain" }
+tempfile.workspace = true
+tokio.workspace = true
+axum = { version = "0.8", default-features = false, features = ["json"] }

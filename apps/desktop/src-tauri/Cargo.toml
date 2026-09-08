@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "finos-desktop"
+version = "0.1.0"
+description = "Finance Management System desktop shell (Tauri 2)"
+edition = "2021"
+
+[lib]
+name = "finos_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+application-core = { path = "../../../crates/application-core" }
+financial-domain = { path = "../../../crates/financial-domain" }
+import-engine = { path = "../../../crates/import-engine" }
+storage-sqlite = { path = "../../../crates/storage-sqlite" }
+ai-gateway = { path = "../../../crates/ai-gateway" }
+dotenvy = "0.15"

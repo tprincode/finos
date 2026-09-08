@@ -1,0 +1,50 @@
+# Locked Calculator AE Plan extract. Initial load effective 2026-08-12.
+# Authority: docs/Authority/domains/Calculator_Current_Architecture_and_Target_Requirements_2026-08-12.docx
+# Template_Positions.current_plan_per_share is blank; this file is the initial effective PlanHistory.
+# Plan never auto-updates from declarations or broker cash.
+
+source: "2026-tracking spreadsheet.xlsb / Calculator / AE"
+effective_from: "2026-08-12"
+decision_reason: "Locked Calculator from initial load on 2026-08-12"
+
+symbols:
+  - { symbol: CRF, plan: "0.1168", periods: 12 }
+  - { symbol: TSLL, plan: "0.08", periods: 4 }
+  - { symbol: AMDW, plan: "0.55", periods: 52 }
+  - { symbol: GLAD, plan: "0.15", periods: 12 }
+  - { symbol: TOPW, plan: "0.25", periods: 52 }
+  - { symbol: BITO, plan: "0.75", periods: 12 }
+  - { symbol: NVDW, plan: "0.35", periods: 52 }
+  - { symbol: PLTW, plan: "0.18", periods: 52 }
+  - { symbol: TSPY, plan: "0.275", periods: 12 }
+  - { symbol: QQQI, plan: "0.62", periods: 12 }
+  - { symbol: QDVO, plan: "0.24", periods: 12 }
+  - { symbol: IGLD, plan: "0.131", periods: 12 }
+  - { symbol: TSLW, plan: "0.19", periods: 52 }
+  - { symbol: QYLD, plan: "0.165", periods: 12 }
+  - { symbol: JEPQ, plan: "0.45", periods: 12 }
+  - { symbol: ET, plan: "0.3325", periods: 4 }
+  - { symbol: MPLX, plan: "0.95", periods: 4 }
+  - { symbol: EFC, plan: "0.13", periods: 12 }
+  - { symbol: XPAY, plan: "0.8995", periods: 12 }
+  - { symbol: SVOL, plan: "0.3", periods: 12 }
+  - { symbol: ORC, plan: "0.1", periods: 12 }
+  - { symbol: CLM, plan: "0.1224", periods: 12 }
+  - { symbol: TRIN, plan: "0.17", periods: 12 }
+  - { symbol: CEFS, plan: "0.14", periods: 12 }
+  - { symbol: SPAXX, plan: "0.003", periods: 12 }
+  - { symbol: SWVXX, plan: "0.0015", periods: 12 }
+  - { symbol: EPD, plan: "0.55", periods: 4 }
+  - { symbol: XDTE, plan: "0.12", periods: 52 }
+  - { symbol: SOXL, plan: "0.04", periods: 4 }
+  - { symbol: SPYI, plan: "0.48", periods: 12 }
+  - { symbol: RDTE, plan: "0.16", periods: 52 }
+  - { symbol: QDTE, plan: "0.13", periods: 52 }
+  - { symbol: BTCI, plan: "1.41", periods: 12 }
+  - { symbol: NFLY, plan: "0.06", periods: 52 }
+  - { symbol: AMZY, plan: "0.07", periods: 52 }
+  - { symbol: YMAX, plan: "0.07", periods: 52 }
+  - { symbol: YBTC, plan: "0.13", periods: 52 }
+  - { symbol: MSTY, plan: "0.21", periods: 52 }
+  - { symbol: CONY, plan: "0.3", periods: 52 }
+  - { symbol: AMDY, plan: "0.31", periods: 52 }

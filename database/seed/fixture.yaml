@@ -1,0 +1,27 @@
+accounts:
+  - name: Taxable Brokerage
+    kind: taxable
+  - name: Traditional IRA
+    kind: ira
+securities:
+  - symbol: CASH
+    name: USD Cash
+import:
+  sourceId: seed-broker-2026
+  filename: seed-broker.txt
+  content: |
+    deposit,1000.00
+    dividend,500.00
+  candidates:
+    - accountName: Taxable Brokerage
+      symbol: CASH
+      activityType: deposit
+      amountMinor: 100000
+      scale: 2
+      occurredOn: "2026-01-10"
+    - accountName: Taxable Brokerage
+      symbol: CASH
+      activityType: dividend
+      amountMinor: 50000
+      scale: 2
+      occurredOn: "2026-01-17"

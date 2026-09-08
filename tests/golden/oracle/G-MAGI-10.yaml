@@ -1,0 +1,28 @@
+# Independent oracle. Engine must not overwrite this file.
+
+scenario_id: G-MAGI-10
+status: approved
+approved_at: "2026-08-18"
+decision_state: SAFE
+data_completeness: complete
+scale: 2
+applicable_threshold_minor: 8460000
+safety_reserve_minor: 500000
+posted_magi_minor: 5200000
+form_total_minor: 5250000
+difference_minor: -50000
+after_adjustment_minor: 5200000
+actual_included_ytd_minor: 5200000
+known_remaining_minor: 0
+base_forecast_minor: 5200000
+conservative_forecast_minor: 5200000
+uncertain_amount_minor: 0
+raw_headroom_minor: 3260000
+protected_headroom_minor: 2760000
+included: [G10-DIV-1, G10-GAIN-1]
+excluded: []
+warnings: []
+trace:
+  - "1099-DIV 50000.00 + 1099-B 2500.00 = 52500.00"
+  - "posted 50000.00 + 2000.00 = 52000.00"
+  - "G10-ADJ-1 owner-approved; adjusted forms 52000.00 match posted MAGI"

@@ -6,5 +6,12 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+    "scripts": {
+    "desktop": "npm start --workspace=@finos/desktop",
+    "desktop:build": "npm run tauri --workspace=@finos/desktop -- build",
+    "data-seed": "cargo run -p golden-harness --bin data-seed",
+    "web": "npm run dev --workspace=@finos/web",
+    "web:check": "npm run build --workspace=@finos/web"
+  }
 }

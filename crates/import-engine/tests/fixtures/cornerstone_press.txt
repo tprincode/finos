@@ -1,0 +1,5 @@
+Record Date Payable Date Per Share
+PAY1 July 15, 2026 July 31, 2026 $0.1215
+PAY1 August 14, 2026 August 31, 2026 $0.1215
+PAY1 September 15, 2026 September 30, 2026 $0.1215
+XXX July 15, 2026 July 31, 2026 $0.9999

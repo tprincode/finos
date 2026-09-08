@@ -1,0 +1,21 @@
+[package]
+name = "finos-server"
+description = "Central Axum HTTP adapter over application-core and storage-postgres (M8; not desktop authority)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "finos-server"
+path = "src/main.rs"
+
+[dependencies]
+application-core = { path = "../../crates/application-core" }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+jsonwebtoken.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+storage-postgres = { path = "../../crates/storage-postgres" }
+tokio.workspace = true
+tower = { version = "0.5", default-features = false, features = ["util"] }
+uuid.workspace = true

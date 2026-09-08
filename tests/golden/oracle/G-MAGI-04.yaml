@@ -1,0 +1,26 @@
+# Proposed independent oracle. Not approved. Engine must not overwrite this file.
+
+scenario_id: G-MAGI-04
+status: approved
+approved_at: "2026-08-18"
+decision_state: SAFE
+data_completeness: complete
+scale: 2
+applicable_threshold_minor: 8460000
+safety_reserve_minor: 500000
+actual_included_ytd_minor: 4000000
+known_remaining_minor: 0
+base_forecast_minor: 4000000
+conservative_forecast_minor: 4000000
+uncertain_amount_minor: 0
+raw_headroom_minor: 4460000
+protected_headroom_minor: 3960000
+included: [G04-DIV-1]
+excluded: [G04-ROTH-DIST, G04-ROTH-INT, G04-HSA-BUY]
+warnings: []
+trace:
+  - "include taxable dividend 40000.00"
+  - "exclude qualified FI Roth distribution 50000.00"
+  - "exclude Roth internal dividend 2000.00"
+  - "exclude HSA internal buy 10000.00"
+  - "MAGI remains 40000.00 → SAFE"

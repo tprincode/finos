@@ -1,0 +1,37 @@
+scenario_id: G-MAGI-02
+scenario_version: "0.2.0-proposed"
+business_question: Values immediately below, at and above the boundary produce deterministic boundary behavior with no rounding ambiguity.
+requirement_ids: [V1.1-§11.4-G-MAGI-02]
+as_of_date: "2026-12-31"
+coverage_year: 2026
+oracle: tests/golden/oracle/G-MAGI-02.yaml
+input_facts:
+  household:
+    size: 2
+    jurisdiction: US-contiguous-DC
+  accounts:
+    - { name: Taxable Brokerage, kind: taxable, coverage: complete }
+  boundary_probes:
+    - { id: below, actual_included_ytd_minor: 8459999, note: "one cent below $84,600.00" }
+    - { id: at, actual_included_ytd_minor: 8460000, note: "exactly $84,600.00" }
+    - { id: above, actual_included_ytd_minor: 8460001, note: "one cent above $84,600.00" }
+  notes: Each probe is a complete year-end snapshot with known_remaining 0 and uncertain 0. Amounts are integer cents; no half-cent rounding.
+provenance:
+  completeness: complete
+rule_set_id: marketplace-magi-2026-us-contiguous-hh2
+calculation_version: magi-2026.1-proposed
+expected_included: [below, at, above]
+expected_excluded: []
+expected_subtotals:
+  below_status: WATCH
+  at_status: OVER
+  above_status: OVER
+expected_range: {}
+expected_status: see-oracle-probes
+expected_warnings: []
+tolerance: exact
+precision_policy: fixed-scale
+approval:
+  status: approved
+  rationale: "Owner accepted proposed pack as written on 2026-08-18: household of 2, threshold $84,600, safety reserve $5,000, OVER when actual is at or above threshold."
+  approved_at: "2026-08-18"

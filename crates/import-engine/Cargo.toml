@@ -7,6 +7,14 @@ license.workspace = true
 
 [dependencies]
 application-core = { path = "../application-core" }
+calamine = "0.26"
+chrono.workspace = true
+flate2 = "1"
 financial-domain = { path = "../financial-domain" }
 serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
 thiserror.workspace = true
+native-tls = "0.2"
+ureq = { version = "2", features = ["cookies", "native-tls"] }
+uuid.workspace = true
