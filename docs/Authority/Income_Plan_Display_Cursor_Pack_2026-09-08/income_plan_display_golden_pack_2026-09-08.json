@@ -1,0 +1,181 @@
+{
+  "pack": "income-plan-display-golden-2026-09-08",
+  "authority": [
+    "Income_Plan_Grid_and_Week_Display_Requirements_2026-09-08.docx",
+    "Income_Plan_Print_and_Export_2026-09-08.docx",
+    "Income_Plan_Target_Architecture_v1.0_2026-08-13.docx"
+  ],
+  "as_of": "2026-09-08",
+  "week_rule": "Saturday through Friday; column label is Friday week-ending date",
+  "html_companion": "Income_Plan_Pattern_A_B_Simulation.html is visualization only and is not a runtime dependency",
+  "test_symbols_only": [
+    "WEEK1",
+    "MON1",
+    "QTR1",
+    "CASH1"
+  ],
+  "banned_in_tests": "Do not use live household tickers as fixture names",
+  "fixtures": {
+    "accounts_default_on": [
+      "Income",
+      "Car",
+      "Health",
+      "FI Roth",
+      "9"
+    ],
+    "accounts_default_off": [
+      "Speculation",
+      "Energy",
+      "Robinhood"
+    ],
+    "plan_history": [
+      {
+        "symbol": "WEEK1",
+        "plan_per_share": 0.15,
+        "effective_from": "2026-01-01",
+        "effective_to": "2026-08-14"
+      },
+      {
+        "symbol": "WEEK1",
+        "plan_per_share": 0.17,
+        "effective_from": "2026-08-15",
+        "effective_to": null
+      }
+    ],
+    "lots": [
+      {
+        "symbol": "WEEK1",
+        "account": "Car",
+        "qty": 100
+      },
+      {
+        "symbol": "MON1",
+        "account": "Income",
+        "qty": 10
+      },
+      {
+        "symbol": "QTR1",
+        "account": "Income",
+        "qty": 20
+      },
+      {
+        "symbol": "CASH1",
+        "account": "9",
+        "qty": 1000
+      }
+    ],
+    "frequency": {
+      "WEEK1": "Weekly",
+      "MON1": "Monthly",
+      "QTR1": "Quarterly",
+      "CASH1": "Monthly"
+    },
+    "monthly_pay_week_ending": "2026-08-28",
+    "quarterly_pay_week_ending": "2026-08-14"
+  },
+  "goldens": [
+    {
+      "id": "G-IP-01",
+      "name": "table1_has_no_last_update",
+      "expect": "Pattern A Table 1 column set is label, year summary, week columns only"
+    },
+    {
+      "id": "G-IP-02",
+      "name": "table2_last_update_replaces_qty_total_annual",
+      "expect": "Pattern A Table 2 frozen columns are symbol, last_update, then weeks. No quantity, no ytd_total, no annual_pct"
+    },
+    {
+      "id": "G-IP-03",
+      "name": "plan_lock_past_weeks",
+      "given": "WEEK1 qty 100 Car; week ending 2026-08-14 is closed; current plan is 0.17",
+      "expect_plan_dollars_week_ending_2026_08_14": 15.0,
+      "expect_plan_dollars_week_ending_2026_08_21": 17.0
+    },
+    {
+      "id": "G-IP-04",
+      "name": "monthly_only_pay_week",
+      "expect": "MON1 has plan $ only in week ending 2026-08-28; other weeks empty not red"
+    },
+    {
+      "id": "G-IP-05",
+      "name": "future_actual_blank",
+      "expect": "Table 1 Total Actual and Total Difference for week ending 2026-09-11 are null, not 0"
+    },
+    {
+      "id": "G-IP-06",
+      "name": "account_filter_car_only",
+      "expect": "Selecting Car only removes Income/Health/Roth/9 rows from Table 1 and drops non-Car lots from Table 2 $"
+    },
+    {
+      "id": "G-IP-07",
+      "name": "week_nav_a_to_b_to_a",
+      "expect": "Opening week 2026-09-04 from Table 1 header shows Pattern B for that week; Back restores Pattern A with 2026-09-04 selected"
+    },
+    {
+      "id": "G-IP-08",
+      "name": "last_update_success_only",
+      "given": "WEEK1 last collector attempt failed; no prior success",
+      "expect_last_update": null
+    },
+    {
+      "id": "G-IP-09",
+      "name": "default_accounts_exclude_speculation",
+      "expect": "Initial Pattern A account set does not include Speculation, Energy, Robinhood"
+    },
+    {
+      "id": "G-IP-10",
+      "name": "html_not_imported",
+      "expect": "Repo production path does not add the companion HTML as a shipped runtime asset"
+    },
+    {
+      "id": "G-IP-P01",
+      "name": "pdf_pattern_a_contains_both_tables_not_b",
+      "expect": "Save PDF while Pattern A is active includes account rollup and position grid and does not include Pattern B declaration/actual columns"
+    },
+    {
+      "id": "G-IP-P02",
+      "name": "pdf_pattern_b_single_week",
+      "expect": "Save PDF while Pattern B week ending 2026-09-04 is active is that week only"
+    },
+    {
+      "id": "G-IP-P03",
+      "name": "print_respects_car_filter",
+      "expect": "Car-only on screen is Car-only on PDF and Excel"
+    },
+    {
+      "id": "G-IP-P04",
+      "name": "excel_future_actual_blank",
+      "expect": "Future Actual and Difference cells in Excel are empty, not 0"
+    },
+    {
+      "id": "G-IP-P05",
+      "name": "excel_table1_no_last_update",
+      "expect": "AccountRollup sheet has no last_update column"
+    },
+    {
+      "id": "G-IP-P06",
+      "name": "excel_table2_has_last_update_not_qty",
+      "expect": "PositionGrid sheet has last_update and does not have quantity, ytd_total, or annual_pct"
+    },
+    {
+      "id": "G-IP-P07",
+      "name": "file_menu_delegates",
+      "expect": "File Print current view while Income Plan focused uses the same snapshot as the page Print / Export control"
+    },
+    {
+      "id": "G-IP-P08",
+      "name": "html_not_print_engine",
+      "expect": "Print path does not invoke Income_Plan_Pattern_A_B_Simulation.html"
+    },
+    {
+      "id": "G-IP-P09",
+      "name": "pdf_write_local_first",
+      "expect": "Default PDF destination is local filesystem, not cloud Drive"
+    },
+    {
+      "id": "G-IP-P10",
+      "name": "cover_lists_filter_state",
+      "expect": "PDF and Excel cover/header list pattern, selected accounts, and week window"
+    }
+  ]
+}

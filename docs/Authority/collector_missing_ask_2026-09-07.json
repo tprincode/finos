@@ -1,0 +1,300 @@
+{
+  "as_of": "2026-09-07",
+  "purpose": "Issuer-host facts only. Do not persist. Do not invent spec or 0% ROC.",
+  "authority": [
+    "Collector_Requirements_Initial_and_Runtime_Locked_2026-09-04",
+    "Adapter_Collector_Owner_Decisions_Locked_2026-09-02",
+    "F1/F2 Collector_Implementation_Plan_Audit_2026-09-04"
+  ],
+  "bans": [
+    "yahoo.com",
+    "finance.yahoo.com",
+    "nasdaq.com",
+    "dividendhistory.org",
+    "dividendinvestor.com",
+    "aggregators",
+    "invented 0% ROC",
+    "overwrite stored paid rows",
+    "change locked cadence / Plan $ / risk",
+    "persist owner clicks"
+  ],
+  "frequency_locks": {
+    "Weekly": ["AMDW", "QDTE", "RDTE", "TOPW", "XDTE", "YBTC"],
+    "Monthly": ["XPAY"]
+  },
+  "do_not_overwrite": [
+    {"symbol": "TSPY", "payment_period": "2026-09-02", "stored_amount_per_share": "0.30007"},
+    {"symbol": "SVOL", "keep_paid_row_count": 64}
+  ],
+  "owner_clicks_listed_not_requested": [
+    {"symbol": "HAKY", "field": "div_type", "current": "", "lock_value": "DIV-1"},
+    {"symbol": "HAKY", "field": "inception_on", "current": "", "evidence": "printed 2026-01-20 / launch 01/21/2026"},
+    {"symbol": "HAKY", "field": "roc_accept", "current": "needs_roc_research=1", "stored_pct": "100.00"},
+    {"symbol": "HAKY", "field": "amount_confirm", "tickets": ["declaration_amount_variation", "declaration_stored_mismatch"]},
+    {"symbol": "TSPY", "field": "amount_confirm", "stored": "0.30007", "issuer_now": "0.2954"},
+    {"symbol": "IGLD", "field": "amount_confirm"},
+    {"symbol": "QDVO", "field": "amount_confirm"},
+    {"symbol": "CLM", "field": "paid_payable_supersede", "vendor": "2026-09-30", "stored_paid": "2026-09-15"},
+    {"symbol": "CRF", "field": "paid_payable_supersede", "vendor": "2026-09-30", "stored_paid": "2026-09-15"},
+    {"symbol": "GLAD", "field": "paid_payable_supersede", "vendor": "2026-09-30", "stored_paid": "2026-09-21"}
+  ],
+  "return_schema": {
+    "symbol": "string",
+    "adapter": "string",
+    "declaration": {
+      "working_url": "string|null",
+      "http_status": "number|null",
+      "content_type": "string|null",
+      "parse_kind": "html|json|pdf|press|none",
+      "parse_recipe": {
+        "method": "GET",
+        "follow_same_host": ["string"],
+        "selector_or_json_path": "string",
+        "date_column": "string",
+        "amount_column": "string",
+        "notes": "string"
+      },
+      "rows": [
+        {
+          "payable_on": "YYYY-MM-DD",
+          "amount_per_share": "string",
+          "status": "paid|upcoming",
+          "source_url": "string"
+        }
+      ],
+      "blocked": "string|null"
+    },
+    "remaining_2026": {
+      "unused_dates": ["YYYY-MM-DD"],
+      "or_none": true
+    },
+    "roc": {
+      "tax_year": 2026,
+      "estimate_pct": "number|null",
+      "source_url": "string|null",
+      "http_status": "number|null",
+      "quote": "string|null",
+      "notice_says_zero": false,
+      "search_urls_tried": [{"url": "string", "http_status": "number|null"}]
+    }
+  },
+  "items": [
+    {
+      "symbol": "EFC",
+      "adapter": "ellington",
+      "gaps": ["A_last_run"],
+      "seed_url": "https://www.ellingtonfinancial.com/dividends",
+      "stored_paid_n": 188,
+      "stored_remaining_2026": ["2026-09-30", "2026-10-30"],
+      "ask": ["working_url", "http_status", "parse_recipe", "recent_paid_rows", "unused_2026_or_none"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "ET",
+      "adapter": "energytransfer",
+      "gaps": ["A_last_run"],
+      "seed_url": "https://ir.energytransfer.com/distribution-history-et",
+      "stored_paid_n": 168,
+      "stored_remaining_2026": ["2026-11-06"],
+      "ask": ["working_url", "http_status", "parse_recipe", "recent_paid_rows", "unused_2026_or_none"],
+      "do_not_wipe_history": true,
+      "roc_scope": "NotInScope"
+    },
+    {
+      "symbol": "GLAD",
+      "adapter": "gladstone",
+      "gaps": ["A_last_run", "A_lookback_false_positive"],
+      "seed_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history",
+      "prefer_same_host": [
+        "https://www.gladstonecapital.com/newsroom/detail/394/gladstone-capital-announces-monthly-cash-distributions-for"
+      ],
+      "stored_paid_n": 295,
+      "stored_remaining_2026": ["2026-09-21", "2026-10-23", "2026-11-17"],
+      "ask": ["working_url", "http_status", "parse_recipe", "recent_paid_rows", "unused_2026_or_none"],
+      "notes": "Dividend-history page is a JS widget. Parse newsroom press. Common stock only. Do not invent December. roc_scope=Bdc1099 — no invented 0%.",
+      "do_not_wipe_history": true,
+      "roc_scope": "Bdc1099"
+    },
+    {
+      "symbol": "HAKY",
+      "adapter": "amplify",
+      "gaps": ["A_last_run", "C_template"],
+      "seed_url": "https://amplifyetfs.com/haky/",
+      "stored_paid_n": 7,
+      "stored_remaining_2026": ["2026-09-30", "2026-10-30", "2026-11-30", "2026-12-31"],
+      "ask": ["working_url", "http_status", "parse_recipe", "paid_rows", "19a1_url_quote_or_none"],
+      "do_not_wipe_history": true,
+      "do_not_persist_owner_clicks": true
+    },
+    {
+      "symbol": "JEPQ",
+      "adapter": "jpmorgan",
+      "gaps": ["A_last_run"],
+      "seed_url": "https://am.jpmorgan.com/us/en/asset-management/adv/products/jpmorgan-nasdaq-equity-premium-income-etf-etf-46654q203",
+      "stored_paid_n": 65,
+      "stored_remaining_2026": ["2026-10-01"],
+      "ask": ["working_url", "http_status", "parse_recipe", "recent_paid_rows", "unused_2026_or_none"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "MPLX",
+      "adapter": "mplx",
+      "gaps": ["A_last_run"],
+      "seed_url": "https://ir.mplx.com/CorporateProfile/stock-information/stock-information/default.aspx",
+      "stored_paid_n": 57,
+      "stored_remaining_2026": ["2026-11-06"],
+      "ask": ["working_url", "http_status", "parse_recipe", "recent_paid_rows", "unused_2026_or_none"],
+      "do_not_wipe_history": true,
+      "roc_scope": "NotInScope"
+    },
+    {
+      "symbol": "MSTU",
+      "adapter": "trex",
+      "gaps": ["A_never_established", "frequency_None"],
+      "seed_url": "https://www.rexshares.com/mstr-etfs/",
+      "stored_paid_n": 0,
+      "stored_remaining_2026": [],
+      "ask": ["working_url", "http_status", "parse_recipe", "paid_rows_or_none", "frequency_quote", "unused_2026_or_none"],
+      "roc_scope": "NotInScope",
+      "notes": "Do not invent ROC 0. Owner lock: ordinary / not 19a-1."
+    },
+    {
+      "symbol": "QYLD",
+      "adapter": "globalx",
+      "gaps": ["A_last_run"],
+      "seed_url": "https://www.globalxetfs.com/funds/qyld/",
+      "stored_paid_n": 154,
+      "stored_remaining_2026": ["2026-09-22", "2026-10-20"],
+      "ask": ["working_url", "http_status", "parse_recipe", "recent_paid_rows", "unused_2026_or_none"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "SOXL",
+      "adapter": "direxion",
+      "gaps": ["A_last_run"],
+      "seed_url": "https://www.direxion.com/product/daily-semiconductor-bull-3x-etf",
+      "stored_paid_n": 29,
+      "stored_remaining_2026": [],
+      "ask": ["working_url", "http_status", "parse_recipe", "recent_paid_rows", "unused_2026_or_none"],
+      "do_not_wipe_history": true,
+      "roc_scope": "NotInScope"
+    },
+    {
+      "symbol": "TSLL",
+      "adapter": "direxion",
+      "gaps": ["A_last_run"],
+      "seed_url": "https://www.direxion.com/product/daily-tsla-bull-and-bear-leveraged-single-stock-etfs",
+      "stored_paid_n": 22,
+      "stored_remaining_2026": ["2026-09-23", "2026-12-10"],
+      "ask": ["working_url", "http_status", "parse_recipe", "recent_paid_rows", "unused_2026_or_none"],
+      "do_not_wipe_history": true,
+      "roc_scope": "NotInScope"
+    },
+    {
+      "symbol": "TSPY",
+      "adapter": "tappalpha",
+      "gaps": ["A_last_run", "C5_increment"],
+      "seed_url": "https://www.tappalphafunds.com/etfs/tspy",
+      "stored_paid_n": 48,
+      "stored_remaining_2026": ["2026-10-07", "2026-11-04", "2026-12-02"],
+      "ask": ["working_url", "http_status", "parse_recipe", "overlap_rows_only", "unused_2026_or_none"],
+      "do_not_overwrite_period": {"payment_period": "2026-09-02", "stored_amount_per_share": "0.30007"},
+      "do_not_drop_period": "2026-10-07"
+    },
+    {
+      "symbol": "SVOL",
+      "adapter": "simplify",
+      "gaps": ["C5_short_table", "B_stale_ticket"],
+      "seed_url": "https://www.simplify.us/etfs/536/distributions",
+      "stored_paid_n": 64,
+      "stored_remaining_2026": ["2026-09-30"],
+      "ask": ["full_history_same_host_url", "http_status", "parse_recipe", "unused_2026_or_none"],
+      "do_not_wipe_history": true,
+      "keep_paid_row_count": 64
+    },
+    {
+      "symbol": "AMDY",
+      "adapter": "yieldmax",
+      "gaps": ["B_remaining_zero"],
+      "stored_paid_n": 71,
+      "stored_remaining_2026": [],
+      "ask": ["unused_2026_fridays_or_none"],
+      "last_run_ok": true
+    },
+    {
+      "symbol": "AMZY",
+      "adapter": "yieldmax",
+      "gaps": ["B_remaining_zero"],
+      "stored_paid_n": 73,
+      "stored_remaining_2026": [],
+      "ask": ["unused_2026_fridays_or_none"],
+      "last_run_ok": true
+    },
+    {
+      "symbol": "CONY",
+      "adapter": "yieldmax",
+      "gaps": ["B_remaining_zero"],
+      "stored_paid_n": 72,
+      "stored_remaining_2026": [],
+      "ask": ["unused_2026_fridays_or_none"],
+      "last_run_ok": true
+    },
+    {
+      "symbol": "MSTY",
+      "adapter": "yieldmax",
+      "gaps": ["B_remaining_zero"],
+      "stored_paid_n": 66,
+      "stored_remaining_2026": [],
+      "ask": ["unused_2026_fridays_or_none"],
+      "last_run_ok": true
+    },
+    {
+      "symbol": "NFLY",
+      "adapter": "yieldmax",
+      "gaps": ["B_remaining_zero"],
+      "stored_paid_n": 73,
+      "stored_remaining_2026": [],
+      "ask": ["unused_2026_fridays_or_none"],
+      "last_run_ok": true
+    },
+    {
+      "symbol": "CLM",
+      "adapter": "cornerstone",
+      "gaps": ["B_december_or_none"],
+      "stored_remaining_2026": ["2026-09-15", "2026-10-15", "2026-11-13"],
+      "ask": ["unused_2026_or_none"],
+      "notes": "Do not invent December. Stale expected-4 ticket is software."
+    },
+    {
+      "symbol": "CRF",
+      "adapter": "cornerstone",
+      "gaps": ["B_december_or_none"],
+      "stored_remaining_2026": ["2026-09-15", "2026-10-15", "2026-11-13"],
+      "ask": ["unused_2026_or_none"],
+      "notes": "Do not invent December. Stale expected-4 ticket is software."
+    },
+    {
+      "symbol": "IGLD",
+      "adapter": "ftvest",
+      "gaps": ["B_october_or_none"],
+      "stored_remaining_2026": ["2026-09-30", "2026-11-30"],
+      "ask": ["unused_2026_or_none"],
+      "notes": "October or none. Do not persist amount Except."
+    },
+    {
+      "symbol": "CEFS",
+      "adapter": "saba",
+      "gaps": ["B_remaining_zero"],
+      "stored_paid_n": 113,
+      "stored_remaining_2026": [],
+      "ask": ["unused_2026_or_none"],
+      "last_run_ok": true
+    }
+  ],
+  "roc_template_missing_inscope": [
+    "AMDW", "AMDY", "AMZY", "BITO", "BTCI", "CEFS", "CONY", "EFC", "HAKY", "IGLD",
+    "MSTY", "NFLY", "NVDW", "ORC", "PLTW", "QDTE", "QDVO", "QQQI", "RDTE", "SPYI",
+    "SVOL", "TOPW", "TRIN", "TSLW", "XDTE", "XPAY", "YBTC", "YMAX"
+  ],
+  "roc_ask": "For each InScope name in roc_template_missing_inscope: vendor-host 19a-1 / tax-information URL + quote of Estimated Return of Capital, or none with search URLs tried. Persist 0 only if the notice says 0. Do not invent 0."
+}
