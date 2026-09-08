@@ -136,6 +136,7 @@ pub async fn plan_history_record(
         amount_scale,
         planning_periods_per_year,
         effective_from: effective_from.clone(),
+        effective_to: String::new(),
         decision_reason: decision_reason.clone(),
     };
     sqlx::query(
@@ -164,7 +165,7 @@ async fn plan_history_for_security(
 ) -> Result<Option<PlanHistoryRecord>, PlatformError> {
     let row = sqlx::query(
         "SELECT plan_history_id, security_id, amount_per_share_minor, amount_scale,
-                planning_periods_per_year, effective_from, decision_reason
+                planning_periods_per_year, effective_from, effective_to, decision_reason
          FROM plan_history WHERE security_id = ? AND effective_to IS NULL",
     )
     .bind(security_id.to_string())
@@ -194,6 +195,12 @@ fn plan_history_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<PlanHistoryRec
             .try_get::<i64, _>("planning_periods_per_year")
             .map_err(|e| map_err(e.into()))? as u8,
         effective_from: row.try_get("effective_from").map_err(|e| map_err(e.into()))?,
+        effective_to: row
+            .try_get::<Option<String>, _>("effective_to")
+            .ok()
+            .flatten()
+            .or_else(|| row.try_get::<String, _>("effective_to").ok())
+            .unwrap_or_default(),
         decision_reason: row.try_get("decision_reason").map_err(|e| map_err(e.into()))?,
     })
 }
@@ -201,8 +208,22 @@ fn plan_history_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<PlanHistoryRec
 pub async fn plan_history_list(pool: &SqlitePool) -> Result<Vec<PlanHistoryRecord>, PlatformError> {
     let rows = sqlx::query(
         "SELECT plan_history_id, security_id, amount_per_share_minor, amount_scale,
-                planning_periods_per_year, effective_from, decision_reason
+                planning_periods_per_year, effective_from, effective_to, decision_reason
          FROM plan_history WHERE effective_to IS NULL ORDER BY security_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    Ok(rows.iter().map(plan_history_from_row).collect::<Result<Vec<_>, _>>()?)
+}
+
+pub async fn plan_history_version_list(
+    pool: &SqlitePool,
+) -> Result<Vec<PlanHistoryRecord>, PlatformError> {
+    let rows = sqlx::query(
+        "SELECT plan_history_id, security_id, amount_per_share_minor, amount_scale,
+                planning_periods_per_year, effective_from, effective_to, decision_reason
+         FROM plan_history ORDER BY security_id, effective_from",
     )
     .fetch_all(pool)
     .await
@@ -234,6 +255,7 @@ pub async fn plan_history_confirm(
         amount_scale,
         planning_periods_per_year,
         effective_from: effective_from.clone(),
+        effective_to: String::new(),
         decision_reason: decision_reason.clone(),
     };
     sqlx::query(

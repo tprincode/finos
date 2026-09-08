@@ -187,6 +187,9 @@ async fn research_template(platform: &LocalPlatform, security_id: &str) {
         }),
     )
     .await;
+    golden_harness::complete_collector_for_first_lot(platform, security_id, "RESEARCHED")
+        .await
+        .expect("complete collector");
 }
 
 async fn open_lot(
@@ -520,6 +523,7 @@ async fn position_master_shows_underlying_without_selecting_a_symbol() {
         serde_json::json!({
             "securityId": haky_id,
             "paymentFrequency": "Weekly",
+            "replaceCadence": true,
             "riskTier": "Core",
             "provider": "Amplify",
             "underlying": "HACK",
@@ -585,6 +589,7 @@ async fn position_master_settings_yields_inactive_and_dated_regime() {
         serde_json::json!({
             "securityId": haky_id,
             "paymentFrequency": "Weekly",
+            "replaceCadence": true,
             "riskTier": "Core",
             "provider": "Amplify",
             "underlying": "HACK",
@@ -951,6 +956,7 @@ async fn ac_pd_06_plan_yoc_uses_52_12_4() {
             serde_json::json!({
                 "securityId": sec,
                 "paymentFrequency": freq,
+                "replaceCadence": true,
                 "riskTier": "Core"
             }),
         )
@@ -1146,6 +1152,7 @@ async fn ac_pd_12_tier_suggest_does_not_apply() {
         serde_json::json!({
             "securityId": haky_id,
             "paymentFrequency": "Weekly",
+            "replaceCadence": true,
             "riskTier": "Core",
             "provider": "Amplify",
             "isActive": true
@@ -1298,5 +1305,44 @@ async fn ac_pd_20_lifetime_distributions_use_original_cost() {
     .await;
     assert_eq!(inv["remainingPerformanceMinor"].as_i64(), Some(100_000));
     assert_eq!(inv["costRecoveryBps"].as_i64(), Some(1_000));
+}
+
+/// Position hub shows parseable characteristics. Suggested tier is not auto-applied.
+#[tokio::test]
+async fn pay1_characteristics_are_visible_risk_not_auto_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "PAY1",
+            "sourceUrl": "https://example.test/pay1/distributions",
+            "underlying": "UNDR",
+            "lookthrough": {
+                "themeStrategy": "Covered Call",
+                "primaryRiskDriver": "Look-through UNDR",
+                "coveredCall": true,
+                "leveraged": false,
+                "riskTierSuggestion": "Risk On"
+            },
+            "skipRefresh": true
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    let inv = query_body(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(inv["symbol"], "PAY1");
+    assert_eq!(inv["divType"], "DIV-1");
+    assert_eq!(inv["underlying"], "UNDR");
+    assert_eq!(inv["lookthrough"]["coveredCall"], true);
+    assert_eq!(inv["lookthrough"]["themeStrategy"], "Covered Call");
+    assert_eq!(inv["lookthrough"]["riskTierSuggestion"], "Risk On");
+    assert_eq!(inv["riskTier"], "");
 }
 

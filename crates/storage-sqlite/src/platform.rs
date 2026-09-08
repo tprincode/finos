@@ -443,6 +443,9 @@ mod tests {
                     amount_minor: Some(100),
                     scale: 2,
                     occurred_on: "2026-01-10".into(),
+                    candidate_id: None,
+                    validation: String::new(),
+                    issue: String::new(),
                 }],
                 None,
             )

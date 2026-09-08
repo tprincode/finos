@@ -2,6 +2,7 @@
 
 pub mod amplify;
 pub mod div1;
+pub mod energytransfer;
 pub mod dividendinvestor;
 pub mod generic;
 pub mod moneymarket;
@@ -12,7 +13,10 @@ pub mod saba;
 pub mod simplify;
 pub mod yieldmax;
 
-pub use amplify::{amplify_fund_page, parse_amplify_distributions};
+pub use amplify::{
+    amplify_distributions_pack_url, amplify_fund_page, amplify_fund_page_url,
+    parse_amplify_distribution_pack, parse_amplify_distributions,
+};
 pub use neos::parse_neos_distributions;
 pub(crate) use neos::neos_fund_page;
 pub use roundhill::{
@@ -20,7 +24,7 @@ pub use roundhill::{
     roundhill_fund_page,
 };
 pub(crate) use roundhill::{
-    hrefs_matching, parse_roundhill_csv, parse_roundhill_roc_html,
+    hrefs_matching, https_urls_matching, parse_roundhill_csv, parse_roundhill_roc_html,
     parse_vendor_distributions_with_csv,
 };
 pub(crate) use saba::saba_fund_page;
@@ -32,16 +36,25 @@ pub use simplify::{
 pub use yieldmax::parse_yieldmax_distributions;
 pub(crate) use yieldmax::yieldmax_fund_page;
 pub use div1::{
-    div1_fund_page, div1_probe_urls, parse_div1_distributions, parse_proshares_distribution_summary,
+    cornerstone_candidates_table, div1_fund_page, div1_probe_urls, ftvest_history_form,
+    ftvest_history_url, ftvest_history_years, globalx_19a_notice_urls, globalx_filings_hub_url,
+    globalx_fund_url, globalx_tax_supplements_url, jpmorgan_cusip_from_seed,
+    jpmorgan_historical_data_url, parse_cornerstone_press, parse_div1_distributions,
+    parse_gladstone_press, parse_globalx_distribution_history,
+    parse_jpmorgan_distributions, parse_proshares_distribution_summary, parse_return_of_capital_pct,
+    parse_tappalpha_distributions, rexshares_calendar_covers_inception, tappalpha_distributions_url,
+    tappalpha_fund_page_url,
 };
 pub(crate) use dividendinvestor::dividendinvestor_fund_page;
-pub use dividendinvestor::{
-    parse_dividendinvestor_distributions, HISTORY_URL as DIVIDENDINVESTOR_HISTORY_URL,
-};
+#[allow(unused_imports)]
+pub use dividendinvestor::parse_dividendinvestor_distributions;
 pub use generic::parse_generic_distributions;
 pub use moneymarket::parse_moneymarket_distributions;
-pub(crate) use moneymarket::{moneymarket_fund_page, moneymarket_probe_urls};
-pub use nasdaq::{dividendhistory_url, nasdaq_dividends_url, parse_nasdaq_dividends};
+pub(crate) use moneymarket::{
+    fidelity_mm_cusip, fidelity_mm_header_url, is_cash_rate_candidate, moneymarket_fund_page,
+    moneymarket_probe_urls, parse_moneymarket_distributions_for, standing_mm_url,
+};
+pub use nasdaq::parse_nasdaq_dividends;
 
 pub(crate) fn page_is_not_found(html: &str) -> bool {
     let l = html.to_ascii_lowercase();
@@ -54,10 +67,6 @@ pub(crate) fn html_names_symbol(html: &str, symbol: &str) -> bool {
 }
 
 pub(crate) fn parse_vendor_distributions(source: &str, html: &str) -> Vec<serde_json::Value> {
-    let nasdaq = parse_nasdaq_dividends(source, html);
-    if !nasdaq.is_empty() {
-        return nasdaq;
-    }
     match source.trim().to_ascii_lowercase().as_str() {
         "amplify" => parse_amplify_distributions(html),
         "neos" => parse_neos_distributions(html),
@@ -66,7 +75,8 @@ pub(crate) fn parse_vendor_distributions(source: &str, html: &str) -> Vec<serde_
         "fidelity" | "schwab" => parse_moneymarket_distributions(source, html),
         "saba" => parse_saba_distributions(source, html),
         "simplify" => parse_simplify_distributions(source, html),
-        "dividendinvestor" => parse_dividendinvestor_distributions(source, html),
+        "dividendinvestor" => Vec::new(),
+        "energytransfer" | "mlp_sec_8k" => energytransfer::parse_energytransfer_distributions(html),
         other => parse_div1_distributions(other, html),
     }
 }

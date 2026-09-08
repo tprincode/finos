@@ -1,0 +1,39 @@
+{
+  "name": "projects/amplify-etfs-data-feed/databases/(default)/documents/funds/PAY1/distributions_pack/full",
+  "fields": {
+    "schema": { "integerValue": "1" },
+    "rows": {
+      "arrayValue": {
+        "values": [
+          {
+            "mapValue": {
+              "fields": {
+                "payableDate": { "stringValue": "2026-09-30" },
+                "exDate": { "stringValue": "2026-09-28" },
+                "amount": { "nullValue": null }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "payableDate": { "stringValue": "2026-08-31" },
+                "exDate": { "stringValue": "2026-08-28" },
+                "amount": { "doubleValue": 0.38826 }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "payableDate": { "stringValue": "2026-07-31" },
+                "exDate": { "stringValue": "2026-07-30" },
+                "amount": { "doubleValue": 0.120000 }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

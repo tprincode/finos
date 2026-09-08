@@ -282,6 +282,9 @@ pub fn parse_broker_csv_detail(
             amount_minor,
             scale: 2,
             occurred_on: parse_broker_day(date_raw).unwrap_or_default(),
+            candidate_id: None,
+            validation: String::new(),
+            issue: String::new(),
         });
     }
     Ok(out)

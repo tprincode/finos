@@ -16,7 +16,8 @@ use crate::contracts::{
     PositionBacktestResultBody,
     RocResearchObservation, RemainingPaymentDateOverride, ExpectedPaymentPattern,
     PositionTaxProfile, RetrieveRunRecord, CollectorSetBody, CollectorStatsBody,
-    AccountBalanceSnapshotRecord, TrendsWeekSourceRecord,
+    AccountBalanceSnapshotRecord, TrendsWeekSourceRecord, WorkTicketRecord,
+    CollectorFieldDecisionRecord,
 };
 use crate::ports::platform::PlatformError;
 
@@ -83,6 +84,7 @@ pub trait Canonical: Send + Sync {
     async fn import_approve(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
     async fn import_post(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
     async fn import_batch_get(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
+    async fn import_pending_get(&self) -> Result<Option<ImportBatchRecord>, PlatformError> { ni() }
 
     async fn activity_post(
         &self,
@@ -122,6 +124,43 @@ pub trait Canonical: Send + Sync {
         _code: String,
         _message: String,
     ) -> Result<ExceptionRecord, PlatformError> {
+        ni()
+    }
+    async fn work_ticket_raise(
+        &self,
+        _record: WorkTicketRecord,
+    ) -> Result<WorkTicketRecord, PlatformError> {
+        ni()
+    }
+    async fn work_ticket_list(
+        &self,
+        _security_id: Option<Uuid>,
+        _status: Option<String>,
+    ) -> Result<Vec<WorkTicketRecord>, PlatformError> {
+        ni()
+    }
+    async fn work_ticket_get(
+        &self,
+        _ticket_id: Uuid,
+    ) -> Result<WorkTicketRecord, PlatformError> {
+        ni()
+    }
+    async fn work_ticket_update(
+        &self,
+        _record: WorkTicketRecord,
+    ) -> Result<WorkTicketRecord, PlatformError> {
+        ni()
+    }
+    async fn collector_field_decision_set(
+        &self,
+        _record: CollectorFieldDecisionRecord,
+    ) -> Result<CollectorFieldDecisionRecord, PlatformError> {
+        ni()
+    }
+    async fn collector_field_decision_list(
+        &self,
+        _security_id: Uuid,
+    ) -> Result<Vec<CollectorFieldDecisionRecord>, PlatformError> {
         ni()
     }
     async fn canonical_week_get(&self, as_of_date: String) -> Result<CanonicalWeekBody, PlatformError> { ni() }
@@ -236,6 +275,9 @@ pub trait Canonical: Send + Sync {
         decision_reason: String,
     ) -> Result<PlanHistoryRecord, PlatformError> { ni() }
     async fn plan_history_list(&self) -> Result<Vec<PlanHistoryRecord>, PlatformError> { ni() }
+    async fn plan_history_version_list(&self) -> Result<Vec<PlanHistoryRecord>, PlatformError> {
+        self.plan_history_list().await
+    }
     async fn position_characteristic_upsert(
         &self,
         record: PositionCharacteristicRecord,
@@ -260,20 +302,67 @@ pub trait Canonical: Send + Sync {
         source: String,
         entered_at: String,
     ) -> Result<IssuerDeclarationRecord, PlatformError> { ni() }
+    /// Kept for tests. Product retrieve never replaces stored paid rows.
+    async fn issuer_declaration_replace_paid(
+        &self,
+        security_id: Uuid,
+        amount_per_share_minor: Option<i64>,
+        amount_scale: u8,
+        payment_period: String,
+        source: String,
+        entered_at: String,
+    ) -> Result<IssuerDeclarationRecord, PlatformError> {
+        self.issuer_declaration_record(
+            security_id,
+            amount_per_share_minor,
+            amount_scale,
+            payment_period,
+            source,
+            entered_at,
+        )
+        .await
+    }
     async fn issuer_declaration_list(
         &self,
         security_id: Uuid,
     ) -> Result<Vec<IssuerDeclarationRecord>, PlatformError> { ni() }
+    /// Retire an unoccurred placeholder so the pay date can move. Occurred rows stay.
+    async fn issuer_declaration_supersede_period(
+        &self,
+        _security_id: Uuid,
+        _payment_period: String,
+    ) -> Result<u64, PlatformError> {
+        Ok(0)
+    }
     async fn issuer_pay_date_replace(
         &self,
         security_id: Uuid,
         as_of: String,
         dates: Vec<IssuerPayDateRecord>,
     ) -> Result<Vec<IssuerPayDateRecord>, PlatformError> { ni() }
+    async fn issuer_pay_date_insert(
+        &self,
+        record: IssuerPayDateRecord,
+    ) -> Result<IssuerPayDateRecord, PlatformError> {
+        ni()
+    }
+    async fn issuer_pay_date_supersede_one(
+        &self,
+        security_id: Uuid,
+        pay_on: String,
+    ) -> Result<(), PlatformError> {
+        ni()
+    }
     async fn issuer_pay_date_list(
         &self,
         security_id: Uuid,
     ) -> Result<Vec<IssuerPayDateRecord>, PlatformError> { ni() }
+    async fn issuer_pay_date_dedupe(
+        &self,
+        _security_id: Uuid,
+    ) -> Result<u64, PlatformError> {
+        Ok(0)
+    }
     async fn price_quote_record(
         &self,
         security_id: Uuid,

@@ -71,6 +71,7 @@ pub async fn trends_week_capture_view(
     let week = financial_domain::trends::trends_period_for_capture(as_of);
     let period_start = week.start.format("%Y-%m-%d").to_string();
     let period_end = week.end.format("%Y-%m-%d").to_string();
+    let id = financial_domain::week::week_id_containing(as_of);
     let sources = canonical.trends_week_list().await?;
     let current = sources.iter().find(|w| w.period_end == period_end).cloned();
     let prior = sources
@@ -146,8 +147,10 @@ pub async fn trends_week_capture_view(
         missing.push("week_not_saved".into());
     }
     Ok(TrendsWeekCaptureBody {
-        period_start,
-        period_end,
+        period_start: period_start.clone(),
+        period_end: period_end.clone(),
+        week_year: id.year,
+        week_number: id.number,
         captured_at: chrono::Utc::now().to_rfc3339(),
         closed: current.as_ref().map(|c| c.closed).unwrap_or(false),
         exists: current.is_some(),

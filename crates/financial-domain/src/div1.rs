@@ -14,6 +14,7 @@ pub const REGISTERED_DECLARATION_SOURCES: &[&str] = &[
     "ellington",
     "enterprise",
     "energytransfer",
+    "mlp_sec_8k",
     "gladstone",
     "jpmorgan",
     "mplx",
@@ -54,7 +55,7 @@ pub fn declaration_source_for_provider(provider: &str) -> Option<&'static str> {
         "saba" => "saba",
         "ellington" => "ellington",
         "enterprise products" | "enterprise" => "enterprise",
-        "energy transfer" | "energytransfer" => "energytransfer",
+        "energy transfer" | "energytransfer" | "mlp_sec_8k" => "mlp_sec_8k",
         "gladstone" => "gladstone",
         "jpmorgan" | "jp morgan" => "jpmorgan",
         "mplx lp" | "mplx" => "mplx",
@@ -74,11 +75,50 @@ pub fn declaration_source_for_provider(provider: &str) -> Option<&'static str> {
 /// Default calendar policy for a registered issuer adapter. Vendor-published pay dates
 /// are preferred; derived walk is applied at schedule time only when none are stored.
 pub fn calendar_policy_for_source(source: &str) -> &'static str {
+    if crate::mlp_sec::is_adapter_kind(source) {
+        return "derived_walk";
+    }
     if is_registered_declaration_source(source) {
         "issuer_calendar"
     } else {
         "derived_walk"
     }
+}
+
+/// Common-unit 8-Ks on EDGAR (CIK 0001276187). Not Yahoo / Nasdaq / dividendinvestor.
+pub fn is_energytransfer_sec_url(url: &str) -> bool {
+    crate::mlp_sec::is_sec_history_url(url)
+}
+
+/// Third-party calendars are never a declaration adapter (not Yahoo, not the vendor site).
+pub fn is_third_party_declaration_url(url: &str) -> bool {
+    let u = url.trim().to_ascii_lowercase();
+    u.contains("dividendhistory.org")
+        || u.contains("nasdaq.com")
+        || u.contains("dividendinvestor.com")
+        || u.contains("yahoo.com")
+        || u.contains("finance.yahoo.com")
+}
+
+/// True only when `url` is that registered adapter's own vendor host.
+pub fn declaration_url_matches_source(source: &str, url: &str) -> bool {
+    let url = url.trim();
+    if url.is_empty() || is_third_party_declaration_url(url) {
+        return false;
+    }
+    if crate::mlp_sec::is_ir_url(url) {
+        return false;
+    }
+    if crate::mlp_sec::is_adapter_kind(source) && crate::mlp_sec::is_sec_history_url(url) {
+        return true;
+    }
+    declaration_source_from_url(url)
+        .map(|mapped| {
+            mapped.eq_ignore_ascii_case(source.trim())
+                || (crate::mlp_sec::is_adapter_kind(mapped)
+                    && crate::mlp_sec::is_adapter_kind(source))
+        })
+        .unwrap_or(false)
 }
 
 /// Map a standing distribution / issuer URL onto a registered declarationSource.
@@ -91,7 +131,10 @@ pub fn declaration_source_from_url(url: &str) -> Option<&'static str> {
         .strip_prefix("https://")
         .or_else(|| u.strip_prefix("http://"))
         .unwrap_or(&u);
-    let mapped = if host_path.contains("amplifyetfs.com") || host_path.contains("amplify.com") {
+    let mapped = if host_path.contains("amplifyetfs.com")
+        || host_path.contains("amplify.com")
+        || host_path.contains("amplify-etfs-data-feed")
+    {
         "amplify"
     } else if host_path.contains("neosfunds.com") {
         "neos"
@@ -119,23 +162,27 @@ pub fn declaration_source_from_url(url: &str) -> Option<&'static str> {
         "trex"
     } else if host_path.contains("fidelity.com") {
         "fidelity"
-    } else if host_path.contains("schwab.com") {
+    } else if host_path.contains("schwab.com") || host_path.contains("schwabassetmanagement.com") {
         "schwab"
     } else if host_path.contains("ellington") {
         "ellington"
     } else if host_path.contains("enterpriseproducts") || host_path.contains("enterprise") {
         "enterprise"
-    } else if host_path.contains("energytransfer") {
-        "energytransfer"
+    } else if crate::mlp_sec::is_ir_url(&u) {
+        return None;
+    } else if is_energytransfer_sec_url(&u) {
+        "mlp_sec_8k"
     } else if host_path.contains("gladstone") {
         "gladstone"
     } else if host_path.contains("mplx") {
         "mplx"
     } else if host_path.contains("orchidisland") {
         "orchidisland"
-    } else if host_path.contains("tappalpha") {
+    } else if host_path.contains("tappalpha")
+        || host_path.contains("jdkfnvgkfwotjlyovbrk.supabase.co")
+    {
         "tappalpha"
-    } else if host_path.contains("trinity") {
+    } else if host_path.contains("trinity") || host_path.contains("trincapinvestment.com") {
         "trinity"
     } else {
         return None;
@@ -155,7 +202,7 @@ pub fn source_label(source: &str) -> &'static str {
         "saba" => "Saba",
         "ellington" => "Ellington",
         "enterprise" => "Enterprise Products",
-        "energytransfer" => "Energy Transfer",
+        "energytransfer" | "mlp_sec_8k" => "Energy Transfer",
         "gladstone" => "Gladstone",
         "jpmorgan" => "JPMorgan",
         "mplx" => "MPLX LP",
@@ -168,6 +215,36 @@ pub fn source_label(source: &str) -> &'static str {
         "trex" => "T-Rex/GraniteShares",
         "fidelity" => "Fidelity",
         "schwab" => "Schwab",
+        _ => "",
+    }
+}
+
+/// Registered adapter host for ranking search hits. Empty if the slug has no known host.
+pub fn vendor_host(source: &str) -> &'static str {
+    match source.trim().to_ascii_lowercase().as_str() {
+        "amplify" => "amplifyetfs.com",
+        "roundhill" => "roundhillinvestments.com",
+        "neos" => "neosfunds.com",
+        "yieldmax" => "yieldmaxetfs.com",
+        "proshares" => "proshares.com",
+        "simplify" => "simplify.us",
+        "saba" => "sabaetf.com",
+        "globalx" => "globalxetfs.com",
+        "direxion" => "direxion.com",
+        "jpmorgan" => "am.jpmorgan.com",
+        "ftvest" => "ftportfolios.com",
+        "trex" => "rexshares.com",
+        "fidelity" => "fidelity.com",
+        "schwab" => "schwab.com",
+        "ellington" => "ellingtonfinancial.com",
+        "enterprise" => "enterpriseproducts.com",
+        "energytransfer" | "mlp_sec_8k" => "sec.gov",
+        "gladstone" => "gladstoneinvestment.com",
+        "mplx" => "mplx.com",
+        "orchidisland" => "orchidislandcap.com",
+        "tappalpha" => "tappalpha.com",
+        "trinity" => "trincapinvestment.com",
+        "cornerstone" => "cornerstonetotalreturn.com",
         _ => "",
     }
 }
@@ -208,9 +285,72 @@ mod tests {
             Some("amplify")
         );
         assert_eq!(
+            declaration_source_from_url(
+                "https://firestore.googleapis.com/v1/projects/amplify-etfs-data-feed/databases/(default)/documents/funds/PAY1/distributions_pack/full"
+            ),
+            Some("amplify")
+        );
+        assert_eq!(
             declaration_source_from_url("https://www.simplify.us/etfs/svol"),
             Some("simplify")
         );
         assert!(declaration_source_from_url("https://example.com/foo").is_none());
+        assert!(is_third_party_declaration_url(
+            "https://dividendhistory.org/payout/TOPW/"
+        ));
+        assert!(is_third_party_declaration_url(
+            "https://api.nasdaq.com/api/quote/TOPW/dividends?assetclass=etf"
+        ));
+        assert!(is_third_party_declaration_url(
+            "https://finance.yahoo.com/quote/PAY1"
+        ));
+        assert!(is_third_party_declaration_url(
+            "https://query1.finance.yahoo.com/v8/finance/chart/PAY1?events=div"
+        ));
+        assert!(!declaration_url_matches_source(
+            "roundhill",
+            "https://dividendhistory.org/payout/TOPW/"
+        ));
+        assert!(declaration_url_matches_source(
+            "roundhill",
+            "https://www.roundhillinvestments.com/assets/php/distribution-call.php"
+        ));
+        assert!(declaration_url_matches_source(
+            "amplify",
+            "https://amplifyetfs.com/haky/"
+        ));
+        assert!(!declaration_url_matches_source(
+            "roundhill",
+            "https://amplifyetfs.com/haky/"
+        ));
+        assert!(declaration_url_matches_source(
+            "mlp_sec_8k",
+            "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001276187&type=8-K&owner=exclude&count=20&output=atom"
+        ));
+        assert!(declaration_url_matches_source(
+            "energytransfer",
+            "https://www.sec.gov/Archives/edgar/data/1276187/000127618726000088/ex99.htm"
+        ));
+        assert!(!declaration_url_matches_source(
+            "mlp_sec_8k",
+            "https://ir.energytransfer.com/distribution-history-et"
+        ));
+        assert_eq!(
+            declaration_source_from_url(
+                "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001276187&type=8-K&owner=exclude&count=20&output=atom"
+            ),
+            Some("mlp_sec_8k")
+        );
+        assert!(declaration_source_from_url(
+            "https://ir.energytransfer.com/distribution-history-et"
+        )
+        .is_none());
+        assert_eq!(calendar_policy_for_source("mlp_sec_8k"), "derived_walk");
+        assert!(!is_third_party_declaration_url(
+            "https://www.sec.gov/Archives/edgar/data/1276187/000127618726000088/et-8k.htm"
+        ));
+        assert_eq!(vendor_host("roundhill"), "roundhillinvestments.com");
+        assert_eq!(vendor_host("yieldmax"), "yieldmaxetfs.com");
+        assert_eq!(vendor_host("unknown"), "");
     }
 }

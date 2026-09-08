@@ -106,9 +106,14 @@ fn pad_cik(cik: &str) -> String {
     format!("{digits:0>10}")
 }
 
-fn edgar_http_get(url: &str) -> Result<String, String> {
+pub(crate) fn edgar_http_get(url: &str) -> Result<String, String> {
+    edgar_http_get_timeout(url, 20)
+}
+
+pub(crate) fn edgar_http_get_timeout(url: &str, timeout_secs: u64) -> Result<String, String> {
     let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(30))
+        .timeout_connect(Duration::from_secs(45))
+        .timeout(Duration::from_secs(timeout_secs))
         .user_agent("FINOS Desktop lastprice@finos.local")
         .build();
     agent

@@ -118,6 +118,15 @@ async fn roc_unknown_is_not_zero_and_car_magi_plans_then_actuals() {
         }),
     )
     .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        security_id,
+        "HAKY",
+        "Monthly",
+        false,
+    )
+    .await
+    .expect("complete collector");
     must_ok(
         &platform,
         "LotOpen",
@@ -132,6 +141,19 @@ async fn roc_unknown_is_not_zero_and_car_magi_plans_then_actuals() {
             "taxBasisMinor": 200_000,
             "scale": 2,
             "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "riskTier": "Risk On",
+            "rocPct2025ActualMinor": 7000,
+            "rocPct2026EstimateMinor": null,
+            "rocScale": 2
         }),
     )
     .await;
@@ -435,4 +457,121 @@ async fn income_account_does_not_write_car_magi() {
     assert_eq!(research["magiEligible"], false);
     assert_eq!(research["complete"], false);
     assert!(research["rocPctMinor"].is_null());
+}
+
+#[tokio::test]
+async fn owner_lock_zero_roc_is_accepted_not_invented() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "PAY1", "name": "PAY1"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Quarterly",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RocPlanConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "rocPctMinor": 0,
+            "rocScale": 2,
+            "ownerOverride": true,
+            "source": "owner-override",
+            "sourceUrl": "https://example.test/pay1/not-roc",
+            "establishedHow": "owner lock: not ROC — 0%",
+            "asOfDate": "2026-09-06"
+        }),
+    )
+    .await;
+    let research = query_json(
+        &platform,
+        "RocResearchGet",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-06"
+        }),
+    )
+    .await;
+    assert_eq!(research["rocPctMinor"].as_i64(), Some(0));
+    assert_eq!(research["ownerOverride"], true);
+    let obs = research["observations"].as_array().unwrap();
+    assert!(
+        obs.iter().any(|o| {
+            o["ownerOverride"] == true
+                && o["rocPctMinor"].as_i64() == Some(0)
+                && o["sourceUrl"] == "https://example.test/pay1/not-roc"
+        }),
+        "owner 0% must keep the lock URL: {research}"
+    );
+}
+
+#[tokio::test]
+async fn owner_confirm_100_roc_keeps_cited_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "AMDW", "name": "AMDW"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RocPlanConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "rocPctMinor": 10000,
+            "rocScale": 2,
+            "ownerOverride": true,
+            "source": "19a-1",
+            "sourceUrl": "https://www.roundhillinvestments.com/social-disclosures",
+            "establishedHow": "owner: 100% ROC from Roundhill social-disclosures",
+            "asOfDate": "2026-09-06"
+        }),
+    )
+    .await;
+    let research = query_json(
+        &platform,
+        "RocResearchGet",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-06"
+        }),
+    )
+    .await;
+    assert_eq!(research["rocPctMinor"].as_i64(), Some(10000));
+    assert_eq!(research["complete"], true);
+    let obs = research["observations"].as_array().unwrap();
+    assert!(
+        obs.iter().any(|o| {
+            o["rocPctMinor"].as_i64() == Some(10000)
+                && o["sourceUrl"] == "https://www.roundhillinvestments.com/social-disclosures"
+        }),
+        "100% must keep the cited URL: {research}"
+    );
 }

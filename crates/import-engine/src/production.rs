@@ -277,6 +277,9 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
                 amount_minor: Some(to_minor(amount, 2)?),
                 scale: 2,
                 occurred_on: as_iso_date(get(row, "txn_date")),
+                candidate_id: None,
+                validation: String::new(),
+                issue: String::new(),
             });
         }
         yield_batches.push(ProductionSeedYieldBatch {

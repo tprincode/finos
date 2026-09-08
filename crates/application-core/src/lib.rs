@@ -6,6 +6,7 @@
 pub mod contracts;
 pub mod golden;
 pub mod handoff;
+pub mod income_plan_display;
 pub mod ports;
 pub mod production_seed;
 pub mod queries;

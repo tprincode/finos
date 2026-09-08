@@ -50,6 +50,50 @@ pub fn uses_cash_par(div_type: &str, symbol: &str) -> bool {
     is_cash(div_type) || is_cash_par_symbol(symbol)
 }
 
+/// Monthly Plan $ is stored at this scale (dollars × 10^6).
+pub const CASH_PLAN_SCALE: u8 = 6;
+
+/// Published 7-day yield percent → monthly $ per $1 (par).
+/// `3.34` (%) → 2783 at scale 6 ($0.002783). Annual % stays the published yield.
+pub fn seven_day_yield_to_monthly_plan(yield_percent: &str) -> Option<(i64, u8, i64)> {
+    let bps = parse_yield_percent_to_bps(yield_percent)?;
+    let monthly_minor = (bps.saturating_mul(100) + 6) / 12;
+    if monthly_minor <= 0 {
+        return None;
+    }
+    Some((monthly_minor, CASH_PLAN_SCALE, bps))
+}
+
+fn parse_yield_percent_to_bps(raw: &str) -> Option<i64> {
+    let t = raw.trim().trim_start_matches('+').trim_end_matches('%').trim();
+    if t.is_empty() {
+        return None;
+    }
+    let (whole_s, frac_s) = match t.split_once('.') {
+        Some((a, b)) => (a, b),
+        None => (t, ""),
+    };
+    let whole: i64 = whole_s.parse().ok()?;
+    if whole < 0 || whole > 20 {
+        return None;
+    }
+    let digits: String = frac_s.chars().filter(|c| c.is_ascii_digit()).collect();
+    let bps = match digits.len() {
+        0 => whole.saturating_mul(100),
+        1 => whole.saturating_mul(100) + digits.parse::<i64>().ok()?.saturating_mul(10),
+        _ => {
+            let two: i64 = digits[..2].parse().ok()?;
+            let extra = digits
+                .as_bytes()
+                .get(2)
+                .and_then(|c| (*c as char).to_digit(10))
+                .unwrap_or(0);
+            whole.saturating_mul(100) + two + i64::from(extra >= 5)
+        }
+    };
+    (bps > 0 && bps <= 2_000).then_some(bps)
+}
+
 /// Stable exception text for BR-CASH-01 (account + symbol + YYYY-MM).
 pub fn missing_cash_dividend_message(account_name: &str, symbol: &str, month: &str) -> String {
     format!("missing cash dividend: {account_name} {symbol} {month}")
@@ -164,5 +208,17 @@ mod tests {
         assert!(uses_cash_par("", "FDRXX"));
         assert!(uses_cash_par("CASH", "OTHER"));
         assert!(!uses_cash_par("DIV-1", "QYLD"));
+    }
+
+    #[test]
+    fn seven_day_yield_divides_by_twelve_for_monthly_plan() {
+        let (minor, scale, bps) = seven_day_yield_to_monthly_plan("3.34").unwrap();
+        assert_eq!((minor, scale, bps), (2783, 6, 334));
+        let (minor, _, bps) = seven_day_yield_to_monthly_plan("+3.40%").unwrap();
+        assert_eq!((minor, bps), (2833, 340));
+        let (minor, _, bps) = seven_day_yield_to_monthly_plan("3.53").unwrap();
+        assert_eq!((minor, bps), (2942, 353));
+        assert!(seven_day_yield_to_monthly_plan("0").is_none());
+        assert!(seven_day_yield_to_monthly_plan("").is_none());
     }
 }

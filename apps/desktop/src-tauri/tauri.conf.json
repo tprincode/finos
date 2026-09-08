@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "finos",
-        "width": 880,
-        "height": 760,
+        "width": 1320,
+        "height": 1140,
         "decorations": true,
         "closable": true
       }

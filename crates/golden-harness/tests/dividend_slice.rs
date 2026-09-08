@@ -16,15 +16,6 @@ fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
     }
 }
 
-fn qry(name: &str) -> QueryRequest {
-    QueryRequest {
-        contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
-        query_name: name.to_string(),
-        correlation_id: Uuid::new_v4(),
-        body_json: None,
-    }
-}
-
 async fn must_ok(platform: &LocalPlatform, name: &str, body: serde_json::Value) -> serde_json::Value {
     let result = execute_command_on(platform, platform, cmd(name, body)).await;
     assert!(result.ok, "{name} failed: {:?}", result.error_code);
@@ -32,7 +23,25 @@ async fn must_ok(platform: &LocalPlatform, name: &str, body: serde_json::Value) 
 }
 
 async fn query_json(platform: &LocalPlatform, name: &str) -> serde_json::Value {
-    let result = execute_query_on(platform, platform, qry(name)).await;
+    query_json_body(platform, name, serde_json::json!({})).await
+}
+
+async fn query_json_body(
+    platform: &LocalPlatform,
+    name: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let result = execute_query_on(
+        platform,
+        platform,
+        QueryRequest {
+            contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
+            query_name: name.to_string(),
+            correlation_id: Uuid::new_v4(),
+            body_json: Some(body.to_string()),
+        },
+    )
+    .await;
     assert!(result.ok, "{name} failed: {:?}", result.error_code);
     serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap()
 }
@@ -127,4 +136,129 @@ async fn schwab_capture_matches_fidelity_amount_on_the_same_views() {
         .unwrap();
     stage_and_post(&platform, "schwab-div-2026", "schwab-dividend.csv", &schwab).await;
     assert_views_agree(&platform, 50_000, 1).await;
+}
+
+#[tokio::test]
+async fn import_batch_get_lists_rows_and_flags_duplicate_without_posting_again() {
+    let root = repo_root();
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    register_taxable(&platform).await;
+    let fidelity = std::fs::read_to_string(root.join("tests/golden/fixtures/fidelity-dividend.csv"))
+        .unwrap();
+    let staged = must_ok(
+        &platform,
+        "ImportStage",
+        serde_json::json!({
+            "sourceId": "wiz-1",
+            "filename": "fidelity-dividend.csv",
+            "content": fidelity,
+            "accountName": "Taxable Brokerage"
+        }),
+    )
+    .await;
+    let batch_id = staged["batchId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "ImportValidate",
+        serde_json::json!({"batchId": batch_id}),
+    )
+    .await;
+    let preview = query_json_body(
+        &platform,
+        "ImportBatchGet",
+        serde_json::json!({"batchId": batch_id}),
+    )
+    .await;
+    assert_eq!(preview["status"], "validated");
+    let rows = preview["candidates"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["accountName"], "Taxable Brokerage");
+    assert_eq!(rows[0]["symbol"], "CASH");
+    assert_eq!(rows[0]["validation"], "ready");
+    let pending = query_json(&platform, "ImportPendingGet").await;
+    assert_eq!(pending["batch"]["batchId"], batch_id);
+
+    must_ok(
+        &platform,
+        "ImportApprove",
+        serde_json::json!({"batchId": batch_id}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ImportPost",
+        serde_json::json!({"batchId": batch_id}),
+    )
+    .await;
+    let staged2 = must_ok(
+        &platform,
+        "ImportStage",
+        serde_json::json!({
+            "sourceId": "wiz-2",
+            "filename": "fidelity-dividend.csv",
+            "content": fidelity,
+            "accountName": "Taxable Brokerage"
+        }),
+    )
+    .await;
+    let batch2 = staged2["batchId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "ImportValidate",
+        serde_json::json!({"batchId": batch2}),
+    )
+    .await;
+    let dup = query_json_body(
+        &platform,
+        "ImportBatchGet",
+        serde_json::json!({"batchId": batch2}),
+    )
+    .await;
+    assert_eq!(dup["candidates"][0]["validation"], "duplicate");
+    assert_eq!(dup["status"], "validated");
+    let still = query_json(&platform, "DividendGet").await;
+    assert_eq!(still["actuals"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn import_batch_get_blocks_unregistered_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let staged = must_ok(
+        &platform,
+        "ImportStage",
+        serde_json::json!({
+            "sourceId": "wiz-blocked",
+            "filename": "ghost.csv",
+            "content": "x",
+            "candidates": [{
+                "accountName": "Not An Account",
+                "symbol": "CASH",
+                "activityType": "dividend",
+                "amountMinor": 100,
+                "scale": 2,
+                "occurredOn": "2026-08-01"
+            }]
+        }),
+    )
+    .await;
+    let batch_id = staged["batchId"].as_str().unwrap();
+    let preview = query_json_body(
+        &platform,
+        "ImportBatchGet",
+        serde_json::json!({"batchId": batch_id}),
+    )
+    .await;
+    assert_eq!(preview["candidates"][0]["validation"], "blocked");
+    assert!(preview["candidates"][0]["issue"]
+        .as_str()
+        .unwrap()
+        .contains("account not registered"));
+    let pending = query_json(&platform, "ImportPendingGet").await;
+    assert_eq!(pending["batch"]["status"], "staged");
 }

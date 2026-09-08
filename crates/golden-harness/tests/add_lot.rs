@@ -83,6 +83,34 @@ async fn process_b_researched_zero_lots_then_explicit_open() {
     .await;
     assert!(inv["lots"].as_array().unwrap().is_empty());
     assert_eq!(inv["remainingQuantityMinor"], 0);
+    assert_eq!(inv["collectorComplete"], false);
+
+    let blocked = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "LotOpen",
+            serde_json::json!({
+                "accountId": account["accountId"],
+                "securityId": security_id,
+                "openedOn": "2026-08-15",
+                "origin": "purchase",
+                "quantityMinor": 25,
+                "quantityScale": 0,
+                "performanceBasisMinor": 50_000,
+                "taxBasisMinor": 48_000,
+                "scale": 2,
+                "isOpen": true
+            }),
+        ),
+    )
+    .await;
+    assert!(!blocked.ok);
+    assert_eq!(blocked.error_code.as_deref(), Some("collector_incomplete"));
+
+    golden_harness::complete_collector_for_first_lot(&platform, security_id, "HAKY")
+        .await
+        .expect("complete collector");
 
     let lot = must_ok(
         &platform,
@@ -174,6 +202,9 @@ async fn process_b_origin_drip_and_transfer_are_explicit() {
     .await;
     let security_id = security["securityId"].as_str().unwrap();
     research_template(&platform, security_id, "ORIG").await;
+    golden_harness::complete_collector_for_first_lot(&platform, security_id, "ORIG")
+        .await
+        .expect("complete collector");
     let drip = must_ok(
         &platform,
         "LotOpen",
@@ -237,6 +268,7 @@ async fn wz_add_lot_existing_increases_income_plan_not_plan_history() {
         serde_json::json!({
             "securityId": security_id,
             "paymentFrequency": "Weekly",
+            "replaceCadence": true,
             "riskTier": "Core"
         }),
     )
@@ -269,6 +301,15 @@ async fn wz_add_lot_existing_increases_income_plan_not_plan_history() {
         }),
     )
     .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        security_id,
+        "ADD1",
+        "Weekly",
+        true,
+    )
+    .await
+    .expect("complete collector");
     must_ok(
         &platform,
         "LotOpen",
@@ -407,4 +448,90 @@ async fn wz_add_lot_unknown_security_fails() {
     )
     .await;
     assert!(!result.ok, "WZ-add-lot-unknown must fail");
+}
+
+/// Required Skip keeps LotOpen gated. Accept restores complete. Do not LotOpen from research.
+#[tokio::test]
+async fn process_a_required_skip_keeps_lot_open_gated() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": "https://amplifyetfs.com/haky/#distributions"
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    golden_harness::complete_collector_for_first_lot(&platform, security_id, "HAKY")
+        .await
+        .expect("complete");
+    must_ok(
+        &platform,
+        "CollectorFieldDecisionSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "field": "roc_estimate",
+            "decision": "skip"
+        }),
+    )
+    .await;
+    let blocked = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "LotOpen",
+            serde_json::json!({
+                "accountId": account["accountId"],
+                "securityId": security_id,
+                "openedOn": "2026-08-15",
+                "origin": "purchase",
+                "quantityMinor": 25,
+                "quantityScale": 0,
+                "performanceBasisMinor": 50_000,
+                "taxBasisMinor": 48_000,
+                "scale": 2,
+                "isOpen": true
+            }),
+        ),
+    )
+    .await;
+    assert!(!blocked.ok);
+    assert_eq!(blocked.error_code.as_deref(), Some("collector_incomplete"));
+
+    must_ok(
+        &platform,
+        "CollectorFieldDecisionSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "field": "roc_estimate",
+            "decision": "accept"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-08-15",
+            "origin": "purchase",
+            "quantityMinor": 25,
+            "quantityScale": 0,
+            "performanceBasisMinor": 50_000,
+            "taxBasisMinor": 48_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
 }

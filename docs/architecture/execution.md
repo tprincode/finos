@@ -2,9 +2,10 @@
 
 Profile A product only. Local data SQLite is the system of record. Seed is a separate CLI, not an owner screen.
 
-**Now:** Income Plan week forecast (open on calendar this week; By position lists scheduled payers; Actual N/A until cash posts)
-**Next:** owner-named (August dual-entry post into live Finos — do not post until owner says so)
-**Done this turn:** Dividend capture committed (`2fa6632`). Week membership goldens green. Live HAKY 70×$0.38 and NVDW 215×$0.35 belong in Sat 2026-08-29 – Fri 2026-09-04.
+**Now:** Miss loop until 0 miss on enabled payers. MSTU is long-hold — do not collect.
+**Next:** Owner desktop rebuild so Tickets can take a declared $ if a quarterly ask opens (first window 7 Nov 2026).
+**Ops (parallel):** none.
+**Done this turn:** ET / this adapter kind no longer fails last_run for “no new 8-K” before the ask window. Remaining 2026 date stays derived; Plan $ stays until a declaration or owner amount. Owner is prompted every 3 months starting 7 Nov 2026. Income Plan Pattern A/B display + Print/Export remains as previously gated.
 **Parked:** M1 macOS; SQLite→Postgres cutover; live OIDC; public CA; Python connectors posting; Shopping Cart; MAGI oracle rewrite; M8/M9 theater; watchlist; live collector inventory fix until gate green (slice E); full position-liquidity classification replacing Acct9 interim heuristic
 
 `App.tsx` stays `LocalTauriFinanceClient`. No UI SQL. Never regenerate MAGI oracles.

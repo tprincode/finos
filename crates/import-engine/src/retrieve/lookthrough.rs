@@ -15,29 +15,41 @@ const HOLDING_SKIP: &[&str] = &[
 pub fn extract_lookthrough(html: &str, symbol: &str, underlying: &str) -> Value {
     let text = strip_html(html);
     let lower = text.to_ascii_lowercase();
-    let cyber = lower.contains("cyber");
-    let covered = lower.contains("covered call");
-    let overlay = symbol.eq_ignore_ascii_case("HAKY")
-        || (cyber && covered && underlying.eq_ignore_ascii_case("HACK"));
+    let covered = lower.contains("covered call") || lower.contains("covered-call");
+    let leveraged = lower.contains("leveraged")
+        || lower.contains(" 2x ")
+        || lower.contains(" 3x ")
+        || lower.contains("2x leveraged")
+        || lower.contains("3x leveraged");
+    let look_through = !underlying.trim().is_empty()
+        || lower.contains("look-through")
+        || lower.contains("look through")
+        || lower.contains("underlying");
 
-    let theme_strategy = if cyber && covered {
-        "Cybersecurity + Covered Call Equity".to_string()
-    } else if cyber {
-        "Cybersecurity".to_string()
+    let mut theme_parts = Vec::new();
+    if lower.contains("cyber") {
+        theme_parts.push("Cybersecurity");
+    }
+    if covered {
+        theme_parts.push("Covered Call");
+    }
+    if leveraged {
+        theme_parts.push("Leveraged");
+    }
+    let theme_strategy = theme_parts.join(" + ");
+
+    let primary_risk_driver = if !underlying.trim().is_empty() {
+        format!("Look-through {underlying}")
+    } else if look_through {
+        "Look-through underlying".to_string()
     } else {
         String::new()
     };
 
-    let primary_risk_driver = if !underlying.is_empty() && (overlay || cyber) {
-        format!("Look-through cybersecurity equity basket ({underlying})")
-    } else if !underlying.is_empty() {
-        underlying.to_string()
-    } else {
-        String::new()
-    };
-
-    let vol_proxy = if overlay || (cyber && covered) {
-        "Slightly dampened version of HACK / cyber software basket".to_string()
+    let vol_proxy = if covered && !underlying.trim().is_empty() {
+        format!("Dampened look-through of {underlying}")
+    } else if leveraged && !underlying.trim().is_empty() {
+        format!("Leveraged look-through of {underlying}")
     } else {
         String::new()
     };
@@ -48,11 +60,14 @@ pub fn extract_lookthrough(html: &str, symbol: &str, underlying: &str) -> Value 
         String::new()
     };
 
-    let (risk_tier_suggestion, risk_tier_suggestion_reason) = if overlay || (cyber && covered)
-    {
+    let (risk_tier_suggestion, risk_tier_suggestion_reason) = if covered || leveraged {
         (
             "Risk On",
-            "Highest return potential + thematic concentration",
+            if leveraged {
+                "Leverage concentrates return and loss"
+            } else {
+                "Covered-call overlay — owner sets risk; never auto-applied"
+            },
         )
     } else {
         ("", "")
@@ -77,6 +92,8 @@ pub fn extract_lookthrough(html: &str, symbol: &str, underlying: &str) -> Value 
         "taxCharacter": tax_character,
         "riskTierSuggestion": risk_tier_suggestion,
         "riskTierSuggestionReason": risk_tier_suggestion_reason,
+        "coveredCall": covered,
+        "leveraged": leveraged,
     })
 }
 
@@ -91,7 +108,9 @@ pub fn empty_lookthrough() -> Value {
         "volProxy": "",
         "taxCharacter": "",
         "riskTierSuggestion": "",
-        "riskTierSuggestionReason": ""
+        "riskTierSuggestionReason": "",
+        "coveredCall": false,
+        "leveraged": false
     })
 }
 
@@ -225,5 +244,20 @@ Amplify HACK Cybersecurity Covered Call ETF HAKY
         assert_eq!(v["topHoldings"][0]["ticker"], "PANW");
         assert_eq!(v["topHoldings"][0]["weightBps"], 887);
         assert_eq!(v["sectorWeights"][0]["weightBps"], 9120);
+        assert_eq!(v["coveredCall"], true);
+    }
+
+    #[test]
+    fn parseable_characteristics_are_generic_not_a_named_symbol() {
+        let html = r#"<html><body>
+PAY1 is a leveraged covered call ETF with look-through to UNDR.
+</body></html>"#;
+        let v = extract_lookthrough(html, "PAY1", "UNDR");
+        assert_eq!(v["coveredCall"], true);
+        assert_eq!(v["leveraged"], true);
+        assert!(v["themeStrategy"].as_str().unwrap().contains("Covered Call"));
+        assert!(v["themeStrategy"].as_str().unwrap().contains("Leveraged"));
+        assert_eq!(v["primaryRiskDriver"], "Look-through UNDR");
+        assert_eq!(v["riskTierSuggestion"], "Risk On");
     }
 }

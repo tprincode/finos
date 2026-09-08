@@ -1,0 +1,37 @@
+[
+  {
+    "ETF_TICKER": "QYLD",
+    "DISTRIBUTION_HISTORY": [
+      {
+        "amount": 0.2574,
+        "ex_date": "2014-01-22",
+        "payable_date": "2014-02-06",
+        "record_date": "2014-01-24"
+      },
+      {
+        "amount": 0.1728,
+        "ex_date": "2025-11-24",
+        "payable_date": "2025-12-02",
+        "record_date": "2025-11-24"
+      },
+      {
+        "amount": 0,
+        "ex_date": "2025-12-30",
+        "payable_date": "2026-01-07",
+        "record_date": "2025-12-30"
+      },
+      {
+        "amount": 0.1829,
+        "ex_date": "2026-08-24",
+        "payable_date": "2026-08-27",
+        "record_date": "2026-08-24"
+      },
+      {
+        "amount": null,
+        "ex_date": "2026-09-21",
+        "payable_date": "2026-09-24",
+        "record_date": "2026-09-21"
+      }
+    ]
+  }
+]

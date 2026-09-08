@@ -100,6 +100,31 @@ fn parse_iso_date(raw: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()
 }
 
+/// First `YYYY-MM-DD` in search-hit title/snippet. Empty hits = search miss.
+pub fn inception_on_from_search_hits(hits: &[(&str, &str)]) -> Option<String> {
+    for (title, snippet) in hits {
+        let text = format!("{title} {snippet}");
+        if let Some(date) = first_iso_date(&text) {
+            return Some(date);
+        }
+    }
+    None
+}
+
+pub fn first_iso_date(text: &str) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() < 10 {
+        return None;
+    }
+    for i in 0..=chars.len() - 10 {
+        let s: String = chars[i..i + 10].iter().collect();
+        if NaiveDate::parse_from_str(&s, "%Y-%m-%d").is_ok() {
+            return Some(s);
+        }
+    }
+    None
+}
+
 fn periods_elapsed(inception: NaiveDate, as_of: NaiveDate, periods_per_year: u8) -> u32 {
     let days = (as_of - inception).num_days().max(0) as u32;
     match periods_per_year {
@@ -174,5 +199,14 @@ mod tests {
             expected_from_inception("2026-02-27", "2026-08-27", "Weekly"),
             12
         );
+    }
+
+    #[test]
+    fn search_hits_yield_first_iso_date() {
+        assert_eq!(
+            inception_on_from_search_hits(&[("HAKY launched 2026-02-01", "ETF")]),
+            Some("2026-02-01".into())
+        );
+        assert_eq!(inception_on_from_search_hits(&[]), None);
     }
 }

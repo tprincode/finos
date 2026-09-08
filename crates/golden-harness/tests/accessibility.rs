@@ -17,7 +17,31 @@ fn accessibility_primary_actions_have_accessible_names() {
     let decl_chart =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/DeclarationPaymentsChart.tsx"))
             .expect("DeclarationPaymentsChart.tsx");
-    let sources = format!("{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{decl_chart}");
+    let import_wizard =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/ImportWizard.tsx"))
+            .expect("ImportWizard.tsx");
+    let dividend_weeks =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/DividendWeeks.tsx"))
+            .expect("DividendWeeks.tsx");
+    let sources = format!(
+        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}"
+    );
+    for name in [
+        "aria-label=\"Import wizard\"",
+        "aria-label=\"Import step\"",
+        "aria-label=\"Validate step\"",
+        "aria-label=\"Import transactions\"",
+        "aria-label=\"Continue to validate\"",
+        "aria-label=\"Continue last import\"",
+        "aria-label=\"Load\"",
+        "aria-label=\"Cancel\"",
+        "aria-label=\"Dividend weeks\"",
+        "aria-label=\"Dividend week table\"",
+        "aria-label=\"Dividend performance period\"",
+        "aria-label=\"Actual versus plan\"",
+    ] {
+        assert!(sources.contains(name), "missing import wizard name {name}");
+    }
     for name in [
         "aria-label=\"finos\"",
         "aria-label=\"Save device name\"",
@@ -34,6 +58,11 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Add manual dividend row\"",
         "aria-label=\"Income Plan\"",
         "aria-label=\"Calculator\"",
+        "aria-label=\"Distribution history\"",
+        "aria-label=\"Payment frequency filter\"",
+        "aria-label=\"History period\"",
+        "aria-label=\"History start date\"",
+        "aria-label=\"History end date\"",
         "aria-label=\"Position Details\"",
         "aria-label=\"Dashboard\"",
         "aria-label=\"Holdings\"",
@@ -41,10 +70,13 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Add Lot\"",
         "aria-label=\"Import\"",
         "aria-label=\"Collectors\"",
+        "aria-label=\"Tickets\"",
         "aria-label=\"Settings\"",
-        "aria-label=\"Refresh collector fleet\"",
         "aria-label=\"Run enabled collectors\"",
         "aria-label=\"Run misses only\"",
+        "aria-label=\"Work tickets\"",
+        "aria-label=\"Work ticket summary\"",
+        "aria-label={`Recreate adapter ${symbol}`}",
         "aria-label=\"Open exception log\"",
         "aria-label=\"Open process log\"",
         "aria-label=\"Capture process\"",
@@ -66,15 +98,21 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Collector run progress\"",
         "aria-label=\"Collector run log\"",
         "aria-label=\"Collector fleet\"",
+        "aria-label=\"Collector footer grid\"",
         "aria-label=\"Collector statistics\"",
-        "aria-label=\"Force refresh this symbol\"",
+        "aria-label=\"Collect fresh distribution data for this symbol\"",
+        "aria-label=\"Reevaluate collector\"",
+        "aria-label=\"Establish collector fleet\"",
+        "aria-label={`Establish collector ${row.symbol}`}",
+        "aria-label={`Reevaluate collector ${row.symbol}`}",
+        "aria-label={`Accept recommended ROC ${row.symbol}`}",
         "aria-label=\"Retrieve runs\"",
         "aria-label=\"Collector retrieve payload\"",
         "aria-label=\"Collector symbol page\"",
         "aria-label=\"Stored declarations\"",
         "aria-label=\"Collector plan\"",
         "aria-label=\"Assign lot\"",
-        "aria-label=\"Retrieve from market\"",
+        "aria-label=\"Retrieve declarations for this symbol\"",
         "aria-label=\"Mandatory data checklist\"",
         "aria-label=\"Use Most Current as Plan\"",
         "aria-label=\"Save new investment facts\"",
@@ -134,6 +172,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Bear end\"",
         "aria-label=\"Record last price\"",
         "aria-label=\"Refresh last prices\"",
+        "aria-label=\"Refresh declarations\"",
         "aria-label=\"Refresh last price for this symbol\"",
         "aria-label=\"Retrieve declarations for this symbol\"",
         "aria-label=\"Complete research\"",
@@ -143,7 +182,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Declaration graphing period\"",
         "aria-label=\"Issuer retrieve\"",
         "aria-label=\"Issuer retrieve miss summary\"",
-        "aria-label=\"Data screens\"",
+        "aria-label=\"Application\"",
         "aria-label=\"Data position totals\"",
         "aria-label=\"Apply issuer sources from provider\"",
         "aria-label=\"Position div type\"",
@@ -163,19 +202,19 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label={`Clear ${label} filter`}",
         "aria-label=\"Clear filters\"",
         "aria-label=\"Retrieve declarations\"",
-        "aria-label=\"Validate import\"",
-        "aria-label=\"Approve import\"",
-        "aria-label=\"Post import\"",
         "aria-label=\"Select week\"",
         "aria-label=\"Current week\"",
         "aria-label=\"Previous week\"",
         "aria-label=\"Next week\"",
         "aria-label=\"Income plan by account\"",
         "aria-label=\"Income plan by position\"",
+        "aria-label=\"Dividend weeks\"",
+        "aria-label=\"Dividend week table\"",
+        "aria-label=\"Dividend performance period\"",
+        "aria-label=\"Actual versus plan\"",
         "aria-label=\"Filter holdings\"",
         "label=\"Filter calculator\"",
         "label=\"Filter position lots\"",
-        "label=\"Filter income plan drilldown\"",
         "label=\"Filter dashboard\"",
         "aria-label=\"Trends weekly capture\"",
         "aria-label=\"Save Trends week\"",

@@ -3,9 +3,7 @@
 
 use serde_json::Value;
 
-use crate::retrieve::html::{
-    distribution_candidate, html_td_rows, parse_issuer_amount, parse_issuer_date, sort_newest_first,
-};
+use crate::retrieve::html::{parse_distribution_tables, sort_newest_first};
 
 use super::generic::parse_generic_distributions;
 
@@ -85,17 +83,7 @@ pub fn extract_simplify_table_html(body: &str) -> String {
 
 pub fn parse_simplify_distributions(source: &str, body: &str) -> Vec<Value> {
     let html = extract_simplify_table_html(body);
-    let mut out = Vec::new();
-    for cells in html_td_rows(&html) {
-        if cells.len() >= 4 {
-            let pay = parse_issuer_date(&cells[2]);
-            let amount = parse_issuer_amount(&cells[3]);
-            if let Some(pay) = pay {
-                out.push(distribution_candidate(source, pay, amount, None));
-                continue;
-            }
-        }
-    }
+    let mut out = parse_distribution_tables(source, &html);
     if out.is_empty() {
         out = parse_generic_distributions(source, &html);
     }

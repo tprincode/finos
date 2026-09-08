@@ -1,0 +1,7 @@
+% Amplify HAKY Form 19a-1 payable 2026-05-29 — PDF content-stream TJ operators from HTTP 200 body.
+BT
+[(I)-3(n )-4(c)-3(on)3(nec)-4(t)6(ion )-3(w)-4(it)4(h )-4(t)6(he )-6(m)-5(on)3(t)6(hly )-4(divide)-2(nd )-3(pa)4(ym)-3(ent)4( )-5(of $)-7(0)-4(.)-3(4)-4(1)-4(9)-4( )-5(per)-5( )-5(sha)5(r)-4(e )-7(pa)4(ya)5(ble)-2( )-5(on)3( )-5(Ma)5(y )-3(2)-4(9)-4(,)6( )-5(2)-4(0)-4(2)-4(6)-4( )-5(t)6(o )-2(sha)5(r)-4(eholder)-6(s )] TJ
+ET
+BT
+[(of r)-7(ec)-5(ord )-6(on)3( )-5(Ma)5(y )-3(2)-4(8)-4(,)6( )-5(2)-4(0)-4(2)-4(6)-4(,)6( )-5(it)4( )-5(is )-6(a)3(nt)6(ic)-5(ipat)8(ed )-6(t)6(ha)4(t)6( )-5(1)-4(0)-4(0)-4(%)-4( )-5(of suc)-4(h )-4(divide)-2(nd )-3(w)-4(il)-2(l )-6(be )-6(a)3( )-5(r)-4(et)4(ur)-3(n )-4(of c)-6(a)3(pit)5(a)3(l.)] TJ
+ET

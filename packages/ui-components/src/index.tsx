@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import {
   ClearFiltersButton,
   colFilter,
@@ -11,9 +11,24 @@ import {
   useListSort,
   type CheckedFilters,
 } from "./listTable";
+import { formatFridayEnding, formatWeekCaption, formatWeekColumnHeader } from "./week";
 
 export { ClearFiltersButton, ListFilter, SortTh, sortHead, sortRows, textMatches, useListSort } from "./listTable";
 export type { CheckedFilters, SortDir } from "./listTable";
+export {
+  addUtcDays,
+  fridayOfWeek,
+  formatWeekCaption,
+  formatMenuWeek,
+  formatWeekChooserLabel,
+  formatWeekColumnHeader,
+  formatFridayEnding,
+  formatWeekNumber,
+  formatWeekShort,
+  saturdayOfWeek,
+  weekIdContaining,
+} from "./week";
+export type { WeekId } from "./week";
 
 /** Design tokens and Radix-based primitives used by the local desktop data screens. */
 export const DESIGN_SYSTEM_VERSION = "0.1.0-draft";
@@ -69,6 +84,22 @@ export function formatUsd(minor: number, scale = USD_SCALE): string {
 export function formatPercentScaled(minor: number, scale = USD_SCALE): string {
   const places = Number.isFinite(scale) ? scale : USD_SCALE;
   return `${formatScaled(minor, places)}%`;
+}
+
+/** Scale-2 percent of plan (10000 = 100.00%). Null if plan unknown, plan is 0, or actual is still open. */
+export function pctOfPlanMinor(
+  planKnown: boolean,
+  plannedMinor: number,
+  actualMinor: number,
+  actualOpen = false,
+): number | null {
+  if (!planKnown || actualOpen || plannedMinor === 0) return null;
+  return Math.trunc((actualMinor * 10000) / plannedMinor);
+}
+
+export function formatPctOfPlan(pct: number | null | undefined): string {
+  if (pct == null) return "N/A";
+  return formatPercentScaled(pct, 2);
 }
 
 export function formatBps(bps: number | null | undefined): string {
@@ -1153,6 +1184,178 @@ export function ExceptionList({
   );
 }
 
+export type WorkTicketView = {
+  ticketId: string;
+  securityId: string;
+  symbol: string;
+  field: string;
+  code: string;
+  tool: string;
+  reason: string;
+  urlsTried?: string;
+  status: string;
+  openedOn?: string;
+};
+
+export function WorkTicketQueue({
+  tickets,
+  onRetry,
+  onRecreateAdapter,
+  onExcept,
+  onReject,
+  onEnterAmount,
+  onFile,
+  filterSymbol,
+  retryingTicketId,
+  retryingSymbol,
+}: {
+  tickets: WorkTicketView[];
+  onRetry?: (ticket: WorkTicketView) => void;
+  onRecreateAdapter?: (ticket: WorkTicketView) => void;
+  onExcept?: (ticket: WorkTicketView) => void;
+  onReject?: (ticket: WorkTicketView) => void;
+  onEnterAmount?: (ticket: WorkTicketView, amount: string) => void;
+  onFile?: (ticket: WorkTicketView) => void;
+  filterSymbol?: string;
+  retryingTicketId?: string;
+  retryingSymbol?: string;
+}) {
+  const open = tickets.filter((t) => t.status === "open");
+  const scoped = filterSymbol
+    ? open.filter(
+        (t) => t.symbol.toUpperCase() === filterSymbol.trim().toUpperCase(),
+      )
+    : open;
+  const bySymbol = new Map<string, WorkTicketView[]>();
+  for (const t of scoped) {
+    const list = bySymbol.get(t.symbol) ?? [];
+    list.push(t);
+    bySymbol.set(t.symbol, list);
+  }
+  const codes = new Map<string, number>();
+  for (const t of scoped) {
+    codes.set(t.code, (codes.get(t.code) ?? 0) + 1);
+  }
+  const codeRollup = [...codes.entries()]
+    .map(([c, n]) => `${c} ${n}`)
+    .join(", ");
+  return (
+    <section aria-label="Work tickets">
+      {retryingTicketId ? (
+        <section aria-label="Retry progress" aria-busy="true">
+          <p role="status" aria-live="polite">
+            Retrying {retryingSymbol || "symbol"} — fetching the issuer page and
+            matching pay date to amount…
+          </p>
+          <progress aria-label={`Retrying ${retryingSymbol || "symbol"}`} />
+        </section>
+      ) : null}
+      <p aria-label="Work ticket summary">
+        Open {formatCount(scoped.length)} tickets · {formatCount(bySymbol.size)} symbols
+        {codeRollup ? ` · ${codeRollup}` : ""}
+      </p>
+      {scoped.length === 0 ? (
+        <p>No open work tickets.</p>
+      ) : (
+        [...bySymbol.entries()].map(([symbol, rows]) => (
+          <details key={symbol} aria-label={`Work tickets for ${symbol}`}>
+            <summary>
+              {symbol} — {formatCount(rows.length)} open (
+              {rows.map((r) => r.code).join(", ")})
+            </summary>
+            <ul>
+              {rows.map((t) => (
+                <li key={t.ticketId}>
+                  <p>
+                    {t.code}: {t.reason}
+                  </p>
+                  {t.tool === "retry_retrieve" && onRecreateAdapter ? (
+                    <button
+                      type="button"
+                      aria-label={`Recreate adapter ${symbol}`}
+                      disabled={Boolean(retryingTicketId)}
+                      onClick={() => onRecreateAdapter(t)}
+                    >
+                      Recreate adapter
+                    </button>
+                  ) : null}
+                  {t.tool === "retry_retrieve" && onRetry ? (
+                    <button
+                      type="button"
+                      aria-label={`Retry ${symbol}`}
+                      disabled={Boolean(retryingTicketId)}
+                      aria-busy={t.ticketId === retryingTicketId}
+                      onClick={() => onRetry(t)}
+                    >
+                      {t.ticketId === retryingTicketId ? "Retrying…" : "Retry"}
+                    </button>
+                  ) : null}
+                  {t.tool === "amount_confirm" && onExcept ? (
+                    <button
+                      type="button"
+                      aria-label={`Except ${symbol} amount variation`}
+                      disabled={Boolean(retryingTicketId)}
+                      onClick={() => onExcept(t)}
+                    >
+                      Except
+                    </button>
+                  ) : null}
+                  {t.tool === "amount_confirm" && onReject ? (
+                    <button
+                      type="button"
+                      aria-label={`Reject ${symbol} amount variation`}
+                      disabled={Boolean(retryingTicketId)}
+                      onClick={() => onReject(t)}
+                    >
+                      Reject
+                    </button>
+                  ) : null}
+                  {t.tool === "enter_declared_amount" && onEnterAmount ? (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const fd = new FormData(e.currentTarget);
+                        onEnterAmount(t, String(fd.get("amount") ?? ""));
+                      }}
+                    >
+                      <label>
+                        Declared $ per unit
+                        <input
+                          name="amount"
+                          inputMode="decimal"
+                          aria-label={`Declared amount ${symbol}`}
+                          required
+                        />
+                      </label>
+                      <button
+                        type="submit"
+                        aria-label={`Save declared amount ${symbol}`}
+                        disabled={Boolean(retryingTicketId)}
+                      >
+                        Save declared amount
+                      </button>
+                    </form>
+                  ) : null}
+                  {onFile && t.tool !== "amount_confirm" && t.tool !== "enter_declared_amount" ? (
+                    <button
+                      type="button"
+                      aria-label={`File ticket ${symbol} ${t.code}`}
+                      disabled={Boolean(retryingTicketId)}
+                      onClick={() => onFile?.(t)}
+                    >
+                      File
+                    </button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </details>
+        ))
+      )}
+    </section>
+  );
+}
+
 export function LotsRoiPanel({
   basis,
   roi,
@@ -1482,10 +1685,323 @@ export function AllocationVsPositions({
   );
 }
 
+export type IncomePlanGridView = {
+  asOfDate: string;
+  historicalWeeks: number;
+  futureWeeks: number;
+  selectedAccounts: string[];
+  table1Columns: string[];
+  weeks: Array<{ start: string; end: string; kind: string }>;
+  table1: Array<{
+    id: string;
+    label: string;
+    yearMinor: number | null;
+    yearPctMinor?: number | null;
+    cells: Array<{ weekEnd: string; amountMinor: number | null; tone?: string }>;
+  }>;
+  table2: Array<{
+    cadence: string;
+    rows: Array<{
+      symbol: string;
+      cadence: string;
+      lastUpdate: string | null;
+      cells: Array<{ weekEnd: string; amountMinor: number | null; tone?: string }>;
+    }>;
+  }>;
+  selectedWeekEnd: string;
+  scale: number;
+};
+
+export const INCOME_PLAN_DEFAULT_ACCOUNTS = [
+  "Income",
+  "Car",
+  "Health",
+  "FI Roth",
+  "9",
+];
+export const INCOME_PLAN_OPTIONAL_ACCOUNTS = [
+  "Speculation",
+  "Energy",
+  "Robinhood",
+];
+
+function formatUsdWhole(minor: number, scale: number): string {
+  const places = Number.isFinite(scale) ? Math.max(0, Math.trunc(scale)) : 0;
+  const dollars = Math.round(minor / 10 ** places);
+  const sign = dollars < 0 ? "-" : "";
+  return `${sign}$${formatCount(Math.abs(dollars))}`;
+}
+
+function fmtGridCell(
+  amountMinor: number | null | undefined,
+  tone: string | undefined,
+  scale: number,
+  isDelta: boolean,
+): string {
+  if (isDelta) {
+    if (!tone) return "";
+    const n = Number(tone);
+    if (!Number.isFinite(n)) return "";
+    return `${(n / 100).toFixed(2)}%`;
+  }
+  if (amountMinor == null) return "";
+  return formatUsdWhole(amountMinor, scale);
+}
+
+function table1RowClass(id: string): string {
+  if (id === "total_plan") return "ip-plan-total";
+  if (id === "total_actual") return "ip-act-total";
+  if (id === "total_difference") return "ip-diff-total";
+  if (id === "delta_to_plan_pct") return "ip-delta";
+  if (id.startsWith("plan_")) return "ip-planrow";
+  if (id.startsWith("actual_")) return "ip-actrow";
+  return "";
+}
+
+export function IncomePlanGridPanel({
+  grid,
+  selectedAccounts,
+  onToggleAccount,
+  historicalWeeks,
+  futureWeeks,
+  onHistoricalWeeks,
+  onFutureWeeks,
+  onOpenWeek,
+  onPrintExport,
+}: {
+  grid: IncomePlanGridView | null;
+  selectedAccounts: string[];
+  onToggleAccount: (name: string) => void;
+  historicalWeeks: number;
+  futureWeeks: number;
+  onHistoricalWeeks: (n: number) => void;
+  onFutureWeeks: (n: number) => void;
+  onOpenWeek: (weekEnd: string) => void;
+  onPrintExport: (action: "print" | "pdf" | "excel") => void;
+}) {
+  const chips = [
+    ...INCOME_PLAN_DEFAULT_ACCOUNTS,
+    ...INCOME_PLAN_OPTIONAL_ACCOUNTS,
+  ];
+  if (!grid) {
+    return <p>Loading income plan…</p>;
+  }
+  const yearCol = grid.table1Columns[1] ?? "";
+  const weekHead = (weekEnd: string) => (
+    <th key={weekEnd} className="ip-week">
+      <button
+        type="button"
+        className={weekEnd === grid.selectedWeekEnd ? "week-selected" : undefined}
+        aria-label={`Open week ending ${weekEnd}`}
+        onClick={() => onOpenWeek(weekEnd)}
+      >
+        {formatFridayEnding(weekEnd)}
+      </button>
+    </th>
+  );
+  const grand = grid.weeks.map((_, i) =>
+    grid.table2.reduce(
+      (sum, group) =>
+        sum +
+        group.rows.reduce((s, row) => s + (row.cells[i]?.amountMinor ?? 0), 0),
+      0,
+    ),
+  );
+  return (
+    <div className="income-plan-grids">
+      <div className="income-week-bar">
+        <fieldset className="income-account-picker">
+          <legend className="income-week-label">Accounts</legend>
+          <div className="income-account-ticks">
+            {chips.map((name) => (
+              <label
+                key={name}
+                className={`income-account-tick${selectedAccounts.includes(name) ? "" : " off"}`}
+              >
+                <input
+                  type="checkbox"
+                  aria-label={`Filter ${name}`}
+                  checked={selectedAccounts.includes(name)}
+                  onChange={() => onToggleAccount(name)}
+                />
+                {name}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <label className="income-week-label">
+          Historical weeks
+          <input
+            aria-label="Historical weeks"
+            className="ip-num"
+            type="number"
+            min={0}
+            max={26}
+            value={historicalWeeks}
+            onChange={(e) =>
+              onHistoricalWeeks(Math.max(0, Math.min(26, Number(e.target.value) || 0)))
+            }
+          />
+        </label>
+        <label className="income-week-label">
+          Future weeks
+          <input
+            aria-label="Future weeks"
+            className="ip-num"
+            type="number"
+            min={0}
+            max={26}
+            value={futureWeeks}
+            onChange={(e) =>
+              onFutureWeeks(Math.max(0, Math.min(26, Number(e.target.value) || 0)))
+            }
+          />
+        </label>
+        <div className="income-print-export">
+          <span className="income-week-label">Print / Export</span>
+          <button type="button" aria-label="Print to page" onClick={() => onPrintExport("print")}>
+            Print to page
+          </button>
+          <button type="button" aria-label="Save PDF" onClick={() => onPrintExport("pdf")}>
+            Save PDF
+          </button>
+          <button type="button" aria-label="Export Excel" onClick={() => onPrintExport("excel")}>
+            Export Excel
+          </button>
+        </div>
+      </div>
+      <div className="ip-panel">
+        <h3>Account rollup</h3>
+        <table className="ip-grid" aria-label="Income plan account rollup">
+          <thead>
+            <tr>
+              <th className="ip-sticky" />
+              <th className="ip-year">{yearCol}</th>
+              {grid.weeks.map((week) => weekHead(week.end))}
+            </tr>
+          </thead>
+          <tbody>
+            {grid.table1.map((row) => (
+              <tr key={row.id} className={table1RowClass(row.id)}>
+                <td className="ip-sticky">{row.label}</td>
+                <td className="numeric ip-year">
+                  {row.id === "delta_to_plan_pct"
+                    ? row.yearPctMinor != null
+                      ? `${(row.yearPctMinor / 100).toFixed(2)}%`
+                      : ""
+                    : row.yearMinor == null
+                      ? ""
+                      : row.id.startsWith("plan_") || row.id.startsWith("actual_")
+                        ? formatUsd(row.yearMinor, grid.scale)
+                        : formatUsd(row.yearMinor, grid.scale)}
+                </td>
+                {row.cells.map((cell) => (
+                  <td
+                    key={cell.weekEnd}
+                    className="numeric"
+                  >
+                    <button
+                      type="button"
+                      className="cell-btn"
+                      aria-label={`Open week ending ${cell.weekEnd}`}
+                      onClick={() => onOpenWeek(cell.weekEnd)}
+                    >
+                      {fmtGridCell(
+                        cell.amountMinor,
+                        cell.tone,
+                        grid.scale,
+                        row.id === "delta_to_plan_pct",
+                      )}
+                    </button>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="ip-panel">
+        <h3>Position plan grid</h3>
+        <table className="ip-grid" aria-label="Income plan position grid">
+          <thead>
+            <tr>
+              <th className="ip-sticky">Symbol</th>
+              <th>Last Update</th>
+              {grid.weeks.map((week) => weekHead(week.end))}
+            </tr>
+          </thead>
+          <tbody>
+            {grid.table2.map((group) => {
+              const sub = group.rows.reduce((acc, row) => {
+                row.cells.forEach((cell, i) => {
+                  acc[i] = (acc[i] ?? 0) + (cell.amountMinor ?? 0);
+                });
+                return acc;
+              }, [] as number[]);
+              return (
+                <Fragment key={group.cadence}>
+                  <tr className="ip-grp">
+                    <td className="ip-sticky">{group.cadence}</td>
+                    <td />
+                    {grid.weeks.map((week, i) => (
+                      <td key={week.end} className="numeric">
+                        {sub[i] ? formatUsdWhole(sub[i], grid.scale) : ""}
+                      </td>
+                    ))}
+                  </tr>
+                  {group.rows.map((row) => (
+                    <tr key={row.symbol}>
+                      <td className="ip-sticky">{row.symbol}</td>
+                      <td>{row.lastUpdate ?? ""}</td>
+                      {row.cells.map((cell) => (
+                        <td
+                          key={cell.weekEnd}
+                          className={`numeric cell-${cell.tone ?? "empty"}`}
+                        >
+                          <button
+                            type="button"
+                            className="cell-btn"
+                            aria-label={`Open week ending ${cell.weekEnd}`}
+                            onClick={() => onOpenWeek(cell.weekEnd)}
+                          >
+                            {fmtGridCell(cell.amountMinor, cell.tone, grid.scale, false)}
+                          </button>
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </Fragment>
+              );
+            })}
+            <tr className="ip-grand">
+              <td className="ip-sticky">Grand Total</td>
+              <td />
+              {grid.weeks.map((week, i) => (
+                <td key={week.end} className="numeric">
+                  {grand[i] ? formatUsdWhole(grand[i], grid.scale) : ""}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="ip-legend">
+        <span><i className="ip-sw ok" />Past · actual ≈ plan</span>
+        <span><i className="ip-sw variance" />Past · variance</span>
+        <span><i className="ip-sw miss" />Past · miss</span>
+        <span><i className="ip-sw future" />Future plan</span>
+        <span><i className="ip-sw empty" />Not a pay week</span>
+      </p>
+    </div>
+  );
+}
+
 export type IncomePlanWeekView = {
   asOfDate: string;
   start: string;
   end: string;
+  weekYear?: number;
+  weekNumber?: number;
   status: string;
   lines: Array<{
     accountName: string;
@@ -1499,9 +2015,22 @@ export type IncomePlanWeekView = {
     cadence?: string;
     payOn?: string;
     actualMinor: number;
+    actualKnown?: boolean;
     plannedMinor?: number;
     planKnown: boolean;
+    declarationMinor?: number;
+    declarationKnown?: boolean;
     scale: number;
+    accounts?: Array<{
+      accountName: string;
+      actualMinor: number;
+      actualKnown?: boolean;
+      plannedMinor?: number;
+      planKnown: boolean;
+      declarationMinor?: number;
+      declarationKnown?: boolean;
+    }>;
+    lastUpdate?: string | null;
   }>;
   drilldown: Array<{
     accountName: string;
@@ -1513,25 +2042,39 @@ export type IncomePlanWeekView = {
   latestActualOn?: string | null;
   yieldCount?: number;
   scale?: number;
+  missCount?: number;
+  amountExceptionCount?: number;
+  varianceMinor?: number | null;
 };
 
 export function IncomePlanWeekPanel({
   week,
-  selectedAccount,
+  selectedAccounts,
   onOpenSymbol,
+  onBack,
+  weekStrip,
+  onSelectWeek,
+  closedAsOf,
 }: {
   week: IncomePlanWeekView | null;
-  selectedAccount?: string | null;
+  selectedAccounts?: string[];
   onOpenSymbol?: (symbol: string) => void;
+  onBack?: () => void;
+  weekStrip?: string[];
+  onSelectWeek?: (weekEnd: string) => void;
+  closedAsOf?: string;
 }) {
-  const [drillFilter, setDrillFilter] = useState("");
   const weekSort = useListSort("account");
   const positionSort = useListSort("symbol");
-  const drillSort = useListSort("date");
   if (!week) {
     return <p>Loading week…</p>;
   }
-  const weekLines = sortRows(week.lines, weekSort.sortKey, weekSort.sortDir, (line, key) => {
+  const selected = selectedAccounts ?? [];
+  const visibleLines =
+    selected.length > 0
+      ? week.lines.filter((line) => selected.includes(line.accountName))
+      : week.lines;
+  const weekLines = sortRows(visibleLines, weekSort.sortKey, weekSort.sortDir, (line, key) => {
     switch (key) {
       case "account":
         return line.accountName;
@@ -1541,20 +2084,58 @@ export function IncomePlanWeekPanel({
         return line.actualMinor;
       case "variance":
         return line.planKnown ? line.actualMinor - (line.plannedMinor ?? 0) : null;
+      case "pct":
+        return pctOfPlanMinor(
+          line.planKnown,
+          line.plannedMinor ?? 0,
+          line.actualMinor,
+          week.end >= new Date().toISOString().slice(0, 10) && line.actualMinor === 0,
+        );
       default:
         return line.accountName;
     }
   });
-  const totalActual = week.lines.reduce((sum, line) => sum + line.actualMinor, 0);
+  const totalActual = visibleLines.reduce((sum, line) => sum + line.actualMinor, 0);
   const today = new Date().toISOString().slice(0, 10);
-  const weekOpen = week.end >= today;
+  const asOf = closedAsOf?.slice(0, 10) || today;
+  const weekOpen = week.end >= asOf;
   const actualText = (amount: number, scale: number | undefined) => {
     if (weekOpen && amount === 0) return "N/A";
     return formatUsd(amount, scale);
   };
-  const derivedPositions = Array.isArray(week.positions)
-    ? week.positions
-    : [];
+  const derivedPositions = (
+    Array.isArray(week.positions) ? week.positions : []
+  ).flatMap((row) => {
+    if (selected.length === 0) {
+      return [row];
+    }
+    const slices = (row.accounts ?? []).filter((account) =>
+      selected.includes(account.accountName),
+    );
+    if (slices.length === 0) {
+      return [];
+    }
+    const planKnown = slices.every((account) => account.planKnown);
+    const actualKnown = slices.some((account) => account.actualKnown);
+    const declarationKnown = slices.some((account) => account.declarationKnown);
+    return [
+      {
+        ...row,
+        planKnown,
+        plannedMinor: slices.reduce(
+          (sum, account) => sum + (account.plannedMinor ?? 0),
+          0,
+        ),
+        actualKnown,
+        actualMinor: slices.reduce((sum, account) => sum + account.actualMinor, 0),
+        declarationKnown,
+        declarationMinor: slices.reduce(
+          (sum, account) => sum + (account.declarationMinor ?? 0),
+          0,
+        ),
+      },
+    ];
+  });
   const positionRows = sortRows(
     derivedPositions,
     positionSort.sortKey,
@@ -1569,57 +2150,351 @@ export function IncomePlanWeekPanel({
           return row.payOn ?? "";
         case "plan":
           return row.planKnown ? (row.plannedMinor ?? 0) : null;
+        case "declaration":
+          return row.declarationKnown ? (row.declarationMinor ?? 0) : null;
         case "actual":
-          return row.actualMinor;
+          return row.actualKnown === false ? null : row.actualMinor;
         case "variance":
           return row.planKnown ? row.actualMinor - (row.plannedMinor ?? 0) : null;
+        case "pct":
+          return pctOfPlanMinor(
+            row.planKnown,
+            row.plannedMinor ?? 0,
+            row.actualMinor,
+            weekOpen && row.actualMinor === 0,
+          );
         default:
           return row.symbol;
       }
     },
   );
-  const scoped = selectedAccount
-    ? week.drilldown.filter((row) => row.accountName === selectedAccount)
-    : week.drilldown;
-  const matched = scoped.filter((row) =>
-    textMatches(
-      drillFilter,
-      row.accountName,
-      row.symbol,
-      row.occurredOn,
-      formatUsd(row.amountMinor, row.scale),
-    ),
+  const positionPctTotal = (() => {
+    const actualOpen =
+      weekOpen && positionRows.every((row) => row.actualMinor === 0);
+    if (actualOpen || positionRows.length === 0) return null;
+    if (positionRows.some((row) => !row.planKnown)) return null;
+    const planned = positionRows.reduce((sum, row) => sum + (row.plannedMinor ?? 0), 0);
+    const actual = positionRows.reduce((sum, row) => sum + row.actualMinor, 0);
+    return pctOfPlanMinor(true, planned, actual, false);
+  })();
+  const accountPctTotal = (() => {
+    const actualOpen = weekOpen && totalActual === 0;
+    if (actualOpen) return null;
+    const known = visibleLines.filter((line) => line.planKnown);
+    if (known.length === 0) return null;
+    const planned = known.reduce((sum, line) => sum + (line.plannedMinor ?? 0), 0);
+    const actual = known.reduce((sum, line) => sum + line.actualMinor, 0);
+    return pctOfPlanMinor(true, planned, actual, false);
+  })();
+  const weekPlan = positionRows.reduce(
+    (s, r) => s + (r.planKnown ? (r.plannedMinor ?? 0) : 0),
+    0,
   );
-  const drill = sortRows(matched, drillSort.sortKey, drillSort.sortDir, (row, key) => {
-    switch (key) {
-      case "account":
-        return row.accountName;
-      case "symbol":
-        return row.symbol;
-      case "date":
-        return row.occurredOn;
-      case "amount":
-        return row.amountMinor;
-      default:
-        return row.occurredOn;
-    }
-  });
+  const weekActual = positionRows.reduce(
+    (s, r) => s + (r.actualKnown === false ? 0 : r.actualMinor),
+    0,
+  );
+  const TOLERANCE = 100;
+  const missSymbols = positionRows
+    .filter((r) => {
+      const planned = r.planKnown ? (r.plannedMinor ?? 0) : 0;
+      const paid = r.actualKnown !== false && r.actualMinor !== 0;
+      return planned > 0 && !paid;
+    })
+    .map((r) => r.symbol);
+  const exceptionSymbols = positionRows
+    .filter((r) => {
+      const planned = r.planKnown ? (r.plannedMinor ?? 0) : 0;
+      const paid = r.actualKnown !== false && r.actualMinor !== 0;
+      return r.planKnown && paid && Math.abs(r.actualMinor - planned) > TOLERANCE;
+    })
+    .map((r) => r.symbol);
+  const weekVariance = weekOpen ? null : weekActual - weekPlan;
+  const missCount = weekOpen ? null : missSymbols.length;
+  const exceptionCount = weekOpen ? null : exceptionSymbols.length;
+  const cadenceOrder = ["Monthly", "Quarterly", "Weekly", "Other"] as const;
+  const cadenceBucket = (c?: string) => {
+    const f = (c ?? "").toLowerCase();
+    if (f.includes("month")) return "Monthly";
+    if (f.includes("quarter")) return "Quarterly";
+    if (f.includes("week")) return "Weekly";
+    return "Other";
+  };
+  const grouped = cadenceOrder
+    .map((name) => ({
+      name,
+      rows: positionRows.filter((r) => cadenceBucket(r.cadence) === name),
+    }))
+    .filter((g) => g.rows.length > 0);
   return (
-    <div>
-      <p>
-        Status {week.status}. Plan is unknown until Calculator exists — not shown as $0.00.
-        {week.yieldCount != null ? ` Data yield rows: ${formatCount(week.yieldCount)}.` : ""}
-        {week.latestActualOn ? ` Last yield ${week.latestActualOn}.` : ""}
-      </p>
+    <div className={onBack ? "income-plan-pattern-b" : undefined}>
+      {onBack ? (
+        <>
+          <div className="ip-kpi" aria-label="Week summary">
+            <div className="ip-kpi-box">
+              <span>Week plan</span>
+              <b>{formatUsdWhole(weekPlan, week.scale ?? 2)}</b>
+            </div>
+            <div className="ip-kpi-box">
+              <span>Week actual</span>
+              <b>{weekOpen ? "—" : formatUsdWhole(weekActual, week.scale ?? 2)}</b>
+            </div>
+            <div className="ip-kpi-box" title="Actual minus Plan for this week">
+              <span>Variance</span>
+              <b className={weekVariance != null && weekVariance < 0 ? "diffneg" : weekVariance != null && weekVariance > 0 ? "diffpos" : undefined}>
+                {weekVariance == null
+                  ? "—"
+                  : formatUsdWhole(weekVariance, week.scale ?? 2)}
+              </b>
+            </div>
+            <div className="ip-kpi-box" title="Planned this week and not paid">
+              <span>Misses</span>
+              <b>{missCount == null ? "—" : missCount}</b>
+            </div>
+            <div
+              className="ip-kpi-box"
+              title="Paid this week, but the amount differs from plan by more than $1"
+            >
+              <span>Amount exceptions</span>
+              <b>{exceptionCount == null ? "—" : exceptionCount}</b>
+            </div>
+          </div>
+          <div className="income-week-bar">
+            <button type="button" aria-label="Back to Weekly grid" onClick={onBack}>
+              ← Back to Weekly grid
+            </button>
+            {weekStrip && weekStrip.length > 0 ? (
+              <div className="ip-week-nav" aria-label="Week strip">
+                {weekStrip.map((end) => (
+                  <button
+                    key={end}
+                    type="button"
+                    className={`ip-week-pill${end === week.end ? " week-selected" : ""}`}
+                    aria-label={`Open week ending ${end}`}
+                    onClick={() => onSelectWeek?.(end)}
+                  >
+                    {formatFridayEnding(end)}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <>
+          {weekStrip && weekStrip.length > 0 ? (
+            <div className="income-week-bar" aria-label="Week strip">
+              {weekStrip.map((end) => (
+                <button
+                  key={end}
+                  type="button"
+                  className={end === week.end ? "week-selected" : undefined}
+                  aria-label={`Open week ending ${end}`}
+                  onClick={() => onSelectWeek?.(end)}
+                >
+                  {end}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="income-week-bar" aria-label="Week summary">
+            <span>Plan {formatUsd(weekPlan, week.scale)}</span>
+            <span>Actual {formatUsd(weekActual, week.scale)}</span>
+            <span>
+              Variance{" "}
+              {week.varianceMinor == null
+                ? "N/A"
+                : formatUsd(week.varianceMinor, week.scale)}
+            </span>
+            <span>Misses {week.missCount ?? 0}</span>
+            <span>Amount exceptions {week.amountExceptionCount ?? 0}</span>
+          </div>
+        </>
+      )}
       {totalActual === 0 && positionRows.length === 0 ? (
         <p>
           No dividend cash and no scheduled payers in this week. That is not unpaid and not
           an empty database.
         </p>
       ) : null}
-      <h3>By position for the week</h3>
+      {onBack ? null : <h3>By account for the week</h3>}
+      {onBack ? null : (
+      <div className="table-wrap">
+        <table aria-label="Income plan by account">
+          <thead>
+            <tr>
+              {sortHead(weekSort, "Account", "account")}
+              {sortHead(weekSort, "Plan", "plan", true)}
+              {sortHead(weekSort, "Actual", "actual", true)}
+              {sortHead(weekSort, "Variance", "variance", true)}
+              {sortHead(weekSort, "% of Plan", "pct", true)}
+            </tr>
+          </thead>
+          <tbody>
+            {weekLines.map((line) => {
+              const actualOpen = weekOpen && line.actualMinor === 0;
+              return (
+              <tr key={line.accountName}>
+                <td>{line.accountName}</td>
+                <td className="numeric">
+                  {line.planKnown
+                    ? formatUsd(line.plannedMinor ?? 0, line.scale)
+                    : "N/A"}
+                </td>
+                <td className="numeric">{actualText(line.actualMinor, line.scale)}</td>
+                <td className="numeric">
+                  {line.planKnown && !actualOpen
+                    ? formatUsd(line.actualMinor - (line.plannedMinor ?? 0), line.scale)
+                    : "N/A"}
+                </td>
+                <td className="numeric">
+                  {formatPctOfPlan(
+                    pctOfPlanMinor(
+                      line.planKnown,
+                      line.plannedMinor ?? 0,
+                      line.actualMinor,
+                      actualOpen,
+                    ),
+                  )}
+                </td>
+              </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td>Total</td>
+              <td className="numeric">
+                {moneyTotal(
+                  visibleLines.map((line) => (line.planKnown ? (line.plannedMinor ?? 0) : null)),
+                  week.scale,
+                )}
+              </td>
+              <td className="numeric">
+                {weekOpen && totalActual === 0
+                  ? "N/A"
+                  : formatUsd(totalActual, week.scale)}
+              </td>
+              <td className="numeric">
+                {weekOpen
+                  ? "N/A"
+                  : moneyTotal(
+                      visibleLines.map((line) =>
+                        line.planKnown ? line.actualMinor - (line.plannedMinor ?? 0) : null,
+                      ),
+                      week.scale,
+                    )}
+              </td>
+              <td className="numeric">{formatPctOfPlan(accountPctTotal)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      )}
+      <h3>{onBack ? "Positions in this week" : "By position for the week"}</h3>
       {positionRows.length === 0 ? (
         <p>No positions scheduled or paid in this week.</p>
+      ) : onBack ? (
+        <table className="ip-grid" aria-label="Income plan by position">
+          <thead>
+            <tr>
+              <th className="ip-sticky">Symbol</th>
+              <th>Freq</th>
+              <th>Last Update</th>
+              <th>Plan $</th>
+              <th>Declaration $</th>
+              <th>Actual $</th>
+              <th>Variance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {grouped.map((group) => {
+              const gPlan = group.rows.reduce(
+                (s, r) => s + (r.planKnown ? (r.plannedMinor ?? 0) : 0),
+                0,
+              );
+              const gDecl = group.rows.reduce(
+                (s, r) => s + (r.declarationKnown ? (r.declarationMinor ?? 0) : 0),
+                0,
+              );
+              const gAct = group.rows.reduce(
+                (s, r) => s + (r.actualKnown === false ? 0 : r.actualMinor),
+                0,
+              );
+              return (
+                <Fragment key={group.name}>
+                  <tr className="ip-grp">
+                    <td className="ip-sticky">{group.name}</td>
+                    <td>{group.rows.length}</td>
+                    <td />
+                    <td className="numeric">{formatUsdWhole(gPlan, week.scale ?? 2)}</td>
+                    <td className="numeric">{gDecl ? formatUsdWhole(gDecl, week.scale ?? 2) : ""}</td>
+                    <td className="numeric">
+                      {weekOpen ? "" : formatUsdWhole(gAct, week.scale ?? 2)}
+                    </td>
+                    <td className="numeric">
+                      {weekOpen ? "" : formatUsdWhole(gAct - gPlan, week.scale ?? 2)}
+                    </td>
+                  </tr>
+                  {group.rows.map((row) => {
+                    const paid = row.actualKnown !== false && row.actualMinor !== 0;
+                    const planned = row.planKnown ? (row.plannedMinor ?? 0) : 0;
+                    const varMinor =
+                      weekOpen || !row.planKnown ? null : (paid ? row.actualMinor : 0) - planned;
+                    return (
+                      <tr key={row.symbol}>
+                        <td className="ip-sticky">
+                          {onOpenSymbol ? (
+                            <button
+                              type="button"
+                              aria-label={`Open ${row.symbol} position`}
+                              onClick={() => onOpenSymbol(row.symbol)}
+                            >
+                              {row.symbol}
+                            </button>
+                          ) : (
+                            row.symbol
+                          )}
+                        </td>
+                        <td>{row.cadence?.trim() || "—"}</td>
+                        <td>{row.lastUpdate?.trim() || ""}</td>
+                        <td className="numeric">
+                          {row.planKnown ? formatUsd(planned, row.scale) : ""}
+                        </td>
+                        <td className="numeric">
+                          {row.declarationKnown
+                            ? formatUsd(row.declarationMinor ?? 0, row.scale)
+                            : ""}
+                        </td>
+                        <td className="numeric">
+                          {weekOpen ? "" : paid ? formatUsd(row.actualMinor, row.scale) : ""}
+                        </td>
+                        <td
+                          className={`numeric${varMinor != null && varMinor < 0 ? " diffneg" : ""}${varMinor != null && varMinor > 0 ? " diffpos" : ""}`}
+                        >
+                          {varMinor == null ? "" : formatUsd(varMinor, row.scale)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </Fragment>
+              );
+            })}
+            <tr className="ip-grand">
+              <td className="ip-sticky">Grand Total</td>
+              <td>{positionRows.length}</td>
+              <td />
+              <td className="numeric">{formatUsdWhole(weekPlan, week.scale ?? 2)}</td>
+              <td className="numeric" />
+              <td className="numeric">
+                {weekOpen ? "" : formatUsdWhole(weekActual, week.scale ?? 2)}
+              </td>
+              <td className="numeric">
+                {weekVariance == null ? "" : formatUsdWhole(weekVariance, week.scale ?? 2)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
       ) : (
         <div className="table-wrap">
           <table aria-label="Income plan by position">
@@ -1627,15 +2502,17 @@ export function IncomePlanWeekPanel({
               <tr>
                 {sortHead(positionSort, "Symbol", "symbol")}
                 {sortHead(positionSort, "Cadence", "cadence")}
-                {sortHead(positionSort, "Pay-on", "payOn")}
+                {sortHead(positionSort, "Last Update", "lastUpdate")}
                 {sortHead(positionSort, "Plan", "plan", true)}
+                {sortHead(positionSort, "Declaration", "declaration", true)}
                 {sortHead(positionSort, "Actual", "actual", true)}
                 {sortHead(positionSort, "Variance", "variance", true)}
               </tr>
             </thead>
             <tbody>
               {positionRows.map((row) => {
-                const actualOpen = weekOpen && row.actualMinor === 0;
+                const actualKnown = row.actualKnown ?? !(weekOpen && row.actualMinor === 0);
+                const actualOpen = !actualKnown;
                 return (
                 <tr key={row.symbol}>
                   <td>
@@ -1652,15 +2529,22 @@ export function IncomePlanWeekPanel({
                     )}
                   </td>
                   <td>{row.cadence?.trim() || "—"}</td>
-                  <td>{row.payOn?.trim() || "—"}</td>
+                  <td>{row.lastUpdate?.trim() || ""}</td>
                   <td className="numeric">
                     {row.planKnown
                       ? formatUsd(row.plannedMinor ?? 0, row.scale)
                       : "N/A"}
                   </td>
-                  <td className="numeric">{actualText(row.actualMinor, row.scale)}</td>
                   <td className="numeric">
-                    {row.planKnown && !actualOpen
+                    {row.declarationKnown
+                      ? formatUsd(row.declarationMinor ?? 0, row.scale)
+                      : "N/A"}
+                  </td>
+                  <td className="numeric">
+                    {actualKnown ? formatUsd(row.actualMinor, row.scale) : "N/A"}
+                  </td>
+                  <td className="numeric">
+                    {row.planKnown && actualKnown
                       ? formatUsd(row.actualMinor - (row.plannedMinor ?? 0), row.scale)
                       : "N/A"}
                   </td>
@@ -1682,13 +2566,25 @@ export function IncomePlanWeekPanel({
                   )}
                 </td>
                 <td className="numeric">
-                  {weekOpen &&
-                  positionRows.every((row) => row.actualMinor === 0)
+                  {moneyTotal(
+                    positionRows.map((row) =>
+                      row.declarationKnown ? (row.declarationMinor ?? 0) : null,
+                    ),
+                    week.scale,
+                  )}
+                </td>
+                <td className="numeric">
+                  {positionRows.every((row) => row.actualKnown === false)
                     ? "N/A"
-                    : formatUsd(
-                        positionRows.reduce((sum, row) => sum + row.actualMinor, 0),
-                        week.scale,
-                      )}
+                    : weekOpen &&
+                        positionRows.every((row) => row.actualMinor === 0)
+                      ? "N/A"
+                      : formatUsd(
+                          positionRows
+                            .filter((row) => row.actualKnown !== false)
+                            .reduce((sum, row) => sum + row.actualMinor, 0),
+                          week.scale,
+                        )}
                 </td>
                 <td className="numeric">
                   {weekOpen
@@ -1707,124 +2603,14 @@ export function IncomePlanWeekPanel({
           </table>
         </div>
       )}
-      <h3>By account for the week</h3>
-      <div className="table-wrap">
-        <table aria-label="Income plan by account">
-          <thead>
-            <tr>
-              {sortHead(weekSort, "Account", "account")}
-              {sortHead(weekSort, "Plan", "plan", true)}
-              {sortHead(weekSort, "Actual", "actual", true)}
-              {sortHead(weekSort, "Variance", "variance", true)}
-            </tr>
-          </thead>
-          <tbody>
-            {weekLines.map((line) => (
-              <tr key={line.accountName}>
-                <td>{line.accountName}</td>
-                <td className="numeric">
-                  {line.planKnown
-                    ? formatUsd(line.plannedMinor ?? 0, line.scale)
-                    : "N/A"}
-                </td>
-                <td className="numeric">{actualText(line.actualMinor, line.scale)}</td>
-                <td className="numeric">
-                  {line.planKnown && !(weekOpen && line.actualMinor === 0)
-                    ? formatUsd(line.actualMinor - (line.plannedMinor ?? 0), line.scale)
-                    : "N/A"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td>Total</td>
-              <td className="numeric">
-                {moneyTotal(
-                  week.lines.map((line) => (line.planKnown ? (line.plannedMinor ?? 0) : null)),
-                  week.scale,
-                )}
-              </td>
-              <td className="numeric">
-                {weekOpen && totalActual === 0
-                  ? "N/A"
-                  : formatUsd(totalActual, week.scale)}
-              </td>
-              <td className="numeric">
-                {weekOpen
-                  ? "N/A"
-                  : moneyTotal(
-                      week.lines.map((line) =>
-                        line.planKnown ? line.actualMinor - (line.plannedMinor ?? 0) : null,
-                      ),
-                      week.scale,
-                    )}
-              </td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-      <h3>Yield rows{selectedAccount ? ` — ${selectedAccount}` : ""}</h3>
-      <ListFilter
-        label="Filter income plan drilldown"
-        value={drillFilter}
-        onChange={setDrillFilter}
-      />
-      {scoped.length === 0 ? (
-        <p>No dividend actuals in this week for the selected scope.</p>
-      ) : (
-        <div className="table-wrap">
-          <p>
-            Showing {formatCount(drill.length)} of {formatCount(scoped.length)} yield rows.
-            Click a column heading to sort. Footer totals are the shown rows.
-          </p>
-          <table aria-label="Income plan drilldown">
-            <thead>
-              <tr>
-                {sortHead(drillSort, "Account", "account")}
-                {sortHead(drillSort, "Symbol", "symbol")}
-                {sortHead(drillSort, "Date", "date")}
-                {sortHead(drillSort, "Amount", "amount", true)}
-              </tr>
-            </thead>
-            <tbody>
-              {drill.map((row, i) => (
-                <tr key={`${row.accountName}-${row.symbol}-${row.occurredOn}-${i}`}>
-                  <td>{row.accountName}</td>
-                  <td>
-                    {onOpenSymbol ? (
-                      <button
-                        type="button"
-                        aria-label={`Open ${row.symbol} position`}
-                        onClick={() => onOpenSymbol(row.symbol)}
-                      >
-                        {row.symbol}
-                      </button>
-                    ) : (
-                      row.symbol
-                    )}
-                  </td>
-                  <td>{row.occurredOn}</td>
-                  <td className="numeric">{formatUsd(row.amountMinor, row.scale)}</td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td>Total</td>
-                <td>{formatCount(drill.length)}</td>
-                <td></td>
-                <td className="numeric">
-                  {moneyTotal(
-                    drill.map((row) => row.amountMinor),
-                    week.scale,
-                  )}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      )}
+      {onBack && !weekOpen && missSymbols.length > 0 ? (
+        <p className="ip-exceptions">Planned not paid: {missSymbols.join(", ")}.</p>
+      ) : null}
+      {onBack && !weekOpen && exceptionSymbols.length > 0 ? (
+        <p className="ip-exceptions">
+          Amount exceptions (paid ≠ plan by more than $1): {exceptionSymbols.join(", ")}.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -1832,6 +2618,8 @@ export function IncomePlanWeekPanel({
 export type DashboardBurndownView = {
   start: string;
   end: string;
+  weekYear?: number;
+  weekNumber?: number;
   status: string;
   note: string;
   lines: Array<{
@@ -1881,7 +2669,7 @@ export function DashboardBurndownPanel({
   return (
     <div>
       <p>
-        Read-only. Week {burndown.start} to {burndown.end}. {burndown.note}
+        Read-only. {formatWeekCaption(burndown.start)}. {burndown.note}
       </p>
       <ListFilter label="Filter dashboard" value={listFilter} onChange={setListFilter} />
       <p>
@@ -2472,6 +3260,336 @@ export function CalculatorPanel({
         </table>
       </div>
     </div>
+  );
+}
+
+export type DeclarationHistoryView = {
+  asOfDate: string;
+  startOn?: string;
+  endOn?: string;
+  cadenceFilter: string;
+  weekEnds: string[];
+  weekStarts?: string[];
+  weekYears?: number[];
+  weekNumbers?: number[];
+  rows: Array<{
+    symbol: string;
+    paymentFrequency: string;
+    cells: Array<{
+      amountPerShareMinor: number | null;
+      amountScale: number;
+    }>;
+  }>;
+};
+
+function cadenceRowClass(freq: string): string {
+  const c = freq.trim().toLowerCase();
+  if (c === "weekly" || c === "52") {
+    return "cadence-weekly";
+  }
+  if (c === "monthly" || c === "12") {
+    return "cadence-monthly";
+  }
+  if (c === "quarterly" || c === "4") {
+    return "cadence-quarterly";
+  }
+  return "";
+}
+
+function cadenceMatchesFilter(freq: string, filter: string): boolean {
+  const want = filter.trim().toLowerCase();
+  if (!want || want === "all") {
+    return true;
+  }
+  const have = freq.trim().toLowerCase();
+  if (want === "weekly") {
+    return have === "weekly" || have === "52";
+  }
+  if (want === "monthly") {
+    return have === "monthly" || have === "12";
+  }
+  if (want === "quarterly") {
+    return have === "quarterly" || have === "4";
+  }
+  return have === want;
+}
+
+export function DeclarationHistoryPanel({
+  history,
+  cadence,
+  onCadenceChange,
+  period,
+  startOn,
+  endOn,
+  onPeriodChange,
+  onStartOnChange,
+  onEndOnChange,
+  onOpenSymbol,
+}: {
+  history: DeclarationHistoryView | null;
+  cadence: string;
+  onCadenceChange: (cadence: string) => void;
+  period: string;
+  startOn: string;
+  endOn: string;
+  onPeriodChange: (period: string) => void;
+  onStartOnChange: (iso: string) => void;
+  onEndOnChange: (iso: string) => void;
+  onOpenSymbol?: (symbol: string) => void;
+}) {
+  if (!history) {
+    return <p>Loading distribution history…</p>;
+  }
+  const shown = history.rows.filter((row) =>
+    cadenceMatchesFilter(row.paymentFrequency, cadence),
+  );
+  return (
+    <div>
+      <div className="decl-history-bar">
+        <label className="decl-history-filter">
+          Payment frequency
+          <select
+            aria-label="Payment frequency filter"
+            value={cadence}
+            onChange={(e) => onCadenceChange(e.target.value)}
+          >
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="all">All</option>
+          </select>
+        </label>
+        <label className="decl-history-filter">
+          Period
+          <select
+            aria-label="History period"
+            value={period}
+            onChange={(e) => onPeriodChange(e.target.value)}
+          >
+            <option value="60">Last 60 days</option>
+            <option value="month">This month</option>
+            <option value="90">Last 90 days</option>
+            <option value="ytd">Year to date</option>
+            <option value="custom">Custom dates</option>
+          </select>
+        </label>
+        <label className="decl-history-filter">
+          From
+          <input
+            type="date"
+            aria-label="History start date"
+            value={startOn}
+            onChange={(e) => onStartOnChange(e.target.value)}
+          />
+        </label>
+        <label className="decl-history-filter">
+          To
+          <input
+            type="date"
+            aria-label="History end date"
+            value={endOn}
+            onChange={(e) => onEndOnChange(e.target.value)}
+          />
+        </label>
+      </div>
+      <p>
+        Columns are Saturday-start weeks (Wnn · Sat start). Amounts group into the Sat–Fri
+        week that contains the vendor pay date. Default window is the last 60 days. Empty is
+        unknown, not $0.00 — a blank cell means no stored paid declaration for that week.
+      </p>
+      <div className="table-wrap decl-history-wrap">
+        <table aria-label="Distribution history">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              {history.weekEnds.map((friday, i) => (
+                <th key={friday} className="numeric">
+                  {formatWeekColumnHeader(history.weekStarts?.[i] ?? friday)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((row) => (
+              <tr key={row.symbol}>
+                <td className={cadenceRowClass(row.paymentFrequency)}>
+                  {onOpenSymbol ? (
+                    <button
+                      type="button"
+                      aria-label={`Open ${row.symbol} position`}
+                      onClick={() => onOpenSymbol(row.symbol)}
+                    >
+                      {row.symbol}
+                    </button>
+                  ) : (
+                    row.symbol
+                  )}
+                </td>
+                {row.cells.map((cell, i) => (
+                  <td key={history.weekEnds[i] ?? i} className="numeric">
+                    {cell.amountPerShareMinor == null
+                      ? ""
+                      : `$${formatScaled(cell.amountPerShareMinor, cell.amountScale)}`}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {shown.length === 0 ? (
+        <p>No paying positions for this frequency.</p>
+      ) : null}
+    </div>
+  );
+}
+
+export type CollectorPaidRow = {
+  payOn: string;
+  amountPerShare: string;
+};
+
+export type CollectorCompletionProof = {
+  symbol: string;
+  futureDates: string[];
+  roc2024: string;
+  roc2025: string;
+  roc2026e: string;
+  roc2026a: string;
+  weekEnds: string[];
+  weekStarts?: string[];
+  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>;
+  paid: CollectorPaidRow[];
+};
+
+export function CollectorCompletionProofs({
+  proofs,
+  asOf,
+}: {
+  proofs: CollectorCompletionProof[];
+  asOf: string;
+}) {
+  const [picked, setPicked] = useState(proofs[0]?.symbol ?? "");
+  if (proofs.length === 0) {
+    return null;
+  }
+  const symbol = proofs.some((p) => p.symbol === picked)
+    ? picked
+    : proofs[0].symbol;
+  const proof = proofs.find((p) => p.symbol === symbol) ?? proofs[0];
+  return (
+    <section aria-label="Working collector proofs">
+      <h3>Collector vs spreadsheet</h3>
+      <p>
+        One collector at a time. ROC year columns match Positions.
+        Calculator columns are Friday week-ends derived from the stored
+        paymentPeriod. paymentPeriod is the issuer event date, not broker cash.
+        Collectors never write pay data — import only. Blank is unknown, not $0.
+        As of {asOf}.
+      </p>
+      <label>
+        Collector
+        <select
+          aria-label="Collector to compare"
+          value={proof.symbol}
+          onChange={(e) => setPicked(e.target.value)}
+        >
+          {proofs.map((p) => (
+            <option key={p.symbol} value={p.symbol}>
+              {p.symbol}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="table-wrap">
+        <table aria-label={`${proof.symbol} Positions ROC year percents`}>
+          <thead>
+            <tr>
+              <th scope="col">symbol</th>
+              <th scope="col">roc_pct_2024_actual</th>
+              <th scope="col">roc_pct_2025_actual</th>
+              <th scope="col">roc_pct_2026_estimate</th>
+              <th scope="col">roc_pct_2026_actual</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{proof.symbol}</td>
+              <td className="numeric">{proof.roc2024}</td>
+              <td className="numeric">{proof.roc2025}</td>
+              <td className="numeric">{proof.roc2026e}</td>
+              <td className="numeric">{proof.roc2026a}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {proof.futureDates.length > 0 ? (
+        <div className="table-wrap">
+          <table aria-label={`${proof.symbol} remaining-year pay dates`}>
+            <thead>
+              <tr>
+                <th scope="col">vendor_calendar_date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {proof.futureDates.map((d) => (
+                <tr key={d}>
+                  <td>{d}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {proof.weekEnds.length > 0 ? (
+        <div className="table-wrap">
+          <table aria-label={`${proof.symbol} calculator distribution grid`}>
+            <thead>
+              <tr>
+                <th scope="col">symbol</th>
+                {proof.weekEnds.map((end) => (
+                  <th key={end} scope="col" className="numeric">
+                    {end}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>{proof.symbol}</td>
+                {proof.cells.map((cell, i) => (
+                  <td key={proof.weekEnds[i] ?? i} className="numeric">
+                    {cell.amountPerShareMinor == null
+                      ? ""
+                      : formatScaled(cell.amountPerShareMinor, cell.amountScale)}
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {proof.paid.length > 0 ? (
+        <div className="table-wrap">
+          <table aria-label={`${proof.symbol} paid declarations`}>
+            <thead>
+              <tr>
+                <th scope="col">paymentPeriod</th>
+                <th scope="col">declared_per_share</th>
+              </tr>
+            </thead>
+            <tbody>
+              {proof.paid.map((row) => (
+                <tr key={row.payOn}>
+                  <td>{row.payOn}</td>
+                  <td className="numeric">{row.amountPerShare}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

@@ -32,6 +32,18 @@ path = "src/bin/data_seed.rs"
 name = "div1-adapter-audit"
 path = "src/bin/div1_adapter_audit.rs"
 
+[[bin]]
+name = "roc-19a1-fill"
+path = "src/bin/roc_19a1_fill.rs"
+
+[[bin]]
+name = "collector-miss-loop"
+path = "src/bin/collector_miss_loop.rs"
+
+[[bin]]
+name = "owner-lock-apply"
+path = "src/bin/owner_lock_apply.rs"
+
 [dev-dependencies]
 financial-domain = { path = "../financial-domain" }
 tempfile.workspace = true

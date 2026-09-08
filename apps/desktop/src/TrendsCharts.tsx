@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import ReactECharts from "echarts-for-react";
 import type { TrendsWeekPoint } from "@finos/app-contracts";
-import { formatUsd } from "@finos/ui-components";
+import { formatUsd, formatWeekShort } from "@finos/ui-components";
 
 type SeriesSpec = {
   title: string;
@@ -129,7 +129,7 @@ function linearTrend(data: (number | null)[]): (number | null)[] {
 }
 
 function chartOption(title: string, weeks: TrendsWeekPoint[], key: keyof TrendsWeekPoint, color: string) {
-  const categories = weeks.map((w) => w.periodEnd);
+  const categories = weeks.map((w) => formatWeekShort(w.periodStart || w.periodEnd));
   const data = seriesValues(weeks, key);
   const trend = linearTrend(data);
   return {
@@ -205,7 +205,7 @@ export function TrendsChartsPanel({
   const scale = overview?.scale ?? visible[0]?.scale ?? 2;
   const rangeLabel =
     visible.length > 0
-      ? `${visible[0].periodEnd} to ${visible[visible.length - 1].periodEnd}`
+      ? `${formatWeekShort(visible[0].periodStart || visible[0].periodEnd)} to ${formatWeekShort(visible[visible.length - 1].periodStart || visible[visible.length - 1].periodEnd)}`
       : "no weeks in this period";
 
   return (

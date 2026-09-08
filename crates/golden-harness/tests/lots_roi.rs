@@ -62,6 +62,9 @@ async fn research_template(platform: &LocalPlatform, security_id: &str, symbol: 
         }),
     )
     .await;
+    golden_harness::complete_collector_for_first_lot(platform, security_id, symbol)
+        .await
+        .expect("complete collector");
 }
 
 #[tokio::test]

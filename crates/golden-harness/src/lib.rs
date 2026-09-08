@@ -4,9 +4,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::Datelike;
+
 use application_core::contracts::{
     CommandRequest, QueryRequest, ReconcileCounts, FINANCE_CLIENT_CONTRACT_VERSION,
 };
+use application_core::ports::canonical::Canonical;
 use application_core::queries::{execute_command_on, execute_query_on};
 use serde::{Deserialize, Serialize};
 use storage_sqlite::LocalPlatform;
@@ -275,6 +278,161 @@ impl From<ReconcileCounts> for ExpectedCounts {
     }
 }
 
+/// Fill required collector fields so the first LotOpen is allowed.
+/// Required Skip is not complete; remaining-year dates match periods through 31 Dec.
+pub async fn complete_collector_for_first_lot(
+    platform: &LocalPlatform,
+    security_id: &str,
+    symbol: &str,
+) -> Result<(), String> {
+    complete_collector_for_first_lot_as(platform, security_id, symbol, "Monthly", true).await
+}
+
+pub async fn complete_collector_for_first_lot_as(
+    platform: &LocalPlatform,
+    security_id: &str,
+    symbol: &str,
+    cadence: &str,
+    replace_dates: bool,
+) -> Result<(), String> {
+    let as_of = chrono::Utc::now().date_naive();
+    let as_of_s = as_of.to_string();
+    let periods_per_year = financial_domain::calculator::PaymentCadence::parse(cadence)
+        .and_then(financial_domain::calculator::PaymentCadence::periods)
+        .unwrap_or(12);
+    let periods = financial_domain::schedule::remaining_periods_to_year_end(&as_of_s, periods_per_year)
+        .unwrap_or(1);
+    let mut dates = Vec::new();
+    match periods_per_year {
+        12 => {
+            for month in as_of.month()..=12 {
+                let pay_on = if month == 12 {
+                    chrono::NaiveDate::from_ymd_opt(as_of.year(), 12, 31)
+                } else {
+                    chrono::NaiveDate::from_ymd_opt(as_of.year(), month + 1, 1)
+                        .and_then(|d| d.pred_opt())
+                };
+                if let Some(d) = pay_on {
+                    dates.push(serde_json::json!({ "payOn": d.to_string(), "source": "test" }));
+                }
+                if dates.len() >= usize::from(periods) {
+                    break;
+                }
+            }
+        }
+        4 => {
+            let start_q = ((as_of.month() - 1) / 3) + 1;
+            for q in start_q..=4 {
+                let month = q * 3;
+                let pay_on = if month == 12 {
+                    chrono::NaiveDate::from_ymd_opt(as_of.year(), 12, 31)
+                } else {
+                    chrono::NaiveDate::from_ymd_opt(as_of.year(), month + 1, 1)
+                        .and_then(|d| d.pred_opt())
+                };
+                if let Some(d) = pay_on {
+                    dates.push(serde_json::json!({ "payOn": d.to_string(), "source": "test" }));
+                }
+            }
+        }
+        _ => {
+            let year_end = chrono::NaiveDate::from_ymd_opt(as_of.year(), 12, 31).unwrap();
+            let mut week = financial_domain::week::week_containing(as_of);
+            while week.start <= year_end && dates.len() < usize::from(periods) {
+                if week.end >= as_of {
+                    dates.push(serde_json::json!({
+                        "payOn": week.end.to_string(),
+                        "source": "test"
+                    }));
+                }
+                week.start += chrono::Duration::days(7);
+                week.end += chrono::Duration::days(7);
+            }
+        }
+    }
+    let mut steps = Vec::new();
+    let existing = execute_query_on(
+        platform,
+        platform,
+        qry_json(
+            "InvestmentGet",
+            serde_json::json!({ "securityId": security_id, "asOfDate": as_of_s }),
+        ),
+    )
+    .await;
+    let existing_json: serde_json::Value = serde_json::from_str(
+        existing.body_json.as_deref().unwrap_or("{}"),
+    )
+    .unwrap_or_else(|_| serde_json::json!({}));
+    let tpl = existing_json.get("template").cloned().unwrap_or_default();
+    steps.push((
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": tpl.get("priceSource").and_then(|v| v.as_str()).unwrap_or("public"),
+            "sourceSymbol": tpl.get("sourceSymbol").and_then(|v| v.as_str()).unwrap_or(symbol),
+            "declarationSource": tpl.get("declarationSource").and_then(|v| v.as_str()).unwrap_or("issuer"),
+            "sourceUrl": tpl.get("sourceUrl").and_then(|v| v.as_str()).unwrap_or(""),
+            "calendarPolicy": tpl.get("calendarPolicy").and_then(|v| v.as_str()).unwrap_or("issuer_calendar"),
+            "collectorEnabled": tpl.get("collectorEnabled").and_then(|v| v.as_bool()).unwrap_or(true),
+            "lookbackCount": tpl.get("lookbackCount").and_then(|v| v.as_u64()).unwrap_or(12),
+            "inceptionOn": as_of_s
+        }),
+    ));
+    steps.push((
+            "PositionCharacteristicUpsert",
+            serde_json::json!({
+                "securityId": security_id,
+                "paymentFrequency": cadence,
+                "replaceCadence": true,
+                "divType": "DIV-1",
+                "underlying": "HACK",
+                "provider": "Amplify",
+                "riskTier": "Foundation",
+                "rocPct2026EstimateMinor": 5000,
+                "rocScale": 2,
+                "needsRocResearch": false
+            }),
+    ));
+    if replace_dates && !dates.is_empty() {
+        steps.push((
+            "IssuerPayDateReplace",
+            serde_json::json!({
+                "securityId": security_id,
+                "asOfDate": as_of_s,
+                "dates": dates
+            }),
+        ));
+    }
+    for (name, body) in steps {
+        let result = execute_command_on(platform, platform, cmd(name, body)).await;
+        if !result.ok {
+            return Err(format!(
+                "{name}: {}",
+                result.error_code.unwrap_or_else(|| "failed".into())
+            ));
+        }
+    }
+    if let Ok(sid) = Uuid::parse_str(security_id) {
+        let prior = as_of
+            .pred_opt()
+            .unwrap_or(as_of)
+            .format("%Y-%m-%d")
+            .to_string();
+        let _ = platform
+            .retrieval_template_touch_run(
+                sid,
+                true,
+                "test collector complete".into(),
+                prior,
+                String::new(),
+                "",
+            )
+            .await;
+    }
+    Ok(())
+}
+
 fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
     CommandRequest {
         contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
@@ -291,6 +449,15 @@ fn qry(name: &str) -> QueryRequest {
         query_name: name.to_string(),
         correlation_id: Uuid::new_v4(),
         body_json: None,
+    }
+}
+
+fn qry_json(name: &str, body: serde_json::Value) -> QueryRequest {
+    QueryRequest {
+        contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
+        query_name: name.to_string(),
+        correlation_id: Uuid::new_v4(),
+        body_json: Some(body.to_string()),
     }
 }
 

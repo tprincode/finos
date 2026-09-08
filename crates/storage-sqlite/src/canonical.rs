@@ -13,6 +13,7 @@ use application_core::contracts::{
     TaxProjectionBody, BacktestPeriodRecord, PositionBacktestResultBody,
     RocResearchObservation, RemainingPaymentDateOverride, ExpectedPaymentPattern,
     PositionTaxProfile, IssuerPayDateRecord, AccountBalanceSnapshotRecord, TrendsWeekSourceRecord,
+    WorkTicketRecord, CollectorFieldDecisionRecord,
 };
 use application_core::ports::canonical::Canonical;
 use application_core::ports::platform::PlatformError;
@@ -269,29 +270,131 @@ fn assignment_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<LotAssignmentRec
 
 async fn fetch_batch(pool: &SqlitePool, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> {
     let row = sqlx::query(
-        "SELECT batch_id, source_id, content_hash, status FROM import_batch WHERE batch_id = ?",
+        "SELECT b.batch_id, b.source_id, b.content_hash, b.status, e.filename
+         FROM import_batch b
+         LEFT JOIN evidence e ON e.evidence_id = b.evidence_id
+         WHERE b.batch_id = ?",
     )
     .bind(batch_id.to_string())
     .fetch_optional(pool)
     .await
     .map_err(|e| map_err(e.into()))?
     .ok_or_else(|| PlatformError::new("not_found", "import batch not found"))?;
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM import_candidate WHERE batch_id = ?")
-        .bind(batch_id.to_string())
-        .fetch_one(pool)
-        .await
-        .map_err(|e| map_err(e.into()))?;
+    let cand_rows = sqlx::query(
+        "SELECT candidate_id, account_name, symbol, activity_type, amount_minor, scale, occurred_on,
+                posted_activity_id
+         FROM import_candidate WHERE batch_id = ? ORDER BY occurred_on, account_name, symbol",
+    )
+    .bind(batch_id.to_string())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    let mut candidates = Vec::with_capacity(cand_rows.len());
+    for crow in &cand_rows {
+        let account_name: String = crow.try_get("account_name").map_err(|e| map_err(e.into()))?;
+        let symbol: Option<String> = crow.try_get("symbol").map_err(|e| map_err(e.into()))?;
+        let activity_type: String = crow.try_get("activity_type").map_err(|e| map_err(e.into()))?;
+        let amount_minor: Option<i64> = crow.try_get("amount_minor").map_err(|e| map_err(e.into()))?;
+        let scale: u8 = crow.try_get::<i64, _>("scale").map_err(|e| map_err(e.into()))? as u8;
+        let occurred_on: String = crow.try_get("occurred_on").map_err(|e| map_err(e.into()))?;
+        let posted: Option<String> = crow
+            .try_get("posted_activity_id")
+            .map_err(|e| map_err(e.into()))?;
+        let candidate_id = Uuid::parse_str(
+            &crow
+                .try_get::<String, _>("candidate_id")
+                .map_err(|e| map_err(e.into()))?,
+        )
+        .ok();
+        let mut issues: Vec<String> = Vec::new();
+        if require_candidate_amount(amount_minor, scale).is_err() {
+            issues.push("unknown amount".into());
+        }
+        let account_row = sqlx::query("SELECT account_id FROM account WHERE name = ?")
+            .bind(&account_name)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+        let mut duplicate = posted.is_some();
+        if account_row.is_none() {
+            issues.push("account not registered".into());
+        } else if issues.is_empty() && !duplicate {
+            let account_id = Uuid::parse_str(
+                &account_row
+                    .unwrap()
+                    .try_get::<String, _>("account_id")
+                    .map_err(|e| map_err(e.into()))?,
+            )
+            .map_err(|e| PlatformError::new("parse_error", e.to_string()))?;
+            let security_id = if let Some(sym) = symbol.as_ref().filter(|s| !s.is_empty()) {
+                let sec = sqlx::query("SELECT security_id FROM security WHERE symbol = ?")
+                    .bind(sym)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| map_err(e.into()))?;
+                match sec {
+                    Some(sec_row) => Some(
+                        Uuid::parse_str(
+                            &sec_row
+                                .try_get::<String, _>("security_id")
+                                .map_err(|e| map_err(e.into()))?,
+                        )
+                        .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
+                    ),
+                    None => None,
+                }
+            } else {
+                None
+            };
+            if find_duplicate_dividend(
+                pool,
+                account_id,
+                security_id,
+                &occurred_on,
+                amount_minor,
+                &activity_type,
+            )
+            .await?
+            .is_some()
+            {
+                duplicate = true;
+            }
+        }
+        let (validation, issue) = if !issues.is_empty() {
+            ("blocked".into(), issues.join("; "))
+        } else if duplicate {
+            ("duplicate".into(), "already in Finos".into())
+        } else {
+            ("ready".into(), String::new())
+        };
+        candidates.push(ImportCandidate {
+            account_name,
+            symbol,
+            activity_type,
+            amount_minor,
+            scale,
+            occurred_on,
+            candidate_id,
+            validation,
+            issue,
+        });
+    }
     Ok(ImportBatchRecord {
         batch_id: Uuid::parse_str(&row.try_get::<String, _>("batch_id").map_err(|e| map_err(e.into()))?)
             .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
         source_id: row.try_get("source_id").map_err(|e| map_err(e.into()))?,
         content_hash: row.try_get("content_hash").map_err(|e| map_err(e.into()))?,
         status: row.try_get("status").map_err(|e| map_err(e.into()))?,
-        candidate_count: count as u64,
+        candidate_count: candidates.len() as u64,
+        filename: row
+            .try_get::<Option<String>, _>("filename")
+            .map_err(|e| map_err(e.into()))?
+            .unwrap_or_default(),
         posted_count: 0,
         skipped_duplicate_count: 0,
         error_count: 0,
         process_lines: Vec::new(),
+        candidates,
     })
 }
 
@@ -941,6 +1044,27 @@ impl Canonical for LocalPlatform {
         fetch_batch(&pool, batch_id).await
     }
 
+    async fn import_pending_get(&self) -> Result<Option<ImportBatchRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        let row = sqlx::query(
+            "SELECT batch_id FROM import_batch
+             WHERE status IN ('staged', 'validated', 'approved')
+             ORDER BY rowid DESC LIMIT 1",
+        )
+        .fetch_optional(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let id = Uuid::parse_str(
+            &row.try_get::<String, _>("batch_id")
+                .map_err(|e| map_err(e.into()))?,
+        )
+        .map_err(|e| PlatformError::new("parse_error", e.to_string()))?;
+        Ok(Some(fetch_batch(&pool, id).await?))
+    }
+
     async fn activity_post(
         &self,
         account_id: Uuid,
@@ -1196,14 +1320,66 @@ impl Canonical for LocalPlatform {
         })
     }
 
+    async fn work_ticket_raise(
+        &self,
+        record: WorkTicketRecord,
+    ) -> Result<WorkTicketRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::work_ticket::work_ticket_raise(&*pool, record).await
+    }
+
+    async fn work_ticket_list(
+        &self,
+        security_id: Option<Uuid>,
+        status: Option<String>,
+    ) -> Result<Vec<WorkTicketRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::work_ticket::work_ticket_list(&*pool, security_id, status).await
+    }
+
+    async fn work_ticket_get(
+        &self,
+        ticket_id: Uuid,
+    ) -> Result<WorkTicketRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::work_ticket::work_ticket_get(&*pool, ticket_id).await
+    }
+
+    async fn work_ticket_update(
+        &self,
+        record: WorkTicketRecord,
+    ) -> Result<WorkTicketRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::work_ticket::work_ticket_update(&*pool, record).await
+    }
+
+    async fn collector_field_decision_set(
+        &self,
+        record: CollectorFieldDecisionRecord,
+    ) -> Result<CollectorFieldDecisionRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::field_decision::collector_field_decision_set(&*pool, record).await
+    }
+
+    async fn collector_field_decision_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<CollectorFieldDecisionRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::field_decision::collector_field_decision_list(&*pool, security_id).await
+    }
+
     async fn canonical_week_get(&self, as_of_date: String) -> Result<CanonicalWeekBody, PlatformError> {
         let date = NaiveDate::parse_from_str(&as_of_date, "%Y-%m-%d")
             .map_err(|e| PlatformError::new("invalid_date", e.to_string()))?;
         let week = week_containing(date);
+        let id = financial_domain::week::week_id_containing(date);
         Ok(CanonicalWeekBody {
             as_of_date,
             start: week.start.format("%Y-%m-%d").to_string(),
             end: week.end.format("%Y-%m-%d").to_string(),
+            week_year: id.year,
+            week_number: id.number,
         })
     }
 
@@ -1854,6 +2030,11 @@ impl Canonical for LocalPlatform {
         crate::plan::plan_history_list(&*pool).await
     }
 
+    async fn plan_history_version_list(&self) -> Result<Vec<PlanHistoryRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::plan::plan_history_version_list(&*pool).await
+    }
+
     async fn position_characteristic_upsert(
         &self,
         record: PositionCharacteristicRecord,
@@ -1913,12 +2094,44 @@ impl Canonical for LocalPlatform {
         .await
     }
 
+    async fn issuer_declaration_replace_paid(
+        &self,
+        security_id: Uuid,
+        amount_per_share_minor: Option<i64>,
+        amount_scale: u8,
+        payment_period: String,
+        source: String,
+        entered_at: String,
+    ) -> Result<application_core::contracts::IssuerDeclarationRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::issuer_declaration_record_with_policy(
+            &*pool,
+            security_id,
+            amount_per_share_minor,
+            amount_scale,
+            payment_period,
+            source,
+            entered_at,
+            true,
+        )
+        .await
+    }
+
     async fn issuer_declaration_list(
         &self,
         security_id: Uuid,
     ) -> Result<Vec<application_core::contracts::IssuerDeclarationRecord>, PlatformError> {
         let pool = self.pool.read().await;
         crate::wizard::issuer_declaration_list(&*pool, security_id).await
+    }
+
+    async fn issuer_declaration_supersede_period(
+        &self,
+        security_id: Uuid,
+        payment_period: String,
+    ) -> Result<u64, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::wizard::issuer_declaration_supersede_period(&*pool, security_id, payment_period).await
     }
 
     async fn issuer_pay_date_replace(
@@ -1931,12 +2144,37 @@ impl Canonical for LocalPlatform {
         crate::issuer_pay::pay_date_replace(&*pool, security_id, as_of, dates).await
     }
 
+    async fn issuer_pay_date_insert(
+        &self,
+        record: IssuerPayDateRecord,
+    ) -> Result<IssuerPayDateRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::issuer_pay::pay_date_insert(&*pool, record).await
+    }
+
+    async fn issuer_pay_date_supersede_one(
+        &self,
+        security_id: Uuid,
+        pay_on: String,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::issuer_pay::pay_date_supersede_one(&*pool, security_id, &pay_on).await
+    }
+
     async fn issuer_pay_date_list(
         &self,
         security_id: Uuid,
     ) -> Result<Vec<IssuerPayDateRecord>, PlatformError> {
         let pool = self.pool.read().await;
         crate::issuer_pay::pay_date_list(&*pool, security_id).await
+    }
+
+    async fn issuer_pay_date_dedupe(
+        &self,
+        security_id: Uuid,
+    ) -> Result<u64, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::issuer_pay::pay_date_dedupe(&*pool, security_id).await
     }
 
     async fn price_quote_record(

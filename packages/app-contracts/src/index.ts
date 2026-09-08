@@ -14,6 +14,7 @@ export const REGISTERED_DECLARATION_SOURCES = [
   "ellington",
   "enterprise",
   "energytransfer",
+  "mlp_sec_8k",
   "gladstone",
   "jpmorgan",
   "mplx",
@@ -121,6 +122,8 @@ export type CanonicalWeek = {
   asOfDate: string;
   start: string;
   end: string;
+  weekYear?: number;
+  weekNumber?: number;
 };
 
 export type ReconcileCounts = {
@@ -182,10 +185,42 @@ export type IncomePlanGet = {
   scale: number;
 };
 
+export type ImportCandidate = {
+  accountName: string;
+  symbol?: string | null;
+  activityType: string;
+  amountMinor?: number | null;
+  scale: number;
+  occurredOn: string;
+  candidateId?: string | null;
+  validation?: string;
+  issue?: string;
+};
+
+export type ImportBatchRecord = {
+  batchId: string;
+  sourceId: string;
+  contentHash: string;
+  status: string;
+  candidateCount: number;
+  filename?: string;
+  postedCount?: number;
+  skippedDuplicateCount?: number;
+  errorCount?: number;
+  processLines?: string[];
+  candidates?: ImportCandidate[];
+};
+
+export type ImportPendingGet = {
+  batch: ImportBatchRecord | null;
+};
+
 export type IncomePlanWeekGet = {
   asOfDate: string;
   start: string;
   end: string;
+  weekYear?: number;
+  weekNumber?: number;
   status: string;
   lines: Array<{
     accountName: string;
@@ -199,9 +234,22 @@ export type IncomePlanWeekGet = {
     cadence?: string;
     payOn?: string;
     actualMinor: number;
+    actualKnown?: boolean;
     plannedMinor: number;
     planKnown: boolean;
+    declarationMinor?: number;
+    declarationKnown?: boolean;
     scale: number;
+    accounts?: Array<{
+      accountName: string;
+      actualMinor: number;
+      actualKnown?: boolean;
+      plannedMinor: number;
+      planKnown: boolean;
+      declarationMinor?: number;
+      declarationKnown?: boolean;
+    }>;
+    lastUpdate?: string | null;
   }>;
   drilldown: Array<{
     accountName: string;
@@ -212,6 +260,118 @@ export type IncomePlanWeekGet = {
   }>;
   latestActualOn: string | null;
   yieldCount: number;
+  scale: number;
+  missCount?: number;
+  amountExceptionCount?: number;
+  varianceMinor?: number | null;
+};
+
+export type IncomePlanMoneyCell = {
+  weekEnd: string;
+  amountMinor: number | null;
+  tone?: string;
+};
+
+export type IncomePlanGridGet = {
+  asOfDate: string;
+  historicalWeeks: number;
+  futureWeeks: number;
+  selectedAccounts: string[];
+  table1Columns: string[];
+  weeks: Array<{ start: string; end: string; kind: string }>;
+  table1: Array<{
+    id: string;
+    label: string;
+    yearMinor: number | null;
+    yearPctMinor?: number | null;
+    cells: IncomePlanMoneyCell[];
+  }>;
+  table2: Array<{
+    cadence: string;
+    rows: Array<{
+      symbol: string;
+      cadence: string;
+      lastUpdate: string | null;
+      cells: IncomePlanMoneyCell[];
+    }>;
+  }>;
+  selectedWeekEnd: string;
+  scale: number;
+};
+
+export type IncomePlanExportGet = {
+  format: string;
+  destinationKind: string;
+  defaultFileName: string;
+  landscape: boolean;
+    bytesBase64: string;
+    printHtml: string;
+    cover: {
+      pattern: string;
+      printedAt: string;
+      selectedAccounts: string[];
+      historicalWeeks: number;
+      futureWeeks: number;
+      weekEnding?: string | null;
+    };
+    sheetNames?: string[];
+  };
+
+export type DividendPerformanceRange =
+  | "30d"
+  | "60d"
+  | "90d"
+  | "1m"
+  | "2m"
+  | "3m"
+  | "ytd"
+  | "all";
+
+export type DividendPerformancePosition = {
+  symbol: string;
+  actualMinor: number;
+  actualKnown?: boolean;
+  plannedMinor: number;
+  planKnown: boolean;
+  declarationMinor?: number;
+  declarationKnown?: boolean;
+  pctOfPlanMinor: number | null;
+  scale: number;
+};
+
+export type DividendPerformanceWeek = {
+  start: string;
+  end: string;
+  weekYear?: number;
+  weekNumber?: number;
+  actualMinor: number;
+  actualKnown?: boolean;
+  plannedMinor: number;
+  planKnown: boolean;
+  declarationMinor?: number;
+  declarationKnown?: boolean;
+  pctOfPlanMinor: number | null;
+  positions: DividendPerformancePosition[];
+  scale: number;
+};
+
+export type DividendPerformanceGet = {
+  asOfDate: string;
+  range: string;
+  rangeStart: string | null;
+  thisWeekStart: string;
+  weeks: DividendPerformanceWeek[];
+  summary: {
+    actualMinor: number;
+    plannedMinor: number;
+    planKnown: boolean;
+    pctOfPlanMinor: number | null;
+    avgWeeklyActualMinor: number | null;
+    avgWeeklyPlanMinor: number | null;
+    weekCount: number;
+    knownPlanWeekCount: number;
+    scale: number;
+  };
   scale: number;
 };
 
@@ -226,6 +386,14 @@ export type DataSummaryGet = {
   openPerformanceMinor: number;
   openTaxMinor: number;
   lastPriceCount: number;
+  lastPriceRefreshedOn: string | null;
+  /** Enabled collectors whose daily issuer retrieve is current for declarationAsOf. */
+  declarationCount: number;
+  /** Run-enabled collectors. One expected retrieve each today — not lookback rows. */
+  declarationCollectorCount: number;
+  declarationRefreshedOn: string | null;
+  /** Local calendar day of the standing DeclarationRefresh. */
+  declarationAsOf: string;
   marketValueMinor: number | null;
   marketValueComplete: boolean;
   /** Lifetime paid dividends (all yield actuals). */
@@ -259,10 +427,31 @@ export type CalculatorGet = {
   scale: number;
 };
 
+export type DeclarationHistoryGet = {
+  asOfDate: string;
+  startOn: string;
+  endOn: string;
+  cadenceFilter: string;
+  weekEnds: string[];
+  weekStarts?: string[];
+  weekYears?: number[];
+  weekNumbers?: number[];
+  rows: Array<{
+    symbol: string;
+    paymentFrequency: string;
+    cells: Array<{
+      amountPerShareMinor: number | null;
+      amountScale: number;
+    }>;
+  }>;
+};
+
 export type DashboardBurndownGet = {
   asOfDate: string;
   start: string;
   end: string;
+  weekYear?: number;
+  weekNumber?: number;
   status: string;
   note: string;
   lines: Array<{
@@ -300,6 +489,9 @@ export type DashboardGet = {
 
 export type TrendsWeekPoint = {
   periodEnd: string;
+  periodStart?: string;
+  weekYear?: number;
+  weekNumber?: number;
   profitMinor: number;
   monthlyDivsMinor: number;
   divDeltaMinor: number;
@@ -615,6 +807,30 @@ export type ExceptionRecord = {
   createdAt: string;
 };
 
+export type WorkTicketRecord = {
+  ticketId: string;
+  securityId: string;
+  symbol: string;
+  field: string;
+  code: string;
+  tool: string;
+  reason: string;
+  urlsTried: string;
+  openedOn: string;
+  lastSeenOn: string;
+  status: string;
+  filedOn?: string;
+  completedHow?: string;
+  ownerNote?: string;
+  retrieveRunId?: string;
+};
+
+export type WorkTicketList = {
+  items: WorkTicketRecord[];
+  openCount: number;
+  symbolCount: number;
+};
+
 export type DistributionGet = {
   characterizations: Array<{
     characterizationId: string;
@@ -695,6 +911,8 @@ export type LookthroughResearch = {
   taxCharacter?: string;
   riskTierSuggestion?: string;
   riskTierSuggestionReason?: string;
+  coveredCall?: boolean;
+  leveraged?: boolean;
 };
 
 export type InvestmentGet = {
@@ -749,6 +967,8 @@ export type InvestmentGet = {
     collectorEnabled?: boolean;
     /** ISO date; optional — only used when paid decls are under 12. */
     inceptionOn?: string;
+    /** Reusable 19a-1 / ROC notice URL. */
+    rocSourceUrl?: string;
   } | null;
   lots: Array<{
     lotId: string;
@@ -833,6 +1053,8 @@ export type InvestmentGet = {
   rocEstimateEstablishedHow?: string;
   rocResearchCompletedAt?: string | null;
   lookthrough?: LookthroughResearch;
+  collectorComplete?: boolean;
+  collectorGaps?: string[];
   scale: number;
 };
 

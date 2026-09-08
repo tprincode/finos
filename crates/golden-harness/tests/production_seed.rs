@@ -556,3 +556,76 @@ async fn robinhood_btc_splits_from_grayscale_btc() {
         serde_json::from_str(basis.body_json.as_deref().unwrap_or("{}")).unwrap();
     assert_eq!(basis_val["lots"].as_array().map(|a| a.len()), Some(2));
 }
+
+/// Every imported Calculator plan from calculator-plan-seed.yaml must persist as written.
+#[tokio::test]
+async fn imported_calculator_plans_match_seed_catalog() {
+    let production = repo_root().join("database/seed/production");
+    let doc = import_engine::parse_production_templates(&production).expect("templates");
+    assert!(
+        !doc.plans.is_empty(),
+        "calculator-plan-seed.yaml must list imported plans"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .expect("open sqlite");
+    for plan in &doc.plans {
+        must_ok(
+            &platform,
+            "SecurityRegister",
+            serde_json::json!({ "symbol": plan.symbol, "name": plan.symbol }),
+        )
+        .await;
+    }
+    must_ok(
+        &platform,
+        "ProductionSeedLoad",
+        serde_json::json!({
+            "accounts": [],
+            "securities": [],
+            "lots": [],
+            "yieldBatches": [],
+            "disbursements": [],
+            "plans": doc.plans
+        }),
+    )
+    .await;
+    for plan in &doc.plans {
+        let got = execute_query_on(
+            &platform,
+            &platform,
+            QueryRequest {
+                contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
+                query_name: "InvestmentGet".into(),
+                correlation_id: Uuid::new_v4(),
+                body_json: Some(serde_json::json!({ "symbol": plan.symbol }).to_string()),
+            },
+        )
+        .await;
+        assert!(got.ok, "{} InvestmentGet: {:?}", plan.symbol, got.error_code);
+        let val: serde_json::Value =
+            serde_json::from_str(got.body_json.as_deref().unwrap_or("{}")).unwrap();
+        assert_eq!(
+            val["planKnown"],
+            true,
+            "{} imported plan missing after seed",
+            plan.symbol
+        );
+        let stored = val["planPerShareMinor"].as_i64().unwrap_or(0);
+        let scale = val["planScale"].as_u64().unwrap_or(2) as u8;
+        let target = plan.amount_scale.max(scale);
+        assert_eq!(
+            financial_domain::money::rescale(stored, scale, target),
+            financial_domain::money::rescale(
+                plan.amount_per_share_minor,
+                plan.amount_scale,
+                target
+            ),
+            "{} imported plan drifted: stored {stored} scale {scale} vs seed {} scale {}",
+            plan.symbol,
+            plan.amount_per_share_minor,
+            plan.amount_scale
+        );
+    }
+}

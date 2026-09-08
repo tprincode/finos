@@ -405,17 +405,16 @@ fn provider_retrieval_defaults(provider: &str, frequency: &str) -> (String, Stri
         .and_then(financial_domain::calculator::PaymentCadence::periods)
         .unwrap_or(0)
         > 0;
+    if !pays {
+        return ("unassigned".into(), "none".into());
+    }
     if let Some(src) = financial_domain::div1::declaration_source_for_provider(&p) {
         return (
             src.to_string(),
             financial_domain::div1::calendar_policy_for_source(src).to_string(),
         );
     }
-    if !pays {
-        ("unassigned".into(), "none".into())
-    } else {
-        ("unassigned".into(), "derived_walk".into())
-    }
+    ("unassigned".into(), "derived_walk".into())
 }
 
 fn fill_retrieval_template(
@@ -452,6 +451,8 @@ fn fill_retrieval_template(
         // Mapped vendor adapters start enabled so daily DeclarationRefresh probes them.
         collector_enabled: registered,
         inception_on: existing.map(|e| e.inception_on.clone()).unwrap_or_default(),
+        roc_source_url: existing.map(|e| e.roc_source_url.clone()).unwrap_or_default(),
+        history_url_attempts: existing.map(|e| e.history_url_attempts).unwrap_or(0),
     }
 }
 
@@ -511,6 +512,9 @@ pub async fn apply_provider_declaration_sources(
         let Some(ch) = char_by.get(&security.security_id) else {
             continue;
         };
+        if financial_domain::calculator::is_non_paying(&ch.payment_frequency) {
+            continue;
+        }
         let existing = skip_ni(canonical.retrieval_template_get(security.security_id).await)?
             .flatten();
         if let Some(row) = existing.as_ref() {
@@ -566,6 +570,8 @@ async fn apply_private_issue_templates(
             last_content_hash: String::new(),
             collector_enabled: false,
             inception_on: String::new(),
+            roc_source_url: String::new(),
+            history_url_attempts: 0,
         })
         .await?;
     Ok(())
@@ -715,6 +721,8 @@ async fn set_public_quote_template(
                 last_content_hash: String::new(),
                 collector_enabled: false,
                 inception_on: String::new(),
+                roc_source_url: String::new(),
+                history_url_attempts: 0,
             })
             .await,
     )?;

@@ -1,16 +1,33 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   FINANCE_CLIENT_CONTRACT_VERSION,
   type AccountListItem,
   type CalculatorGet,
+  type DeclarationHistoryGet,
   type CurrentPriceGet,
   type DashboardBurndownGet,
   type DividendGet,
+  type DividendPerformanceGet,
+  type DividendPerformanceRange,
   type ExceptionRecord,
+  type WorkTicketRecord,
+  type WorkTicketList,
   type HandoffStatus,
   type HoldingsGet,
   type DataSummaryGet,
   type IncomePlanWeekGet,
+  type IncomePlanGridGet,
+  type IncomePlanExportGet,
+  type ImportBatchRecord,
+  type ImportPendingGet,
   type InvestmentGet,
   type LookthroughResearch,
   type PositionDetailsGet,
@@ -26,14 +43,22 @@ import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import { LocalTauriFinanceClient } from "./financeClient";
 import { TrendsChartsPanel } from "./TrendsCharts";
+import { DividendWeeksPanel } from "./DividendWeeks";
 import { DeclarationPaymentsChart } from "./DeclarationPaymentsChart";
 import { TrendsCapturePanel, type TrendsWeekCapture } from "./TrendsCapture";
+import { openImportWizardWindow } from "./ImportWizard";
 import {
   CalculatorPanel,
+  type CollectorCompletionProof,
+  DeclarationHistoryPanel,
   DashboardBurndownPanel,
   ExceptionList,
+  WorkTicketQueue,
   HoldingsPanel,
   IncomePlanWeekPanel,
+  IncomePlanGridPanel,
+  INCOME_PLAN_DEFAULT_ACCOUNTS,
+  INCOME_PLAN_OPTIONAL_ACCOUNTS,
   PositionDetailsTable,
   PositionMasterTable,
   SymbolLotsTable,
@@ -41,6 +66,10 @@ import {
   formatScaled,
   formatUsd,
   formatPercentScaled,
+  addUtcDays,
+  saturdayOfWeek,
+  formatWeekChooserLabel,
+  formatMenuWeek,
 } from "@finos/ui-components";
 import "./App.css";
 
@@ -58,7 +87,27 @@ const emptyLookthrough = (): LookthroughResearch => ({
   taxCharacter: "",
   riskTierSuggestion: "",
   riskTierSuggestionReason: "",
+  coveredCall: false,
+  leveraged: false,
 });
+
+function isNewOrChangedDeclaration(
+  period: string | undefined,
+  amount: number | null | undefined,
+  scale: number | undefined,
+  stored: Array<{
+    paymentPeriod?: string;
+    amountPerShareMinor?: number | null;
+    amountScale?: number;
+  }>,
+): boolean {
+  if (!period?.trim() || amount == null || amount <= 0) return false;
+  const row = stored.find((d) => d.paymentPeriod?.trim() === period.trim());
+  if (!row) return true;
+  return (
+    row.amountPerShareMinor !== amount || (row.amountScale ?? 0) !== (scale ?? 0)
+  );
+}
 
 function mergeLookthrough(raw?: LookthroughResearch | null): LookthroughResearch {
   return {
@@ -67,6 +116,44 @@ function mergeLookthrough(raw?: LookthroughResearch | null): LookthroughResearch
     topHoldings: raw?.topHoldings ?? [],
     sectorWeights: raw?.sectorWeights ?? [],
   };
+}
+
+function fleetRocText(row: {
+  rocEstimateMinor?: number | null;
+  rocScale?: number;
+  rocTaxYear?: string;
+}): string {
+  if (row.rocEstimateMinor == null) return "unknown";
+  const scale = row.rocScale ?? 2;
+  const pct = (row.rocEstimateMinor / 10 ** scale).toFixed(scale);
+  return row.rocTaxYear?.trim()
+    ? `${pct}% (${row.rocTaxYear})`
+    : `${pct}%`;
+}
+
+function strategyCharacteristics(
+  lt: LookthroughResearch,
+  underlying?: string,
+): string {
+  const bits: string[] = [];
+  const theme = lt.themeStrategy ?? "";
+  if (
+    lt.coveredCall ||
+    /covered[-\s]?call/i.test(theme) ||
+    /covered[-\s]?call/i.test(lt.taxCharacter ?? "")
+  ) {
+    bits.push("covered-call");
+  }
+  if (lt.leveraged || /leveraged/i.test(theme)) {
+    bits.push("leveraged");
+  }
+  const under = (underlying ?? "").trim();
+  if (under) {
+    bits.push(`look-through ${under}`);
+  } else if ((lt.primaryRiskDriver ?? "").trim()) {
+    bits.push(`look-through ${lt.primaryRiskDriver}`);
+  }
+  return bits.join(" · ");
 }
 
 function concentrationSummary(lt: LookthroughResearch): string {
@@ -316,6 +403,29 @@ function draftFromInvestment(body: InvestmentGet): PdDraft {
   };
 }
 
+function formatCollectorClock(raw?: string | null): string {
+  const opts: Intl.DateTimeFormatOptions = {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  };
+  const stamp = (raw ?? "").trim();
+  if (stamp.length >= 19) {
+    const parsed = new Date(stamp.includes("T") ? stamp : stamp.replace(" ", "T"));
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toLocaleString("en-US", opts);
+    }
+  }
+  if (stamp.length >= 10) {
+    return `${stamp.slice(0, 10)} (run stored date only) · screen ${new Date().toLocaleString("en-US", opts)}`;
+  }
+  return new Date().toLocaleString("en-US", opts);
+}
+
 function formatBps(bps: number | null | undefined): string {
   if (bps == null) return "unknown";
   return `${(bps / 100).toFixed(2)}%`;
@@ -485,6 +595,7 @@ type HealthView = {
 };
 
 type Screen =
+  | "home"
   | "income-plan"
   | "calculator"
   | "dashboard"
@@ -495,7 +606,30 @@ type Screen =
   | "new-investment"
   | "add-lot"
   | "position-details"
-  | "collectors";
+  | "collectors"
+  | "tickets"
+  | "collector-establish";
+
+const SCREENS: readonly Screen[] = [
+  "home",
+  "income-plan",
+  "calculator",
+  "dashboard",
+  "trends",
+  "holdings",
+  "import",
+  "settings",
+  "new-investment",
+  "add-lot",
+  "position-details",
+  "collectors",
+  "tickets",
+  "collector-establish",
+];
+
+function isScreen(id: string): id is Screen {
+  return (SCREENS as readonly string[]).includes(id);
+}
 
 type CollectorSetItem = {
   securityId: string;
@@ -512,14 +646,37 @@ type CollectorSetItem = {
   lastRunOk?: boolean | null;
   lastRunMessage?: string;
   lastContentHash?: string;
+  rocSourceUrl?: string;
   openLots: boolean;
   inceptionOn?: string;
+  complete?: boolean;
+  gaps?: string[];
+  fillGapsProviderBlank?: boolean;
+  fillGapsFrequencyBlank?: boolean;
+  fillGapsDivTypeBlank?: boolean;
+  fillGapsRocBlank?: boolean;
+  paidDeclarationCount?: number;
+  remainingPlanned?: number | null;
+  remainingExpected?: number | null;
+  successfulRunCount?: number;
+  failureCount?: number;
+  openTicketCount?: number;
+  latestTicketField?: string;
+  lastPriceAsOf?: string;
+  lastPriceFreshness?: string;
+  underlying?: string;
+  rocEstimateMinor?: number | null;
+  rocScale?: number;
+  rocTaxYear?: string;
+  openLotCount?: number;
+  lastPayableOn?: string;
 };
 
 type Div1ComplianceRow = {
   securityId: string;
   symbol: string;
   futurePayDatesQty: number;
+  futurePayDates?: string[];
   priorDeclarationsQty: number;
   currentDeclarationAmountMinor: number | null;
   currentDeclarationAmountScale: number | null;
@@ -528,8 +685,56 @@ type Div1ComplianceRow = {
   requiredPaid: number;
 };
 
+function paidRowsFromDeclarations(
+  decls: Array<{
+    paymentPeriod: string;
+    amountPerShareMinor: number | null;
+    amountScale: number;
+  }>,
+): CollectorCompletionProof["paid"] {
+  return [...decls]
+    .filter((d) => (d.amountPerShareMinor ?? 0) > 0)
+    .sort((a, b) => b.paymentPeriod.localeCompare(a.paymentPeriod))
+    .map((d) => ({
+      payOn: d.paymentPeriod.slice(0, 10),
+      amountPerShare: formatScaled(
+        d.amountPerShareMinor ?? 0,
+        d.amountScale ?? 2,
+      ),
+    }));
+}
+
+function proofsFromFleet(
+  items: CollectorSetItem[],
+  compliance: Div1ComplianceRow[],
+  calc: CalculatorGet | null,
+  history: DeclarationHistoryGet | null,
+): CollectorCompletionProof[] {
+  const ok = items.filter((r) => r.collectorEnabled && r.lastRunOk === true);
+  return ok
+    .map((row) => {
+      const comp = compliance.find((c) => c.symbol === row.symbol);
+      const calcRow = calc?.rows.find((c) => c.symbol === row.symbol);
+      const hist = history?.rows.find((h) => h.symbol === row.symbol);
+      const scale = calcRow?.rocScale;
+      return {
+        symbol: row.symbol,
+        futureDates: comp?.futurePayDates ?? [],
+        roc2024: "",
+        roc2025: rocText(calcRow?.rocPct2025ActualMinor, scale),
+        roc2026e: rocText(calcRow?.rocPct2026EstimateMinor, scale),
+        roc2026a: rocText(calcRow?.rocPct2026ActualMinor, scale),
+        weekEnds: history?.weekEnds ?? [],
+        weekStarts: history?.weekStarts,
+        cells: hist?.cells ?? [],
+        paid: [],
+      };
+    })
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
 function collectorRetrieveNeedsRun(row: CollectorSetItem, asOfDate: string): boolean {
-  if (!row.collectorEnabled || !row.declarationSource.trim()) {
+  if (!row.openLots || !row.collectorEnabled || !row.declarationSource.trim()) {
     return false;
   }
   if (row.lastRunOk !== true) {
@@ -542,7 +747,11 @@ function collectorRetrieveNeedsRun(row: CollectorSetItem, asOfDate: string): boo
   return !ran.startsWith(asOfDate);
 }
 
-function collectorCommandBody(row: CollectorSetItem, forceRefresh: boolean) {
+function collectorCommandBody(
+  row: CollectorSetItem,
+  forceRefresh: boolean,
+  establish = false,
+) {
   return {
     securityId: row.securityId,
     symbol: row.symbol,
@@ -555,6 +764,7 @@ function collectorCommandBody(row: CollectorSetItem, forceRefresh: boolean) {
     paymentFrequency: row.paymentFrequency ?? "",
     inceptionOn: row.inceptionOn ?? "",
     forceRefresh,
+    establish,
   };
 }
 
@@ -577,6 +787,33 @@ function collectorItemPays(row: CollectorSetItem): boolean {
     freq === "quarterly" ||
     freq === "4"
   );
+}
+
+function collectorIsCash(row: CollectorSetItem): boolean {
+  const sym = row.symbol.trim().toUpperCase();
+  const div = (row.divType || "").trim().toUpperCase().replace(/\s+/g, "-");
+  return div === "CASH" || sym === "SPAXX" || sym === "FDRXX" || sym === "SWVXX";
+}
+
+function collectorIsDiv1OrCash(row: CollectorSetItem): boolean {
+  const div = (row.divType || "").trim().toUpperCase().replace(/\s+/g, "-");
+  return collectorIsCash(row) || div === "DIV-1" || div === "DIV1";
+}
+
+/** DIV-1/CASH only. Failing or never-run with empty seed URL, or DIV-1 ROC hole. */
+function collectorNeedsOwnerUrl(row: CollectorSetItem): boolean {
+  if (!collectorIsDiv1OrCash(row)) {
+    return false;
+  }
+  const emptySeed = !(row.sourceUrl ?? "").trim();
+  const failingOrNever = row.lastRunOk !== true;
+  if (emptySeed && failingOrNever) {
+    return true;
+  }
+  if (collectorIsCash(row)) {
+    return false;
+  }
+  return Boolean(row.fillGapsRocBlank) && !(row.rocSourceUrl ?? "").trim();
 }
 
 type CollectorStats = {
@@ -617,20 +854,30 @@ function parseHandoff(bodyJson?: string): HandoffStatus | null {
 }
 
 function shiftIso(date: string, days: number): string {
-  const d = new Date(`${date}T12:00:00`);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return addUtcDays(date, days);
 }
 
-/** Saturday that starts the Sat–Fri Income Plan week containing `iso`. */
-function saturdayOfWeek(iso: string): string {
-  const d = new Date(`${iso}T12:00:00`);
-  if (Number.isNaN(d.getTime())) {
-    return iso;
+function historyBounds(
+  preset: string,
+  asOf: string,
+  startOn: string,
+  endOn: string,
+): { startOn: string; endOn: string } {
+  switch (preset) {
+    case "month":
+      return { startOn: `${asOf.slice(0, 7)}-01`, endOn: asOf };
+    case "90":
+      return { startOn: addUtcDays(asOf, -90), endOn: asOf };
+    case "ytd":
+      return { startOn: `${asOf.slice(0, 4)}-01-01`, endOn: asOf };
+    case "custom":
+      return {
+        startOn: startOn || addUtcDays(asOf, -60),
+        endOn: endOn || asOf,
+      };
+    default:
+      return { startOn: addUtcDays(asOf, -60), endOn: asOf };
   }
-  const daysSinceSaturday = (d.getDay() + 1) % 7;
-  d.setDate(d.getDate() - daysSinceSaturday);
-  return d.toISOString().slice(0, 10);
 }
 
 function incomePlanWeekChoices(asOf: string, latestActualOn?: string | null): string[] {
@@ -657,9 +904,7 @@ function incomePlanWeekChoices(asOf: string, latestActualOn?: string | null): st
 }
 
 function incomePlanWeekOptionLabel(saturday: string, thisWeekSaturday: string): string {
-  const friday = shiftIso(saturday, 6);
-  const mark = saturday === thisWeekSaturday ? " · this week" : "";
-  return `Sat ${saturday} – Fri ${friday}${mark}`;
+  return formatWeekChooserLabel(saturday, thisWeekSaturday);
 }
 
 type ManualDividendRow = {
@@ -696,7 +941,10 @@ function blankManualDividendRow(): ManualDividendRow {
 }
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("income-plan");
+  const [screen, setScreen] = useState<Screen>("home");
+  const screenRef = useRef(screen);
+  screenRef.current = screen;
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthView | null>(null);
   const [handoff, setHandoff] = useState<HandoffStatus | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
@@ -707,21 +955,44 @@ export default function App() {
     saturdayOfWeek(new Date().toISOString().slice(0, 10)),
   );
   const [incomeWeek, setIncomeWeek] = useState<IncomePlanWeekGet | null>(null);
+  const [incomeGrid, setIncomeGrid] = useState<IncomePlanGridGet | null>(null);
+  const [incomePattern, setIncomePattern] = useState<"A" | "B">("A");
+  const [incomeHistWeeks, setIncomeHistWeeks] = useState(6);
+  const [incomeFutWeeks, setIncomeFutWeeks] = useState(6);
   const [burndown, setBurndown] = useState<DashboardBurndownGet | null>(null);
   const [trends, setTrends] = useState<TrendsGet | null>(null);
   const [trendsError, setTrendsError] = useState<string | null>(null);
   const [trendsCapture, setTrendsCapture] = useState<TrendsWeekCapture | null>(null);
+  const [perfRange, setPerfRange] = useState<DividendPerformanceRange>("ytd");
+  const [dividendPerf, setDividendPerf] = useState<DividendPerformanceGet | null>(null);
+  const perfRangeRef = useRef(perfRange);
+  perfRangeRef.current = perfRange;
   const [holdings, setHoldings] = useState<HoldingsGet | null>(null);
   const [calculator, setCalculator] = useState<CalculatorGet | null>(null);
+  const [declHistory, setDeclHistory] = useState<DeclarationHistoryGet | null>(null);
+  const [histCadence, setHistCadence] = useState("weekly");
+  const [histPeriod, setHistPeriod] = useState("60");
+  const [histStartOn, setHistStartOn] = useState("");
+  const [histEndOn, setHistEndOn] = useState("");
+  const histPeriodRef = useRef(histPeriod);
+  histPeriodRef.current = histPeriod;
+  const histStartRef = useRef(histStartOn);
+  histStartRef.current = histStartOn;
+  const histEndRef = useRef(histEndOn);
+  histEndRef.current = histEndOn;
   const [summary, setSummary] = useState<DataSummaryGet | null>(null);
   const [dividendLifetime, setDividendLifetime] = useState<DividendGet | null>(null);
   const [exceptions, setExceptions] = useState<ExceptionRecord[]>([]);
+  const [workTickets, setWorkTickets] = useState<WorkTicketRecord[]>([]);
+  const [ticketFocusSymbol, setTicketFocusSymbol] = useState("");
+  const [fleetDetailId, setFleetDetailId] = useState<string | null>(null);
   const [positionFocusPanel, setPositionFocusPanel] = useState<
     "lots" | "income" | "declarations" | "ledger" | ""
   >("");
   const [pdLedger, setPdLedger] = useState<DividendGet | null>(null);
   const [pendingBatchId, setPendingBatchId] = useState<string | null>(null);
   const [pendingBatchStatus, setPendingBatchStatus] = useState<string>("none");
+  const [pendingBatchFilename, setPendingBatchFilename] = useState("");
   const [manualDividendRows, setManualDividendRows] = useState<ManualDividendRow[]>(() => [
     blankManualDividendRow(),
     blankManualDividendRow(),
@@ -733,7 +1004,9 @@ export default function App() {
   const [assignActivityId, setAssignActivityId] = useState("");
   const [assignQty, setAssignQty] = useState("1");
   const [updateStatus, setUpdateStatus] = useState("not checked");
-  const [drillAccount, setDrillAccount] = useState<string | null>(null);
+  const [drillAccounts, setDrillAccounts] = useState<string[]>(() => [
+    ...INCOME_PLAN_DEFAULT_ACCOUNTS,
+  ]);
   const [accounts, setAccounts] = useState<AccountListItem[]>([]);
   const [securities, setSecurities] = useState<SecurityListItem[]>([]);
   const [wizSymbol, setWizSymbol] = useState("");
@@ -822,6 +1095,17 @@ export default function App() {
   const [wizBaseline, setWizBaseline] = useState(() => JSON.stringify(emptyWizEdit()));
   /** Process A: results panel after Research (symbol + distribution URL). */
   const [wizResearchDone, setWizResearchDone] = useState(false);
+  const [wizCollectorComplete, setWizCollectorComplete] = useState(false);
+  const [wizCollectorGaps, setWizCollectorGaps] = useState<string[]>([]);
+  const [wizSecondUrl, setWizSecondUrl] = useState("");
+  const [wizAskSecondUrl, setWizAskSecondUrl] = useState(false);
+  const [wizSecondUrlTried, setWizSecondUrlTried] = useState(false);
+  const [wizAskInception, setWizAskInception] = useState(false);
+  const [wizInceptionCandidate, setWizInceptionCandidate] = useState("");
+  const [wizInceptionOn, setWizInceptionOn] = useState("");
+  const [wizExpectedPaid, setWizExpectedPaid] = useState<number | null>(null);
+  const [wizRocUrl, setWizRocUrl] = useState("");
+  const [wizFieldDecision, setWizFieldDecision] = useState<Record<string, string>>({});
   /** Process A: owner Save → explicit completion screen (not a blank wizard). */
   const [wizProcessASaved, setWizProcessASaved] = useState(false);
   /** Shared long-action indicator for Complete research / Add Position / Fill gaps. */
@@ -859,6 +1143,7 @@ export default function App() {
   const [pdPeriodBaseline, setPdPeriodBaseline] = useState(() => JSON.stringify(emptyPeriod()));
   const [savedPeriodId, setSavedPeriodId] = useState("");
   const [lastPriceBusy, setLastPriceBusy] = useState(false);
+  const [declarationBusy, setDeclarationBusy] = useState(false);
   const lastPriceKickoff = useRef(false);
   const [collectorItems, setCollectorItems] = useState<CollectorSetItem[]>([]);
   const [collectorStats, setCollectorStats] = useState<CollectorStats | null>(null);
@@ -881,9 +1166,13 @@ export default function App() {
         calendarPolicy: string;
         lookbackCount: string;
         inceptionOn: string;
+        rocSourceUrl: string;
       }
     >
   >({});
+  const [collectorStatusAt, setCollectorStatusAt] = useState(() =>
+    new Date().toISOString(),
+  );
   const [collectorRunProgress, setCollectorRunProgress] = useState<{
     running: boolean;
     total: number;
@@ -892,17 +1181,33 @@ export default function App() {
     ok: number;
     miss: number;
     lines: string[];
+    finishedAt?: string;
   } | null>(null);
-  const [div1Compliance, setDiv1Compliance] = useState<Div1ComplianceRow[]>([]);
+  const [retryingTicket, setRetryingTicket] = useState<{
+    ticketId: string;
+    symbol: string;
+  } | null>(null);
+  const [, setDiv1Compliance] = useState<Div1ComplianceRow[]>([]);
+  const [, setCollectorProofs] = useState<CollectorCompletionProof[]>([]);
+  const [missingUrlDrafts, setMissingUrlDrafts] = useState<
+    Record<string, { sourceUrl: string; rocSourceUrl: string }>
+  >({});
 
   const refreshCollectors = useCallback(async (asOf: string, symbol?: string) => {
     setBusy(true);
     setCollectorAction("Loading collector fleet…");
     try {
-      const [setResult, statsResult, complianceResult] = await Promise.all([
-        client.executeQuery("CollectorSetGet", {}),
+      const [setResult, statsResult, complianceResult, calcResult, historyResult] =
+        await Promise.all([
+        client.executeQuery("CollectorSetGet", { asOfDate: asOf || "2026-08-26" }),
         client.executeQuery("CollectorStatsGet", { asOfDate: asOf || "2026-08-26" }),
         client.executeQuery("Div1ComplianceSummaryGet", {}),
+        client.executeQuery("CalculatorGet"),
+        client.executeQuery("DeclarationHistoryGet", {
+          asOfDate: asOf || "2026-08-26",
+          cadence: "all",
+          period: "60",
+        }),
       ]);
       if (!setResult.ok) {
         const msg = `Collector fleet failed: ${setResult.errorCode ?? "error"}. Restart with npm run desktop so Rust is rebuilt.`;
@@ -917,6 +1222,18 @@ export default function App() {
           const raw = Array.isArray(body.items) ? body.items : [];
           items = raw.filter(collectorItemPays);
           setCollectorItems(items);
+          setMissingUrlDrafts((prev) => {
+            const next = { ...prev };
+            for (const row of items) {
+              if (!collectorNeedsOwnerUrl(row) || next[row.securityId]) continue;
+              next[row.securityId] = {
+                sourceUrl: row.sourceUrl ?? "",
+                rocSourceUrl: row.rocSourceUrl ?? "",
+              };
+            }
+            return next;
+          });
+          setCollectorStatusAt(new Date().toISOString());
           setSettingsTemplateDrafts((prev) => {
             const next = { ...prev };
             for (const row of items) {
@@ -927,6 +1244,7 @@ export default function App() {
                 calendarPolicy: row.calendarPolicy ?? "",
                 lookbackCount: String(DECLARATION_LOOKBACK_TARGET),
                 inceptionOn: row.inceptionOn ?? "",
+                rocSourceUrl: row.rocSourceUrl ?? "",
               };
             }
             return next;
@@ -944,18 +1262,39 @@ export default function App() {
           setCollectorStats(null);
         }
       }
+      let complianceRows: Div1ComplianceRow[] = [];
       if (complianceResult.ok && complianceResult.bodyJson) {
         try {
           const body = JSON.parse(complianceResult.bodyJson) as {
             rows?: Div1ComplianceRow[];
           };
-          setDiv1Compliance(Array.isArray(body.rows) ? body.rows : []);
+          complianceRows = Array.isArray(body.rows) ? body.rows : [];
+          setDiv1Compliance(complianceRows);
         } catch {
           setDiv1Compliance([]);
         }
       } else {
         setDiv1Compliance([]);
       }
+      let calcBody: CalculatorGet | null = null;
+      if (calcResult.ok && calcResult.bodyJson) {
+        try {
+          calcBody = JSON.parse(calcResult.bodyJson) as CalculatorGet;
+          setCalculator(calcBody);
+        } catch {
+          calcBody = null;
+        }
+      }
+      let histBody: DeclarationHistoryGet | null = null;
+      if (historyResult.ok && historyResult.bodyJson) {
+        try {
+          histBody = JSON.parse(historyResult.bodyJson) as DeclarationHistoryGet;
+          setDeclHistory(histBody);
+        } catch {
+          histBody = null;
+        }
+      }
+      setCollectorProofs(proofsFromFleet(items, complianceRows, calcBody, histBody));
       const focus = symbol ?? collectorSymbol;
       if (!focus) {
         const msg = `Fleet loaded: ${formatCount(items.length)} paying symbols (non-payers excluded).`;
@@ -1044,6 +1383,75 @@ export default function App() {
     }
   }, [collectorSymbol]);
 
+  const recordCollectorProof = async (
+    row: CollectorSetItem,
+    retrieveJson?: string | null,
+  ) => {
+    let futureDates: string[] = [];
+    if (retrieveJson) {
+      try {
+        const retrieve = JSON.parse(retrieveJson) as { payloadJson?: string };
+        const payload = retrieve.payloadJson
+          ? (JSON.parse(retrieve.payloadJson) as {
+              upcomingPays?: Array<{ payOn?: string; paymentPeriod?: string }>;
+              payDates?: Array<{ payOn?: string; paymentPeriod?: string }>;
+            })
+          : {};
+        const pays = payload.upcomingPays ?? payload.payDates ?? [];
+        futureDates = [
+          ...new Set(
+            pays
+              .map((p) => (p.payOn || p.paymentPeriod || "").slice(0, 10))
+              .filter((d) => d && d > asOfDate),
+          ),
+        ].sort();
+      } catch {
+        /* keep empty until fleet refresh */
+      }
+    }
+    const invResult = await client.executeQuery("InvestmentGet", {
+      securityId: row.securityId,
+      asOfDate,
+    });
+    let roc2024 = "";
+    let roc2025 = "";
+    let roc2026e = "";
+    let roc2026a = "";
+    let paid: CollectorCompletionProof["paid"] = [];
+    if (invResult.ok && invResult.bodyJson) {
+      try {
+        const inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+        const scale = inv.rocScale;
+        roc2024 = rocText(inv.rocPct2024ActualMinor, scale);
+        roc2025 = rocText(inv.rocPct2025ActualMinor, scale);
+        roc2026e = rocText(inv.rocPct2026EstimateMinor, scale);
+        roc2026a = rocText(inv.rocPct2026ActualMinor, scale);
+        paid = paidRowsFromDeclarations(inv.declarations ?? []);
+      } catch {
+        /* unknown */
+      }
+    }
+    const histRow = declHistory?.rows.find((h) => h.symbol === row.symbol);
+    const proof: CollectorCompletionProof = {
+      symbol: row.symbol,
+      futureDates,
+      roc2024,
+      roc2025,
+      roc2026e,
+      roc2026a,
+      weekEnds: histRow ? (declHistory?.weekEnds ?? []) : [],
+      weekStarts: histRow ? declHistory?.weekStarts : undefined,
+      cells: histRow?.cells ?? [],
+      paid,
+    };
+    setCollectorProofs((prev) => {
+      const next = prev.filter((p) => p.symbol !== row.symbol);
+      next.push(proof);
+      next.sort((a, b) => a.symbol.localeCompare(b.symbol));
+      return next;
+    });
+  };
+
   const runCollectorTargets = async (
     targets: CollectorSetItem[],
     label: string,
@@ -1128,6 +1536,7 @@ export default function App() {
             }
             if (runOk) {
               ok += 1;
+              await recordCollectorProof(row, result.bodyJson);
               lines.push(
                 unchanged > 0
                   ? `${row.symbol}: unchanged (fresh today)`
@@ -1166,6 +1575,7 @@ export default function App() {
       const done = `${label} finished: ${formatCount(ok)} ok, ${formatCount(miss)} miss of ${formatCount(targets.length)}.`;
       setCollectorAction(done);
       setActionMessage(done);
+      setCollectorStatusAt(new Date().toISOString());
       setCollectorRunProgress({
         running: false,
         total: targets.length,
@@ -1174,6 +1584,7 @@ export default function App() {
         ok,
         miss,
         lines: [...lines],
+        finishedAt: new Date().toISOString(),
       });
     } catch (err: unknown) {
       const msg = String(err);
@@ -1189,7 +1600,10 @@ export default function App() {
 
   const runEnabledCollectors = async () => {
     const targets = collectorItems.filter(
-      (row) => row.collectorEnabled && row.declarationSource.trim(),
+      (row) =>
+        row.openLots &&
+        row.collectorEnabled &&
+        row.declarationSource.trim(),
     );
     if (targets.length === 0) {
       const msg =
@@ -1218,14 +1632,16 @@ export default function App() {
 
   const forceCollectorRefresh = async (row: CollectorSetItem) => {
     setBusy(true);
-    setActionMessage(`Force refresh ${row.symbol}…`);
+    setActionMessage(`Collect fresh distribution data ${row.symbol}…`);
     try {
       const result = await client.executeCommand(
         "CollectorRetrieve",
         collectorCommandBody(row, true),
       );
       if (!result.ok) {
-        setActionMessage(`Force refresh failed: ${result.errorCode ?? "error"}`);
+        setActionMessage(
+          `Collect fresh distribution data failed: ${result.errorCode ?? "error"}`,
+        );
         return;
       }
       let recorded = 0;
@@ -1248,6 +1664,9 @@ export default function App() {
               setCollectorPayload({ raw: body.payloadJson });
             }
           }
+          if (body.ok !== false) {
+            await recordCollectorProof(row, result.bodyJson);
+          }
           setActionMessage(
             `${row.symbol}: ${body.ok === false ? "miss" : "ok"} — ${formatCount(recorded)} recorded, ${formatCount(skipped)} skipped${
               body.message ? `. ${body.message}` : ""
@@ -1260,6 +1679,412 @@ export default function App() {
       setCollectorSymbol(row.symbol);
       await refreshCollectors(asOfDate, row.symbol);
       await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const establishCollector = async (row: CollectorSetItem) => {
+    setBusy(true);
+    setActionMessage(`Establish collector ${row.symbol}…`);
+    try {
+      const retrieve = await client.executeCommand(
+        "CollectorRetrieve",
+        collectorCommandBody(row, true, true),
+      );
+      if (!retrieve.ok) {
+        setActionMessage(
+          `Establish ${row.symbol} retrieve failed: ${retrieve.errorCode ?? "error"}`,
+        );
+        return;
+      }
+      const research = await client.executeCommand("PositionResearchRefresh", {
+        securityId: row.securityId,
+        symbol: row.symbol,
+        rocSourceUrl: row.rocSourceUrl ?? "",
+        sourceUrl: row.sourceUrl ?? "",
+        declarationSource: row.declarationSource,
+        forceRefresh: true,
+      });
+      if (!research.ok) {
+        setActionMessage(
+          `Establish ${row.symbol} characteristics failed: ${research.errorCode ?? "error"}`,
+        );
+        return;
+      }
+      let rocLine = "";
+      if (research.bodyJson) {
+        try {
+          const body = JSON.parse(research.bodyJson) as {
+            rocPctMinor?: number | null;
+            rocScale?: number;
+            rocSourceUrl?: string;
+            retrieveOk?: boolean;
+            retrieveMessage?: string;
+          };
+          if (body.rocPctMinor != null) {
+            const scale = body.rocScale ?? 2;
+            rocLine = ` Recommended ROC ${(body.rocPctMinor / 10 ** scale).toFixed(scale)}% from ${body.rocSourceUrl || "19a-1"}. Accept on this page to complete.`;
+          } else {
+            rocLine = " ROC unknown — not 0%. Accept is still required if in scope.";
+          }
+          if (body.retrieveMessage) {
+            rocLine += ` ${body.retrieveMessage}`;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      setActionMessage(`Established ${row.symbol}.${rocLine}`);
+      await refreshCollectors(asOfDate, row.symbol);
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reevaluateCollector = async (row: CollectorSetItem) => {
+    setBusy(true);
+    setActionMessage(`Reevaluate collector ${row.symbol}…`);
+    try {
+      const research = await client.executeCommand("PositionResearchRefresh", {
+        securityId: row.securityId,
+        symbol: row.symbol,
+        rocSourceUrl: row.rocSourceUrl ?? "",
+        sourceUrl: row.sourceUrl ?? "",
+        declarationSource: row.declarationSource,
+      });
+      if (!research.ok) {
+        setActionMessage(
+          `Reevaluate ${row.symbol} failed: ${research.errorCode ?? "error"}`,
+        );
+        return;
+      }
+      setActionMessage(
+        `Reevaluated ${row.symbol} characteristics. Pays were not rewritten.`,
+      );
+      await refreshCollectors(asOfDate, row.symbol);
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const acceptCollectorRoc = async (row: CollectorSetItem) => {
+    if (row.rocEstimateMinor == null) {
+      setActionMessage(
+        `${row.symbol}: no recommended ROC to accept. Establish or Reevaluate first.`,
+      );
+      return;
+    }
+    setBusy(true);
+    setActionMessage(`Accept ROC ${row.symbol}…`);
+    try {
+      const result = await client.executeCommand("RocPlanConfirm", {
+        securityId: row.securityId,
+        symbol: row.symbol,
+        rocPctMinor: row.rocEstimateMinor,
+        rocScale: row.rocScale || 2,
+        source: "19a-1",
+        sourceUrl: row.rocSourceUrl ?? "",
+        method: "19a-1-current-year",
+        kind: "estimate",
+        establishedHow: "current distribution 19a-1 estimate",
+        ownerOverride: false,
+        asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
+      });
+      if (!result.ok) {
+        setActionMessage(
+          `Accept ROC ${row.symbol} failed: ${result.errorCode ?? "error"}`,
+        );
+        return;
+      }
+      setActionMessage(
+        `Accepted ${row.symbol} ROC ${(row.rocEstimateMinor / 10 ** (row.rocScale || 2)).toFixed(row.rocScale || 2)}%.`,
+      );
+      await refreshCollectors(asOfDate, row.symbol);
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resolveTicketRetry = async (ticket: WorkTicketRecord) => {
+    setBusy(true);
+    setRetryingTicket({ ticketId: ticket.ticketId, symbol: ticket.symbol });
+    setCollectorRunProgress({
+      running: true,
+      total: 1,
+      current: 0,
+      symbol: ticket.symbol,
+      ok: 0,
+      miss: 0,
+      lines: [`${ticket.symbol}: retry started — fetching issuer page…`],
+    });
+    setActionMessage(`${ticket.symbol}: retrying stored adapter…`);
+    setCollectorAction(`${ticket.symbol}: retrying stored adapter…`);
+    try {
+      const { flushSync } = await import("react-dom");
+      flushSync(() => {});
+      await new Promise<void>((resolve) => {
+        window.setTimeout(() => resolve(), 0);
+      });
+      const resolved = await client.executeCommand("WorkTicketResolve", {
+        ticketId: ticket.ticketId,
+        tool: "retry_retrieve",
+        sourceUrl: "",
+      });
+      if (!resolved.ok) {
+        setActionMessage(`Retry refused: ${resolved.errorCode ?? "error"}`);
+        setCollectorRunProgress({
+          running: false,
+          total: 1,
+          current: 1,
+          symbol: ticket.symbol,
+          ok: 0,
+          miss: 1,
+          lines: [`${ticket.symbol}: retry refused ${resolved.errorCode ?? "error"}`],
+        });
+        await refreshData(asOfDate);
+        return;
+      }
+      if (resolved.bodyJson) {
+        try {
+          const body = JSON.parse(resolved.bodyJson) as { code?: string; message?: string; ok?: boolean };
+          const code = body.code ?? "";
+          if (body.ok === false || code === "adapter_url_mismatch") {
+            setActionMessage(
+              body.message ||
+                "That URL is not this adapter. Assigned adapter unchanged.",
+            );
+            setCollectorRunProgress({
+              running: false,
+              total: 1,
+              current: 1,
+              symbol: ticket.symbol,
+              ok: 0,
+              miss: 1,
+              lines: [body.message || `${ticket.symbol}: adapter URL mismatch`],
+            });
+            await refreshData(asOfDate);
+            return;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      const row = collectorItems.find((r) => r.securityId === ticket.securityId);
+      if (!row) {
+        setActionMessage(`${ticket.symbol}: retry used the stored adapter URL.`);
+        setCollectorRunProgress({
+          running: false,
+          total: 1,
+          current: 1,
+          symbol: ticket.symbol,
+          ok: 0,
+          miss: 1,
+          lines: [`${ticket.symbol}: not in collector fleet`],
+        });
+        await refreshData(asOfDate);
+        return;
+      }
+      flushSync(() => {
+        setCollectorRunProgress({
+          running: true,
+          total: 1,
+          current: 1,
+          symbol: ticket.symbol,
+          ok: 0,
+          miss: 0,
+          lines: [`${ticket.symbol}: retrieving ${row.declarationSource}…`],
+        });
+        setCollectorAction(`${ticket.symbol}: retrieving ${row.declarationSource}…`);
+      });
+      const result = await client.executeCommand("CollectorRetrieve", {
+        ...collectorCommandBody(row, true),
+        sourceUrl: row.sourceUrl || "",
+        declarationSource: row.declarationSource,
+      });
+      let runOk = result.ok;
+      let message = "";
+      let recorded = 0;
+      if (result.bodyJson) {
+        try {
+          const body = JSON.parse(result.bodyJson) as {
+            ok?: boolean;
+            message?: string;
+            recorded?: number;
+            code?: string;
+          };
+          runOk = result.ok && body.ok !== false;
+          message = body.message || body.code || "";
+          recorded = body.recorded ?? 0;
+        } catch {
+          /* ignore */
+        }
+      }
+      const line = runOk
+        ? `${ticket.symbol}: ok — ${formatCount(recorded)} recorded${message ? ` (${message})` : ""}`
+        : `${ticket.symbol}: miss${message ? ` — ${message}` : result.errorCode ? ` ${result.errorCode}` : ""}`;
+      setActionMessage(line);
+      setCollectorAction(line);
+      setCollectorRunProgress({
+        running: false,
+        total: 1,
+        current: 1,
+        symbol: ticket.symbol,
+        ok: runOk ? 1 : 0,
+        miss: runOk ? 0 : 1,
+        lines: [line],
+      });
+      await refreshCollectors(asOfDate, ticket.symbol);
+      await refreshData(asOfDate);
+      setActionMessage(line);
+      setCollectorAction(line);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+      setCollectorRunProgress({
+        running: false,
+        total: 1,
+        current: 1,
+        symbol: ticket.symbol,
+        ok: 0,
+        miss: 1,
+        lines: [`${ticket.symbol}: ${String(err)}`],
+      });
+    } finally {
+      setRetryingTicket(null);
+      setBusy(false);
+    }
+  };
+
+  const fileWorkTicket = async (ticket: WorkTicketRecord) => {
+    const note = window.prompt("Note to file this ticket (required)")?.trim() ?? "";
+    if (!note) {
+      setActionMessage("File requires a note.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("WorkTicketFile", {
+        ticketId: ticket.ticketId,
+        note,
+      });
+      setActionMessage(
+        result.ok ? `${ticket.symbol} ${ticket.code} filed.` : `File failed: ${result.errorCode ?? "error"}`,
+      );
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resolveEnterDeclaredAmount = async (
+    ticket: WorkTicketRecord,
+    amount: string,
+  ) => {
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("WorkTicketResolve", {
+        ticketId: ticket.ticketId,
+        tool: "enter_declared_amount",
+        amount,
+      });
+      setActionMessage(
+        result.ok
+          ? `${ticket.symbol}: declared amount saved.`
+          : `Save amount failed: ${result.errorCode ?? "error"}`,
+      );
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resolveAmountConfirm = async (
+    ticket: WorkTicketRecord,
+    action: "except" | "reject",
+  ) => {
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("WorkTicketResolve", {
+        ticketId: ticket.ticketId,
+        tool: ticket.tool,
+        action,
+      });
+      setActionMessage(
+        result.ok
+          ? `${ticket.symbol}: ${action === "except" ? "excepted — vendor amount kept." : "rejected — vendor amount discarded."}`
+          : `${action} failed: ${result.errorCode ?? "error"}`,
+      );
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyMissingCollectorUrls = async () => {
+    const rows = collectorItems.filter(collectorNeedsOwnerUrl);
+    const filled = rows.filter((row) => {
+      const draft = missingUrlDrafts[row.securityId];
+      return Boolean(
+        draft &&
+          (draft.sourceUrl.trim() ||
+            (!collectorIsCash(row) && draft.rocSourceUrl.trim())),
+      );
+    });
+    if (filled.length === 0) {
+      setActionMessage("Paste at least one issuer URL, then Apply URLs.");
+      return;
+    }
+    setBusy(true);
+    setCollectorAction("Applying owner issuer URLs…");
+    try {
+      let wrote = 0;
+      for (const row of filled) {
+        const draft = missingUrlDrafts[row.securityId];
+        if (!draft) continue;
+        const sourceUrl = draft.sourceUrl.trim() || row.sourceUrl || "";
+        const rocSourceUrl = collectorIsCash(row)
+          ? ""
+          : draft.rocSourceUrl.trim() || sourceUrl || row.rocSourceUrl || "";
+        if (!sourceUrl && !rocSourceUrl) continue;
+        const result = await client.executeCommand("RetrievalTemplateSet", {
+          securityId: row.securityId,
+          declarationSource: row.declarationSource,
+          priceSource: row.priceSource || "public",
+          sourceSymbol: row.symbol,
+          sourceUrl,
+          calendarPolicy: row.calendarPolicy ?? "",
+          lookbackCount: 12,
+          collectorEnabled: row.collectorEnabled,
+          inceptionOn: row.inceptionOn ?? "",
+          rocSourceUrl,
+        });
+        if (!result.ok) {
+          setActionMessage(
+            `Apply URLs failed for ${row.symbol}: ${result.errorCode ?? "error"}`,
+          );
+          return;
+        }
+        wrote += 1;
+      }
+      setActionMessage(`Applied issuer URLs for ${formatCount(wrote)} collectors.`);
+      await refreshCollectors(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -1308,11 +2133,39 @@ export default function App() {
     }
   }, [exceptions, captureProcess]);
 
+  const loadDeclHistory = useCallback(
+    async (asOf: string, preset: string, startOn: string, endOn: string) => {
+      const bounds = historyBounds(preset, asOf, startOn, endOn);
+      const result = await client.executeQuery("DeclarationHistoryGet", {
+        asOfDate: asOf,
+        cadence: "all",
+        startOn: bounds.startOn,
+        endOn: bounds.endOn,
+      });
+      if (!result.ok || !result.bodyJson) {
+        return;
+      }
+      try {
+        setDeclHistory(JSON.parse(result.bodyJson) as DeclarationHistoryGet);
+      } catch {
+        setDeclHistory(null);
+      }
+    },
+    [],
+  );
+
   const refreshData = useCallback(async (asOf: string) => {
     await client.executeQuery("CashDividendCoverageGet", { asOfDate: asOf });
-    const [weekResult, burnResult, trendsResult, trendsWeekResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, accountResult, securityResult, positionResult, masterResult, coverageResult] =
+    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult] =
       await Promise.all([
         client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf }),
+        client.executeQuery("IncomePlanGridGet", {
+          asOfDate: asOf,
+          historicalWeeks: incomeHistWeeks,
+          futureWeeks: incomeFutWeeks,
+          accounts: drillAccounts,
+          weekEnding: asOf,
+        }),
         client.executeQuery("DashboardBurndownGet", { asOfDate: asOf }),
         client.executeQuery("TrendsGet", { asOfDate: asOf }),
         client.executeQuery("TrendsWeekGet", { asOfDate: asOf }),
@@ -1321,14 +2174,35 @@ export default function App() {
         client.executeQuery("DataSummaryGet"),
         client.executeQuery("DividendGet"),
         client.executeQuery("CalculatorGet"),
+        client.executeQuery("DeclarationHistoryGet", {
+          asOfDate: asOf,
+          cadence: "all",
+          startOn: historyBounds(
+            histPeriodRef.current,
+            asOf,
+            histStartRef.current,
+            histEndRef.current,
+          ).startOn,
+          endOn: historyBounds(
+            histPeriodRef.current,
+            asOf,
+            histStartRef.current,
+            histEndRef.current,
+          ).endOn,
+        }),
         client.executeQuery("AccountList"),
         client.executeQuery("SecurityList"),
         client.executeQuery("PositionDetailsGet", { asOfDate: asOf }),
         client.executeQuery("PositionMasterGet"),
         client.executeQuery("PositionDetailsCoverageGet"),
+        client.executeQuery("DividendPerformanceGet", {
+          asOfDate: asOf,
+          range: perfRangeRef.current,
+        }),
       ]);
     const failed = [
       weekResult,
+      gridResult,
       burnResult,
       trendsResult,
       trendsWeekResult,
@@ -1337,11 +2211,13 @@ export default function App() {
       summaryResult,
       dividendResult,
       calcResult,
+      historyResult,
       accountResult,
       securityResult,
       positionResult,
       masterResult,
       coverageResult,
+      perfResult,
     ].filter((r) => !r.ok);
     if (failed.length > 0) {
       const stale = failed.some((r) => r.errorCode === "unknown_query");
@@ -1363,6 +2239,7 @@ export default function App() {
       }
     };
     setIncomeWeek(parse<IncomePlanWeekGet>(weekResult.bodyJson));
+    setIncomeGrid(parse<IncomePlanGridGet>(gridResult.bodyJson));
     setBurndown(parse<DashboardBurndownGet>(burnResult.bodyJson));
     if (trendsResult.ok) {
       setTrends(parse<TrendsGet>(trendsResult.bodyJson));
@@ -1376,11 +2253,17 @@ export default function App() {
     }
     setHoldings(parse<HoldingsGet>(holdingsResult.bodyJson));
     setCalculator(parse<CalculatorGet>(calcResult.bodyJson));
+    setDeclHistory(parse<DeclarationHistoryGet>(historyResult.bodyJson));
     setSummary(parse<DataSummaryGet>(summaryResult.bodyJson));
     setDividendLifetime(parse<DividendGet>(dividendResult.bodyJson));
     setPositionDetails(parse<PositionDetailsGet>(positionResult.bodyJson));
     setPositionMaster(parse<PositionMasterGet>(masterResult.bodyJson));
     setIssuerCoverage(parse<PositionDetailsCoverageGet>(coverageResult.bodyJson));
+    if (perfResult.ok) {
+      setDividendPerf(parse<DividendPerformanceGet>(perfResult.bodyJson));
+    } else {
+      setDividendPerf(null);
+    }
     if (accountResult.bodyJson) {
       try {
         const listed = JSON.parse(accountResult.bodyJson) as AccountListItem[];
@@ -1404,25 +2287,130 @@ export default function App() {
         setExceptions([]);
       }
     }
+    const syncTickets = await client.executeCommand("WorkTicketSyncMisses", {});
+    if (syncTickets.ok && syncTickets.bodyJson) {
+      try {
+        const body = JSON.parse(syncTickets.bodyJson) as {
+          raised?: number;
+          openCount?: number;
+        };
+        if ((body.raised ?? 0) > 0) {
+          setActionMessage(
+            `Opened ${formatCount(body.raised ?? 0)} collector tickets (${formatCount(body.openCount ?? 0)} open).`,
+          );
+        }
+      } catch {
+        /* list still loads */
+      }
+    }
+    const ticketResult = await client.executeQuery("WorkTicketList", {});
+    if (ticketResult.ok && ticketResult.bodyJson) {
+      try {
+        const body = JSON.parse(ticketResult.bodyJson) as WorkTicketList;
+        setWorkTickets(Array.isArray(body.items) ? body.items : []);
+      } catch {
+        setWorkTickets([]);
+      }
+    } else {
+      setWorkTickets([]);
+    }
   }, []);
+
+  const loadIncomeGrid = useCallback(
+    async (
+      asOf: string,
+      hist: number,
+      fut: number,
+      accounts: string[],
+      weekEnding?: string,
+    ) => {
+      const result = await client.executeQuery("IncomePlanGridGet", {
+        asOfDate: asOf,
+        historicalWeeks: hist,
+        futureWeeks: fut,
+        accounts,
+        weekEnding: weekEnding || asOf,
+      });
+      if (result.ok && result.bodyJson) {
+        try {
+          setIncomeGrid(JSON.parse(result.bodyJson) as IncomePlanGridGet);
+        } catch {
+          setIncomeGrid(null);
+        }
+      }
+      const week = await client.executeQuery("IncomePlanWeekGet", {
+        asOfDate: asOf,
+        weekEnding: weekEnding || asOf,
+      });
+      if (week.ok && week.bodyJson) {
+        try {
+          setIncomeWeek(JSON.parse(week.bodyJson) as IncomePlanWeekGet);
+        } catch {
+          setIncomeWeek(null);
+        }
+      }
+    },
+    [],
+  );
+
+  const runIncomeExport = useCallback(
+    async (format: "print" | "pdf" | "excel") => {
+      const result = await client.executeQuery("IncomePlanExportGet", {
+        pattern: incomePattern,
+        format: format === "excel" ? "xlsx" : format === "print" ? "html" : "pdf",
+        asOfDate: asOfDate,
+        historicalWeeks: incomeHistWeeks,
+        futureWeeks: incomeFutWeeks,
+        accounts: drillAccounts,
+        weekEnding: incomeWeek?.end || asOfDate,
+        printedAt: new Date().toISOString().slice(0, 16) + "Z",
+      });
+      if (!result.ok || !result.bodyJson) {
+        setActionMessage(`Print / Export failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      const body = JSON.parse(result.bodyJson) as IncomePlanExportGet;
+      if (format === "print") {
+        const frame = document.createElement("iframe");
+        frame.setAttribute("aria-hidden", "true");
+        frame.style.position = "fixed";
+        frame.style.right = "0";
+        frame.style.bottom = "0";
+        frame.style.width = "0";
+        frame.style.height = "0";
+        frame.style.border = "0";
+        document.body.appendChild(frame);
+        const doc = frame.contentDocument;
+        if (doc) {
+          doc.open();
+          doc.write(body.printHtml);
+          doc.close();
+          frame.contentWindow?.focus();
+          frame.contentWindow?.print();
+        }
+        setTimeout(() => frame.remove(), 1000);
+        return;
+      }
+      try {
+        const bytes = Uint8Array.from(atob(body.bytesBase64), (c) => c.charCodeAt(0));
+        await invoke("save_local_bytes", {
+          defaultFileName: body.defaultFileName,
+          bytes: Array.from(bytes),
+        });
+        setActionMessage(`Saved ${body.defaultFileName} on this computer.`);
+      } catch (err: unknown) {
+        setActionMessage(`Save failed: ${String(err)}`);
+      }
+    },
+    [asOfDate, drillAccounts, incomeFutWeeks, incomeHistWeeks, incomePattern, incomeWeek?.end],
+  );
+  const runIncomeExportRef = useRef(runIncomeExport);
+  runIncomeExportRef.current = runIncomeExport;
 
   const refreshLastPrices = useCallback(async () => {
     setLastPriceBusy(true);
-    setActionMessage("Refreshing last prices…");
     try {
-      const apply = await client.executeCommand("ProviderDeclarationSourcesApply", {});
-      if (apply.ok && apply.bodyJson) {
-        try {
-          const body = JSON.parse(apply.bodyJson) as { updated?: number };
-          if ((body.updated ?? 0) > 0) {
-            setActionMessage(
-              `Applied issuer sources from provider: ${formatCount(body.updated ?? 0)} updated.`,
-            );
-          }
-        } catch {
-          /* ignore */
-        }
-      }
+      await client.executeCommand("ProviderDeclarationSourcesApply", {});
       const result = await client.executeCommand("LastPriceRefresh", {});
       if (!result.ok) {
         setActionMessage(
@@ -1430,52 +2418,30 @@ export default function App() {
         );
         return;
       }
-      let recorded = 0;
-      let skipped = 0;
-      if (result.bodyJson) {
-        try {
-          const body = JSON.parse(result.bodyJson) as {
-            recorded?: number;
-            skipped?: number;
-          };
-          recorded = body.recorded ?? 0;
-          skipped = body.skipped ?? 0;
-        } catch {
-          /* ignore */
-        }
-      }
-      setActionMessage(
-        `Last prices updated: ${formatCount(recorded)} recorded, ${formatCount(skipped)} skipped. Stale last price still displays. Miss stays unknown.`,
-      );
       await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
       setLastPriceBusy(false);
     }
+  }, [asOfDate, refreshData]);
+
+  const refreshDeclarations = useCallback(async () => {
+    setDeclarationBusy(true);
     try {
-      const decls = await client.executeCommand("DeclarationRefresh", {});
-      let declRecorded = 0;
-      let declSkipped = 0;
-      if (decls.ok && decls.bodyJson) {
-        try {
-          const body = JSON.parse(decls.bodyJson) as {
-            recorded?: number;
-            skipped?: number;
-          };
-          declRecorded = body.recorded ?? 0;
-          declSkipped = body.skipped ?? 0;
-        } catch {
-          /* ignore */
-        }
+      await client.executeCommand("ProviderDeclarationSourcesApply", {});
+      const result = await client.executeCommand("DeclarationRefresh", {});
+      if (!result.ok) {
+        setActionMessage(
+          `Declaration refresh failed: ${result.errorCode ?? "error"}.`,
+        );
+        return;
       }
-      setActionMessage(
-        (prev) =>
-          `${prev ?? "Last prices updated."} Declarations: ${formatCount(declRecorded)} recorded, ${formatCount(declSkipped)} skipped.`,
-      );
       await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
+    } finally {
+      setDeclarationBusy(false);
     }
   }, [asOfDate, refreshData]);
 
@@ -1626,6 +2592,18 @@ export default function App() {
         const knownPaymentPeriods = body.declarations
           .map((d) => d.paymentPeriod?.trim())
           .filter((p): p is string => Boolean(p));
+        const knownDeclarationAmounts = body.declarations
+          .filter(
+            (d) =>
+              d.paymentPeriod?.trim() &&
+              d.amountPerShareMinor != null &&
+              d.amountPerShareMinor > 0,
+          )
+          .map((d) => ({
+            paymentPeriod: d.paymentPeriod,
+            amountPerShareMinor: d.amountPerShareMinor,
+            amountScale: d.amountScale,
+          }));
         const result = await client.executeCommand("MarketRetrieve", {
           symbol: body.symbol,
           securityId: body.securityId,
@@ -1635,6 +2613,7 @@ export default function App() {
           priceSource: body.template?.priceSource ?? draft.priceSource ?? "",
           sourceUrl: body.template?.sourceUrl ?? draft.sourceUrl,
           knownPaymentPeriods,
+          knownDeclarationAmounts,
         });
         if (result.ok && result.bodyJson) {
           const retrieve = JSON.parse(result.bodyJson) as {
@@ -1645,14 +2624,13 @@ export default function App() {
               source?: string;
             }>;
           };
-          const existing = new Set(knownPaymentPeriods);
-          const retrieved = (retrieve.candidates ?? []).filter(
-            (d) =>
-              d.source &&
-              d.amountPerShareMinor != null &&
-              d.amountPerShareMinor > 0 &&
-              d.paymentPeriod?.trim() &&
-              !existing.has(d.paymentPeriod.trim()),
+          const retrieved = (retrieve.candidates ?? []).filter((d) =>
+            isNewOrChangedDeclaration(
+              d.paymentPeriod,
+              d.amountPerShareMinor,
+              d.amountScale,
+              body.declarations,
+            ) && Boolean(d.source),
           );
           let posted = 0;
           for (const [i, cand] of retrieved.entries()) {
@@ -1785,7 +2763,39 @@ export default function App() {
   }, [asOfDate, refreshData]);
 
   useEffect(() => {
-    if (screen !== "collectors" && screen !== "settings") {
+    if (screen !== "import") {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const result = await client.executeQuery("ImportPendingGet");
+      if (cancelled || !result.ok || !result.bodyJson) return;
+      try {
+        const body = JSON.parse(result.bodyJson) as ImportPendingGet;
+        if (body.batch?.batchId) {
+          setPendingBatchId(body.batch.batchId);
+          setPendingBatchStatus(body.batch.status);
+          setPendingBatchFilename(body.batch.filename ?? "");
+        } else {
+          setPendingBatchId(null);
+          setPendingBatchStatus("none");
+          setPendingBatchFilename("");
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [screen]);
+
+  useEffect(() => {
+    if (
+      screen !== "collectors" &&
+      screen !== "settings" &&
+      screen !== "collector-establish"
+    ) {
       return;
     }
     void refreshCollectors(asOfDate).catch((err: unknown) => {
@@ -1809,6 +2819,7 @@ export default function App() {
           Number(draft.lookbackCount) || DECLARATION_LOOKBACK_TARGET,
         collectorEnabled: row.collectorEnabled,
         inceptionOn: draft.inceptionOn.trim(),
+        rocSourceUrl: draft.rocSourceUrl.trim(),
       });
       if (!result.ok) {
         setActionMessage(
@@ -1833,10 +2844,13 @@ export default function App() {
       return;
     }
     lastPriceKickoff.current = true;
-    refreshLastPrices().catch((err: unknown) => {
+    void (async () => {
+      await refreshLastPrices();
+      await refreshDeclarations();
+    })().catch((err: unknown) => {
       setActionMessage(String(err));
     });
-  }, [summary, refreshLastPrices]);
+  }, [summary, refreshLastPrices, refreshDeclarations]);
 
   useEffect(() => {
     if (screen !== "new-investment" || !wizSecurityId) {
@@ -2682,6 +3696,14 @@ export default function App() {
         rocEstablishedHow?: string;
         rocComplete?: boolean;
         rocProbes?: { url?: string; status?: number; httpStatus?: number }[];
+        needsSecondUrl?: boolean;
+        secondUrlTried?: boolean;
+        adapterFailed?: boolean;
+        paidCount?: number;
+        needsInceptionConfirm?: boolean;
+        inceptionCandidate?: string;
+        expectedPaidSinceInception?: number | null;
+        inceptionSearchMiss?: boolean;
       };
       setResearchActivity({
         running: true,
@@ -2739,7 +3761,10 @@ export default function App() {
       if (inv.template?.calendarPolicy) {
         setWizCalendarPolicy(inv.template.calendarPolicy);
       }
-      if (inv.review?.mostCurrentMinor != null) {
+      if (inv.planKnown) {
+        setWizPlan(scaledDollars(inv.planPerShareMinor, inv.planScale));
+        if (inv.planReason) setWizPlanReason(inv.planReason);
+      } else if (inv.review?.mostCurrentMinor != null) {
         setWizPlan(scaledDollars(inv.review.mostCurrentMinor, inv.review.amountScale));
         if (!wizPlanReason) setWizPlanReason("Match Most Current");
       }
@@ -2838,8 +3863,9 @@ export default function App() {
         /* advisory miss stays blank */
       }
 
-      // Process A proposes 19a-1 estimate only — never marks research complete, never 0%.
-      if (seed.rocPctMinor != null && seed.rocPctMinor > 0) {
+      // Process A proposes 19a-1 estimate only — never marks research complete.
+      // Parsed 0% is valid only when the notice said 0.
+      if (seed.rocPctMinor != null && seed.rocPctMinor >= 0) {
         const scale = seed.rocScale ?? 2;
         setWizRoc({
           securityId: seed.securityId,
@@ -2868,6 +3894,15 @@ export default function App() {
         setWizRoc(null);
         setWizRocPct("");
       }
+      setWizCollectorComplete(Boolean(inv.collectorComplete));
+      setWizCollectorGaps(inv.collectorGaps ?? []);
+      setWizAskSecondUrl(Boolean(seed.needsSecondUrl) && !seed.secondUrlTried);
+      setWizSecondUrlTried(Boolean(seed.secondUrlTried || seed.adapterFailed));
+      setWizAskInception(Boolean(seed.needsInceptionConfirm || seed.inceptionSearchMiss));
+      setWizInceptionCandidate(seed.inceptionCandidate || "");
+      setWizInceptionOn(seed.inceptionCandidate || "");
+      setWizExpectedPaid(seed.expectedPaidSinceInception ?? null);
+      if (seed.rocSourceUrl) setWizRocUrl(seed.rocSourceUrl);
       setWizResearchDone(true);
       snapshotWiz({
         symbol: seed.symbol || symbol,
@@ -2879,9 +3914,11 @@ export default function App() {
         sourceUrl: seed.sourceUrl || sourceUrl,
         declSource: seed.declarationSource || "",
         calendarPolicy: seed.calendarPolicy || "",
-        plan: inv.review?.mostCurrentMinor != null
-          ? scaledDollars(inv.review.mostCurrentMinor, inv.review.amountScale)
-          : "",
+        plan: inv.planKnown
+          ? scaledDollars(inv.planPerShareMinor, inv.planScale)
+          : inv.review?.mostCurrentMinor != null
+            ? scaledDollars(inv.review.mostCurrentMinor, inv.review.amountScale)
+            : "",
       });
       const filledBits = [
         inv.provider ? `provider ${inv.provider}` : null,
@@ -2889,7 +3926,7 @@ export default function App() {
         (seed.paymentFrequency || inv.paymentFrequency)
           ? `frequency ${seed.paymentFrequency || inv.paymentFrequency}`
           : null,
-        seed.rocPctMinor != null && seed.rocPctMinor > 0
+        seed.rocPctMinor != null && seed.rocPctMinor >= 0
           ? `ROC estimate ${(seed.rocPctMinor / 10 ** (seed.rocScale ?? 2)).toFixed(seed.rocScale ?? 2)}%`
           : null,
       ].filter(Boolean);
@@ -2897,7 +3934,7 @@ export default function App() {
         !inv.provider ? "provider" : null,
         !inv.underlying ? "underlying" : null,
         !(seed.paymentFrequency || inv.paymentFrequency) ? "frequency" : null,
-        !(seed.rocPctMinor != null && seed.rocPctMinor > 0) ? "ROC estimate" : null,
+        seed.rocPctMinor == null ? "ROC estimate" : null,
       ].filter(Boolean);
       const retrieveNote = seed.retrieveOk
         ? "Retrieve finished."
@@ -3030,6 +4067,10 @@ export default function App() {
       let inv: InvestmentGet | null = null;
       if (invResult.ok && invResult.bodyJson) {
         inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+        if (opts.securityId === wizSecurityId) {
+          setWizCollectorComplete(Boolean(inv.collectorComplete));
+          setWizCollectorGaps(inv.collectorGaps ?? []);
+        }
       }
 
       let suggestedTier = "";
@@ -3676,6 +4717,76 @@ export default function App() {
     next();
   };
 
+  const leaveWithoutSavingRef = useRef(leaveWithoutSaving);
+  leaveWithoutSavingRef.current = leaveWithoutSaving;
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const stop = await listen<string>("finos-navigate", (event) => {
+          const id = event.payload;
+          if (id === "home") {
+            goHomeRef.current();
+            return;
+          }
+          if (!isScreen(id)) return;
+          leaveWithoutSavingRef.current(() => setScreen(id), id);
+        });
+        const stopPrint = await listen<string>("finos-income-print", () => {
+          if (screenRef.current === "income-plan") {
+            void runIncomeExportRef.current("print");
+          }
+        });
+        const stopExport = await listen<string>("finos-income-export", () => {
+          if (screenRef.current === "income-plan") {
+            void runIncomeExportRef.current("excel");
+          }
+        });
+        if (cancelled) {
+          stop();
+          stopPrint();
+          stopExport();
+          return;
+        }
+        unlisten = () => {
+          stop();
+          stopPrint();
+          stopExport();
+        };
+      } catch {
+        /* browser preview without Tauri events */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const close = () => setOpenMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "p" &&
+        screenRef.current === "income-plan"
+      ) {
+        event.preventDefault();
+        void runIncomeExportRef.current("print");
+      }
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
   const openPositionHub = (
     symbol: string,
     focus: "lots" | "income" | "declarations" | "ledger" | "" = "",
@@ -3733,6 +4844,7 @@ export default function App() {
       const chars = await client.executeCommand("PositionCharacteristicUpsert", {
         securityId: investment.securityId,
         paymentFrequency: cadence.label,
+        replaceCadence: true,
         riskTier: pdDraft.risk,
         provider: pdDraft.provider.trim(),
         underlying: pdDraft.underlying.trim(),
@@ -3920,6 +5032,18 @@ export default function App() {
         knownPaymentPeriods: (investment.declarations ?? [])
           .map((d) => d.paymentPeriod?.trim())
           .filter((p): p is string => Boolean(p)),
+        knownDeclarationAmounts: (investment.declarations ?? [])
+          .filter(
+            (d) =>
+              d.paymentPeriod?.trim() &&
+              d.amountPerShareMinor != null &&
+              d.amountPerShareMinor > 0,
+          )
+          .map((d) => ({
+            paymentPeriod: d.paymentPeriod,
+            amountPerShareMinor: d.amountPerShareMinor,
+            amountScale: d.amountScale,
+          })),
       });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Declaration retrieve missed: ${result.errorCode ?? "error"}`);
@@ -3935,18 +5059,14 @@ export default function App() {
         upcomingPays?: Array<{ payOn?: string; source?: string }>;
         missExplanation?: string;
       };
-      const existingPeriods = new Set(
-        (investment.declarations ?? [])
-          .map((d) => d.paymentPeriod?.trim())
-          .filter((p): p is string => Boolean(p)),
-      );
-      const retrieved = (body.candidates ?? []).filter(
-        (d) =>
-          d.source &&
-          d.amountPerShareMinor != null &&
-          d.amountPerShareMinor > 0 &&
-          d.paymentPeriod?.trim() &&
-          !existingPeriods.has(d.paymentPeriod.trim()),
+      const retrieved = (body.candidates ?? []).filter((d) =>
+        Boolean(d.source) &&
+        isNewOrChangedDeclaration(
+          d.paymentPeriod,
+          d.amountPerShareMinor,
+          d.amountScale,
+          investment.declarations ?? [],
+        ),
       );
       if (retrieved.length === 0) {
         await client.executeCommand("DeclarationRefresh", {
@@ -4053,7 +5173,7 @@ export default function App() {
       };
       const targets = gaps.items ?? [];
       if (targets.length === 0) {
-        const msg = "No research gaps — enabled income names have provider, underlying, frequency, and ROC observation.";
+        const msg = "No research gaps — open-lot names have provider, frequency, DIV-1, and ROC estimate.";
         setCollectorAction(msg);
         setActionMessage(msg);
         setCollectorRunProgress(null);
@@ -4307,18 +5427,6 @@ export default function App() {
   const importBrokerCsv = async (file: File) => {
     setBusy(true);
     setActionMessage(null);
-    const lines: string[] = [`CSV  ${file.name}`];
-    setCaptureProcess({
-      running: true,
-      title: "CSV import",
-      current: 0,
-      total: 3,
-      detail: `Staging ${file.name}`,
-      lines: [...lines],
-      posted: 0,
-      skipped: 0,
-      errors: 0,
-    });
     try {
       const content = await file.text();
       const staged = await client.executeCommand("ImportStage", {
@@ -4327,75 +5435,35 @@ export default function App() {
         content,
       });
       if (!staged.ok || !staged.bodyJson) {
-        const msg = `ImportStage failed: ${staged.errorCode ?? "error"}`;
-        lines.push(msg);
-        setCaptureProcess((p) =>
-          p ? { ...p, running: false, errors: 1, detail: msg, lines: [...lines] } : p,
-        );
-        setActionMessage(msg);
+        setActionMessage(`Import failed: ${staged.errorCode ?? "error"}`);
         return;
       }
-      const stagedBody = JSON.parse(staged.bodyJson) as {
-        batchId?: string;
-        candidateCount?: number;
-        status?: string;
-      };
+      const stagedBody = JSON.parse(staged.bodyJson) as ImportBatchRecord;
       const batchId = stagedBody.batchId;
       if (!batchId) {
-        const msg = "ImportStage failed: missing batchId";
-        lines.push(msg);
-        setCaptureProcess((p) =>
-          p ? { ...p, running: false, errors: 1, detail: msg, lines: [...lines] } : p,
-        );
-        setActionMessage(msg);
+        setActionMessage("Import failed: missing batch");
         return;
       }
       setPendingBatchId(batchId);
-      const n = stagedBody.candidateCount ?? 0;
-      lines.push(`staged  ${n} candidate${n === 1 ? "" : "s"}  ${batchId}`);
-      setCaptureProcess((p) =>
-        p
-          ? { ...p, current: 1, detail: "Validating", lines: [...lines] }
-          : p,
-      );
+      setPendingBatchFilename(file.name);
       const validated = await client.executeCommand("ImportValidate", { batchId });
       const status =
         validated.bodyJson != null
-          ? (JSON.parse(validated.bodyJson) as { status?: string }).status ?? "unknown"
+          ? (JSON.parse(validated.bodyJson) as ImportBatchRecord).status ?? "unknown"
           : "unknown";
       setPendingBatchStatus(status);
-      lines.push(`validate  ${status}`);
-      await refreshData(asOfDate);
-      if (!validated.ok || status !== "validated") {
-        const msg = `Staged ${batchId}; status ${status}. Review exceptions before approve/post.`;
-        lines.push(msg);
-        setCaptureProcess((p) =>
-          p
-            ? { ...p, running: false, current: 2, errors: 1, detail: msg, lines: [...lines] }
-            : p,
+      if (!validated.ok) {
+        setActionMessage(
+          `Read ${file.name} (${stagedBody.candidateCount ?? 0} transactions). Validation failed: ${validated.errorCode ?? "error"}.`,
         );
-        setActionMessage(msg);
         return;
       }
-      setCaptureProcess((p) =>
-        p
-          ? {
-              ...p,
-              running: false,
-              current: 2,
-              detail: "Validated. Approve, then post.",
-              lines: [...lines],
-            }
-          : p,
+      await openImportWizardWindow(batchId, file.name);
+      setActionMessage(
+        `Opened Import for ${file.name} (${stagedBody.candidateCount ?? 0} transactions). Load or Cancel in that window.`,
       );
-      setActionMessage(`Staged and validated ${batchId}. Approve, then post.`);
     } catch (err: unknown) {
-      const msg = String(err);
-      lines.push(msg);
-      setCaptureProcess((p) =>
-        p ? { ...p, running: false, errors: 1, detail: msg, lines: [...lines] } : p,
-      );
-      setActionMessage(msg);
+      setActionMessage(String(err));
     } finally {
       setBusy(false);
     }
@@ -4554,84 +5622,6 @@ export default function App() {
     }
   };
 
-  const runPendingImport = async (name: "ImportValidate" | "ImportApprove" | "ImportPost") => {
-    if (!pendingBatchId) {
-      setActionMessage("No staged import batch");
-      return;
-    }
-    setBusy(true);
-    setActionMessage(null);
-    if (name === "ImportPost") {
-      setCaptureProcess((p) => ({
-        running: true,
-        title: p?.title || "CSV import",
-        current: p?.current ?? 0,
-        total: Math.max(p?.total ?? 3, 3),
-        detail: "Posting",
-        lines: [...(p?.lines ?? []), "post  starting"],
-        posted: 0,
-        skipped: 0,
-        errors: 0,
-      }));
-    }
-    try {
-      const result = await client.executeCommand(name, { batchId: pendingBatchId });
-      let body: {
-        status?: string;
-        postedCount?: number;
-        skippedDuplicateCount?: number;
-        errorCount?: number;
-        processLines?: string[];
-        candidateCount?: number;
-      } = {};
-      if (result.bodyJson) {
-        try {
-          body = JSON.parse(result.bodyJson) as typeof body;
-          if (body.status) setPendingBatchStatus(body.status);
-        } catch {
-          /* ignore */
-        }
-      }
-      if (name === "ImportPost") {
-        const posted = body.postedCount ?? 0;
-        const skipped = body.skippedDuplicateCount ?? 0;
-        const errors = body.errorCount ?? 0;
-        const report = body.processLines ?? [];
-        const summary = result.ok
-          ? `Posted ${posted}, skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}, ${errors} error${errors === 1 ? "" : "s"}.`
-          : `ImportPost failed: ${result.errorCode ?? "error"}`;
-        setCaptureProcess((p) => ({
-          running: false,
-          title: p?.title || "CSV import",
-          current: p?.total || 3,
-          total: p?.total || 3,
-          detail: summary,
-          lines: [...(p?.lines ?? []), ...report, summary],
-          posted,
-          skipped,
-          errors: result.ok ? errors : errors + 1,
-        }));
-        setActionMessage(summary);
-      } else {
-        const msg = result.ok ? `${name} ok` : `${name} failed: ${result.errorCode ?? "error"}`;
-        setCaptureProcess((p) =>
-          p ? { ...p, detail: msg, lines: [...p.lines, msg] } : p,
-        );
-        setActionMessage(msg);
-      }
-      await refreshHandoff();
-      await refreshData(asOfDate);
-    } catch (err: unknown) {
-      const msg = String(err);
-      setCaptureProcess((p) =>
-        p ? { ...p, running: false, errors: p.errors + 1, detail: msg, lines: [...p.lines, msg] } : p,
-      );
-      setActionMessage(msg);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const checkForUpdates = async () => {
     setBusy(true);
     setActionMessage(null);
@@ -4769,10 +5759,7 @@ export default function App() {
   const processAFieldStatus = {
     frequency: Boolean(parseCadence(wizFreq)),
     declarations: wizDecls.length > 0,
-    roc:
-      wizRoc != null &&
-      wizRoc.rocPctMinor != null &&
-      (wizRoc.rocPctMinor as number) > 0,
+    roc: wizRoc != null && wizRoc.rocPctMinor != null,
     price:
       wizPriceState?.priceMinor != null && wizPriceState.priceMinor > 0,
   };
@@ -4785,18 +5772,31 @@ export default function App() {
     snapshotWiz();
     setWizProcessASaved(true);
     setActionMessage(
-      `Saved ${wizSymbol.trim().toUpperCase()}. Open Position Details, Validate ROC, or Add lots — zero lots is valid.`,
+      wizCollectorComplete || processALotCount > 0
+        ? `Saved ${wizSymbol.trim().toUpperCase()}. Collector is complete — Add lots when ready.`
+        : `Saved ${wizSymbol.trim().toUpperCase()}. Identity saved. Add lots stays blocked until the collector is complete${
+            wizCollectorGaps.length ? ` (gaps: ${wizCollectorGaps.join(", ")})` : ""
+          }.`,
     );
     void refreshData(asOfDate || new Date().toISOString().slice(0, 10));
   };
 
-  const startAnotherProcessA = () => {
+  const resetProcessAForm = () => {
     setWizProcessASaved(false);
     setWizResearchDone(false);
+    setWizCollectorComplete(false);
+    setWizCollectorGaps([]);
+    setWizSecondUrl("");
+    setWizAskSecondUrl(false);
+    setWizSecondUrlTried(false);
+    setWizAskInception(false);
+    setWizInceptionCandidate("");
+    setWizInceptionOn("");
+    setWizExpectedPaid(null);
+    setWizRocUrl("");
+    setWizFieldDecision({});
     setWizSecurityId("");
-    setWizSymbol("");
     setWizName("");
-    setWizSourceUrl("");
     setWizFreq("");
     setWizDecls([]);
     setWizRoc(null);
@@ -4807,7 +5807,28 @@ export default function App() {
     setWizTierSuggestion(null);
     setWizPlanStored(false);
     setWizRisk("");
+    setWizDeclSource("");
+  };
+
+  const startAnotherProcessA = () => {
+    resetProcessAForm();
+    setWizSymbol("");
+    setWizSourceUrl("");
     setWizBaseline(JSON.stringify(emptyWizEdit()));
+  };
+
+  const openRecreateAdapter = (ticket: WorkTicketRecord) => {
+    leaveWithoutSaving(() => {
+      const symbol = ticket.symbol.trim().toUpperCase();
+      resetProcessAForm();
+      setWizSymbol(symbol);
+      setWizSourceUrl("");
+      setWizBaseline(JSON.stringify({ ...emptyWizEdit(), symbol, sourceUrl: "" }));
+      setScreen("new-investment");
+      setActionMessage(
+        `${symbol}: paste the issuer distribution URL, then Research.`,
+      );
+    });
   };
 
   const goProcessAToPositionDetails = () => {
@@ -4820,8 +5841,162 @@ export default function App() {
     }, "position-details");
   };
 
+  const reloadProcessAFacts = async () => {
+    if (!wizSecurityId) return;
+    const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+    const invResult = await client.executeQuery("InvestmentGet", {
+      securityId: wizSecurityId,
+      asOfDate: asOf,
+    });
+    if (!invResult.ok || !invResult.bodyJson) return;
+    const inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+    setWizCollectorComplete(Boolean(inv.collectorComplete));
+    setWizCollectorGaps(inv.collectorGaps ?? []);
+    setWizProvider(inv.provider || "");
+    setWizUnderlying(inv.underlying || "");
+    setWizFreq(inv.paymentFrequency || wizFreq);
+    setWizRisk(inv.riskTier || wizRisk);
+    if (inv.template?.sourceUrl) setWizSourceUrl(inv.template.sourceUrl);
+    if (inv.template?.rocSourceUrl) setWizRocUrl(inv.template.rocSourceUrl);
+    if (inv.template?.inceptionOn) setWizInceptionOn(inv.template.inceptionOn);
+    const rem = await client.executeQuery("RemainingYearIncomeGet", {
+      securityId: wizSecurityId,
+      asOfDate: asOf,
+    });
+    if (rem.ok && rem.bodyJson) {
+      const body = JSON.parse(rem.bodyJson) as RemainingYearIncomeGet;
+      setWizRemaining(body);
+    }
+    if (inv.rocPct2026EstimateMinor != null) {
+      setWizRocPct((inv.rocPct2026EstimateMinor / 100).toFixed(2));
+    }
+    await refreshData(asOf);
+  };
+
+  const retryProcessASecondUrl = async () => {
+    if (!wizSecurityId || !wizSecondUrl.trim()) {
+      setActionMessage("Paste a second issuer distribution URL (same adapter).");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("PositionResearchRefresh", {
+        securityId: wizSecurityId,
+        sourceUrl: wizSecondUrl.trim(),
+        secondUrlAttempt: true,
+      });
+      if (!result.ok || !result.bodyJson) {
+        setActionMessage(`Second URL failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      const body = JSON.parse(result.bodyJson) as {
+        retrieveOk?: boolean;
+        secondUrlTried?: boolean;
+        adapterFailed?: boolean;
+        retrieveMessage?: string;
+        retrieveCode?: string;
+      };
+      setWizAskSecondUrl(false);
+      setWizSecondUrlTried(Boolean(body.secondUrlTried || body.adapterFailed));
+      if (body.adapterFailed || !body.retrieveOk) {
+        setActionMessage(
+          body.retrieveMessage ||
+            `Second distribution URL failed (${body.retrieveCode ?? "miss"}). Adapter not built. Manual adapter is parked.`,
+        );
+      }
+      await reloadProcessAFacts();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmProcessAInception = async (yes: boolean) => {
+    if (!wizSecurityId) return;
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("PositionResearchRefresh", {
+        securityId: wizSecurityId,
+        sourceUrl: wizSourceUrl.trim(),
+        inceptionConfirmed: yes,
+        inceptionOn: yes ? wizInceptionOn.trim() || wizInceptionCandidate : "",
+        asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
+      });
+      if (!result.ok) {
+        setActionMessage(`Inception confirm failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      setWizAskInception(false);
+      setActionMessage(
+        yes
+          ? "Inception stored. Collector stays incomplete until the rest of the checklist is accepted."
+          : "Owner said No. Paid history stays short — ticket open, collector incomplete.",
+      );
+      await reloadProcessAFacts();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitProcessARocUrl = async () => {
+    if (!wizSecurityId || !wizRocUrl.trim()) {
+      setActionMessage("Paste a 19a-1 / ROC notice URL.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("PositionResearchRefresh", {
+        securityId: wizSecurityId,
+        sourceUrl: wizSourceUrl.trim(),
+        rocSourceUrl: wizRocUrl.trim(),
+      });
+      if (!result.ok) {
+        setActionMessage(`ROC URL failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      setActionMessage("ROC URL stored as the reusable template. 0% only if the notice said 0.");
+      await reloadProcessAFacts();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const decideProcessAField = async (field: string, decision: "accept" | "skip") => {
+    if (!wizSecurityId) return;
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("CollectorFieldDecisionSet", {
+        securityId: wizSecurityId,
+        field,
+        decision,
+      });
+      if (!result.ok) {
+        setActionMessage(`Checklist ${decision} failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      setWizFieldDecision((prev) => ({ ...prev, [field]: decision }));
+      await reloadProcessAFacts();
+      setActionMessage(
+        decision === "skip" && field !== "backtest"
+          ? `Skipped ${field} — ticket opened, collector incomplete.`
+          : decision === "accept"
+            ? `Accepted ${field}.`
+            : `Backtest skipped — does not block complete.`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const goProcessAToAddLot = () => {
     if (!wizSecurityId) return;
+    if (!wizCollectorComplete && processALotCount === 0) {
+      setActionMessage(
+        `Add lots is blocked until the collector is complete${
+          wizCollectorGaps.length ? ` (gaps: ${wizCollectorGaps.join(", ")})` : ""
+        }.`,
+      );
+      return;
+    }
     leaveWithoutSaving(() => {
       const row = securities.find((s) => s.securityId === wizSecurityId);
       setAddLotSecurityId(wizSecurityId);
@@ -4853,9 +6028,21 @@ export default function App() {
     });
   };
 
+  const goHome = () => {
+    setOpenMenu(null);
+    leaveWithoutSaving(() => {
+      setIncomePattern("A");
+      setScreen("home");
+    }, "home");
+  };
+  const goHomeRef = useRef(goHome);
+  goHomeRef.current = goHome;
+
   const navButton = (id: Screen, label: string) => (
     <button
       type="button"
+      role="menuitem"
+      className="menubar-item"
       aria-label={label}
       aria-current={screen === id ? "page" : undefined}
       disabled={
@@ -4864,16 +6051,141 @@ export default function App() {
           (pdDirty || wizDirty || addLotDirty) &&
           !dirtyTargets.includes(id))
       }
-      onClick={() => leaveWithoutSaving(() => setScreen(id), id)}
+      onClick={() => {
+        setOpenMenu(null);
+        leaveWithoutSaving(() => setScreen(id), id);
+      }}
     >
       {label}
     </button>
   );
 
+  const menuGroup = (id: string, label: string, items: ReactNode) => (
+    <div
+      className={`menubar-group${openMenu === id ? " is-open" : ""}`}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <button
+        type="button"
+        className="menubar-trigger"
+        aria-haspopup="true"
+        aria-expanded={openMenu === id}
+        onClick={() => setOpenMenu(openMenu === id ? null : id)}
+      >
+        {label}
+      </button>
+      {openMenu === id ? (
+        <div className="menubar-dropdown" role="menu">
+          {items}
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
-    <main className="container" aria-label="finos">
-      <h1>finos</h1>
-      {summary ? (
+    <>
+      <nav className="menubar" aria-label="Application">
+        <div className="menubar-menus">
+          <button
+            type="button"
+            className="menubar-trigger"
+            aria-label="Home"
+            aria-current={screen === "home" ? "page" : undefined}
+            onClick={() => goHome()}
+          >
+            Home
+          </button>
+          {menuGroup(
+            "file",
+            "File",
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                className="menubar-item"
+                aria-label="Print current view"
+                onClick={() => {
+                  setOpenMenu(null);
+                  if (screen === "income-plan") {
+                    void runIncomeExport("print");
+                  }
+                }}
+              >
+                Print current view
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menubar-item"
+                aria-label="Export current view"
+                onClick={() => {
+                  setOpenMenu(null);
+                  if (screen === "income-plan") {
+                    void runIncomeExport("excel");
+                  }
+                }}
+              >
+                Export current view
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menubar-item"
+                aria-label="Exit"
+                onClick={() => {
+                  setOpenMenu(null);
+                  void invoke("app_exit");
+                }}
+              >
+                Exit
+              </button>
+            </>,
+          )}
+          {menuGroup(
+            "plan",
+            "Plan",
+            <>
+              {navButton("income-plan", "Income Plan")}
+              {navButton("calculator", "Calculator")}
+              {navButton("dashboard", "Dashboard")}
+              {navButton("trends", "Trends")}
+            </>,
+          )}
+          {menuGroup(
+            "positions",
+            "Positions",
+            <>
+              {navButton("position-details", "Position Details")}
+              {navButton("holdings", "Holdings")}
+              {navButton("new-investment", "Add Position")}
+              {navButton("add-lot", "Add Lot")}
+            </>,
+          )}
+          {menuGroup(
+            "data",
+            "Data",
+            <>
+              {navButton("import", "Import")}
+              {navButton("collectors", "Collectors")}
+              {navButton("tickets", "Tickets")}
+            </>,
+          )}
+          {menuGroup(
+            "tools",
+            "Tools",
+            <>
+              {navButton("collector-establish", "Reevaluate collector")}
+              {navButton("settings", "Settings")}
+            </>,
+          )}
+        </div>
+        <p className="menubar-week" aria-label="Current week">
+          {formatMenuWeek(incomeWeek?.start ?? asOfDate)}
+        </p>
+      </nav>
+      <main className="container" aria-label="finos">
+      {screen === "home" ? (
+        summary ? (
         <section aria-label="Portfolio summary">
           <dl className="portfolio-summary">
             <div className="ps-cell ps-mv">
@@ -4943,6 +6255,43 @@ export default function App() {
                 {formatCount(summary.lastPriceCount ?? 0)} of{" "}
                 {formatCount(summary.symbolCount ?? 0)}
               </dd>
+              <p className="ps-note">
+                Last refresh{" "}
+                {lastPriceBusy
+                  ? "…"
+                  : summary.lastPriceRefreshedOn?.trim().slice(0, 10) || "none"}
+              </p>
+              <button
+                type="button"
+                aria-label="Refresh last prices"
+                disabled={lastPriceBusy || busy}
+                onClick={() => {
+                  void refreshLastPrices();
+                }}
+              >
+                {lastPriceBusy ? "Refreshing last prices…" : "Refresh last prices"}
+              </button>
+            </div>
+            <div className="ps-cell ps-coverage">
+              <dt>Declarations</dt>
+              <dd>
+                {formatCount(summary.declarationCount ?? 0)} of{" "}
+                {formatCount(summary.declarationCollectorCount ?? 0)}
+              </dd>
+              <p className="ps-note">
+                Today {summary.declarationAsOf?.trim() || "—"}. One issuer retrieve
+                per enabled collector
+              </p>
+              <button
+                type="button"
+                aria-label="Refresh declarations"
+                disabled={declarationBusy || busy}
+                onClick={() => {
+                  void refreshDeclarations();
+                }}
+              >
+                {declarationBusy ? "Refreshing declarations…" : "Refresh declarations"}
+              </button>
             </div>
             <div className="ps-cell ps-count">
               <dt>Yield events</dt>
@@ -4964,35 +6313,10 @@ export default function App() {
             </div>
           </dl>
         </section>
-      ) : (
-        <p role="status">Loading portfolio summary…</p>
-      )}
-      <p>
-        <button
-          type="button"
-          aria-label="Refresh last prices"
-          disabled={lastPriceBusy || busy}
-          onClick={() => {
-            void refreshLastPrices();
-          }}
-        >
-          {lastPriceBusy ? "Refreshing last prices…" : "Refresh last prices"}
-        </button>
-      </p>
-      <p>Week labeled by Friday {incomeWeek?.end ?? asOfDate} (Sat–Fri).</p>
-      <nav className="nav" aria-label="Data screens">
-        {navButton("income-plan", "Income Plan")}
-        {navButton("calculator", "Calculator")}
-        {navButton("position-details", "Position Details")}
-        {navButton("dashboard", "Dashboard")}
-        {navButton("trends", "Trends")}
-        {navButton("holdings", "Holdings")}
-        {navButton("new-investment", "Add Position")}
-        {navButton("add-lot", "Add Lot")}
-        {navButton("import", "Import")}
-        {navButton("collectors", "Collectors")}
-        {navButton("settings", "Settings")}
-      </nav>
+        ) : (
+          <p role="status">Loading portfolio summary…</p>
+        )
+      ) : null}
       {pdDirty || wizDirty || addLotDirty ? (
         <div className="blocked unsaved-bar" role="alert">
           <p>
@@ -5028,91 +6352,199 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      {actionMessage ? <p>{actionMessage}</p> : null}
+      {screen !== "home" && actionMessage ? <p>{actionMessage}</p> : null}
       {writesBlocked ? (
         <p className="blocked">Ordinary writes are blocked until restore or explicit review.</p>
       ) : null}
 
       {screen === "income-plan" ? (
-        <section aria-label="Income Plan">
-          <h2>Income Plan</h2>
-          <p>
-            Dividend cash only. Current and future week Plan comes from Calculator Plan ×
-            eligible quantity × expected pay week. Status Open; not official Dashboard close.
-          </p>
-          {(() => {
-            const todaySat = saturdayOfWeek(new Date().toISOString().slice(0, 10));
-            const selectedSat = saturdayOfWeek(
-              incomeWeek?.start || asOfDate || todaySat,
-            );
-            const selectedFri = incomeWeek?.end || shiftIso(selectedSat, 6);
-            const weekChoices = incomePlanWeekChoices(
-              selectedSat,
-              incomeWeek?.latestActualOn,
-            );
-            return (
-              <>
-                <div className="income-week-bar">
-                  <label className="income-week-label">
-                    Week
-                    <select
-                      aria-label="Select week"
-                      value={selectedSat}
-                      onChange={(e) => setAsOfDate(e.target.value)}
-                    >
-                      {weekChoices.map((sat) => (
-                        <option key={sat} value={sat}>
-                          {incomePlanWeekOptionLabel(sat, todaySat)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    aria-label="Previous week"
-                    disabled={!selectedSat}
-                    onClick={() => setAsOfDate(shiftIso(selectedSat, -7))}
-                  >
-                    Previous week
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Next week"
-                    disabled={!selectedSat}
-                    onClick={() => setAsOfDate(shiftIso(selectedSat, 7))}
-                  >
-                    Next week
-                  </button>
-                </div>
-                <p className="income-current-week" aria-label="Current week">
-                  Current week: Saturday {selectedSat} through Friday {selectedFri}
-                  {selectedSat === todaySat ? (
-                    <span className="this-week-mark"> · this week</span>
-                  ) : null}
-                </p>
-              </>
-            );
-          })()}
-          <label>
-            Drill account
-            <select
-              aria-label="Drill account"
-              value={drillAccount ?? ""}
-              onChange={(e) => setDrillAccount(e.target.value || null)}
-            >
-              <option value="">All control accounts</option>
-              {(incomeWeek?.lines ?? []).map((line) => (
-                <option key={line.accountName} value={line.accountName}>
-                  {line.accountName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <IncomePlanWeekPanel
-            week={incomeWeek}
-            selectedAccount={drillAccount}
-            onOpenSymbol={(symbol) => openPositionHub(symbol, "income")}
-          />
+        <section className="income-plan-page" aria-label="Income Plan">
+          <header className="income-plan-appbar">
+            <div>
+              <h2>Income Plan</h2>
+              <p className="income-plan-sub">Sat–Fri week labeled by Friday ending</p>
+            </div>
+            <div className="income-plan-report-tabs" role="tablist" aria-label="Report type">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={incomePattern === "A"}
+                className={incomePattern === "A" ? "is-active" : undefined}
+                onClick={() => setIncomePattern("A")}
+              >
+                Weekly grid
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={incomePattern === "B"}
+                className={incomePattern === "B" ? "is-active" : undefined}
+                onClick={() => {
+                  setIncomePattern("B");
+                  const weekEnd = incomeGrid?.selectedWeekEnd ?? incomeWeek?.end;
+                  if (weekEnd) {
+                    setAsOfDate(saturdayOfWeek(weekEnd));
+                  }
+                }}
+              >
+                Weekly report
+              </button>
+            </div>
+          </header>
+          {incomePattern === "A" ? (
+            <IncomePlanGridPanel
+              grid={incomeGrid}
+              selectedAccounts={drillAccounts}
+              onToggleAccount={(name) => {
+                setDrillAccounts((current) => {
+                  const next = current.includes(name)
+                    ? current.filter((item) => item !== name)
+                    : [...current, name];
+                  void loadIncomeGrid(
+                    asOfDate,
+                    incomeHistWeeks,
+                    incomeFutWeeks,
+                    next,
+                    incomeGrid?.selectedWeekEnd,
+                  );
+                  return next;
+                });
+              }}
+              historicalWeeks={incomeHistWeeks}
+              futureWeeks={incomeFutWeeks}
+              onHistoricalWeeks={(n) => {
+                setIncomeHistWeeks(n);
+                void loadIncomeGrid(asOfDate, n, incomeFutWeeks, drillAccounts, incomeGrid?.selectedWeekEnd);
+              }}
+              onFutureWeeks={(n) => {
+                setIncomeFutWeeks(n);
+                void loadIncomeGrid(asOfDate, incomeHistWeeks, n, drillAccounts, incomeGrid?.selectedWeekEnd);
+              }}
+              onOpenWeek={(weekEnd) => {
+                setIncomePattern("B");
+                setAsOfDate(saturdayOfWeek(weekEnd));
+              }}
+              onPrintExport={(action) => void runIncomeExport(action)}
+            />
+          ) : (
+            <>
+              {(() => {
+                const todaySat = saturdayOfWeek(new Date().toISOString().slice(0, 10));
+                const selectedSat = saturdayOfWeek(
+                  incomeWeek?.start || asOfDate || todaySat,
+                );
+                const selectedFri = incomeWeek?.end || shiftIso(selectedSat, 6);
+                const weekChoices = incomePlanWeekChoices(
+                  selectedSat,
+                  incomeWeek?.latestActualOn,
+                );
+                const chips = [
+                  ...INCOME_PLAN_DEFAULT_ACCOUNTS,
+                  ...INCOME_PLAN_OPTIONAL_ACCOUNTS,
+                ];
+                return (
+                  <>
+                    <div className="income-week-bar">
+                      <label className="income-week-label">
+                        Week
+                        <select
+                          aria-label="Select week"
+                          value={selectedSat}
+                          onChange={(e) => setAsOfDate(e.target.value)}
+                        >
+                          {weekChoices.map((sat) => (
+                            <option key={sat} value={sat}>
+                              {incomePlanWeekOptionLabel(sat, todaySat)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        aria-label="Previous week"
+                        disabled={!selectedSat}
+                        onClick={() => setAsOfDate(shiftIso(selectedSat, -7))}
+                      >
+                        Previous week
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Next week"
+                        disabled={!selectedSat}
+                        onClick={() => setAsOfDate(shiftIso(selectedSat, 7))}
+                      >
+                        Next week
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Back to Weekly grid"
+                        onClick={() => {
+                          setIncomePattern("A");
+                          void loadIncomeGrid(
+                            asOfDate,
+                            incomeHistWeeks,
+                            incomeFutWeeks,
+                            drillAccounts,
+                            incomeWeek?.end,
+                          );
+                        }}
+                      >
+                        Back to Weekly grid
+                      </button>
+                      <div className="income-print-export">
+                        <span className="income-week-label">Print / Export</span>
+                        <button type="button" aria-label="Print to page" onClick={() => void runIncomeExport("print")}>
+                          Print to page
+                        </button>
+                        <button type="button" aria-label="Save PDF" onClick={() => void runIncomeExport("pdf")}>
+                          Save PDF
+                        </button>
+                        <button type="button" aria-label="Export Excel" onClick={() => void runIncomeExport("excel")}>
+                          Export Excel
+                        </button>
+                      </div>
+                    </div>
+                    <p className="income-current-week" aria-label="Current week">
+                      Current week: Saturday {selectedSat} through Friday {selectedFri}
+                      {selectedSat === todaySat ? (
+                        <span className="this-week-mark"> · this week</span>
+                      ) : null}
+                    </p>
+                    <fieldset className="income-account-picker">
+                      <legend className="income-week-label">Accounts</legend>
+                      <div className="income-account-ticks">
+                        {chips.map((name) => (
+                          <label
+                            key={name}
+                            className={`income-account-tick${drillAccounts.includes(name) ? "" : " off"}`}
+                          >
+                            <input
+                              type="checkbox"
+                              aria-label={`Filter ${name}`}
+                              checked={drillAccounts.includes(name)}
+                              onChange={() => {
+                                setDrillAccounts((current) =>
+                                  current.includes(name)
+                                    ? current.filter((item) => item !== name)
+                                    : [...current, name],
+                                );
+                              }}
+                            />
+                            {name}
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                  </>
+                );
+              })()}
+              <IncomePlanWeekPanel
+                week={incomeWeek}
+                selectedAccounts={drillAccounts}
+                onOpenSymbol={(symbol) => openPositionHub(symbol, "income")}
+              />
+            </>
+          )}
         </section>
       ) : null}
 
@@ -5120,9 +6552,58 @@ export default function App() {
         <section aria-label="Calculator">
           <h2>Calculator</h2>
           <p>
-            Plan × quantity for completed investments. Open Position Details to see price,
-            declarations, Most Current, and Avg 6 for one symbol.
+            Distribution history for paying positions, Friday columns. Default period is
+            the last 60 days; change From/To or pick This month, 90 days, or year to date.
+            Positions tagged None (does not pay) stay off Calculator. Empty is unknown,
+            not $0.00.
           </p>
+          <DeclarationHistoryPanel
+            history={declHistory}
+            cadence={histCadence}
+            onCadenceChange={setHistCadence}
+            period={histPeriod}
+            startOn={
+              historyBounds(histPeriod, asOfDate, histStartOn, histEndOn).startOn
+            }
+            endOn={historyBounds(histPeriod, asOfDate, histStartOn, histEndOn).endOn}
+            onPeriodChange={(preset) => {
+              setHistPeriod(preset);
+              const bounds = historyBounds(
+                preset,
+                asOfDate,
+                histStartOn,
+                histEndOn,
+              );
+              if (preset !== "custom") {
+                setHistStartOn(bounds.startOn);
+                setHistEndOn(bounds.endOn);
+              }
+              void loadDeclHistory(
+                asOfDate,
+                preset,
+                bounds.startOn,
+                bounds.endOn,
+              );
+            }}
+            onStartOnChange={(iso) => {
+              setHistPeriod("custom");
+              setHistStartOn(iso);
+              const end = histEndOn || asOfDate;
+              setHistEndOn(end);
+              void loadDeclHistory(asOfDate, "custom", iso, end);
+            }}
+            onEndOnChange={(iso) => {
+              setHistPeriod("custom");
+              const start =
+                histStartOn ||
+                historyBounds("60", asOfDate, "", "").startOn;
+              setHistStartOn(start);
+              setHistEndOn(iso);
+              void loadDeclHistory(asOfDate, "custom", start, iso);
+            }}
+            onOpenSymbol={(symbol) => openPositionHub(symbol)}
+          />
+          <h3>Plan × quantity</h3>
           <CalculatorPanel
             rows={calculator?.rows ?? null}
             onOpenSymbol={(symbol) => openPositionHub(symbol)}
@@ -5499,6 +6980,26 @@ export default function App() {
                   );
                 })()}
               </dl>
+              <WorkTicketQueue
+                tickets={workTickets}
+                filterSymbol={investment.symbol}
+                retryingTicketId={retryingTicket?.ticketId}
+                retryingSymbol={retryingTicket?.symbol}
+                onRetry={(t) => void resolveTicketRetry(t as WorkTicketRecord)}
+                onRecreateAdapter={(t) =>
+                  openRecreateAdapter(t as WorkTicketRecord)
+                }
+                onExcept={(t) =>
+                  void resolveAmountConfirm(t as WorkTicketRecord, "except")
+                }
+                onReject={(t) =>
+                  void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+                }
+                onEnterAmount={(t, amount) =>
+                  void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
+                }
+                onFile={(t) => void fileWorkTicket(t as WorkTicketRecord)}
+              />
               <nav className="hub-toc" aria-label="Position hub sections">
                 <a href="#hub-identity">Position information</a>
                 <a href="#hub-calculator">Calculator</a>
@@ -5678,7 +7179,7 @@ export default function App() {
                             <th scope="row">ROC 2026 estimate</th>
                             <td className="numeric">
                               {calc.rocPct2026EstimateMinor == null || calc.rocScale == null
-                                ? "N/A"
+                                ? "unknown"
                                 : formatPercentScaled(
                                     calc.rocPct2026EstimateMinor,
                                     calc.rocScale,
@@ -6074,6 +7575,23 @@ export default function App() {
                         />
                       </td>
                       <td>editable</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Strategy characteristics</th>
+                      <td aria-label="Strategy characteristics">
+                        {strategyCharacteristics(
+                          pdDraft.lookthrough,
+                          pdDraft.underlying,
+                        ) || "—"}
+                      </td>
+                      <td>
+                        {strategyCharacteristics(
+                          pdDraft.lookthrough,
+                          pdDraft.underlying,
+                        )
+                          ? "researched"
+                          : "unknown"}
+                      </td>
                     </tr>
                     <tr>
                       <th scope="row">Theme / strategy</th>
@@ -6591,6 +8109,18 @@ export default function App() {
                             ? investment.template.sourceUrl
                             : "—"}
                         </p>
+                        <p aria-label="ROC source URL">
+                          ROC URL:{" "}
+                          {investment.template?.rocSourceUrl?.trim()
+                            ? investment.template.rocSourceUrl
+                            : "—"}
+                        </p>
+                        <p aria-label="Template content hash">
+                          Content hash:{" "}
+                          {investment.template?.lastContentHash?.trim()
+                            ? investment.template.lastContentHash
+                            : "—"}
+                        </p>
                         <p>
                           Lookback:{" "}
                           {formatCount(
@@ -6671,13 +8201,14 @@ export default function App() {
                     short = `Adapter returned ${formatCount(paid)} of ${formatCount(expected)} paid declarations expected since inception ${inception}.`;
                   }
                 } else {
-                  short = `Adapter returned ${formatCount(paid)} of ${formatCount(DECLARATION_LOOKBACK_TARGET)} required paid declarations. Optional inception on Settings only if this name is too new for a full lookback.`;
+                  short = `Adapter returned ${formatCount(paid)} of ${formatCount(DECLARATION_LOOKBACK_TARGET)} required paid declarations. Confirm inception Yes/No on Add Position — do not defer to Settings.`;
                 }
                 return (
                   <>
                     <h4>Latest paid ({needLabel})</h4>
                     <p>
-                      Paid $/share from the adapter. Blank stays unknown, not $0.
+                      Paid $/share from the issuer adapter. Period is the payable date,
+                      not the declaration date. Blank stays unknown, not $0.
                       Stored: {formatCount(stored)}. Retrieve first; inception is
                       consulted only when under{" "}
                       {formatCount(DECLARATION_LOOKBACK_TARGET)} paid points.
@@ -6702,7 +8233,7 @@ export default function App() {
                         <table aria-label="Stored declarations">
                           <thead>
                             <tr>
-                              <th scope="col">Period</th>
+                              <th scope="col">Pay date</th>
                               <th className="numeric" scope="col">
                                 Per share
                               </th>
@@ -7383,6 +8914,26 @@ export default function App() {
               }
             }}
           />
+          <DividendWeeksPanel
+            perf={dividendPerf}
+            range={perfRange}
+            onRangeChange={(next) => {
+              setPerfRange(next);
+              void (async () => {
+                const r = await client.executeQuery("DividendPerformanceGet", {
+                  asOfDate,
+                  range: next,
+                });
+                if (r.ok && r.bodyJson) {
+                  try {
+                    setDividendPerf(JSON.parse(r.bodyJson) as DividendPerformanceGet);
+                  } catch {
+                    setDividendPerf(null);
+                  }
+                }
+              })();
+            }}
+          />
           <TrendsChartsPanel
             weeks={trends?.weeks}
             note={trends?.note}
@@ -7553,7 +9104,7 @@ export default function App() {
                 <button
                   type="button"
                   aria-label="Add lots"
-                  disabled={busy}
+                  disabled={busy || (!wizCollectorComplete && processALotCount === 0)}
                   onClick={() => goProcessAToAddLot()}
                 >
                   Add lots
@@ -7663,12 +9214,88 @@ export default function App() {
           {wizResearchDone && !researchActivity?.running ? (
             <section aria-label="Research results">
               <h3>Research results</h3>
+              {wizAskSecondUrl && !wizSecondUrlTried ? (
+                <section aria-label="Second distribution URL" className="process-a-second-url">
+                  <p role="status">
+                    First history parse failed. Paste a second issuer URL once (same
+                    adapter). A second miss is a loud fail — no half adapter. Manual
+                    adapter stays parked.
+                  </p>
+                  <label>
+                    Second distribution URL
+                    <input
+                      aria-label="Second distribution URL"
+                      value={wizSecondUrl}
+                      onChange={(e) => setWizSecondUrl(e.target.value)}
+                      disabled={busy || writesBlocked}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    aria-label="Retry with second URL"
+                    disabled={busy || writesBlocked || !wizSecondUrl.trim()}
+                    onClick={() => void retryProcessASecondUrl()}
+                  >
+                    Retry with this URL
+                  </button>
+                </section>
+              ) : null}
+              {wizSecondUrlTried ? (
+                <p role="alert">
+                  Second distribution URL failed. Adapter not built. Manual adapter
+                  is parked. Collector stays incomplete.
+                </p>
+              ) : null}
+              {wizAskInception ? (
+                <section aria-label="Inception confirm" className="process-a-inception">
+                  <p role="status">
+                    Paid history is under 12.
+                    {wizInceptionCandidate
+                      ? ` Search found inception ${wizInceptionCandidate}${
+                          wizExpectedPaid != null
+                            ? ` — expected ${formatCount(wizExpectedPaid)} paid periods since then`
+                            : ""
+                        }. Is this name too new for 12 paid declarations?`
+                      : " Inception search missed. Yes stores a date you type; No opens a ticket and leaves the collector incomplete."}
+                  </p>
+                  <label>
+                    Inception date
+                    <input
+                      aria-label="Inception date"
+                      type="date"
+                      value={wizInceptionOn}
+                      onChange={(e) => setWizInceptionOn(e.target.value)}
+                      disabled={busy || writesBlocked}
+                    />
+                  </label>
+                  <div className="buttons">
+                    <button
+                      type="button"
+                      aria-label="Inception yes"
+                      disabled={busy || writesBlocked || !wizInceptionOn.trim()}
+                      onClick={() => void confirmProcessAInception(true)}
+                    >
+                      Yes — store inception
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Inception no"
+                      disabled={busy || writesBlocked}
+                      onClick={() => void confirmProcessAInception(false)}
+                    >
+                      No
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+              <section aria-label="Mandatory data checklist">
               <table aria-label="Retrieved versus unknown">
                 <thead>
                   <tr>
                     <th scope="col">Field</th>
                     <th scope="col">Value</th>
                     <th scope="col">Status</th>
+                    <th scope="col">Checklist</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -7678,16 +9305,40 @@ export default function App() {
                       {[wizProvider, wizDeclSource].filter(Boolean).join(" · ") || "—"}
                     </td>
                     <td>{wizProvider.trim() || wizDeclSource.trim() ? "retrieved" : "unknown"}</td>
+                    <td>
+                      <button type="button" aria-label="Accept provider" disabled={busy} onClick={() => void decideProcessAField("provider", "accept")}>Accept</button>
+                      <button type="button" aria-label="Skip provider" disabled={busy} onClick={() => void decideProcessAField("provider", "skip")}>Skip</button>
+                    </td>
                   </tr>
-                  <tr>
-                    <th scope="row">Underlying</th>
-                    <td>{wizUnderlying.trim() || "—"}</td>
-                    <td>{wizUnderlying.trim() ? "retrieved" : "unknown"}</td>
-                  </tr>
+                    <tr>
+                      <th scope="row">Underlying</th>
+                      <td>{wizUnderlying.trim() || "—"}</td>
+                      <td>{wizUnderlying.trim() ? "retrieved" : "unknown"}</td>
+                      <td>
+                        <button type="button" aria-label="Accept underlying" disabled={busy} onClick={() => void decideProcessAField("underlying", "accept")}>Accept</button>
+                        <button type="button" aria-label="Skip underlying" disabled={busy} onClick={() => void decideProcessAField("underlying", "skip")}>Skip</button>
+                      </td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Strategy characteristics</th>
+                      <td aria-label="Strategy characteristics">
+                        {strategyCharacteristics(wizLookthrough, wizUnderlying) || "—"}
+                      </td>
+                      <td>
+                        {strategyCharacteristics(wizLookthrough, wizUnderlying)
+                          ? "retrieved"
+                          : "unknown"}
+                      </td>
+                      <td />
+                    </tr>
                   <tr>
                     <th scope="row">Frequency</th>
                     <td>{wizFreq.trim() || "—"}</td>
                     <td>{parseCadence(wizFreq) ? "retrieved" : "unknown"}</td>
+                    <td>
+                      <button type="button" aria-label="Accept frequency" disabled={busy} onClick={() => void decideProcessAField("frequency", "accept")}>Accept</button>
+                      <button type="button" aria-label="Skip frequency" disabled={busy} onClick={() => void decideProcessAField("frequency", "skip")}>Skip</button>
+                    </td>
                   </tr>
                   <tr>
                     <th scope="row">Last 12 declarations</th>
@@ -7697,6 +9348,7 @@ export default function App() {
                         : "—"}
                     </td>
                     <td>{wizDecls.length > 0 ? "retrieved" : "unknown"}</td>
+                    <td />
                   </tr>
                   <tr>
                     <th scope="row">Remaining-year dates</th>
@@ -7709,6 +9361,10 @@ export default function App() {
                       {(wizRemaining?.payments?.length ?? wizUpcomingPays.length) > 0
                         ? "retrieved"
                         : "unknown"}
+                    </td>
+                    <td>
+                      <button type="button" aria-label="Accept remaining year" disabled={busy} onClick={() => void decideProcessAField("remaining_year", "accept")}>Accept</button>
+                      <button type="button" aria-label="Skip remaining year" disabled={busy} onClick={() => void decideProcessAField("remaining_year", "skip")}>Skip</button>
                     </td>
                   </tr>
                   <tr>
@@ -7726,6 +9382,7 @@ export default function App() {
                         ? "retrieved"
                         : "unknown"}
                     </td>
+                    <td />
                   </tr>
                   <tr>
                     <th scope="row">Last price</th>
@@ -7739,6 +9396,7 @@ export default function App() {
                         ? "retrieved"
                         : "unknown"}
                     </td>
+                    <td />
                   </tr>
                   <tr>
                     <th scope="row">Suggested tier</th>
@@ -7770,9 +9428,24 @@ export default function App() {
                           ? "needs backtest"
                           : "unknown"}
                     </td>
+                    <td>
+                      <button type="button" aria-label="Accept risk" disabled={busy} onClick={() => void decideProcessAField("risk_tier", "accept")}>Accept</button>
+                      <button type="button" aria-label="Skip risk" disabled={busy} onClick={() => void decideProcessAField("risk_tier", "skip")}>Skip</button>
+                      <button type="button" aria-label="Skip backtest" disabled={busy} onClick={() => void decideProcessAField("backtest", "skip")}>Skip backtest</button>
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">DIV-1 / CASH</th>
+                    <td>—</td>
+                    <td>{wizCollectorGaps.includes("div_type") ? "unknown" : "retrieved"}</td>
+                    <td>
+                      <button type="button" aria-label="Accept div type" disabled={busy} onClick={() => void decideProcessAField("div_type", "accept")}>Accept</button>
+                      <button type="button" aria-label="Skip div type" disabled={busy} onClick={() => void decideProcessAField("div_type", "skip")}>Skip</button>
+                    </td>
                   </tr>
                 </tbody>
               </table>
+              </section>
 
               {(researchNotes || wizAiThesis) ? (
                 <section
@@ -7806,6 +9479,43 @@ export default function App() {
                       }. Not research-complete.`
                     : "2026 estimate unknown — not 0%. 2025 actual stays N/A when the position was not held that year."}
                 </p>
+                {!(wizRoc && wizRoc.rocPctMinor != null) ? (
+                  <label>
+                    19a-1 / ROC notice URL
+                    <input
+                      aria-label="ROC notice URL"
+                      value={wizRocUrl}
+                      onChange={(e) => setWizRocUrl(e.target.value)}
+                      disabled={busy || writesBlocked}
+                      placeholder="https://…19a-1…"
+                    />
+                  </label>
+                ) : null}
+                {!(wizRoc && wizRoc.rocPctMinor != null) ? (
+                  <button
+                    type="button"
+                    aria-label="Store ROC URL"
+                    disabled={busy || writesBlocked || !wizRocUrl.trim()}
+                    onClick={() => void submitProcessARocUrl()}
+                  >
+                    Store ROC URL and parse
+                  </button>
+                ) : null}
+                <div className="buttons">
+                  <button type="button" aria-label="Accept ROC estimate" disabled={busy} onClick={() => void decideProcessAField("roc_estimate", "accept")}>
+                    Accept ROC
+                  </button>
+                  <button type="button" aria-label="Skip ROC estimate" disabled={busy} onClick={() => void decideProcessAField("roc_estimate", "skip")}>
+                    Skip ROC
+                  </button>
+                </div>
+                {wizCollectorComplete ? (
+                  <p role="status">
+                    Collector complete. Add lots is offered below — research does not open a lot.
+                  </p>
+                ) : wizCollectorGaps.length ? (
+                  <p role="status">Incomplete: {wizCollectorGaps.join(", ")}.</p>
+                ) : null}
                 {wizSourceUrl.trim() || wizDeclSource.trim() ? (
                   <button
                     type="button"
@@ -8232,14 +9942,16 @@ export default function App() {
         <section aria-label="Import">
           <h2>Import</h2>
           <p>
-            Stage a Fidelity or Schwab CSV, review exceptions, then approve and post. Unknown
-            amounts stay exceptions.
+            Choose a Fidelity or Schwab CSV. A new window walks Import, then Validate (the
+            transaction list), then Load or Cancel. Load writes cash. Cancel writes nothing.
           </p>
-          <p>Pending: {pendingBatchId ?? "none"} ({pendingBatchStatus}).</p>
-          <section aria-label="Exceptions">
-            <h3>Exceptions</h3>
-            <ExceptionList exceptions={exceptions} onOpenLog={() => void openExceptionLog()} />
-          </section>
+          {pendingBatchId && pendingBatchStatus !== "posted" && pendingBatchStatus !== "none" ? (
+            <p>
+              Last CSV is {pendingBatchStatus}
+              {pendingBatchFilename ? ` (${pendingBatchFilename})` : ""}. Open the window to
+              inspect rows, then Load or Cancel.
+            </p>
+          ) : null}
           {captureProcess ? (
             <section className="capture-process" aria-label="Capture process">
               <h3>{captureProcess.title}</h3>
@@ -8300,30 +10012,21 @@ export default function App() {
                 }}
               />
             </label>
-            <button
-              type="button"
-              aria-label="Validate import"
-              disabled={busy || writesBlocked || !pendingBatchId}
-              onClick={() => void runPendingImport("ImportValidate")}
-            >
-              Validate import
-            </button>
-            <button
-              type="button"
-              aria-label="Approve import"
-              disabled={busy || writesBlocked || !pendingBatchId}
-              onClick={() => void runPendingImport("ImportApprove")}
-            >
-              Approve import
-            </button>
-            <button
-              type="button"
-              aria-label="Post import"
-              disabled={busy || writesBlocked || !pendingBatchId}
-              onClick={() => void runPendingImport("ImportPost")}
-            >
-              Post import
-            </button>
+            {pendingBatchId && pendingBatchStatus !== "posted" && pendingBatchStatus !== "none" ? (
+              <button
+                type="button"
+                aria-label="Continue last import"
+                disabled={busy || writesBlocked}
+                onClick={() =>
+                  void openImportWizardWindow(
+                    pendingBatchId,
+                    pendingBatchFilename || "CSV",
+                  )
+                }
+              >
+                Continue last import
+              </button>
+            ) : null}
           </div>
           <section aria-label="Manual dividend">
             <h3>Enter missing dividend</h3>
@@ -8434,24 +10137,61 @@ export default function App() {
         </section>
       ) : null}
 
+      {screen === "tickets" ? (
+        <section aria-label="Tickets">
+          <h2>Tickets</h2>
+          <p>
+            {ticketFocusSymbol
+              ? `Open work tickets for ${ticketFocusSymbol}. `
+              : "All open work tickets, every symbol. "}
+            Recreate adapter opens Add Position and asks for the issuer
+            distribution URL. Retry runs the stored adapter URL again. Amount
+            variation stays open until Except (keep the vendor amount) or
+            Reject (discard it).
+          </p>
+          {ticketFocusSymbol ? (
+            <button
+              type="button"
+              aria-label="Show all tickets"
+              onClick={() => setTicketFocusSymbol("")}
+            >
+              Show all tickets
+            </button>
+          ) : null}
+          <WorkTicketQueue
+            tickets={workTickets}
+            filterSymbol={ticketFocusSymbol || undefined}
+            retryingTicketId={retryingTicket?.ticketId}
+            retryingSymbol={retryingTicket?.symbol}
+            onRetry={(t) => void resolveTicketRetry(t as WorkTicketRecord)}
+            onRecreateAdapter={(t) =>
+              openRecreateAdapter(t as WorkTicketRecord)
+            }
+            onExcept={(t) =>
+              void resolveAmountConfirm(t as WorkTicketRecord, "except")
+            }
+            onReject={(t) =>
+              void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+            }
+            onEnterAmount={(t, amount) =>
+              void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
+            }
+            onFile={(t) => void fileWorkTicket(t as WorkTicketRecord)}
+          />
+        </section>
+      ) : null}
+
       {screen === "collectors" ? (
         <section aria-label="Collectors">
           <h2>Collectors</h2>
           <p>
             Income names only (DIV-1, CASH, Weekly/Monthly/Quarterly). Non-payers
-            are excluded. Force refresh runs the issuer declaration collector;
+            are excluded. Collect fresh distribution data is the daily run —
+            declarations only. Establish and Reevaluate collector are on Tools.
             Yahoo last price is separate and does not fill this page. Yahoo is
             never a declaration source.
           </p>
           <div className="buttons">
-            <button
-              type="button"
-              aria-label="Refresh collector fleet"
-              disabled={busy}
-              onClick={() => void refreshCollectors(asOfDate)}
-            >
-              {busy && !collectorRunProgress?.running ? "Working…" : "Reload fleet"}
-            </button>
             <button
               type="button"
               aria-label="Run enabled collectors"
@@ -8522,7 +10262,7 @@ export default function App() {
           {writesBlocked ? (
             <p role="status">
               Writes are blocked on this device, so Apply and Run enabled are
-              disabled. Reload fleet still works.
+              disabled.
             </p>
           ) : null}
           {collectorAction ? (
@@ -8531,13 +10271,16 @@ export default function App() {
             </p>
           ) : (
             <p aria-label="Collector action status" role="status">
-              Reload fleet refreshes this list from the database. Run enabled
-              collectors hits issuer sites one symbol at a time with live
-              progress. Run misses only skips symbols already ok today
-              (declarations only). Fill research gaps runs Complete research
-              for enabled names missing provider, underlying, frequency, or
-              ROC observation. Apply fills empty templates from provider (0
-              updated means already assigned).
+              Daily fleet
+              is open lots only — saved-but-incomplete names stay out. Run
+              enabled and Run misses only collect declarations (not prices).
+              Collect fresh distribution data is one symbol, declarations
+              only. Stored pays are never overwritten. Amount changes ticket
+              Except or Reject. Empty / 403 / JS parks the name — do not
+              Establish-replace. Identity and Accept ROC are on Tools. Fill
+              research gaps fills missing provider, frequency, DIV-1, or ROC
+              estimate (underlying is extra). Apply fills empty templates
+              from provider (0 updated means already assigned).
             </p>
           )}
           {collectorRunProgress ? (
@@ -8549,7 +10292,10 @@ export default function App() {
                 {collectorRunProgress.running ? "Collecting…" : "Last run"}
               </h3>
               <p>
-                Progress {formatCount(collectorRunProgress.current)} /{" "}
+                {collectorRunProgress.running
+                  ? "In progress"
+                  : `Finished ${formatCollectorClock(collectorRunProgress.finishedAt)}`}
+                . Progress {formatCount(collectorRunProgress.current)} /{" "}
                 {formatCount(collectorRunProgress.total)}
                 {collectorRunProgress.symbol
                   ? ` — ${collectorRunProgress.symbol}`
@@ -8591,48 +10337,227 @@ export default function App() {
           ) : null}
           {collectorStats ? (
             <p aria-label="Collector statistics">
-              Assigned {formatCount(collectorStats.assigned)}. Enabled{" "}
-              {formatCount(collectorStats.enabled)}. Ran today{" "}
-              {formatCount(collectorStats.ranToday)}. Miss today{" "}
-              {formatCount(collectorStats.missToday)}. Unchanged today{" "}
-              {formatCount(collectorStats.unchangedToday)}. Price current{" "}
-              {formatCount(collectorStats.priceCurrent)} / stale{" "}
-              {formatCount(collectorStats.priceStale)}. Open exceptions{" "}
-              {formatCount(collectorStats.openExceptions)}.
+              Assigned {formatCount(collectorStats.assigned)}.
+              Enabled {formatCount(collectorStats.enabled)}.
+              Ran {formatCount(collectorStats.ranToday)} symbols today.
+              Miss {formatCount(collectorStats.missToday)} symbols.
+              Unchanged {formatCount(collectorStats.unchangedToday)} symbols.
+              Price current {formatCount(collectorStats.priceCurrent)} / stale{" "}
+              {formatCount(collectorStats.priceStale)}.
+              Open tickets {formatCount(collectorStats.openExceptions)}.
             </p>
           ) : null}
+          {(() => {
+            const today = new Date().toISOString().slice(0, 10);
+            const todayMisses = collectorItems.filter(
+              (row) =>
+                row.collectorEnabled &&
+                row.lastRunOk === false &&
+                (row.lastRunAt || "").startsWith(today),
+            );
+            const todayOk = collectorItems.filter(
+              (row) =>
+                row.collectorEnabled &&
+                row.lastRunOk === true &&
+                (row.lastRunAt || "").startsWith(today),
+            );
+            const latestStored = [...todayOk, ...todayMisses]
+              .map((row) => row.lastRunAt || "")
+              .filter((at) => at.length >= 10)
+              .sort()
+              .at(-1);
+            return (
+              <section aria-label="Today collector status">
+                <h3>Today&apos;s declaration status</h3>
+                <p>
+                  As of {formatCollectorClock(latestStored || collectorStatusAt)}.{" "}
+                  {formatCount(todayOk.length)} ok · {formatCount(todayMisses.length)} miss
+                  of {formatCount(collectorItems.filter((r) => r.collectorEnabled).length)} enabled.
+                  Older tickets below are a work queue, not this run.
+                </p>
+                {todayMisses.length > 0 ? (
+                  <div className="table-wrap">
+                    <table aria-label="Today declaration misses">
+                      <thead>
+                        <tr>
+                          <th scope="col">Symbol</th>
+                          <th scope="col">Source</th>
+                          <th scope="col">Last run</th>
+                          <th scope="col">Why this run missed</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {todayMisses.map((row) => (
+                          <tr key={`miss-${row.securityId}`}>
+                            <td>{row.symbol}</td>
+                            <td>{row.declarationSource || "unassigned"}</td>
+                            <td>{formatCollectorClock(row.lastRunAt)}</td>
+                            <td>{row.lastRunMessage || "Issuer page empty."}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p>No declaration misses recorded today.</p>
+                )}
+              </section>
+            );
+          })()}
+          {(() => {
+            const missing = collectorItems.filter(collectorNeedsOwnerUrl);
+            if (missing.length === 0) {
+              return null;
+            }
+            return (
+              <section aria-label="Missing collector URLs">
+                <h3>Missing issuer URLs</h3>
+                <p>
+                  Paste a declaration / seed URL for each failing DIV-1 or CASH
+                  collector that has none. Apply before collect will succeed.
+                  CASH does not take an ROC URL. Empty cells stay empty.
+                </p>
+                <div className="table-wrap">
+                  <table aria-label="Missing collector URLs">
+                    <thead>
+                      <tr>
+                        <th scope="col">Symbol</th>
+                        <th scope="col">Adapter</th>
+                        <th scope="col">Declaration / seed URL</th>
+                        <th scope="col">ROC URL</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {missing.map((row) => {
+                        const draft = missingUrlDrafts[row.securityId] ?? {
+                          sourceUrl: row.sourceUrl ?? "",
+                          rocSourceUrl: row.rocSourceUrl ?? "",
+                        };
+                        const cash = collectorIsCash(row);
+                        return (
+                          <tr key={`url-${row.securityId}`}>
+                            <td>{row.symbol}</td>
+                            <td>{row.declarationSource || "unassigned"}</td>
+                            <td>
+                              <input
+                                aria-label={`Declaration URL for ${row.symbol}`}
+                                value={draft.sourceUrl}
+                                onChange={(e) =>
+                                  setMissingUrlDrafts((prev) => ({
+                                    ...prev,
+                                    [row.securityId]: {
+                                      ...draft,
+                                      sourceUrl: e.target.value,
+                                    },
+                                  }))
+                                }
+                                disabled={busy || writesBlocked}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                aria-label={`ROC URL for ${row.symbol}`}
+                                value={cash ? "" : draft.rocSourceUrl}
+                                onChange={(e) =>
+                                  setMissingUrlDrafts((prev) => ({
+                                    ...prev,
+                                    [row.securityId]: {
+                                      ...draft,
+                                      rocSourceUrl: e.target.value,
+                                    },
+                                  }))
+                                }
+                                disabled={busy || writesBlocked || cash}
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="buttons">
+                  <button
+                    type="button"
+                    aria-label="Apply URLs"
+                    disabled={busy || writesBlocked}
+                    onClick={() => void applyMissingCollectorUrls()}
+                  >
+                    Apply URLs
+                  </button>
+                </div>
+              </section>
+            );
+          })()}
+          <section aria-label="Collector footer grid">
+          <h3>Fleet footer</h3>
+          <p>
+            One row per open-lot collector — the same set as Run enabled.
+            Adapter is the face source. Missing ROC, declaration, price, or
+            actual is N/A, never $0.
+          </p>
           <div className="table-wrap">
             <table aria-label="Collector fleet">
               <thead>
                 <tr>
                   <th scope="col">Symbol</th>
-                  <th scope="col">Cadence</th>
-                  <th scope="col">Provider</th>
-                  <th scope="col">Source</th>
+                  <th scope="col">Adapter</th>
                   <th scope="col">Enabled</th>
-                  <th scope="col">Last declaration run</th>
+                  <th scope="col">Complete</th>
+                  <th scope="col">div_type</th>
+                  <th scope="col">Frequency</th>
+                  <th scope="col">Remaining</th>
+                  <th scope="col">Paid decls</th>
+                  <th scope="col">Inception</th>
+                  <th scope="col">Last run</th>
+                  <th scope="col">Runs ok / fail</th>
+                  <th scope="col">Declaration URL</th>
+                  <th scope="col">ROC URL</th>
+                  <th scope="col">Tickets</th>
+                  <th scope="col">Last price</th>
                   <th scope="col">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {collectorItems.map((row) => (
-                  <tr key={row.securityId}>
+                {collectorItems.map((row) => {
+                  const complete = row.complete === true;
+                  const gaps = row.gaps ?? [];
+                  const remaining =
+                    row.remainingPlanned == null && row.remainingExpected == null
+                      ? "—"
+                      : `${formatCount(row.remainingPlanned ?? 0)} / ${formatCount(row.remainingExpected ?? 0)}`;
+                  const open = fleetDetailId === row.securityId;
+                  return (
+                    <Fragment key={row.securityId}>
+                  <tr>
                     <td>
                       <button
                         type="button"
-                        aria-label={`Open ${row.symbol} collector`}
+                        aria-label={`Open ${row.symbol} position`}
                         onClick={() => {
-                          setCollectorSymbol(row.symbol);
-                          void refreshCollectors(asOfDate, row.symbol);
+                          leaveWithoutSaving(() => {
+                            setPositionSymbol(row.symbol);
+                            setScreen("position-details");
+                            void loadInvestment(row.symbol);
+                          });
                         }}
                       >
                         {row.symbol}
                       </button>
                     </td>
-                    <td>{row.paymentFrequency || row.divType || "—"}</td>
-                    <td>{row.provider || "—"}</td>
                     <td>{row.declarationSource || "unassigned"}</td>
                     <td>{row.collectorEnabled ? "yes" : "no"}</td>
+                    <td>
+                      {complete ? "Y" : "N"}
+                      {!complete && gaps.length > 0
+                        ? ` — ${gaps.join(", ")}`
+                        : ""}
+                    </td>
+                    <td>{(row.divType ?? "").trim() ? row.divType : "blank"}</td>
+                    <td>{row.paymentFrequency || "—"}</td>
+                    <td>{remaining}</td>
+                    <td>{formatCount(row.paidDeclarationCount ?? 0)}</td>
+                    <td>{row.inceptionOn?.trim() || "—"}</td>
                     <td>
                       {row.lastRunAt || "never"}
                       {row.lastRunOk === true
@@ -8640,12 +10565,34 @@ export default function App() {
                         : row.lastRunOk === false
                           ? " miss"
                           : ""}
-                      {row.lastRunMessage ? (
-                        <span className="collector-run-message">
-                          {" "}
-                          — {row.lastRunMessage}
-                        </span>
-                      ) : null}
+                    </td>
+                    <td>
+                      {formatCount(row.successfulRunCount ?? 0)} /{" "}
+                      {formatCount(row.failureCount ?? 0)}
+                    </td>
+                    <td>{row.sourceUrl?.trim() || "—"}</td>
+                    <td>{row.rocSourceUrl?.trim() || "—"}</td>
+                    <td>
+                      <button
+                        type="button"
+                        aria-label={`Open tickets for ${row.symbol}`}
+                        disabled={(row.openTicketCount ?? 0) === 0}
+                        onClick={() => {
+                          setTicketFocusSymbol(row.symbol);
+                          setScreen("tickets");
+                        }}
+                      >
+                        {formatCount(row.openTicketCount ?? 0)}
+                        {row.latestTicketField
+                          ? ` ${row.latestTicketField}`
+                          : ""}
+                      </button>
+                    </td>
+                    <td>
+                      {row.lastPriceFreshness === "Unavailable" ||
+                      !row.lastPriceFreshness
+                        ? "N/A — Unavailable"
+                        : `${row.lastPriceAsOf?.trim() || "N/A"} ${row.lastPriceFreshness}`}
                     </td>
                     <td>
                       <button
@@ -8664,71 +10611,94 @@ export default function App() {
                       </button>{" "}
                       <button
                         type="button"
-                        aria-label="Force refresh this symbol"
+                        aria-label="Collect fresh distribution data for this symbol"
                         disabled={busy || writesBlocked}
                         onClick={() => void forceCollectorRefresh(row)}
                       >
-                        Force refresh
+                        Collect fresh distribution data
+                      </button>{" "}
+                      <button
+                        type="button"
+                        aria-label={`Toggle details for ${row.symbol}`}
+                        aria-expanded={open}
+                        onClick={() =>
+                          setFleetDetailId(open ? null : row.securityId)
+                        }
+                      >
+                        {open ? "Hide detail" : "Detail"}
                       </button>
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <h3>DIV-1 compliance</h3>
-          <p>
-            Numeric summary per enabled DIV-1 collector: upcoming pay dates,
-            stored declaration history, and the newest paid declaration.
-          </p>
-          <div className="table-wrap">
-            <table aria-label="DIV-1 compliance summary">
-              <thead>
-                <tr>
-                  <th scope="col">Symbol</th>
-                  <th scope="col">Future dates qty</th>
-                  <th scope="col">Prior decls qty</th>
-                  <th scope="col">Current amount</th>
-                  <th scope="col">Current date</th>
-                  <th scope="col">Required paid</th>
-                  <th scope="col">OK</th>
-                </tr>
-              </thead>
-              <tbody>
-                {div1Compliance.length === 0 ? (
-                  <tr>
-                    <td colSpan={7}>No DIV-1 compliance rows yet.</td>
-                  </tr>
-                ) : (
-                  div1Compliance.map((row) => (
-                    <tr key={row.securityId}>
-                      <td>{row.symbol}</td>
-                      <td className="numeric">{formatCount(row.futurePayDatesQty)}</td>
-                      <td className="numeric">{formatCount(row.priorDeclarationsQty)}</td>
-                      <td className="numeric">
-                        {row.currentDeclarationAmountMinor == null ||
-                        row.currentDeclarationAmountScale == null
-                          ? "—"
-                          : `$${formatScaled(
-                              row.currentDeclarationAmountMinor,
-                              row.currentDeclarationAmountScale,
-                            )}`}
-                      </td>
-                      <td>{row.currentDeclarationDate || "—"}</td>
-                      <td className="numeric">{formatCount(row.requiredPaid)}</td>
-                      <td>
-                        {row.lastRunOk === true
-                          ? "yes"
-                          : row.lastRunOk === false
-                            ? "no"
-                            : "—"}
+                  {open ? (
+                    <tr>
+                      <td colSpan={16}>
+                        <dl aria-label={`${row.symbol} collector detail`}>
+                          <div>
+                            <dt>Provider</dt>
+                            <dd>{row.provider || "—"}</dd>
+                          </div>
+                          <div>
+                            <dt>Underlying</dt>
+                            <dd>{row.underlying?.trim() || "—"}</dd>
+                          </div>
+                          <div>
+                            <dt>ROC estimate</dt>
+                            <dd>{fleetRocText(row)}</dd>
+                          </div>
+                          <div>
+                            <dt>Content hash</dt>
+                            <dd>
+                              {row.lastContentHash?.trim()
+                                ? row.lastContentHash.slice(0, 8)
+                                : "—"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Open lots</dt>
+                            <dd>{formatCount(row.openLotCount ?? 0)}</dd>
+                          </div>
+                          <div>
+                            <dt>Last payable</dt>
+                            <dd>{row.lastPayableOn?.trim() || "—"}</dd>
+                          </div>
+                        </dl>
                       </td>
                     </tr>
-                  ))
-                )}
+                  ) : null}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          </section>
+          <section aria-label="Collector work queue">
+            <h3>Work queue (not today&apos;s run log)</h3>
+            <p>
+              Open tickets stay until filed. Use Today&apos;s declaration status
+              above for the current run.
+            </p>
+            <ExceptionList exceptions={exceptions} onOpenLog={() => void openExceptionLog()} />
+            <WorkTicketQueue
+              tickets={workTickets}
+              retryingTicketId={retryingTicket?.ticketId}
+              retryingSymbol={retryingTicket?.symbol}
+              onRetry={(t) => void resolveTicketRetry(t as WorkTicketRecord)}
+              onRecreateAdapter={(t) =>
+                openRecreateAdapter(t as WorkTicketRecord)
+              }
+              onExcept={(t) =>
+                void resolveAmountConfirm(t as WorkTicketRecord, "except")
+              }
+              onReject={(t) =>
+                void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+              }
+              onEnterAmount={(t, amount) =>
+                void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
+              }
+              onFile={(t) => void fileWorkTicket(t as WorkTicketRecord)}
+            />
+          </section>
           {collectorSymbol ? (
             <section aria-label="Collector symbol page">
               <h3>{collectorSymbol}</h3>
@@ -8825,6 +10795,84 @@ export default function App() {
         </section>
       ) : null}
 
+      {screen === "collector-establish" ? (
+        <section aria-label="Reevaluate collector">
+          <h2>Reevaluate collector</h2>
+          <p>
+            Collect fresh on Collectors is the daily adapter run. Establish /
+            Reevaluate here is identity and 19a-1 — it does not rewrite stored
+            pays. New unpaid dates may be added. Amount changes ticket Except
+            or Reject. Empty / 403 / JS last_run is parked, not a wipe.
+          </p>
+          <div className="table-wrap">
+            <table aria-label="Establish collector fleet">
+              <thead>
+                <tr>
+                  <th scope="col">Symbol</th>
+                  <th scope="col">Complete</th>
+                  <th scope="col">Gaps</th>
+                  <th scope="col">ROC</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {collectorItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>No paying symbols loaded yet.</td>
+                  </tr>
+                ) : (
+                  collectorItems.map((row) => {
+                    const roc =
+                      row.rocEstimateMinor == null
+                        ? "none"
+                        : `${(row.rocEstimateMinor / 10 ** (row.rocScale || 2)).toFixed(row.rocScale || 2)}%`;
+                    return (
+                      <tr key={row.securityId}>
+                        <td>{row.symbol}</td>
+                        <td>{row.complete ? "yes" : "no"}</td>
+                        <td>{(row.gaps ?? []).join(", ") || "—"}</td>
+                        <td>{roc}</td>
+                        <td>
+                          <button
+                            type="button"
+                            aria-label={`Establish collector ${row.symbol}`}
+                            disabled={busy || writesBlocked}
+                            onClick={() => void establishCollector(row)}
+                          >
+                            Establish
+                          </button>{" "}
+                          <button
+                            type="button"
+                            aria-label={`Reevaluate collector ${row.symbol}`}
+                            disabled={busy || writesBlocked}
+                            onClick={() => void reevaluateCollector(row)}
+                          >
+                            Reevaluate
+                          </button>{" "}
+                          <button
+                            type="button"
+                            aria-label={`Accept recommended ROC ${row.symbol}`}
+                            disabled={
+                              busy ||
+                              writesBlocked ||
+                              row.rocEstimateMinor == null ||
+                              row.complete === true
+                            }
+                            onClick={() => void acceptCollectorRoc(row)}
+                          >
+                            Accept ROC
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
       {screen === "settings" ? (
         <section className="actions" aria-label="Settings">
           <h2>Settings</h2>
@@ -8842,10 +10890,11 @@ export default function App() {
           )}
           <h3>Retrieval templates</h3>
           <p>
-            Adapter, source URL, lookback, and schedule live here. Inception is
-            optional — rare exception for names too new for 12 paid points.
-            Collectors retrieve first; if 12+ paid decls land, inception is N/A.
-            Under 12, inception (when set) confirms the short history is complete.
+            Standing template: adapter name, declaration URL, ROC URL, and
+            content hash. Inception is optional — rare exception for names too
+            new for 12 paid points. Collectors retrieve first; if 12+ paid decls
+            land, inception is N/A. Under 12, inception (when set) confirms the
+            short history is complete.
           </p>
           <div className="table-wrap">
             <table aria-label="Retrieval templates">
@@ -8853,7 +10902,9 @@ export default function App() {
                 <tr>
                   <th scope="col">Symbol</th>
                   <th scope="col">Adapter</th>
-                  <th scope="col">Source URL</th>
+                  <th scope="col">Declaration URL</th>
+                  <th scope="col">ROC URL</th>
+                  <th scope="col">Content hash</th>
                   <th scope="col">Schedule</th>
                   <th scope="col">Inception</th>
                   <th scope="col">Lookback</th>
@@ -8863,7 +10914,7 @@ export default function App() {
               <tbody>
                 {collectorItems.length === 0 ? (
                   <tr>
-                    <td colSpan={7}>
+                    <td colSpan={9}>
                       No paying symbols loaded yet. Open Collectors once, or wait
                       for this list to refresh.
                     </td>
@@ -8876,6 +10927,7 @@ export default function App() {
                       calendarPolicy: row.calendarPolicy ?? "",
                       lookbackCount: String(DECLARATION_LOOKBACK_TARGET),
                       inceptionOn: row.inceptionOn ?? "",
+                      rocSourceUrl: row.rocSourceUrl ?? "",
                     };
                     const patch = (
                       patch: Partial<typeof draft>,
@@ -8907,6 +10959,19 @@ export default function App() {
                             }
                             disabled={busy || writesBlocked}
                           />
+                        </td>
+                        <td>
+                          <input
+                            aria-label={`ROC URL for ${row.symbol}`}
+                            value={draft.rocSourceUrl ?? ""}
+                            onChange={(e) =>
+                              patch({ rocSourceUrl: e.target.value })
+                            }
+                            disabled={busy || writesBlocked}
+                          />
+                        </td>
+                        <td aria-label={`Content hash for ${row.symbol}`}>
+                          {row.lastContentHash?.trim() || "—"}
                         </td>
                         <td>
                           <select
@@ -9042,5 +11107,6 @@ export default function App() {
         </section>
       ) : null}
     </main>
+    </>
   );
 }

@@ -1,8 +1,8 @@
 //! Remaining-year payment dates from issuer calendar or declaration cadence. Unknown is not $0.
 
-use chrono::{Datelike, Duration, NaiveDate};
+use chrono::{Datelike, Duration, Months, NaiveDate};
 
-use crate::calculator::plan_payment_cents;
+use crate::calculator::{plan_payment_cents, PaymentCadence};
 use crate::week::week_containing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +107,42 @@ pub struct RemainingYearSpec<'a> {
 fn parse_iso_day(raw: &str) -> Option<NaiveDate> {
     let day = if raw.len() >= 10 { &raw[..10] } else { raw };
     NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()
+}
+
+/// A pay/declaration date has occurred only when it is strictly before `as_of`.
+/// Future placeholders with a copied amount are not paid history.
+pub fn period_has_occurred(period: &str, as_of: &str) -> bool {
+    match (parse_iso_day(period), parse_iso_day(as_of)) {
+        (Some(d), Some(as_of_d)) => d < as_of_d,
+        _ => true,
+    }
+}
+
+/// Unoccurred copied last-pay / orphan calendar rows. Not an issuer notice.
+/// Future planning $ is Plan $/share, not this row.
+pub fn unoccurred_declaration_is_placeholder(
+    period: &str,
+    amount: i64,
+    scale: u8,
+    as_of: &str,
+    occurred_amounts: &[(i64, u8)],
+    pay_ons: &[&str],
+) -> bool {
+    if period_has_occurred(period, as_of) {
+        return false;
+    }
+    let key = period.trim();
+    let key10 = if key.len() >= 10 { &key[..10] } else { key };
+    let on_calendar = pay_ons.iter().any(|p| {
+        let p = p.trim();
+        p == key || (p.len() >= 10 && &p[..10] == key10)
+    });
+    if !on_calendar {
+        return true;
+    }
+    occurred_amounts
+        .iter()
+        .any(|(a, s)| crate::money::amounts_equal(*a, *s, amount, scale))
 }
 
 /// Latest `YYYY-MM-DD` payment period. Labels such as `w1` are not dates.
@@ -230,6 +266,256 @@ fn remaining_year_end(as_of: NaiveDate) -> NaiveDate {
     NaiveDate::from_ymd_opt(as_of.year(), 12, 31).unwrap_or(as_of)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VendorPayableConflict {
+    pub vendor_pay_on: String,
+    pub existing_pay_on: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RuntimePayablePlan {
+    pub keep: Vec<String>,
+    pub add: Vec<String>,
+    pub moves: Vec<(String, String)>,
+    pub conflicts: Vec<VendorPayableConflict>,
+}
+
+fn year_month(raw: &str) -> Option<String> {
+    let d = parse_iso_day(raw)?;
+    Some(format!("{:04}-{:02}", d.year(), d.month()))
+}
+
+/// Runtime collect: add new unpaid payables and move unoccurred same-month dates.
+/// Already-paid months are conflicts — do not silent-supersede. Keep other dates.
+pub fn merge_runtime_vendor_payables(
+    as_of: &str,
+    existing: &[String],
+    paid_periods: &[String],
+    vendor: &[String],
+) -> RuntimePayablePlan {
+    let as_of_d = parse_iso_day(as_of);
+    let paid_months: Vec<String> = paid_periods
+        .iter()
+        .filter_map(|p| {
+            let ym = year_month(p)?;
+            period_has_occurred(p, as_of).then_some(ym)
+        })
+        .collect();
+    let mut keep: Vec<String> = existing
+        .iter()
+        .filter(|d| !d.trim().is_empty())
+        .cloned()
+        .collect();
+    keep.sort();
+    keep.dedup();
+    let mut plan = RuntimePayablePlan {
+        keep: keep.clone(),
+        ..RuntimePayablePlan::default()
+    };
+    for vendor_raw in vendor {
+        let vendor_on = vendor_raw.trim();
+        if vendor_on.is_empty() || parse_iso_day(vendor_on).is_none() {
+            continue;
+        }
+        let Some(month) = year_month(vendor_on) else {
+            continue;
+        };
+        if paid_months.iter().any(|m| m == &month) {
+            if let Some(existing_on) = keep.iter().find(|d| year_month(d).as_deref() == Some(month.as_str()))
+            {
+                if existing_on != vendor_on {
+                    plan.conflicts.push(VendorPayableConflict {
+                        vendor_pay_on: vendor_on.to_string(),
+                        existing_pay_on: existing_on.clone(),
+                    });
+                }
+            } else {
+                plan.conflicts.push(VendorPayableConflict {
+                    vendor_pay_on: vendor_on.to_string(),
+                    existing_pay_on: String::new(),
+                });
+            }
+            continue;
+        }
+        if keep.iter().any(|d| d == vendor_on) {
+            continue;
+        }
+        if let Some(existing_on) = keep.iter().find(|d| year_month(d).as_deref() == Some(month.as_str())).cloned()
+        {
+            let unoccurred = as_of_d
+                .and_then(|as_of| parse_iso_day(&existing_on).map(|d| d >= as_of))
+                .unwrap_or(false);
+            if unoccurred {
+                keep.retain(|d| d != &existing_on);
+                keep.push(vendor_on.to_string());
+                plan.moves.push((existing_on, vendor_on.to_string()));
+            } else {
+                plan.conflicts.push(VendorPayableConflict {
+                    vendor_pay_on: vendor_on.to_string(),
+                    existing_pay_on: existing_on,
+                });
+            }
+            continue;
+        }
+        keep.push(vendor_on.to_string());
+        plan.add.push(vendor_on.to_string());
+    }
+    keep.sort();
+    keep.dedup();
+    plan.keep = keep;
+    plan
+}
+
+/// Stored date is the vendor ex/record leftover; keep the later payable.
+/// Same dollar only. Cross-month leftovers (Nov ex → Dec pay) are included.
+pub fn leftover_ex_to_payable_moves(
+    stored: &[(String, i64, u8)],
+    vendor: &[(String, Option<String>, Option<String>, i64, u8)],
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (pay, ex, record, amt, _scale) in vendor {
+        if *amt <= 0 {
+            continue;
+        }
+        let Some(pay_d) = parse_iso_day(pay) else {
+            continue;
+        };
+        for leftover in [ex.as_deref(), record.as_deref()].into_iter().flatten() {
+            if leftover == pay.as_str() {
+                continue;
+            }
+            let Some(left_d) = parse_iso_day(leftover) else {
+                continue;
+            };
+            if left_d >= pay_d {
+                continue;
+            }
+            let hit = stored.iter().any(|(on, _, _)| on == leftover);
+            if hit && !out.iter().any(|(from, to)| from == leftover && to == pay) {
+                out.push((leftover.to_string(), pay.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Remaining unpaid dates through 31 Dec from paid history + cadence.
+/// Monthly: walk one month from the latest paid day-of-month (not last calendar day).
+pub fn derive_remaining_pay_ons(
+    as_of: &str,
+    payment_frequency: &str,
+    paid_periods: &[&str],
+) -> Vec<String> {
+    let Some(as_of_d) = parse_iso_day(as_of) else {
+        return Vec::new();
+    };
+    let year_end = remaining_year_end(as_of_d);
+    let mut paid: Vec<NaiveDate> = paid_periods
+        .iter()
+        .filter_map(|p| parse_iso_day(p))
+        .filter(|d| *d < as_of_d)
+        .collect();
+    paid.sort();
+    paid.dedup();
+    let Some(latest) = paid.last().copied() else {
+        return Vec::new();
+    };
+    match PaymentCadence::parse(payment_frequency).and_then(PaymentCadence::periods) {
+        Some(12) => {
+            let mut out = Vec::new();
+            let mut cursor = latest;
+            for _ in 0..12 {
+                let Some(next) = cursor.checked_add_months(Months::new(1)) else {
+                    break;
+                };
+                cursor = next;
+                if cursor > year_end {
+                    break;
+                }
+                if cursor >= as_of_d {
+                    out.push(cursor.format("%Y-%m-%d").to_string());
+                }
+            }
+            out
+        }
+        Some(4) => {
+            let mut out = Vec::new();
+            let mut cursor = latest;
+            for _ in 0..4 {
+                let Some(next) = cursor.checked_add_signed(Duration::days(91)) else {
+                    break;
+                };
+                cursor = next;
+                if cursor > year_end {
+                    break;
+                }
+                if cursor >= as_of_d {
+                    out.push(cursor.format("%Y-%m-%d").to_string());
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// mlp_sec_8k remaining-year: +1 calendar quarter from last accepted payable, stop at 31 Dec.
+pub fn derive_quarterly_template_pay_ons(as_of: &str, paid_periods: &[&str]) -> Vec<String> {
+    let Some(as_of_d) = parse_iso_day(as_of) else {
+        return Vec::new();
+    };
+    let year_end = remaining_year_end(as_of_d);
+    let mut paid: Vec<NaiveDate> = paid_periods
+        .iter()
+        .filter_map(|p| parse_iso_day(p))
+        .filter(|d| *d < as_of_d)
+        .collect();
+    paid.sort();
+    paid.dedup();
+    let Some(latest) = paid.last().copied() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut cursor = latest;
+    for _ in 0..4 {
+        let Some(next) = cursor.checked_add_months(Months::new(3)) else {
+            break;
+        };
+        cursor = next;
+        if cursor > year_end {
+            break;
+        }
+        if cursor >= as_of_d {
+            out.push(cursor.format("%Y-%m-%d").to_string());
+        }
+    }
+    out
+}
+
+/// Remaining pay periods from `as_of` through 31 Dec, capped at 4 / 12 / 52.
+/// A monthly name in August has 5 remaining months, not 12.
+pub fn remaining_periods_to_year_end(as_of: &str, periods_per_year: u8) -> Option<u8> {
+    let as_of_d = NaiveDate::parse_from_str(as_of.trim(), "%Y-%m-%d").ok()?;
+    let cap = match periods_per_year {
+        4 | 12 | 52 => periods_per_year,
+        _ => return None,
+    };
+    let year_end = remaining_year_end(as_of_d);
+    if as_of_d > year_end {
+        return Some(0);
+    }
+    let raw = match cap {
+        12 => 13u32.saturating_sub(u32::from(as_of_d.month())) as u8,
+        4 => {
+            let quarter = ((as_of_d.month() - 1) / 3) + 1;
+            5u8.saturating_sub(quarter as u8)
+        }
+        52 => weekly_starts(as_of_d, year_end).len().min(usize::from(cap)) as u8,
+        _ => return None,
+    };
+    Some(raw.min(cap))
+}
+
 fn weekly_starts(as_of: NaiveDate, year_end: NaiveDate) -> Vec<NaiveDate> {
     let mut week = week_containing(as_of);
     let mut dates = Vec::new();
@@ -244,6 +530,53 @@ fn weekly_starts(as_of: NaiveDate, year_end: NaiveDate) -> Vec<NaiveDate> {
         week.end += Duration::days(7);
     }
     dates
+}
+
+fn last_day_of_month(year: i32, month: u32) -> Option<NaiveDate> {
+    if month == 12 {
+        NaiveDate::from_ymd_opt(year, 12, 31)
+    } else {
+        NaiveDate::from_ymd_opt(year, month + 1, 1).and_then(|d| d.pred_opt())
+    }
+}
+
+/// Last calendar day of each remaining month from `as_of` through 31 Dec.
+fn monthly_last_calendar_days(as_of: NaiveDate, year_end: NaiveDate) -> Vec<NaiveDate> {
+    let mut dates = Vec::new();
+    let mut month = as_of.month();
+    let year = as_of.year();
+    for _ in 0..12 {
+        let Some(last) = last_day_of_month(year, month) else {
+            break;
+        };
+        if last >= as_of && last <= year_end {
+            dates.push(last);
+        }
+        if month == 12 || last >= year_end {
+            break;
+        }
+        month += 1;
+    }
+    dates
+}
+
+fn apply_owner_month_anchor(
+    raw: &mut Vec<NaiveDate>,
+    overrides: &[DateOverride],
+    as_of: NaiveDate,
+    year_end: NaiveDate,
+) -> bool {
+    let Some(anchor) = owner_anchor(overrides) else {
+        return false;
+    };
+    if anchor < as_of || anchor > year_end {
+        return false;
+    }
+    raw.retain(|d| d.year() != anchor.year() || d.month() != anchor.month());
+    raw.push(anchor);
+    raw.sort();
+    raw.dedup();
+    true
 }
 
 fn stepped_dates(anchor: NaiveDate, step_days: i64, as_of: NaiveDate, year_end: NaiveDate) -> Vec<NaiveDate> {
@@ -361,8 +694,9 @@ fn single_lot(quantity_minor: i64, quantity_scale: u8) -> OpenLotQty {
     }
 }
 
-/// Rest-of-year payment dates. Weekly = remaining Sat–Fri weeks. Monthly/quarterly walk
-/// 30/91 days from the latest parseable declaration period (or an owner-named next date).
+/// Rest-of-year payment dates. Weekly = remaining Sat–Fri weeks. Monthly = last
+/// calendar day of each remaining month through 31 Dec. Quarterly walks ~91 days
+/// from the latest parseable declaration period (or an owner-named next date).
 pub fn remaining_year_payments(
     as_of: &str,
     latest_payment_period: Option<&str>,
@@ -465,8 +799,28 @@ fn derived_walk_schedule(
             orphaned,
         );
     }
+    if spec.periods_per_year == 12 {
+        let mut raw = monthly_last_calendar_days(as_of_d, year_end);
+        let from_owner = apply_owner_month_anchor(&mut raw, spec.overrides, as_of_d, year_end);
+        let orphaned = orphaned_from(&raw, spec.overrides);
+        let tagged = apply_overrides(&raw, spec.overrides);
+        let provenance = if from_owner || tagged.iter().any(|(_, _, o)| *o) {
+            "owner date override".into()
+        } else {
+            "last calendar day of each remaining month through 31 Dec".into()
+        };
+        return assemble(
+            tagged,
+            year_end,
+            provenance,
+            "derived_walk",
+            spec.lots,
+            spec.plan_minor,
+            spec.plan_scale,
+            orphaned,
+        );
+    }
     let step_days = match spec.periods_per_year {
-        12 => 30,
         4 => 91,
         _ => return unknown("unknown — frequency is not Weekly, Monthly, or Quarterly"),
     };
@@ -509,6 +863,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn leftover_ex_moves_to_later_payable_including_cross_month() {
+        let stored = vec![
+            ("2025-11-24".into(), 1728, 4),
+            ("2026-08-24".into(), 1829, 4),
+        ];
+        let vendor = vec![
+            (
+                "2025-12-02".into(),
+                Some("2025-11-24".into()),
+                Some("2025-11-24".into()),
+                1728,
+                4,
+            ),
+            (
+                "2026-08-27".into(),
+                Some("2026-08-24".into()),
+                Some("2026-08-24".into()),
+                1829,
+                4,
+            ),
+        ];
+        let moves = leftover_ex_to_payable_moves(&stored, &vendor);
+        assert!(moves.contains(&("2025-11-24".into(), "2025-12-02".into())));
+        assert!(moves.contains(&("2026-08-24".into(), "2026-08-27".into())));
+        let rounded = leftover_ex_to_payable_moves(
+            &[("2014-07-23".into(), 209375, 6)],
+            &[(
+                "2014-07-30".into(),
+                Some("2014-07-23".into()),
+                Some("2014-07-25".into()),
+                20938,
+                5,
+            )],
+        );
+        assert_eq!(rounded, vec![("2014-07-23".into(), "2014-07-30".into())]);
+    }
+
+    #[test]
     fn monthly_walk_from_july_skips_past_and_groups_months() {
         let schedule = remaining_year_payments(
             "2026-08-22",
@@ -524,21 +916,20 @@ mod tests {
         let dates: Vec<_> = schedule.payments.iter().map(|p| p.pay_on.as_str()).collect();
         assert_eq!(
             dates,
-            ["2026-08-30", "2026-09-29", "2026-10-29", "2026-11-28", "2026-12-28"]
+            ["2026-08-31", "2026-09-30", "2026-10-31", "2026-11-30", "2026-12-31"]
         );
         assert_eq!(schedule.remaining_periods, Some(5));
         assert_eq!(schedule.year_to_go_minor, Some(5_000));
         assert_eq!(schedule.months.len(), 5);
         assert!(schedule.months.iter().all(|m| m.cash_minor != 0));
         assert!(!schedule.months.iter().any(|m| m.month == "2026-07"));
-        assert!(schedule.provenance.contains("2026-07-01"));
-        assert!(schedule.provenance.contains("Monthly"));
+        assert!(schedule.provenance.contains("last calendar day"));
         assert!(schedule.payments.iter().all(|p| p.date_provenance == "derived_walk"));
     }
 
     #[test]
     fn unparseable_period_is_unknown_not_zero() {
-        let schedule = remaining_year_payments("2026-08-22", Some("w1"), 12, 10, 0, 100, 2, &[]);
+        let schedule = remaining_year_payments("2026-08-22", Some("w1"), 4, 10, 0, 100, 2, &[]);
         assert!(!schedule.known);
         assert!(schedule.payments.is_empty());
         assert_eq!(schedule.remaining_periods, None);
@@ -567,11 +958,11 @@ mod tests {
             100,
             2,
             &[DateOverride {
-                original_pay_on: "2026-08-30".into(),
-                pay_on: "2026-08-31".into(),
+                original_pay_on: "2026-08-31".into(),
+                pay_on: "2026-08-28".into(),
             }],
         );
-        assert_eq!(schedule.payments[0].pay_on, "2026-08-31");
+        assert_eq!(schedule.payments[0].pay_on, "2026-08-28");
         assert!(schedule.payments[0].owner_override);
         assert_eq!(schedule.payments[0].date_provenance, "owner_override");
         assert_eq!(schedule.payments[0].month, "2026-08");
@@ -692,8 +1083,8 @@ mod tests {
             issuer_pay_ons: &[],
             calendar_policy: CalendarPolicy::DerivedWalk,
         });
-        let aug = schedule.payments.iter().find(|p| p.pay_on == "2026-08-30").unwrap();
-        let oct = schedule.payments.iter().find(|p| p.pay_on == "2026-10-29").unwrap();
+        let aug = schedule.payments.iter().find(|p| p.pay_on == "2026-08-31").unwrap();
+        let oct = schedule.payments.iter().find(|p| p.pay_on == "2026-10-31").unwrap();
         assert_eq!(aug.cash_minor, 1_000);
         assert_eq!(oct.cash_minor, 2_000);
     }
@@ -739,7 +1130,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_walk_moves_when_anchor_declaration_changes() {
+    fn monthly_last_calendar_days_ignore_declaration_anchor() {
         let first = remaining_year_payments(
             "2026-08-22",
             Some("2026-07-01"),
@@ -760,9 +1151,9 @@ mod tests {
             2,
             &[],
         );
-        assert_eq!(first.payments[0].pay_on, "2026-08-30");
-        assert_eq!(second.payments[0].pay_on, "2026-09-14");
-        assert_ne!(first.payments[0].pay_on, second.payments[0].pay_on);
+        assert_eq!(first.payments[0].pay_on, "2026-08-31");
+        assert_eq!(second.payments[0].pay_on, "2026-08-31");
+        assert_eq!(first.payments.last().map(|p| p.pay_on.as_str()), Some("2026-12-31"));
     }
 
     #[test]
@@ -789,5 +1180,142 @@ mod tests {
             pay_on_for_week(12, "2026-08-22", "2026-08-28", &["2026-08-31"], Some("2026-07-31")),
             None
         );
+    }
+
+    #[test]
+    fn derive_monthly_walks_from_latest_paid_day() {
+        let paid = [
+            "2025-10-03",
+            "2025-11-05",
+            "2025-12-03",
+            "2026-01-05",
+            "2026-02-04",
+            "2026-03-04",
+            "2026-04-06",
+            "2026-05-05",
+            "2026-06-03",
+            "2026-07-06",
+            "2026-08-05",
+            "2026-09-03",
+        ];
+        let refs: Vec<&str> = paid.to_vec();
+        assert_eq!(
+            derive_remaining_pay_ons("2026-09-07", "Monthly", &refs),
+            ["2026-10-03", "2026-11-03", "2026-12-03"]
+        );
+        let with_future_placeholder = [
+            "2026-09-03",
+            "2026-10-01",
+        ];
+        let refs: Vec<&str> = with_future_placeholder.to_vec();
+        assert_eq!(
+            derive_remaining_pay_ons("2026-09-07", "Monthly", &refs),
+            ["2026-10-03", "2026-11-03", "2026-12-03"]
+        );
+    }
+
+    #[test]
+    fn remaining_periods_to_year_end_is_stub_year_not_full_year() {
+        assert_eq!(remaining_periods_to_year_end("2026-08-22", 12), Some(5));
+        assert_eq!(remaining_periods_to_year_end("2026-08-22", 4), Some(2));
+        assert_eq!(remaining_periods_to_year_end("2026-12-01", 12), Some(1));
+        assert_eq!(remaining_periods_to_year_end("2026-01-15", 12), Some(12));
+    }
+
+    #[test]
+    fn runtime_vendor_adds_and_moves_unoccurred_only() {
+        let plan = merge_runtime_vendor_payables(
+            "2026-09-05",
+            &["2026-09-30".into(), "2026-10-31".into(), "2026-11-30".into()],
+            &["2026-08-31".into()],
+            &["2026-09-28".into(), "2026-12-31".into()],
+        );
+        assert_eq!(plan.add, ["2026-12-31"]);
+        assert_eq!(plan.moves, [("2026-09-30".into(), "2026-09-28".into())]);
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(
+            plan.keep,
+            ["2026-09-28", "2026-10-31", "2026-11-30", "2026-12-31"]
+        );
+    }
+
+    #[test]
+    fn unoccurred_copy_and_orphan_are_placeholders() {
+        assert!(unoccurred_declaration_is_placeholder(
+            "2026-10-03",
+            70497,
+            5,
+            "2026-09-07",
+            &[(68255, 5), (70497, 5)],
+            &["2026-10-03"],
+        ));
+        assert!(unoccurred_declaration_is_placeholder(
+            "2026-09-30",
+            1215,
+            4,
+            "2026-09-07",
+            &[(1215, 4)],
+            &["2026-09-15"],
+        ));
+        assert!(unoccurred_declaration_is_placeholder(
+            "2026-11-06",
+            34,
+            2,
+            "2026-09-07",
+            &[(3400, 4)],
+            &["2026-11-06"],
+        ));
+        assert!(!unoccurred_declaration_is_placeholder(
+            "2026-09-09",
+            74947,
+            5,
+            "2026-09-07",
+            &[(572959, 6)],
+            &["2026-09-09"],
+        ));
+        assert!(!unoccurred_declaration_is_placeholder(
+            "2026-09-03",
+            68255,
+            5,
+            "2026-09-07",
+            &[(68255, 5)],
+            &["2026-09-03"],
+        ));
+    }
+
+    #[test]
+    fn runtime_vendor_moves_future_placeholder_with_amount() {
+        let plan = merge_runtime_vendor_payables(
+            "2026-09-07",
+            &["2026-10-01".into(), "2026-11-03".into()],
+            &["2026-09-03".into(), "2026-10-01".into()],
+            &["2026-10-03".into()],
+        );
+        assert_eq!(plan.moves, [("2026-10-01".into(), "2026-10-03".into())]);
+        assert!(plan.conflicts.is_empty());
+        assert!(plan.keep.contains(&"2026-10-03".to_string()));
+        assert!(!plan.keep.contains(&"2026-10-01".to_string()));
+    }
+
+    #[test]
+    fn runtime_vendor_does_not_supersede_paid_month() {
+        let plan = merge_runtime_vendor_payables(
+            "2026-09-05",
+            &["2026-08-31".into(), "2026-09-30".into()],
+            &["2026-08-31".into()],
+            &["2026-08-28".into()],
+        );
+        assert!(plan.add.is_empty());
+        assert!(plan.moves.is_empty());
+        assert_eq!(plan.conflicts.len(), 1);
+        assert_eq!(plan.conflicts[0].existing_pay_on, "2026-08-31");
+        assert!(plan.keep.contains(&"2026-08-31".to_string()));
+    }
+
+    #[test]
+    fn mlp_sec_8k_derive_one_remaining_2026_quarter_no_2027() {
+        let dates = derive_quarterly_template_pay_ons("2026-09-08", &["2026-08-19"]);
+        assert_eq!(dates, vec!["2026-11-19".to_string()]);
+        assert!(!dates.iter().any(|d| d.starts_with("2027")));
     }
 }

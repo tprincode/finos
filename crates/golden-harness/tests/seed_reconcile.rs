@@ -29,4 +29,6 @@ async fn canonical_week_is_saturday_to_friday() {
         .unwrap();
     assert_eq!(week.start, "2026-08-15");
     assert_eq!(week.end, "2026-08-21");
+    assert_eq!(week.week_year, 2026);
+    assert_eq!(week.week_number, 33);
 }

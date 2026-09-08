@@ -53,6 +53,15 @@ pub fn rescale(amount_minor: i64, from_scale: u8, to_scale: u8) -> i64 {
     }
 }
 
+/// Same dollars at different scales (C5). 27069@5 == 270690@6.
+pub fn amounts_equal(a: i64, a_scale: u8, b: i64, b_scale: u8) -> bool {
+    if a == b && a_scale == b_scale {
+        return true;
+    }
+    let to = a_scale.max(b_scale);
+    rescale(a, a_scale, to) == rescale(b, b_scale, to)
+}
+
 /// Reporting money: lot/unit-cost scales 3–6 become USD cents.
 pub fn to_usd_cents(amount_minor: i64, scale: u8) -> i64 {
     rescale(amount_minor, scale, USD_CENTS_SCALE)
@@ -104,5 +113,12 @@ mod tests {
         assert_eq!(super::rescale(1, 0, 40), i64::MAX);
         assert_eq!(super::rescale(-1, 0, 40), i64::MIN);
         assert_eq!(super::rescale(1000, 40, 2), 0);
+    }
+
+    #[test]
+    fn amounts_equal_across_scale() {
+        assert!(super::amounts_equal(27_069, 5, 270_690, 6));
+        assert!(super::amounts_equal(27_124, 5, 271_240, 6));
+        assert!(!super::amounts_equal(100, 2, 999, 2));
     }
 }

@@ -6,9 +6,10 @@ use uuid::Uuid;
 
 use crate::contracts::{
     AllocationGetBody, CalculatorGetBody, CalculatorRowBody, CommandRequest, CommandResult,
+    DeclarationHistoryCellBody, DeclarationHistoryGetBody, DeclarationHistoryRowBody,
     DashboardBody, DashboardBurndownBody, DashboardBurndownLineBody, HoldingsGetBody,
     HoldingsLotBody, DataSummaryBody, ImportCandidate,     IncomePlanDrillBody,
-    IncomePlanLineBody, IncomePlanPositionBody, IncomePlanWeekBody, ProductionSeedDocument, QueryRequest, QueryResult,
+    IncomePlanExportBody, IncomePlanGridBody, IncomePlanLineBody, IncomePlanPositionAccountBody, IncomePlanPositionBody, IncomePlanWeekBody, ProductionSeedDocument, QueryRequest, QueryResult,
     RoiBody, TrendPoint, TrendsBody, TrendsWeekPoint, UpdaterCheckBody, FINANCE_CLIENT_CONTRACT_VERSION,
     PlanReviewBody, PositionCharacteristicRecord, LookthroughResearch, RetrievalTemplateRecord, InvestmentGetBody,
     InvestmentLotBody, InvestmentDeclarationBody, AccountPositionTotalBody, PositionDetailsBody,
@@ -22,7 +23,12 @@ use crate::contracts::{
     DistributionRecord, LotRecord, IssuerDeclarationRecord, IssuerPayDateRecord,
     ProviderDeclarationSourcesApplyBody, RetrieveRunRecord, CollectorRetrieveBody,
     PositionResearchSeedBody, PositionResearchRefreshBody, ResearchGapItem, ResearchGapsGetBody,
+    CollectorSetBody,
+    CollectorFieldDecisionRecord,
     RetrieveRunListBody, CashDividendCoverageBody, CashDividendCoverageRow,
+    DividendPerformanceBody, DividendPerformanceWeekBody, DividendPerformanceSummaryBody,
+    DividendPerformancePositionBody, SecurityRecord, DividendGetBody, BasisGetBody,
+    PlanHistoryRecord, WorkTicketRecord, WorkTicketListBody, WorkTicketSyncMissesBody,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::{Platform, PlatformError};
@@ -78,6 +84,7 @@ const ORDINARY_WRITES: &[&str] = &[
     "DeclarationRefresh",
     "ProviderDeclarationSourcesApply",
     "CollectorRetrieve",
+    "CollectorAlignFutureToPlan",
     "PositionResearchSeed",
     "PositionResearchRefresh",
     "ExpectedPaymentPatternUpsert",
@@ -85,6 +92,10 @@ const ORDINARY_WRITES: &[&str] = &[
     "TrendsWeekSave",
     "TrendsWeekCorrect",
     "TrendsWeekClose",
+    "WorkTicketResolve",
+    "WorkTicketFile",
+    "WorkTicketSyncMisses",
+    "CollectorFieldDecisionSet",
 ];
 
 #[derive(Debug, Default, Deserialize)]
@@ -231,6 +242,9 @@ fn candidates_from(v: &Value) -> Vec<ImportCandidate> {
                 amount_minor: ji64(item, "amountMinor"),
                 scale: ju8(item, "scale", 2),
                 occurred_on: jstr(item, "occurredOn").unwrap_or_default(),
+                candidate_id: None,
+                validation: String::new(),
+                issue: String::new(),
             })
         })
         .collect()
@@ -307,6 +321,18 @@ async fn income_plan_view(
     Ok(plan)
 }
 
+/// January 1 of the week-ending year. Remaining issuer dates must cover historical
+/// pay weeks in that year; `week.start` of the Jan 1 week is often in December and
+/// would truncate remaining to the prior year (dropping MON1 on 2026-08-28).
+fn income_plan_remaining_as_of(week_end: &str) -> String {
+    match week_end.get(..4) {
+        Some(year) if year.len() == 4 && year.bytes().all(|b| b.is_ascii_digit()) => {
+            format!("{year}-01-01")
+        }
+        _ => week_end.to_string(),
+    }
+}
+
 async fn remaining_pay_dates_for(
     canonical: &dyn Canonical,
     security_id: Uuid,
@@ -327,6 +353,117 @@ async fn remaining_pay_dates_for(
     Ok(dates)
 }
 
+fn issuer_declaration_for_week<'a>(
+    decls: &'a [IssuerDeclarationRecord],
+    week_start: &str,
+    week_end: &str,
+    pay_on: &str,
+) -> Option<&'a IssuerDeclarationRecord> {
+    decls.iter().find(|d| {
+        d.amount_per_share_minor.unwrap_or(0) > 0
+            && financial_domain::income_plan::declaration_belongs_in_week(
+                &d.payment_period,
+                week_start,
+                week_end,
+                pay_on,
+            )
+    })
+}
+
+fn income_plan_position_accounts(
+    symbol: &str,
+    lots: &[&LotRecord],
+    accounts: &[AccountRecord],
+    plan: Option<&PlanHistoryRecord>,
+    pay_on: &str,
+    decl_row: Option<&IssuerDeclarationRecord>,
+    account_actuals: &std::collections::HashMap<(String, String), i64>,
+) -> Vec<IncomePlanPositionAccountBody> {
+    let mut lots_by_control: std::collections::BTreeMap<&str, Vec<&LotRecord>> =
+        std::collections::BTreeMap::new();
+    for lot in lots {
+        let Some(account) = accounts.iter().find(|a| a.account_id == lot.account_id) else {
+            continue;
+        };
+        let Some(control) = financial_domain::income_plan::map_income_plan_account(&account.name) else {
+            continue;
+        };
+        lots_by_control.entry(control).or_default().push(*lot);
+    }
+    let decl_amt = decl_row.and_then(|d| d.amount_per_share_minor.map(|amt| (amt, d.amount_scale)));
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (control, acc_lots) in &lots_by_control {
+        let mut planned_minor = 0i64;
+        let mut unknown = 0u32;
+        for lot in acc_lots {
+            if let Some(p) = plan {
+                planned_minor += financial_domain::calculator::plan_payment_cents(
+                    lot.remaining_quantity_minor,
+                    lot.quantity_scale,
+                    p.amount_per_share_minor,
+                    p.amount_scale,
+                );
+            } else {
+                unknown = unknown.saturating_add(1);
+            }
+        }
+        let declaration_minor = decl_amt
+            .map(|(amt, scale)| lot_cash_for_pay(acc_lots, pay_on, amt, scale))
+            .unwrap_or(0);
+        let display = financial_domain::income_plan::display_account_label(control);
+        let key = (symbol.to_string(), display.clone());
+        let actual_known = account_actuals.contains_key(&key);
+        out.push(IncomePlanPositionAccountBody {
+            account_name: display.clone(),
+            actual_minor: actual_known
+                .then(|| *account_actuals.get(&key).unwrap_or(&0))
+                .unwrap_or(0),
+            actual_known,
+            planned_minor,
+            plan_known: !acc_lots.is_empty() && unknown == 0 && plan.is_some(),
+            declaration_minor,
+            declaration_known: decl_amt.is_some(),
+        });
+        seen.insert(display);
+    }
+    let mut extras: Vec<(String, i64)> = account_actuals
+        .iter()
+        .filter(|((sym, control), _)| sym == symbol && !seen.contains(control))
+        .map(|((_, control), amt)| (control.clone(), *amt))
+        .collect();
+    extras.sort_by(|a, b| a.0.cmp(&b.0));
+    for (control, actual_minor) in extras {
+        out.push(IncomePlanPositionAccountBody {
+            account_name: financial_domain::income_plan::display_account_label(&control),
+            actual_minor,
+            actual_known: true,
+            planned_minor: 0,
+            plan_known: false,
+            declaration_minor: 0,
+            declaration_known: false,
+        });
+    }
+    out
+}
+
+fn lot_cash_for_pay(lots: &[&LotRecord], pay_on: &str, amount_per_share_minor: i64, amount_scale: u8) -> i64 {
+    lots.iter()
+        .filter(|lot| {
+            let opened = lot.opened_on.get(..10).unwrap_or(lot.opened_on.as_str());
+            opened <= pay_on
+        })
+        .map(|lot| {
+            financial_domain::calculator::plan_payment_cents(
+                lot.remaining_quantity_minor,
+                lot.quantity_scale,
+                amount_per_share_minor,
+                amount_scale,
+            )
+        })
+        .sum()
+}
+
 async fn remaining_year_schedule_for(
     canonical: &dyn Canonical,
     security_id: Uuid,
@@ -339,7 +476,7 @@ async fn remaining_year_schedule_for(
         stored_date_overrides(canonical, security_id).await?,
         draft_overrides.to_vec(),
     );
-    let latest = latest_declaration_period(canonical, security_id).await?;
+    let latest = latest_declaration_period(canonical, security_id, as_of).await?;
     let issuer = canonical.issuer_pay_date_list(security_id).await?;
     let issuer_pay_ons: Vec<String> = issuer.into_iter().map(|d| d.pay_on).collect();
     let template = canonical.retrieval_template_get(security_id).await?;
@@ -386,10 +523,14 @@ async fn remaining_year_schedule_for(
 async fn latest_declaration_period(
     canonical: &dyn Canonical,
     security_id: Uuid,
+    as_of: &str,
 ) -> Result<Option<String>, PlatformError> {
     let decls = canonical.issuer_declaration_list(security_id).await?;
     Ok(financial_domain::schedule::latest_parseable_period(
-        decls.iter().map(|d| d.payment_period.as_str()),
+        decls.iter().filter_map(|d| {
+            financial_domain::schedule::period_has_occurred(&d.payment_period, as_of)
+                .then_some(d.payment_period.as_str())
+        }),
     ))
 }
 
@@ -447,27 +588,6 @@ fn fetched_source_url_for(json: &Value, security_id: Option<Uuid>) -> String {
     String::new()
 }
 
-async fn promote_vendor_calendar_template(
-    canonical: &dyn Canonical,
-    security_id: Uuid,
-    pay_date_count: usize,
-    payment_calendar_url: &str,
-) {
-    if pay_date_count == 0 && payment_calendar_url.is_empty() {
-        return;
-    }
-    let Ok(Some(mut template)) = canonical.retrieval_template_get(security_id).await else {
-        return;
-    };
-    if pay_date_count > 0 {
-        template.calendar_policy = financial_domain::schedule::CalendarPolicy::IssuerCalendar.label().to_string();
-    }
-    if !payment_calendar_url.is_empty() {
-        template.payment_source = payment_calendar_url.to_string();
-    }
-    let _ = canonical.retrieval_template_set(template).await;
-}
-
 async fn raise_retrieve_misses(
     canonical: &dyn Canonical,
     misses: &[Value],
@@ -487,9 +607,42 @@ async fn raise_retrieve_misses(
         let _ = canonical.exception_raise(code, message.clone()).await;
         if let Some(id) = juuid(miss, "securityId") {
             let hash = jstr(miss, "contentHash").unwrap_or_default();
-            let _ = canonical
-                .retrieval_template_touch_run(id, false, message, ran_at.to_string(), hash, "")
+            let tmpl = canonical
+                .retrieval_template_get(id)
+                .await
+                .ok()
+                .flatten();
+            let src = jstr(miss, "declarationSource").unwrap_or_else(|| {
+                tmpl.as_ref()
+                    .map(|t| t.declaration_source.clone())
+                    .unwrap_or_default()
+            });
+            let stored_url = tmpl.as_ref().map(|t| t.source_url.as_str()).unwrap_or("");
+            if financial_domain::mlp_sec::is_adapter_kind(&src)
+                || financial_domain::mlp_sec::routes_fetch(&src, Some(stored_url))
+            {
+                let outcome = mlp_sec_outcome_from_misses(std::slice::from_ref(miss));
+                let _ = persist_mlp_sec_last_run(
+                    canonical,
+                    id,
+                    &today_iso(),
+                    outcome,
+                    ran_at.to_string(),
+                    hash,
+                )
                 .await;
+            } else {
+                let _ = canonical
+                    .retrieval_template_touch_run(
+                        id,
+                        false,
+                        message,
+                        ran_at.to_string(),
+                        hash,
+                        "",
+                    )
+                    .await;
+            }
         }
     }
     Ok(())
@@ -528,6 +681,13 @@ async fn persist_retrieve_run(
         .await;
 }
 
+fn is_cash_rate_candidate(row: &Value) -> bool {
+    jstr(row, "kind")
+        .map(|k| k.eq_ignore_ascii_case("cash_rate"))
+        .unwrap_or(false)
+        || row.get("planOnly").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
 /// CASH-only: rate change → new PlanHistory; paid months → actuals when broker yield is absent.
 async fn apply_cash_moneymarket_followups(
     canonical: &dyn Canonical,
@@ -553,19 +713,27 @@ async fn apply_cash_moneymarket_followups(
     }
 
     let mut posted = 0u64;
-    let paid: Vec<&Value> = candidates
+    let rate_only: Vec<&Value> = candidates
         .iter()
-        .filter(|c| {
-            let amount = c.get("amountPerShareMinor").and_then(|x| {
-                if x.is_null() {
-                    None
-                } else {
-                    ji64(c, "amountPerShareMinor")
-                }
-            });
-            amount.unwrap_or(0) > 0
-        })
+        .filter(|c| is_cash_rate_candidate(c))
         .collect();
+    let paid: Vec<&Value> = if !rate_only.is_empty() {
+        rate_only
+    } else {
+        candidates
+            .iter()
+            .filter(|c| {
+                let amount = c.get("amountPerShareMinor").and_then(|x| {
+                    if x.is_null() {
+                        None
+                    } else {
+                        ji64(c, "amountPerShareMinor")
+                    }
+                });
+                amount.unwrap_or(0) > 0
+            })
+            .collect()
+    };
     let Some(latest) = paid.first() else {
         return 0;
     };
@@ -575,7 +743,16 @@ async fn apply_cash_moneymarket_followups(
     let rate_scale = ju8(latest, "amountScale", 5);
     let plans = canonical.plan_history_list().await.unwrap_or_default();
     let current = plans.iter().find(|p| p.security_id == security_id);
-    let reason = format!("money-market rate from {source}");
+    let yield_pct = jstr(latest, "sevenDayYield")
+        .or_else(|| {
+            ji64(latest, "annualYieldBps").map(|bps| format!("{:.2}", bps as f64 / 100.0))
+        })
+        .unwrap_or_default();
+    let reason = if yield_pct.is_empty() {
+        format!("money-market 7-day yield from {source}")
+    } else {
+        format!("money-market 7-day yield {yield_pct}% from {source}")
+    };
     let needs_plan = match current {
         None => true,
         Some(p) => p.amount_per_share_minor != rate_minor || p.amount_scale != rate_scale,
@@ -616,6 +793,9 @@ async fn apply_cash_moneymarket_followups(
         .map(|b| b.lots)
         .unwrap_or_default();
     for cand in paid {
+        if is_cash_rate_candidate(cand) {
+            continue;
+        }
         let Some(amount_minor) = ji64(cand, "amountPerShareMinor").filter(|a| *a > 0) else {
             continue;
         };
@@ -693,17 +873,6 @@ fn pay_dates_for_security(json: &Value, security_id: Uuid) -> Vec<Value> {
         .collect()
 }
 
-fn payment_calendar_url_for(json: &Value, security_id: Uuid) -> String {
-    let top = jstr(json, "fetchedPaymentCalendarUrl").unwrap_or_default();
-    if !top.is_empty() {
-        return top;
-    }
-    pay_dates_for_security(json, security_id)
-        .iter()
-        .find_map(|row| jstr(row, "paymentCalendarUrl").filter(|u| !u.is_empty()))
-        .unwrap_or_default()
-}
-
 fn merge_date_overrides(
     stored: Vec<financial_domain::schedule::DateOverride>,
     draft: Vec<financial_domain::schedule::DateOverride>,
@@ -724,11 +893,193 @@ fn merge_date_overrides(
 
 async fn income_plan_week_view(
     canonical: &dyn Canonical,
-    as_of_date: String,
+    pick_date: String,
+    closed_as_of: String,
 ) -> Result<IncomePlanWeekBody, PlatformError> {
     let accounts = canonical.account_list().await?;
     let securities = canonical.security_list().await?;
     let dividend = canonical.dividend_get().await?;
+    let plans = canonical.plan_history_list().await?;
+    let characteristics = canonical.position_characteristic_list().await?;
+    let basis = canonical.basis_get().await?;
+    let mut decl_dates = std::collections::HashMap::new();
+    income_plan_week_with(
+        canonical,
+        &accounts,
+        &securities,
+        &dividend,
+        &plans,
+        &characteristics,
+        &basis,
+        pick_date,
+        &mut decl_dates,
+        if closed_as_of.trim().is_empty() {
+            None
+        } else {
+            Some(closed_as_of)
+        },
+    )
+    .await
+}
+
+async fn income_plan_grid_view(
+    canonical: &dyn Canonical,
+    as_of_date: String,
+    historical_weeks: u32,
+    future_weeks: u32,
+    accounts: Vec<String>,
+    selected_week_end: String,
+) -> Result<IncomePlanGridBody, PlatformError> {
+    let as_of = parse_iso_date(&as_of_date).unwrap_or_else(|| {
+        chrono::Local::now().date_naive()
+    });
+    let hist = financial_domain::income_plan::clamp_week_count(historical_weeks as i64);
+    let fut = financial_domain::income_plan::clamp_week_count(future_weeks as i64);
+    let visible = financial_domain::income_plan::visible_grid_weeks(as_of, hist, fut);
+    let year = crate::income_plan_display::year_weeks_for(as_of);
+    let accounts_list = canonical.account_list().await?;
+    let securities = canonical.security_list().await?;
+    let dividend = canonical.dividend_get().await?;
+    let plans = canonical.plan_history_list().await?;
+    let characteristics = canonical.position_characteristic_list().await?;
+    let basis = canonical.basis_get().await?;
+    let mut cache = std::collections::HashMap::new();
+    // Sequential load (cache is shared). Year-start first so remaining dates cover the year.
+    let mut year_bodies = Vec::new();
+    for gw in &year {
+        year_bodies.push(
+            income_plan_week_with(
+                canonical,
+                &accounts_list,
+                &securities,
+                &dividend,
+                &plans,
+                &characteristics,
+                &basis,
+                gw.week.end.to_string(),
+                &mut cache,
+                Some(as_of_date.clone()),
+            )
+            .await
+            .map(|body| (gw.kind, body))?,
+        );
+    }
+    let mut week_bodies = Vec::new();
+    for gw in &visible {
+        if let Some(existing) = year_bodies.iter().find(|(_, b)| b.end == gw.week.end.to_string())
+        {
+            week_bodies.push((gw.kind, existing.1.clone()));
+            continue;
+        }
+        week_bodies.push(
+            income_plan_week_with(
+                canonical,
+                &accounts_list,
+                &securities,
+                &dividend,
+                &plans,
+                &characteristics,
+                &basis,
+                gw.week.end.to_string(),
+                &mut cache,
+                Some(as_of_date.clone()),
+            )
+            .await
+            .map(|body| (gw.kind, body))?,
+        );
+    }
+    let selected_end = if selected_week_end.trim().is_empty() {
+        visible
+            .iter()
+            .find(|w| matches!(w.kind, financial_domain::income_plan::GridWeekKind::InProgress))
+            .map(|w| w.week.end.to_string())
+            .unwrap_or_else(|| visible.last().map(|w| w.week.end.to_string()).unwrap_or_default())
+    } else {
+        selected_week_end
+    };
+    Ok(crate::income_plan_display::assemble_grid(
+        as_of.format("%Y-%m-%d").to_string(),
+        hist,
+        fut,
+        crate::income_plan_display::normalize_selected_accounts(&accounts),
+        selected_end,
+        &week_bodies,
+        &year_bodies,
+    ))
+}
+
+async fn income_plan_export_view(
+    canonical: &dyn Canonical,
+    json: &Value,
+) -> Result<IncomePlanExportBody, PlatformError> {
+    let pattern = jstr(json, "pattern").unwrap_or_else(|| "A".into());
+    let format = jstr(json, "format").unwrap_or_else(|| "pdf".into());
+    let as_of = jstr(json, "asOfDate").unwrap_or_else(today_iso);
+    let hist = json
+        .get("historicalWeeks")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(6);
+    let fut = json
+        .get("futureWeeks")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(6);
+    let accounts: Vec<String> = json
+        .get("accounts")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let selected_week = jstr(json, "weekEnding").unwrap_or_default();
+    let printed_at = jstr(json, "printedAt").unwrap_or_else(|| {
+        chrono::Utc::now().format("%Y-%m-%dT%H:%MZ").to_string()
+    });
+    let grid = income_plan_grid_view(
+        canonical,
+        as_of.clone(),
+        financial_domain::income_plan::clamp_week_count(hist),
+        financial_domain::income_plan::clamp_week_count(fut),
+        accounts.clone(),
+        selected_week.clone(),
+    )
+    .await?;
+    let week = if pattern.eq_ignore_ascii_case("B") {
+        let week_as_of = if selected_week.trim().is_empty() {
+            as_of.clone()
+        } else {
+            selected_week.clone()
+        };
+        Some(income_plan_week_view(canonical, week_as_of, as_of.clone()).await?)
+    } else {
+        None
+    };
+    crate::income_plan_display::build_export(crate::income_plan_display::ExportRequest {
+        pattern: &pattern,
+        format: &format,
+        printed_at: &printed_at,
+        grid: Some(&grid),
+        week: week.as_ref(),
+        selected_accounts: &grid.selected_accounts,
+        historical_weeks: grid.historical_weeks,
+        future_weeks: grid.future_weeks,
+    })
+    .map_err(|e| PlatformError::new("export_failed", e))
+}
+
+async fn income_plan_week_with(
+    canonical: &dyn Canonical,
+    accounts: &[AccountRecord],
+    securities: &[SecurityRecord],
+    dividend: &DividendGetBody,
+    plans: &[PlanHistoryRecord],
+    characteristics: &[PositionCharacteristicRecord],
+    basis: &BasisGetBody,
+    as_of_date: String,
+    decl_dates: &mut std::collections::HashMap<uuid::Uuid, Vec<String>>,
+    closed_as_of: Option<String>,
+) -> Result<IncomePlanWeekBody, PlatformError> {
     let latest_actual_on = dividend
         .actuals
         .iter()
@@ -742,14 +1093,32 @@ async fn income_plan_week_view(
     } else {
         as_of_date
     };
-    let week = canonical.canonical_week_get(as_of).await?;
-    let mut actuals: std::collections::HashMap<&'static str, i64> = financial_domain::income_plan::CONTROL_ACCOUNTS
-        .iter()
-        .map(|name| (*name, 0i64))
-        .collect();
+    let week = canonical.canonical_week_get(as_of.clone()).await?;
+    let mut actuals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     let mut position_actuals: std::collections::HashMap<String, i64> =
         std::collections::HashMap::new();
+    let mut position_account_actuals: std::collections::HashMap<(String, String), i64> =
+        std::collections::HashMap::new();
     let mut drilldown = Vec::new();
+    let mut add_actual = |symbol: String,
+                          control: &str,
+                          occurred_on: &str,
+                          amount_minor: i64,
+                          scale: u8| {
+        let display = financial_domain::income_plan::display_account_label(control);
+        *actuals.entry(display.clone()).or_insert(0) += amount_minor;
+        *position_actuals.entry(symbol.clone()).or_insert(0) += amount_minor;
+        *position_account_actuals
+            .entry((symbol.clone(), display.clone()))
+            .or_insert(0) += amount_minor;
+        drilldown.push(IncomePlanDrillBody {
+            account_name: display,
+            symbol,
+            occurred_on: occurred_on.to_string(),
+            amount_minor,
+            scale,
+        });
+    };
     for actual in &dividend.actuals {
         if !financial_domain::income_plan::occurred_in_week(
             &actual.occurred_on,
@@ -764,10 +1133,9 @@ async fn income_plan_week_view(
         let Some(account) = account else {
             continue;
         };
-        let Some(control) = financial_domain::income_plan::map_control_account(&account.name) else {
+        let Some(control) = financial_domain::income_plan::map_income_plan_account(&account.name) else {
             continue;
         };
-        *actuals.entry(control).or_insert(0) += actual.amount_minor;
         let symbol = actual
             .security_id
             .and_then(|id| {
@@ -777,21 +1145,49 @@ async fn income_plan_week_view(
                     .map(|s| s.symbol.clone())
             })
             .unwrap_or_else(|| "—".into());
-        *position_actuals.entry(symbol.clone()).or_insert(0) += actual.amount_minor;
-        drilldown.push(IncomePlanDrillBody {
-            account_name: control.to_string(),
+        add_actual(
             symbol,
-            occurred_on: actual.occurred_on.clone(),
-            amount_minor: actual.amount_minor,
-            scale: actual.scale,
-        });
+            control,
+            &actual.occurred_on,
+            actual.amount_minor,
+            actual.scale,
+        );
     }
-    let plans = canonical.plan_history_list().await?;
-    let characteristics = canonical.position_characteristic_list().await?;
-    let basis = canonical.basis_get().await?;
+    if let Ok(activities) = canonical.activity_list().await {
+        for act in activities {
+            if !financial_domain::income_plan::is_income_cash_activity(&act.activity_type) {
+                continue;
+            }
+            if !act.activity_type.eq_ignore_ascii_case("interest") {
+                continue;
+            }
+            if !financial_domain::income_plan::occurred_in_week(
+                &act.occurred_on,
+                &week.start,
+                &week.end,
+            ) {
+                continue;
+            }
+            let Some(account) = accounts.iter().find(|a| a.account_id == act.account_id) else {
+                continue;
+            };
+            let Some(control) = financial_domain::income_plan::map_income_plan_account(&account.name)
+            else {
+                continue;
+            };
+            let symbol = act
+                .security_id
+                .and_then(|id| {
+                    securities
+                        .iter()
+                        .find(|s| s.security_id == id)
+                        .map(|s| s.symbol.clone())
+                })
+                .unwrap_or_else(|| "CASH".into());
+            add_actual(symbol, control, &act.occurred_on, act.amount_minor, act.scale);
+        }
+    }
     let mut last_actual: std::collections::HashMap<uuid::Uuid, String> =
-        std::collections::HashMap::new();
-    let mut decl_dates: std::collections::HashMap<uuid::Uuid, Vec<String>> =
         std::collections::HashMap::new();
     for actual in &dividend.actuals {
         if let Some(security_id) = actual.security_id {
@@ -810,12 +1206,12 @@ async fn income_plan_week_view(
         scheduled: u32,
         unknown_plan: u32,
     }
-    let mut account_week: std::collections::HashMap<&'static str, AccountWeek> =
+    let mut account_week: std::collections::HashMap<String, AccountWeek> =
         financial_domain::income_plan::CONTROL_ACCOUNTS
             .iter()
             .map(|name| {
                 (
-                    *name,
+                    financial_domain::income_plan::display_account_label(name),
                     AccountWeek {
                         planned: 0,
                         scheduled: 0,
@@ -824,6 +1220,10 @@ async fn income_plan_week_view(
                 )
             })
             .collect();
+    let plan_versions = canonical
+        .plan_history_version_list()
+        .await
+        .unwrap_or_else(|_| plans.to_vec());
     let plan_catalog: std::collections::HashMap<uuid::Uuid, _> = plans
         .iter()
         .map(|p| (p.security_id, p))
@@ -847,8 +1247,27 @@ async fn income_plan_week_view(
             .or_default()
             .push(lot);
     }
+    let last_update_by_sec: std::collections::HashMap<uuid::Uuid, Option<String>> =
+        match canonical.collector_set().await {
+            Ok(set) => set
+                .items
+                .into_iter()
+                .map(|item| {
+                    (
+                        item.security_id,
+                        financial_domain::income_plan::last_update_success(
+                            item.last_run_ok,
+                            &item.last_run_at,
+                        ),
+                    )
+                })
+                .collect(),
+            Err(_) => std::collections::HashMap::new(),
+        };
     let mut positions: Vec<IncomePlanPositionBody> = Vec::new();
     let mut listed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut decl_cache: std::collections::HashMap<Uuid, Vec<IssuerDeclarationRecord>> =
+        std::collections::HashMap::new();
     for (security_id, lots) in &lots_by_security {
         let freq = freq_catalog
             .get(security_id)
@@ -861,9 +1280,14 @@ async fn income_plan_week_view(
         let Some(periods) = cadence.and_then(|c| c.periods()) else {
             continue;
         };
-        let remaining =
-            remaining_pay_dates_for(canonical, *security_id, &week.start, periods, &mut decl_dates)
-                .await?;
+        let remaining = remaining_pay_dates_for(
+            canonical,
+            *security_id,
+            &income_plan_remaining_as_of(&week.end),
+            periods,
+            &mut *decl_dates,
+        )
+        .await?;
         let remaining_refs: Vec<&str> = remaining.iter().map(|s| s.as_str()).collect();
         let last = last_actual.get(security_id).map(|s| s.as_str());
         let calendar_pay = financial_domain::schedule::pay_on_for_week(
@@ -876,36 +1300,83 @@ async fn income_plan_week_view(
         let Some(sec) = securities.iter().find(|s| s.security_id == *security_id) else {
             continue;
         };
-        let actual = *position_actuals.get(&sec.symbol).unwrap_or(&0);
-        if calendar_pay.is_none() && actual == 0 {
+        let actual_known = position_actuals.contains_key(&sec.symbol);
+        let actual = actual_known
+            .then(|| *position_actuals.get(&sec.symbol).unwrap_or(&0))
+            .unwrap_or(0);
+        if !decl_cache.contains_key(security_id) {
+            decl_cache.insert(
+                *security_id,
+                canonical
+                    .issuer_declaration_list(*security_id)
+                    .await
+                    .unwrap_or_default(),
+            );
+        }
+        let decls = decl_cache.get(security_id).map(|v| v.as_slice()).unwrap_or(&[]);
+        let pay_hint = calendar_pay.clone().unwrap_or_default();
+        let decl_row = issuer_declaration_for_week(decls, &week.start, &week.end, &pay_hint);
+        let declaration_known = decl_row.is_some();
+        if calendar_pay.is_none() && !actual_known && !declaration_known {
             continue;
         }
-        let pay_on = calendar_pay.unwrap_or_else(|| {
-            drilldown
-                .iter()
-                .filter(|d| d.symbol == sec.symbol)
-                .map(|d| d.occurred_on.clone())
-                .min()
-                .unwrap_or_default()
-        });
+        let pay_on = calendar_pay
+            .or_else(|| {
+                decl_row.map(|d| {
+                    let p = d.payment_period.as_str();
+                    if p.len() >= 10 { p[..10].to_string() } else { p.to_string() }
+                })
+            })
+            .unwrap_or_else(|| {
+                drilldown
+                    .iter()
+                    .filter(|d| d.symbol == sec.symbol)
+                    .map(|d| d.occurred_on.clone())
+                    .min()
+                    .unwrap_or_default()
+            });
+        let declaration_minor = decl_row
+            .and_then(|d| d.amount_per_share_minor.map(|amt| (amt, d.amount_scale)))
+            .map(|(amt, scale)| lot_cash_for_pay(lots, &pay_on, amt, scale))
+            .unwrap_or(0);
         let plan = plan_catalog.get(security_id);
-        let plan_known = plan.is_some();
+        let windows: Vec<financial_domain::plan::PlanAmountWindow<'_>> = plan_versions
+            .iter()
+            .filter(|p| p.security_id == *security_id)
+            .map(|p| financial_domain::plan::PlanAmountWindow {
+                effective_from: p.effective_from.as_str(),
+                effective_to: p.effective_to.as_str(),
+                amount_per_share_minor: p.amount_per_share_minor,
+                amount_scale: p.amount_scale,
+            })
+            .collect();
+        let mut plan_for_week = plan.map(|p| (*p).clone());
+        if let Some((amt, scale)) =
+            financial_domain::income_plan::plan_amount_on_pay_date(&windows, &pay_on)
+        {
+            if let Some(p) = plan_for_week.as_mut() {
+                p.amount_per_share_minor = amt;
+                p.amount_scale = scale;
+            }
+        }
+        let plan_known = plan_for_week.is_some();
         let mut planned_minor = 0i64;
         for lot in lots {
             let Some(account) = accounts.iter().find(|a| a.account_id == lot.account_id) else {
                 continue;
             };
-            let Some(control) = financial_domain::income_plan::map_control_account(&account.name)
+            let Some(control) = financial_domain::income_plan::map_income_plan_account(&account.name)
             else {
                 continue;
             };
-            let entry = account_week.entry(control).or_insert(AccountWeek {
+            let display = financial_domain::income_plan::display_account_label(control);
+            let entry = account_week.entry(display).or_insert(AccountWeek {
                 planned: 0,
                 scheduled: 0,
                 unknown_plan: 0,
             });
             entry.scheduled = entry.scheduled.saturating_add(1);
-            if let Some(p) = plan {
+            if let Some(p) = plan_for_week.as_ref() {
                 let pay = financial_domain::calculator::plan_payment_cents(
                     lot.remaining_quantity_minor,
                     lot.quantity_scale,
@@ -919,6 +1390,15 @@ async fn income_plan_week_view(
             }
         }
         listed.insert(sec.symbol.clone());
+        let account_slices = income_plan_position_accounts(
+            &sec.symbol,
+            lots,
+            accounts,
+            plan_for_week.as_ref(),
+            &pay_on,
+            decl_row,
+            &position_account_actuals,
+        );
         positions.push(IncomePlanPositionBody {
             symbol: sec.symbol.clone(),
             cadence: cadence
@@ -926,15 +1406,29 @@ async fn income_plan_week_view(
                 .unwrap_or_default(),
             pay_on,
             actual_minor: actual,
+            actual_known,
             planned_minor,
             plan_known,
+            declaration_minor,
+            declaration_known,
             scale: 2,
+            accounts: account_slices,
+            last_update: last_update_by_sec.get(security_id).cloned().flatten(),
         });
     }
     for (symbol, actual) in &position_actuals {
         if *actual == 0 || listed.contains(symbol) {
             continue;
         }
+        let account_slices = income_plan_position_accounts(
+            symbol,
+            &[],
+            accounts,
+            None,
+            "",
+            None,
+            &position_account_actuals,
+        );
         positions.push(IncomePlanPositionBody {
             symbol: symbol.clone(),
             cadence: String::new(),
@@ -945,13 +1439,29 @@ async fn income_plan_week_view(
                 .min()
                 .unwrap_or_default(),
             actual_minor: *actual,
+            actual_known: true,
             planned_minor: 0,
             plan_known: false,
+            declaration_minor: 0,
+            declaration_known: false,
             scale: 2,
+            accounts: account_slices,
+            last_update: None,
         });
     }
     positions.sort_by(|a, b| a.symbol.cmp(&b.symbol));
-    let lines = financial_domain::income_plan::CONTROL_ACCOUNTS
+    let mut line_names: Vec<String> = financial_domain::income_plan::CONTROL_ACCOUNTS
+        .iter()
+        .map(|name| financial_domain::income_plan::display_account_label(name))
+        .collect();
+    for extra in ["Speculation", "Energy", "Robinhood"] {
+        if (account_week.contains_key(extra) || actuals.contains_key(extra))
+            && !line_names.iter().any(|n| n == extra)
+        {
+            line_names.push(extra.to_string());
+        }
+    }
+    let lines: Vec<IncomePlanLineBody> = line_names
         .iter()
         .map(|name| {
             let row = account_week.get(name);
@@ -959,7 +1469,7 @@ async fn income_plan_week_view(
             let unknown = row.map(|r| r.unknown_plan).unwrap_or(0);
             let plan_known = scheduled > 0 && unknown == 0;
             IncomePlanLineBody {
-                account_name: (*name).to_string(),
+                account_name: name.clone(),
                 actual_minor: *actuals.get(name).unwrap_or(&0),
                 plan_known,
                 planned_minor: if plan_known {
@@ -971,16 +1481,263 @@ async fn income_plan_week_view(
             }
         })
         .collect();
+    let cutoff = closed_as_of.as_deref().unwrap_or(as_of.as_str());
+    let week_closed = week.end.as_str() < cutoff;
+    let mut miss_count = 0u64;
+    let mut amount_exception_count = 0u64;
+    let mut variance_minor = None;
+    if week_closed {
+        let mut planned = 0i64;
+        let mut actual = 0i64;
+        for pos in &positions {
+            if pos.plan_known {
+                planned += pos.planned_minor;
+            }
+            let paid = pos.actual_known && pos.actual_minor != 0;
+            if pos.plan_known && pos.planned_minor != 0 && !paid {
+                miss_count = miss_count.saturating_add(1);
+            } else if pos.plan_known && paid {
+                let d = pos.actual_minor - pos.planned_minor;
+                if d.abs() > financial_domain::income_plan::TABLE2_OK_TOLERANCE_MINOR {
+                    amount_exception_count = amount_exception_count.saturating_add(1);
+                }
+            }
+            if pos.actual_known {
+                actual += pos.actual_minor;
+            }
+        }
+        variance_minor = Some(actual - planned);
+    }
     Ok(IncomePlanWeekBody {
         as_of_date: week.as_of_date,
-        start: week.start,
-        end: week.end,
+        start: week.start.clone(),
+        end: week.end.clone(),
+        week_year: week.week_year,
+        week_number: week.week_number,
         status: "Open".into(),
         lines,
         positions,
         drilldown,
         latest_actual_on,
         yield_count,
+        scale: 2,
+        miss_count,
+        amount_exception_count,
+        variance_minor,
+    })
+}
+
+fn parse_iso_date(s: &str) -> Option<chrono::NaiveDate> {
+    let day = if s.len() >= 10 { &s[..10] } else { s };
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()
+}
+
+fn performance_week_from_plan(week: &IncomePlanWeekBody) -> DividendPerformanceWeekBody {
+    let plan_known = !week.positions.is_empty() && week.positions.iter().all(|p| p.plan_known);
+    let planned_minor = if plan_known {
+        week.positions.iter().map(|p| p.planned_minor).sum()
+    } else {
+        0
+    };
+    let actual_known = week.positions.iter().any(|p| p.actual_known);
+    let actual_minor: i64 = week
+        .positions
+        .iter()
+        .filter(|p| p.actual_known)
+        .map(|p| p.actual_minor)
+        .sum();
+    let declaration_known = week.positions.iter().any(|p| p.declaration_known);
+    let declaration_minor: i64 = week
+        .positions
+        .iter()
+        .filter(|p| p.declaration_known)
+        .map(|p| p.declaration_minor)
+        .sum();
+    DividendPerformanceWeekBody {
+        start: week.start.clone(),
+        end: week.end.clone(),
+        week_year: week.week_year,
+        week_number: week.week_number,
+        actual_minor,
+        actual_known,
+        planned_minor,
+        plan_known,
+        declaration_minor,
+        declaration_known,
+        pct_of_plan_minor: financial_domain::income_plan::pct_of_plan_minor(
+            actual_minor,
+            plan_known && actual_known,
+            planned_minor,
+        ),
+        positions: week
+            .positions
+            .iter()
+            .map(|p| DividendPerformancePositionBody {
+                symbol: p.symbol.clone(),
+                actual_minor: p.actual_minor,
+                actual_known: p.actual_known,
+                planned_minor: p.planned_minor,
+                plan_known: p.plan_known,
+                declaration_minor: p.declaration_minor,
+                declaration_known: p.declaration_known,
+                pct_of_plan_minor: financial_domain::income_plan::pct_of_plan_minor(
+                    p.actual_minor,
+                    p.plan_known && p.actual_known,
+                    p.planned_minor,
+                ),
+                scale: p.scale,
+            })
+            .collect(),
+        scale: week.scale,
+    }
+}
+
+fn empty_performance_summary(scale: u8) -> DividendPerformanceSummaryBody {
+    DividendPerformanceSummaryBody {
+        actual_minor: 0,
+        planned_minor: 0,
+        plan_known: false,
+        pct_of_plan_minor: None,
+        avg_weekly_actual_minor: None,
+        avg_weekly_plan_minor: None,
+        week_count: 0,
+        known_plan_week_count: 0,
+        scale,
+    }
+}
+
+async fn dividend_performance_view(
+    canonical: &dyn Canonical,
+    as_of_date: String,
+    range: String,
+) -> Result<DividendPerformanceBody, PlatformError> {
+    let accounts = canonical.account_list().await?;
+    let securities = canonical.security_list().await?;
+    let dividend = canonical.dividend_get().await?;
+    let plans = canonical.plan_history_list().await?;
+    let characteristics = canonical.position_characteristic_list().await?;
+    let basis = canonical.basis_get().await?;
+    let latest_actual_on = dividend.actuals.iter().map(|a| a.occurred_on.clone()).max();
+    let as_of = if as_of_date.trim().is_empty() {
+        latest_actual_on.clone().unwrap_or_else(today_iso)
+    } else {
+        as_of_date
+    };
+    let as_of_d = parse_iso_date(&as_of).ok_or_else(|| {
+        PlatformError::new("invalid_date", format!("invalid asOfDate {as_of}"))
+    })?;
+    let range_key = if range.trim().is_empty() {
+        "ytd".to_string()
+    } else {
+        range.trim().to_ascii_lowercase()
+    };
+    let range_start_d = financial_domain::income_plan::performance_range_start(as_of_d, &range_key)
+        .map_err(|code| PlatformError::new(code, format!("unsupported range {range_key}")))?;
+    let this_week = financial_domain::week::week_containing(as_of_d);
+    let mut earliest: Option<chrono::NaiveDate> = None;
+    for actual in &dividend.actuals {
+        if let Some(d) = parse_iso_date(&actual.occurred_on) {
+            earliest = Some(earliest.map_or(d, |e| e.min(d)));
+        }
+    }
+    for lot in &basis.lots {
+        if lot.remaining_quantity_minor <= 0 {
+            continue;
+        }
+        if let Some(d) = parse_iso_date(&lot.opened_on) {
+            earliest = Some(earliest.map_or(d, |e| e.min(d)));
+        }
+    }
+    let walk_from = match (range_start_d, earliest) {
+        (Some(rs), Some(e)) => rs.max(e),
+        (Some(rs), None) => rs,
+        (None, Some(e)) => e,
+        (None, None) => {
+            return Ok(DividendPerformanceBody {
+                as_of_date: as_of,
+                range: range_key,
+                range_start: None,
+                this_week_start: this_week.start.to_string(),
+                weeks: Vec::new(),
+                summary: empty_performance_summary(2),
+                scale: 2,
+            });
+        }
+    };
+    let mut decl_dates = std::collections::HashMap::new();
+    let mut last_year: Option<i32> = None;
+    let mut weeks: Vec<DividendPerformanceWeekBody> = Vec::new();
+    let mut cursor = financial_domain::week::week_containing(walk_from).start;
+    while cursor < this_week.start {
+        let w = financial_domain::week::week_containing(cursor);
+        if w.end >= this_week.start {
+            break;
+        }
+        let year = chrono::Datelike::year(&w.start);
+        if last_year != Some(year) {
+            decl_dates.clear();
+            last_year = Some(year);
+        }
+        let in_range = range_start_d.map(|rs| w.end >= rs).unwrap_or(true);
+        if in_range {
+            let view = income_plan_week_with(
+                canonical,
+                &accounts,
+                &securities,
+                &dividend,
+                &plans,
+                &characteristics,
+                &basis,
+                w.end.to_string(),
+                &mut decl_dates,
+                None,
+            )
+            .await?;
+            let actual_minor: i64 = view.positions.iter().map(|p| p.actual_minor).sum();
+            if !view.positions.is_empty() || actual_minor > 0 {
+                weeks.push(performance_week_from_plan(&view));
+            }
+        }
+        cursor += chrono::Duration::days(7);
+    }
+    weeks.sort_by(|a, b| a.end.cmp(&b.end));
+    let week_count = weeks.len() as u32;
+    let actual_total: i64 = weeks.iter().map(|w| w.actual_minor).sum();
+    let known: Vec<&DividendPerformanceWeekBody> =
+        weeks.iter().filter(|w| w.plan_known).collect();
+    let known_plan_week_count = known.len() as u32;
+    let planned_total: i64 = known.iter().map(|w| w.planned_minor).sum();
+    let known_actual: i64 = known.iter().map(|w| w.actual_minor).sum();
+    let summary = DividendPerformanceSummaryBody {
+        actual_minor: actual_total,
+        planned_minor: planned_total,
+        plan_known: known_plan_week_count > 0,
+        pct_of_plan_minor: financial_domain::income_plan::pct_of_plan_minor(
+            known_actual,
+            known_plan_week_count > 0,
+            planned_total,
+        ),
+        avg_weekly_actual_minor: if known_plan_week_count == 0 {
+            None
+        } else {
+            Some(known_actual / i64::from(known_plan_week_count))
+        },
+        avg_weekly_plan_minor: if known_plan_week_count == 0 {
+            None
+        } else {
+            Some(planned_total / i64::from(known_plan_week_count))
+        },
+        week_count,
+        known_plan_week_count,
+        scale: 2,
+    };
+    Ok(DividendPerformanceBody {
+        as_of_date: as_of,
+        range: range_key,
+        range_start: range_start_d.map(|d| d.to_string()),
+        this_week_start: this_week.start.to_string(),
+        weeks,
+        summary,
         scale: 2,
     })
 }
@@ -996,7 +1753,7 @@ async fn dashboard_burndown_view(
     canonical: &dyn Canonical,
     as_of_date: String,
 ) -> Result<DashboardBurndownBody, PlatformError> {
-    let week = income_plan_week_view(canonical, as_of_date).await?;
+    let week = income_plan_week_view(canonical, as_of_date.clone(), as_of_date).await?;
     let accounts = canonical.account_list().await?;
     let activities = canonical.activity_list().await?;
     let snapshots = canonical.account_balance_snapshot_list().await?;
@@ -1068,8 +1825,10 @@ async fn dashboard_burndown_view(
         .collect();
     Ok(DashboardBurndownBody {
         as_of_date: week.as_of_date,
-        start: week.start,
-        end: week.end,
+        start: week.start.clone(),
+        end: week.end.clone(),
+        week_year: week.week_year,
+        week_number: week.week_number,
         status: week.status,
         note: "operational (week not closed); Account 9 excluded from burndown; ending balances from Trends snapshots".into(),
         lines,
@@ -1125,6 +1884,17 @@ async fn account_trends_weeks(
         let bals = by_period.get(&src.period_end);
         weeks.push(TrendsWeekPoint {
             period_end: src.period_end.clone(),
+            period_start: {
+                financial_domain::week::parse_iso_day(&src.period_end)
+                    .map(|d| financial_domain::week::week_containing(d).start.to_string())
+                    .unwrap_or_default()
+            },
+            week_year: financial_domain::week::parse_iso_day(&src.period_end)
+                .map(|d| financial_domain::week::week_id_containing(d).year)
+                .unwrap_or(0),
+            week_number: financial_domain::week::parse_iso_day(&src.period_end)
+                .map(|d| financial_domain::week::week_id_containing(d).number)
+                .unwrap_or(0),
             profit_minor: src.profit_minor,
             monthly_divs_minor: src.monthly_divs_minor,
             div_delta_minor: div_delta,
@@ -1191,6 +1961,11 @@ fn is_data_account(name: &str) -> bool {
 
 fn today_iso() -> String {
     chrono::Utc::now().date_naive().to_string()
+}
+
+/// Local date and time for collector last-run / retrieve_run stamps.
+fn run_stamp_local() -> String {
+    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
 fn calendar_month_prefix(as_of: &str) -> Option<String> {
@@ -1311,6 +2086,7 @@ fn count_paid_declarations(decls: &[IssuerDeclarationRecord]) -> u8 {
 fn declaration_store_verify_issues(
     candidates: &[Value],
     stored: &[IssuerDeclarationRecord],
+    as_of: &str,
 ) -> Vec<String> {
     use std::collections::HashMap;
     let mut issues = Vec::new();
@@ -1326,8 +2102,14 @@ fn declaration_store_verify_issues(
         }
     }
     for c in candidates {
+        if is_cash_rate_candidate(c) {
+            continue;
+        }
         let period = jstr(c, "paymentPeriod").unwrap_or_default();
         if period.is_empty() {
+            continue;
+        }
+        if !financial_domain::schedule::period_has_occurred(&period, as_of) {
             continue;
         }
         let amount = match c.get("amountPerShareMinor").and_then(|x| {
@@ -1350,7 +2132,8 @@ fn declaration_store_verify_issues(
             continue;
         }
         if !rows.iter().any(|d| {
-            d.amount_per_share_minor == Some(amount) && d.amount_scale == scale
+            d.amount_per_share_minor
+                .is_some_and(|stored| financial_domain::money::amounts_equal(stored, d.amount_scale, amount, scale))
         }) {
             issues.push(format!(
                 "amount mismatch for {period}: stored {:?}, expected {amount} scale {scale}",
@@ -1363,6 +2146,17 @@ fn declaration_store_verify_issues(
     issues
 }
 
+fn declaration_lookback_applies(div_type: &str, declaration_source: &str, symbol: &str) -> bool {
+    if financial_domain::mlp_sec::is_adapter_kind(declaration_source) {
+        return false;
+    }
+    if financial_domain::current_price::uses_cash_par(div_type, symbol) {
+        return false;
+    }
+    financial_domain::div1::is_div1(div_type)
+        || financial_domain::div1::is_registered_declaration_source(declaration_source)
+}
+
 struct DeclarationGate {
     ok: bool,
     code: String,
@@ -1373,13 +2167,21 @@ fn declaration_retrieve_gate(
     paid_count: u8,
     inception_on: &str,
     payment_frequency: &str,
-    div_type: &str,
+    apply_lookback: bool,
+    lookback_owner_accepted: bool,
 ) -> DeclarationGate {
-    if !financial_domain::div1::is_div1(div_type) {
+    if !apply_lookback {
         return DeclarationGate {
             ok: true,
             code: String::new(),
             message: String::new(),
+        };
+    }
+    if lookback_owner_accepted && paid_count > 0 {
+        return DeclarationGate {
+            ok: true,
+            code: String::new(),
+            message: "declaration retrieve complete (owner accepted issuer series)".into(),
         };
     }
     use financial_domain::declaration_lookback::{
@@ -1398,7 +2200,7 @@ fn declaration_retrieve_gate(
             ok: false,
             code: "declaration_lookback_short".into(),
             message: format!(
-                "Adapter returned {paid} of {DECLARATION_LOOKBACK_TARGET} required paid declarations. Set optional inception on Settings only if this name is too new for a full lookback."
+                "Adapter returned {paid} of {DECLARATION_LOOKBACK_TARGET} required paid declarations. Confirm inception Yes/No — do not defer to Settings."
             ),
         },
         LookbackValidation::ShortWithInception { paid, expected } => DeclarationGate {
@@ -1409,6 +2211,1395 @@ fn declaration_retrieve_gate(
             ),
         },
     }
+}
+
+fn paid_view_from_record(d: &IssuerDeclarationRecord) -> financial_domain::declaration_post::PaidDeclarationView<'_> {
+    financial_domain::declaration_post::PaidDeclarationView {
+        payment_period: d.payment_period.as_str(),
+        amount_per_share_minor: d.amount_per_share_minor,
+        amount_scale: d.amount_scale,
+    }
+}
+
+fn paid_json_period(c: &Value) -> String {
+    jstr(c, "paymentPeriod")
+        .or_else(|| jstr(c, "payOn"))
+        .unwrap_or_default()
+}
+
+fn parse_owner_per_unit_amount(raw: &str) -> Option<(i64, u8)> {
+    let s = raw.trim().trim_start_matches('$').replace(',', "");
+    if s.is_empty() {
+        return None;
+    }
+    let (whole, frac) = match s.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (s.as_str(), ""),
+    };
+    let whole_n: i64 = whole.parse().ok()?;
+    let scale = frac.len() as u8;
+    let frac_n: i64 = if frac.is_empty() {
+        0
+    } else {
+        frac.parse().ok()?
+    };
+    let pow = 10i64.checked_pow(u32::from(scale))?;
+    let minor = whole_n.checked_mul(pow)?.checked_add(frac_n)?;
+    if minor <= 0 {
+        return None;
+    }
+    Some((minor, scale.max(2)))
+}
+
+fn payment_period_from_ticket_reason(reason: &str) -> Option<String> {
+    for token in reason.split_whitespace() {
+        let key = payment_period_key(token.trim_end_matches(';'));
+        if financial_domain::week::parse_iso_day(&key).is_some() {
+            return Some(key);
+        }
+    }
+    None
+}
+
+fn payment_period_key(raw: &str) -> String {
+    let s = raw.trim();
+    if s.len() >= 10 {
+        s[..10].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn paid_json_amount(c: &Value) -> Option<i64> {
+    c.get("amountPerShareMinor").and_then(|x| {
+        if x.is_null() {
+            None
+        } else {
+            ji64(c, "amountPerShareMinor")
+        }
+    })
+}
+
+fn declaration_post_check_issues(
+    stored_before: &[IssuerDeclarationRecord],
+    stored_after: &[IssuerDeclarationRecord],
+    newly_posted: &[Value],
+    page_paid: &[Value],
+    locked_frequency: &str,
+    stored_paid_count: u8,
+) -> Vec<(String, String)> {
+    use financial_domain::declaration_post::{
+        amount_variation_applies, cadence_matches_locked, new_amount_variation_issues,
+        overlap_amount_change_issues, previous_periods_retained, PaidDeclarationView,
+        AMOUNT_VARIATION_PCT,
+    };
+    let mut out = Vec::new();
+    let variation = amount_variation_applies(stored_paid_count);
+    if !page_paid.is_empty() {
+        let page_hold: Vec<(String, Option<i64>, u8)> = page_paid
+            .iter()
+            .map(|c| {
+                (
+                    paid_json_period(c),
+                    paid_json_amount(c),
+                    ju8(c, "amountScale", 2),
+                )
+            })
+            .collect();
+        let page_views: Vec<PaidDeclarationView<'_>> = page_hold
+            .iter()
+            .map(|(p, a, s)| PaidDeclarationView {
+                payment_period: p.as_str(),
+                amount_per_share_minor: *a,
+                amount_scale: *s,
+            })
+            .collect();
+        let before_views: Vec<_> = stored_before.iter().map(paid_view_from_record).collect();
+        for issue in previous_periods_retained(&before_views, &page_views) {
+            out.push((issue.code.to_string(), issue.message));
+        }
+        if variation {
+            let after_overlap: Vec<_> = stored_after.iter().map(paid_view_from_record).collect();
+            for issue in overlap_amount_change_issues(&after_overlap, &page_views) {
+                out.push((issue.code.to_string(), issue.message));
+            }
+        }
+        // Issuer page only. An empty retrieve must not infer Monthly from leftover stored dates.
+        let periods: Vec<&str> = page_views.iter().map(|v| v.payment_period).collect();
+        for issue in cadence_matches_locked(&periods, locked_frequency) {
+            out.push((issue.code.to_string(), issue.message));
+        }
+    }
+    let new_hold: Vec<(String, Option<i64>, u8)> = newly_posted
+        .iter()
+        .map(|c| {
+            (
+                paid_json_period(c),
+                paid_json_amount(c),
+                ju8(c, "amountScale", 2),
+            )
+        })
+        .collect();
+    let new_views: Vec<PaidDeclarationView<'_>> = new_hold
+        .iter()
+        .map(|(p, a, s)| PaidDeclarationView {
+            payment_period: p.as_str(),
+            amount_per_share_minor: *a,
+            amount_scale: *s,
+        })
+        .collect();
+    let after_views: Vec<_> = stored_after.iter().map(paid_view_from_record).collect();
+    if variation {
+        for issue in new_amount_variation_issues(&new_views, &after_views, AMOUNT_VARIATION_PCT) {
+            out.push((issue.code.to_string(), issue.message));
+        }
+    }
+    out
+}
+
+fn append_tried_url(existing: &str, url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return existing.to_string();
+    }
+    let mut urls: Vec<String> = serde_json::from_str(existing).unwrap_or_default();
+    if !urls.iter().any(|u| u == url) {
+        urls.push(url.to_string());
+    }
+    serde_json::to_string(&urls).unwrap_or_else(|_| "[]".into())
+}
+
+async fn work_ticket_raise_or_bump(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    symbol: &str,
+    code: &str,
+    reason: &str,
+    url: &str,
+) -> Result<WorkTicketRecord, PlatformError> {
+    let Some(tool) = financial_domain::work_ticket::tool_for_code(code) else {
+        return Err(PlatformError::new(
+            "ticket_missing_tool",
+            format!("no fix tool for code {code}"),
+        ));
+    };
+    let field = financial_domain::work_ticket::field_for_code(code).to_string();
+    let today = today_iso();
+    let open = canonical
+        .work_ticket_list(Some(security_id), Some("open".into()))
+        .await
+        .unwrap_or_default();
+    if let Some(mut existing) = open.into_iter().find(|t| t.code == code) {
+        existing.reason = reason.to_string();
+        existing.last_seen_on = today;
+        existing.urls_tried = append_tried_url(&existing.urls_tried, url);
+        existing.tool = tool.to_string();
+        existing.field = field;
+        return canonical.work_ticket_update(existing).await;
+    }
+    canonical
+        .work_ticket_raise(WorkTicketRecord {
+            ticket_id: Uuid::new_v4(),
+            security_id,
+            symbol: symbol.to_string(),
+            field,
+            code: code.to_string(),
+            tool: tool.to_string(),
+            reason: reason.to_string(),
+            urls_tried: append_tried_url("[]", url),
+            opened_on: today.clone(),
+            last_seen_on: today,
+            status: "open".into(),
+            filed_on: String::new(),
+            completed_how: String::new(),
+            owner_note: String::new(),
+            retrieve_run_id: String::new(),
+        })
+        .await
+}
+
+async fn raise_collector_identity_tickets(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    symbol: &str,
+    json: &Value,
+) {
+    let url = jstr(json, "sourceUrl")
+        .or_else(|| jstr(json, "source_url"))
+        .unwrap_or_default();
+    let chars = canonical
+        .position_characteristic_list()
+        .await
+        .unwrap_or_default();
+    let rec = chars.into_iter().find(|c| c.security_id == security_id);
+    let cash = rec
+        .as_ref()
+        .map(|c| financial_domain::current_price::uses_cash_par(&c.div_type, symbol))
+        .unwrap_or_else(|| financial_domain::current_price::is_cash_par_symbol(symbol));
+    let div_type = rec.as_ref().map(|c| c.div_type.as_str()).unwrap_or("");
+    if div_type.trim().is_empty() {
+        let _ = work_ticket_raise_or_bump(
+            canonical,
+            security_id,
+            symbol,
+            "div_type",
+            "DIV-1 (or CASH) is empty — owner must set it.",
+            &url,
+        )
+        .await;
+    }
+    if !cash {
+        let freq = rec
+            .as_ref()
+            .map(|c| c.payment_frequency.as_str())
+            .unwrap_or("");
+        if financial_domain::calculator::PaymentCadence::parse(freq)
+            .and_then(financial_domain::calculator::PaymentCadence::periods)
+            .is_none()
+        {
+            let _ = work_ticket_raise_or_bump(
+                canonical,
+                security_id,
+                symbol,
+                "frequency",
+                "Dividend frequency cannot be derived.",
+                &url,
+            )
+            .await;
+        }
+        let underlying = rec.as_ref().map(|c| c.underlying.as_str()).unwrap_or("");
+        if underlying.trim().is_empty() || underlying.eq_ignore_ascii_case(symbol) {
+            let _ = work_ticket_raise_or_bump(
+                canonical,
+                security_id,
+                symbol,
+                "underlying",
+                "Underlying is unknown after retrieve.",
+                &url,
+            )
+            .await;
+        }
+        let roc_ok = rec
+            .as_ref()
+            .and_then(|c| c.roc_pct_2026_estimate_minor)
+            .is_some();
+        if !roc_ok {
+            let probe = json
+                .get("rocProbes")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|p| p.get("url").and_then(|u| u.as_str()))
+                .unwrap_or(url.as_str());
+            let _ = work_ticket_raise_or_bump(
+                canonical,
+                security_id,
+                symbol,
+                "roc_estimate",
+                "19a-1 search miss — ROC estimate unknown. Never invent 0%.",
+                probe,
+            )
+            .await;
+        }
+    }
+}
+
+async fn collector_status_for(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    symbol: &str,
+    as_of: &str,
+) -> financial_domain::collector::CollectorCompleteStatus {
+    let template = canonical
+        .retrieval_template_get(security_id)
+        .await
+        .ok()
+        .flatten();
+    let chars = canonical
+        .position_characteristic_list()
+        .await
+        .unwrap_or_default();
+    let ch = chars.into_iter().find(|c| c.security_id == security_id);
+    let paid = canonical
+        .issuer_declaration_list(security_id)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+        .count()
+        .min(255) as u8;
+    let obs = canonical
+        .roc_observation_list(security_id)
+        .await
+        .unwrap_or_default();
+    let owner_override = obs.iter().any(|o| o.owner_override);
+    let roc_pct = ch.as_ref().and_then(|c| c.roc_pct_2026_estimate_minor);
+    let needs = ch.as_ref().map(|c| c.needs_roc_research).unwrap_or(true);
+    let roc_owner_accepted = roc_pct.is_some() && (!needs || owner_override);
+    let freq = ch
+        .as_ref()
+        .map(|c| c.payment_frequency.clone())
+        .unwrap_or_default();
+    let periods = financial_domain::calculator::PaymentCadence::parse(&freq)
+        .and_then(financial_domain::calculator::PaymentCadence::periods)
+        .unwrap_or(0);
+    let pays = canonical
+        .issuer_pay_date_list(security_id)
+        .await
+        .unwrap_or_default();
+    let pay_ons: Vec<&str> = pays.iter().map(|p| p.pay_on.as_str()).collect();
+    let vendor_ons: Vec<&str> = pays
+        .iter()
+        .filter(|p| !p.source.eq_ignore_ascii_case("derived_walk"))
+        .map(|p| p.pay_on.as_str())
+        .collect();
+    let stored = financial_domain::collector::stored_remaining_planned(&pay_ons, as_of);
+    let issuer_remaining = {
+        let n = financial_domain::collector::stored_remaining_planned(&vendor_ons, as_of);
+        if n > 0 {
+            Some(n)
+        } else {
+            None
+        }
+    };
+    let planned = if periods == 0 {
+        None
+    } else if stored > 0 || issuer_remaining.is_some() {
+        Some(stored)
+    } else {
+        remaining_year_schedule_for(canonical, security_id, as_of, periods, None, &[])
+            .await
+            .ok()
+            .and_then(|s| s.remaining_periods)
+            .or(Some(0))
+    };
+    let decisions = canonical
+        .collector_field_decision_list(security_id)
+        .await
+        .unwrap_or_default();
+    let lookback_owner_accepted = decisions.iter().any(|d| {
+        d.field.eq_ignore_ascii_case("paid_history") && d.decision.eq_ignore_ascii_case("accept")
+    });
+    let skipped: Vec<String> = decisions
+        .into_iter()
+        .filter(|d| d.decision.eq_ignore_ascii_case("skip"))
+        .map(|d| d.field)
+        .collect();
+    let skipped_refs: Vec<&str> = skipped.iter().map(|s| s.as_str()).collect();
+    financial_domain::collector::collector_status(
+        &financial_domain::collector::CollectorCompleteSpec {
+            has_template: template.is_some(),
+            symbol,
+            div_type: ch.as_ref().map(|c| c.div_type.as_str()).unwrap_or(""),
+            payment_frequency: ch
+                .as_ref()
+                .map(|c| c.payment_frequency.as_str())
+                .unwrap_or(""),
+            underlying: ch.as_ref().map(|c| c.underlying.as_str()).unwrap_or(""),
+            provider: ch.as_ref().map(|c| c.provider.as_str()).unwrap_or(""),
+            risk_tier: ch.as_ref().map(|c| c.risk_tier.as_str()).unwrap_or(""),
+            paid_declaration_count: paid,
+            inception_on: template
+                .as_ref()
+                .map(|t| t.inception_on.as_str())
+                .unwrap_or(""),
+            as_of,
+            roc_pct_minor: roc_pct,
+            roc_owner_accepted,
+            planned_remaining: planned,
+            issuer_remaining,
+            skipped_required: &skipped_refs,
+            lookback_owner_accepted,
+            last_run_ok: template.as_ref().and_then(|t| t.last_run_ok),
+        },
+    )
+}
+
+fn ticket_code_from_run(code: &str) -> String {
+    let c = code.trim();
+    if financial_domain::work_ticket::tool_for_code(c).is_some() {
+        c.to_string()
+    } else {
+        "declaration_retrieve_miss".into()
+    }
+}
+
+/// Open a ticket for every enabled collector whose latest declaration retrieve
+/// missed, even when last_run_ok was later overwritten to true.
+async fn work_ticket_sync_misses(
+    canonical: &dyn Canonical,
+) -> Result<WorkTicketSyncMissesBody, PlatformError> {
+    let set = canonical.collector_set().await?;
+    let mut scanned = 0u64;
+    let mut raised = 0u64;
+    for item in &set.items {
+        if !item.collector_enabled || item.declaration_source.trim().is_empty() {
+            continue;
+        }
+        scanned += 1;
+        let runs = canonical
+            .retrieve_run_list(Some(item.security_id), 50)
+            .await
+            .unwrap_or_default();
+        let decl: Vec<_> = runs.iter().filter(|r| r.kind == "declaration").collect();
+        let latest = decl.first();
+        let last_failed = item.last_run_ok == Some(false);
+        let (code, reason) = match latest {
+            Some(run) if !run.ok => (
+                ticket_code_from_run(&run.code),
+                if run.message.trim().is_empty() {
+                    "Issuer page empty.".into()
+                } else {
+                    run.message.clone()
+                },
+            ),
+            Some(_) => continue,
+            None if last_failed => (
+                "declaration_retrieve_miss".into(),
+                if item.last_run_message.trim().is_empty() {
+                    "Issuer page empty.".into()
+                } else {
+                    item.last_run_message.clone()
+                },
+            ),
+            None => continue,
+        };
+        let existing = canonical
+            .work_ticket_list(Some(item.security_id), None)
+            .await
+            .unwrap_or_default();
+        let had_open = existing
+            .iter()
+            .any(|t| t.status == "open" && t.code == code);
+        if !had_open
+            && existing.iter().any(|t| {
+                t.status == "done" && t.code == code && t.completed_how == "owner_filed"
+            })
+        {
+            continue;
+        }
+        if work_ticket_raise_or_bump(
+            canonical,
+            item.security_id,
+            &item.symbol,
+            &code,
+            &reason,
+            &item.source_url,
+        )
+        .await
+        .is_ok()
+            && !had_open
+        {
+            raised += 1;
+        }
+    }
+    for item in &set.items {
+        if !item.collector_enabled {
+            continue;
+        }
+        close_stale_expected_4_remaining_year(
+            canonical,
+            item.security_id,
+            &item.symbol,
+            &today_iso(),
+        )
+        .await;
+    }
+    let open = canonical
+        .work_ticket_list(None, Some("open".into()))
+        .await
+        .unwrap_or_default();
+    Ok(WorkTicketSyncMissesBody {
+        scanned,
+        raised,
+        open_count: open.len() as u64,
+    })
+}
+
+async fn close_stale_expected_4_remaining_year(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    _symbol: &str,
+    as_of: &str,
+) {
+    let open = canonical
+        .work_ticket_list(Some(security_id), Some("open".into()))
+        .await
+        .unwrap_or_default();
+    let pays = canonical
+        .issuer_pay_date_list(security_id)
+        .await
+        .unwrap_or_default();
+    let stored_ons: Vec<&str> = pays.iter().map(|p| p.pay_on.as_str()).collect();
+    let vendor_ons: Vec<&str> = pays
+        .iter()
+        .filter(|p| !p.source.eq_ignore_ascii_case("derived_walk"))
+        .map(|p| p.pay_on.as_str())
+        .collect();
+    if financial_domain::collector::remaining_year_dates_disagree(&stored_ons, &vendor_ons, as_of)
+    {
+        return;
+    }
+    let today = today_iso();
+    for mut t in open {
+        if t.code != "remaining_year" {
+            continue;
+        }
+        if !financial_domain::work_ticket::is_stale_expected_4_remaining_year(&t.reason) {
+            continue;
+        }
+        t.status = "done".into();
+        t.filed_on = today.clone();
+        t.completed_how = "auto_resolved".into();
+        t.last_seen_on = today.clone();
+        let _ = canonical.work_ticket_update(t).await;
+    }
+}
+
+async fn work_ticket_auto_file_declaration(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    retrieve_run_id: Uuid,
+) {
+    let Ok(open) = canonical
+        .work_ticket_list(Some(security_id), Some("open".into()))
+        .await
+    else {
+        return;
+    };
+    let today = today_iso();
+    for mut t in open {
+        if !financial_domain::work_ticket::is_auto_file_on_ok_code(&t.code) {
+            continue;
+        }
+        t.status = "done".into();
+        t.filed_on = today.clone();
+        t.completed_how = "auto_resolved".into();
+        t.last_seen_on = today.clone();
+        t.retrieve_run_id = retrieve_run_id.to_string();
+        let _ = canonical.work_ticket_update(t).await;
+    }
+}
+
+async fn work_ticket_file_on(
+    canonical: &dyn Canonical,
+    ticket_id: Uuid,
+    note: &str,
+) -> Result<WorkTicketRecord, PlatformError> {
+    if note.trim().is_empty() {
+        return Err(PlatformError::new(
+            "ticket_note_required",
+            "File requires a note",
+        ));
+    }
+    let mut t = canonical.work_ticket_get(ticket_id).await?;
+    if t.status != "open" {
+        return Ok(t);
+    }
+    let today = today_iso();
+    t.status = "done".into();
+    t.filed_on = today.clone();
+    t.completed_how = "owner_filed".into();
+    t.owner_note = note.trim().to_string();
+    t.last_seen_on = today;
+    canonical.work_ticket_update(t).await
+}
+
+async fn persist_template_url_same_adapter(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    source_url: &str,
+) -> Result<RetrievalTemplateRecord, PlatformError> {
+    let mut rec = canonical
+        .retrieval_template_get(security_id)
+        .await?
+        .ok_or_else(|| PlatformError::new("not_found", "retrieval template not found"))?;
+    rec.source_url = source_url.trim().to_string();
+    canonical.retrieval_template_set(rec).await
+}
+
+#[derive(Default)]
+struct PhaseIEstablish {
+    needs_second_url: bool,
+    second_url_tried: bool,
+    adapter_failed: bool,
+    retrieve_message: String,
+    paid_count: u8,
+    needs_inception_confirm: bool,
+    inception_candidate: String,
+    expected_paid_since_inception: Option<u8>,
+    inception_search_miss: bool,
+}
+
+async fn apply_phase_i_establish(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    symbol: &str,
+    source_url: &str,
+    payment_frequency: &str,
+    retrieve_ok: bool,
+    retrieve_code: &str,
+    retrieve_message: &str,
+    json: &Value,
+) -> PhaseIEstablish {
+    let mut out = PhaseIEstablish {
+        retrieve_message: retrieve_message.to_string(),
+        ..PhaseIEstablish::default()
+    };
+    let as_of = jstr(json, "asOfDate").unwrap_or_else(today_iso);
+    let Ok(Some(mut template)) = canonical.retrieval_template_get(security_id).await else {
+        return out;
+    };
+
+    let parse_fail = financial_domain::work_ticket::is_history_parse_fail(retrieve_code);
+    let second_attempt = jbool(json, "secondUrlAttempt", false);
+    let incoming = jstr(json, "sourceUrl")
+        .or_else(|| jstr(json, "distributionUrl"))
+        .unwrap_or_default();
+    let url_changed = !incoming.is_empty() && incoming != template.source_url;
+    let mut attempts = template.history_url_attempts;
+    if parse_fail {
+        if second_attempt || url_changed {
+            attempts = 2;
+        } else {
+            attempts = attempts.max(1);
+        }
+        template.history_url_attempts = attempts;
+        let _ = canonical.retrieval_template_set(template.clone()).await;
+        out.needs_second_url = attempts < 2;
+        out.second_url_tried = attempts >= 2;
+        out.adapter_failed = attempts >= 2;
+        if out.adapter_failed {
+            out.retrieve_message = if retrieve_message.trim().is_empty() {
+                "Second distribution URL failed. Adapter not built. Manual adapter is parked."
+                    .into()
+            } else {
+                format!(
+                    "{retrieve_message} Second distribution URL failed. Adapter not built. Manual adapter is parked."
+                )
+            };
+        } else if out.retrieve_message.trim().is_empty() {
+            out.retrieve_message =
+                "History parse failed. Paste a second issuer URL once — same adapter only.".into();
+        }
+    } else if retrieve_ok {
+        template.history_url_attempts = 0;
+        let _ = canonical.retrieval_template_set(template.clone()).await;
+    }
+
+    let paid = canonical
+        .issuer_declaration_list(security_id)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+        .count()
+        .min(255) as u8;
+    out.paid_count = paid;
+
+    let cash = financial_domain::current_price::is_cash_par_symbol(symbol);
+    if !cash && paid < financial_domain::declaration_lookback::DECLARATION_LOOKBACK_TARGET {
+        let confirmed = json.get("inceptionConfirmed").and_then(|v| v.as_bool());
+        let hits = json
+            .get("inceptionHits")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let candidate = jstr(json, "inceptionCandidate")
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                if confirmed == Some(true) {
+                    jstr(json, "inceptionOn").filter(|s| !s.trim().is_empty())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                let pairs: Vec<(&str, &str)> = hits
+                    .iter()
+                    .map(|hit| {
+                        (
+                            hit.get("title")
+                                .or_else(|| hit.get("inceptionOn"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(""),
+                            hit.get("snippet")
+                                .or_else(|| hit.get("body"))
+                                .or_else(|| hit.get("inceptionOn"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(""),
+                        )
+                    })
+                    .collect();
+                financial_domain::declaration_lookback::inception_on_from_search_hits(&pairs)
+            })
+            .unwrap_or_default();
+        out.inception_candidate = candidate.clone();
+        if confirmed == Some(true) {
+            let date = jstr(json, "inceptionOn")
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| candidate.clone());
+            if !date.is_empty() {
+                template.inception_on = date;
+                let _ = canonical.retrieval_template_set(template.clone()).await;
+            }
+        } else if confirmed == Some(false) || candidate.is_empty() {
+            out.inception_search_miss = candidate.is_empty() && confirmed != Some(true);
+            let _ = work_ticket_raise_or_bump(
+                canonical,
+                security_id,
+                symbol,
+                "declaration_lookback_short",
+                if confirmed == Some(false) {
+                    "Owner said this name is not too new. Paid history stays short — collector incomplete."
+                } else {
+                    "Inception search miss. Paid history under 12 — collector incomplete."
+                },
+                source_url,
+            )
+            .await;
+        }
+        let stored = canonical
+            .retrieval_template_get(security_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|t| t.inception_on)
+            .unwrap_or_default();
+        let for_expected = if !stored.trim().is_empty() {
+            stored.clone()
+        } else {
+            candidate.clone()
+        };
+        if !for_expected.is_empty() {
+            out.expected_paid_since_inception = Some(
+                financial_domain::declaration_lookback::expected_from_inception(
+                    &for_expected,
+                    &as_of,
+                    payment_frequency,
+                ),
+            );
+        }
+        out.needs_inception_confirm =
+            stored.trim().is_empty() && !candidate.is_empty() && confirmed != Some(false);
+    }
+
+    persist_phase_i_remaining_year(canonical, security_id, symbol, &as_of, payment_frequency).await;
+
+    if let Some(roc_url) = jstr(json, "rocSourceUrl").filter(|s| !s.trim().is_empty()) {
+        if let Ok(Some(mut rec)) = canonical.retrieval_template_get(security_id).await {
+            rec.roc_source_url = roc_url;
+            let _ = canonical.retrieval_template_set(rec).await;
+        }
+    }
+
+    out
+}
+
+async fn persist_phase_i_remaining_year(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    symbol: &str,
+    as_of: &str,
+    payment_frequency: &str,
+) {
+    let Some(periods) = financial_domain::calculator::PaymentCadence::parse(payment_frequency)
+        .and_then(financial_domain::calculator::PaymentCadence::periods)
+    else {
+        return;
+    };
+    let year = as_of.get(..4).unwrap_or("");
+    let year_end = format!("{year}-12-31");
+    let issuer = canonical
+        .issuer_pay_date_list(security_id)
+        .await
+        .unwrap_or_default();
+    let vendor: Vec<_> = issuer
+        .iter()
+        .filter(|d| {
+            !d.source.eq_ignore_ascii_case("derived_walk")
+                && d.pay_on.as_str() >= as_of
+                && d.pay_on.as_str() <= year_end.as_str()
+        })
+        .collect();
+    if vendor.is_empty() {
+        let Ok(schedule) =
+            remaining_year_schedule_for(canonical, security_id, as_of, periods, None, &[]).await
+        else {
+            return;
+        };
+        if !schedule.known {
+            return;
+        }
+        let dates: Vec<IssuerPayDateRecord> = schedule
+            .payments
+            .iter()
+            .map(|p| IssuerPayDateRecord {
+                pay_date_id: Uuid::new_v4(),
+                security_id,
+                pay_on: p.pay_on.clone(),
+                source: "derived_walk".into(),
+                recorded_at: as_of.to_string(),
+            })
+            .collect();
+        if !dates.is_empty() {
+            let _ = canonical
+                .issuer_pay_date_replace(security_id, as_of.to_string(), dates)
+                .await;
+        }
+        return;
+    }
+    let stored_ons: Vec<&str> = issuer.iter().map(|d| d.pay_on.as_str()).collect();
+    let vendor_ons: Vec<&str> = vendor.iter().map(|d| d.pay_on.as_str()).collect();
+    if financial_domain::collector::remaining_year_dates_disagree(&stored_ons, &vendor_ons, as_of) {
+        let _ = work_ticket_raise_or_bump(
+            canonical,
+            security_id,
+            symbol,
+            "remaining_year",
+            &format!(
+                "Remaining-year stored dates disagree with the issuer list ({} stored, {} issuer) through 31 Dec.",
+                stored_ons.len(),
+                vendor_ons.len()
+            ),
+            "",
+        )
+        .await;
+    }
+}
+
+/// Stored ex/record leftover → later vendor payable, same dollar. Owner twin cleanup.
+async fn apply_leftover_ex_to_payable(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    vendor_rows: &[Value],
+    recorded_at: &str,
+) -> u64 {
+    let stored = canonical
+        .issuer_declaration_list(security_id)
+        .await
+        .unwrap_or_default();
+    let stored_view: Vec<(String, i64, u8)> = stored
+        .iter()
+        .filter_map(|d| {
+            let amt = d.amount_per_share_minor.filter(|a| *a > 0)?;
+            Some((d.payment_period.clone(), amt, d.amount_scale))
+        })
+        .collect();
+    let vendor: Vec<(String, Option<String>, Option<String>, i64, u8)> = vendor_rows
+        .iter()
+        .filter_map(|row| {
+            let pay = jstr(row, "paymentPeriod").or_else(|| jstr(row, "payOn"))?;
+            let amt = paid_json_amount(row).filter(|a| *a > 0)?;
+            Some((
+                pay,
+                jstr(row, "exDate"),
+                jstr(row, "recordDate"),
+                amt,
+                ju8(row, "amountScale", 2),
+            ))
+        })
+        .collect();
+    let moves = financial_domain::schedule::leftover_ex_to_payable_moves(&stored_view, &vendor);
+    let mut n = 0u64;
+    for (from, to) in moves {
+        if let Some(old) = stored.iter().find(|d| d.payment_period == from) {
+            let _ = canonical
+                .issuer_declaration_supersede_period(security_id, from.clone())
+                .await;
+            let already = stored.iter().any(|d| {
+                d.payment_period == to && d.amount_per_share_minor.unwrap_or(0) > 0
+            });
+            if !already {
+                let (amt, scale) = vendor
+                    .iter()
+                    .find(|(pay, _, _, _, _)| pay == &to)
+                    .map(|(_, _, _, a, s)| (Some(*a), *s))
+                    .unwrap_or((old.amount_per_share_minor, old.amount_scale));
+                let _ = canonical
+                    .issuer_declaration_record(
+                        security_id,
+                        amt,
+                        scale,
+                        to.clone(),
+                        "vendor_payable".into(),
+                        recorded_at.to_string(),
+                    )
+                    .await;
+            }
+            let _ = canonical
+                .issuer_pay_date_supersede_one(security_id, from)
+                .await;
+            let rec = IssuerPayDateRecord {
+                pay_date_id: Uuid::new_v4(),
+                security_id,
+                pay_on: to,
+                source: "vendor_payable".into(),
+                recorded_at: recorded_at.to_string(),
+            };
+            let _ = canonical.issuer_pay_date_insert(rec).await;
+            n = n.saturating_add(1);
+        }
+    }
+    n
+}
+
+/// Runtime collect: apply vendor payables to unoccurred rows only. Never rebuild the year.
+/// Plan $ is not touched. Paid months raise a ticket instead of silent-supersede.
+async fn apply_mlp_sec_8k_payables(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    symbol: &str,
+    as_of: &str,
+    declarations: &[Value],
+    pay_dates: &[Value],
+    recorded_at: &str,
+) -> u64 {
+    let existing = canonical
+        .issuer_pay_date_list(security_id)
+        .await
+        .unwrap_or_default();
+    let mut wrote = 0u64;
+    for decl in declarations {
+        let amount = decl.get("amountPerShareMinor").and_then(|x| {
+            if x.is_null() {
+                None
+            } else {
+                ji64(decl, "amountPerShareMinor")
+            }
+        });
+        if amount.unwrap_or(0) <= 0 {
+            continue;
+        }
+        let period = jstr(decl, "paymentPeriod").unwrap_or_default();
+        if period.is_empty() {
+            continue;
+        }
+        if financial_domain::schedule::period_has_occurred(&period, as_of) {
+            continue;
+        }
+        let nearby = existing.iter().find(|p| {
+            p.source
+                .eq_ignore_ascii_case(financial_domain::mlp_sec::SOURCE_DERIVED_TEMPLATE)
+                && (p.pay_on == period
+                    || financial_domain::mlp_sec::within_three_business_days(&p.pay_on, &period))
+        });
+        if let Some(old) = nearby {
+            if old.pay_on != period {
+                let _ = canonical
+                    .issuer_pay_date_supersede_one(security_id, old.pay_on.clone())
+                    .await;
+            }
+        } else {
+            let far = existing.iter().find(|p| {
+                p.source
+                    .eq_ignore_ascii_case(financial_domain::mlp_sec::SOURCE_DERIVED_TEMPLATE)
+                    && !financial_domain::schedule::period_has_occurred(&p.pay_on, as_of)
+                    && p.pay_on != period
+            });
+            if let Some(old) = far {
+                let _ = work_ticket_raise_or_bump(
+                    canonical,
+                    security_id,
+                    symbol,
+                    financial_domain::mlp_sec::CODE_PAYABLE_DATE_MOVED,
+                    &format!(
+                        "Derived payable {} moved to 8-K payable {}.",
+                        old.pay_on, period
+                    ),
+                    "",
+                )
+                .await;
+                let _ = canonical
+                    .issuer_pay_date_supersede_one(security_id, old.pay_on.clone())
+                    .await;
+            }
+        }
+    }
+    for row in pay_dates {
+        let Some(pay_on) = jstr(row, "payOn")
+            .or_else(|| jstr(row, "paymentPeriod"))
+            .filter(|s| !s.trim().is_empty())
+        else {
+            continue;
+        };
+        let src = jstr(row, "source").unwrap_or_else(|| {
+            financial_domain::mlp_sec::SOURCE_DERIVED_TEMPLATE.to_string()
+        });
+        if !src.eq_ignore_ascii_case(financial_domain::mlp_sec::SOURCE_DERIVED_TEMPLATE) {
+            continue;
+        }
+        if existing.iter().any(|p| p.pay_on == pay_on) {
+            continue;
+        }
+        if financial_domain::schedule::period_has_occurred(&pay_on, as_of) {
+            continue;
+        }
+        let rec = IssuerPayDateRecord {
+            pay_date_id: Uuid::new_v4(),
+            security_id,
+            pay_on,
+            source: financial_domain::mlp_sec::SOURCE_DERIVED_TEMPLATE.into(),
+            recorded_at: recorded_at.to_string(),
+        };
+        if canonical.issuer_pay_date_insert(rec).await.is_ok() {
+            wrote = wrote.saturating_add(1);
+        }
+    }
+    wrote
+}
+
+fn mlp_sec_outcome_from_misses(misses: &[Value]) -> &'static str {
+    if misses.iter().any(|m| {
+        jstr(m, "code").as_deref() == Some(financial_domain::mlp_sec::CODE_SEC_403)
+            || jstr(m, "reason")
+                .unwrap_or_default()
+                .contains("sec_403")
+    }) {
+        "sec_403"
+    } else {
+        "empty"
+    }
+}
+
+async fn persist_mlp_sec_last_run(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    as_of: &str,
+    outcome: &str,
+    ran_at: String,
+    hash: String,
+) -> (bool, String, String) {
+    let source_url = financial_domain::mlp_sec::atom_url();
+    let stored_now = canonical
+        .issuer_declaration_list(security_id)
+        .await
+        .unwrap_or_default();
+    let pays_now = canonical
+        .issuer_pay_date_list(security_id)
+        .await
+        .unwrap_or_default();
+    let paid_refs: Vec<&str> = stored_now
+        .iter()
+        .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+        .map(|d| d.payment_period.as_str())
+        .collect();
+    let needed = financial_domain::schedule::derive_quarterly_template_pay_ons(as_of, &paid_refs);
+    let remaining_ok = needed.iter().all(|need| {
+        pays_now.iter().any(|p| {
+            p.pay_on == *need
+                && p.source
+                    .eq_ignore_ascii_case(financial_domain::mlp_sec::SOURCE_DERIVED_TEMPLATE)
+        }) || stored_now.iter().any(|d| {
+            d.amount_per_share_minor.unwrap_or(0) > 0
+                && (d.payment_period == *need
+                    || financial_domain::mlp_sec::within_three_business_days(
+                        &d.payment_period,
+                        need,
+                    ))
+        })
+    });
+    let next_pay = needed.first().map(String::as_str).unwrap_or("");
+    let has_declared = stored_now.iter().any(|d| {
+        d.amount_per_share_minor.unwrap_or(0) > 0
+            && (d.payment_period == next_pay
+                || financial_domain::mlp_sec::within_three_business_days(
+                    &d.payment_period,
+                    next_pay,
+                ))
+    });
+    let overdue = financial_domain::mlp_sec::owner_amount_ask_due(as_of, next_pay, has_declared);
+    let stamp = if outcome == "sec_403" {
+        "sec_403"
+    } else if outcome == "page" {
+        "page"
+    } else if overdue {
+        "need_owner"
+    } else {
+        "waiting"
+    };
+    let message = financial_domain::mlp_sec::last_run_stamp(stamp);
+    let ok = financial_domain::mlp_sec::last_run_ok(&source_url, remaining_ok, overdue);
+    let _ = canonical
+        .retrieval_template_touch_run(
+            security_id,
+            ok,
+            message.clone(),
+            ran_at,
+            hash,
+            &source_url,
+        )
+        .await;
+    (ok, message, source_url)
+}
+
+async fn apply_runtime_vendor_payables(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    symbol: &str,
+    as_of: &str,
+    payment_frequency: &str,
+    vendor_rows: &[Value],
+    recorded_at: &str,
+) -> u64 {
+    let vendor: Vec<String> = vendor_rows
+        .iter()
+        .filter_map(|row| {
+            jstr(row, "payOn")
+                .or_else(|| jstr(row, "paymentPeriod"))
+                .filter(|s| !s.trim().is_empty())
+        })
+        .collect();
+    let _ = canonical.issuer_pay_date_dedupe(security_id).await;
+    if vendor.is_empty() {
+        ticket_if_remaining_count_mismatch(canonical, security_id, symbol, as_of, payment_frequency)
+            .await;
+        return 0;
+    }
+    let existing = canonical
+        .issuer_pay_date_list(security_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| d.pay_on)
+        .collect::<Vec<_>>();
+    let decls = canonical
+        .issuer_declaration_list(security_id)
+        .await
+        .unwrap_or_default();
+    let paid_periods = decls
+        .iter()
+        .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+        .map(|d| d.payment_period.clone())
+        .collect::<Vec<_>>();
+    let plan = financial_domain::schedule::merge_runtime_vendor_payables(
+        as_of,
+        &existing,
+        &paid_periods,
+        &vendor,
+    );
+    let mut wrote = 0u64;
+    for (from, to) in &plan.moves {
+        if canonical
+            .issuer_pay_date_supersede_one(security_id, from.clone())
+            .await
+            .is_ok()
+        {
+            let rec = IssuerPayDateRecord {
+                pay_date_id: Uuid::new_v4(),
+                security_id,
+                pay_on: to.clone(),
+                source: "vendor_payable".into(),
+                recorded_at: recorded_at.to_string(),
+            };
+            if canonical.issuer_pay_date_insert(rec).await.is_ok() {
+                wrote = wrote.saturating_add(1);
+            }
+        }
+        if !financial_domain::schedule::period_has_occurred(from, as_of) {
+            if let Some(old) = decls.iter().find(|d| d.payment_period == *from) {
+                let occurred: Vec<(i64, u8)> = decls
+                    .iter()
+                    .filter(|d| {
+                        d.amount_per_share_minor.unwrap_or(0) > 0
+                            && financial_domain::schedule::period_has_occurred(
+                                &d.payment_period,
+                                as_of,
+                            )
+                    })
+                    .filter_map(|d| d.amount_per_share_minor.map(|a| (a, d.amount_scale)))
+                    .collect();
+                let pay_refs: Vec<&str> = existing.iter().map(String::as_str).collect();
+                let amt = old.amount_per_share_minor.unwrap_or(0);
+                let placeholder = financial_domain::schedule::unoccurred_declaration_is_placeholder(
+                    from,
+                    amt,
+                    old.amount_scale,
+                    as_of,
+                    &occurred,
+                    &pay_refs,
+                );
+                let _ = canonical
+                    .issuer_declaration_supersede_period(security_id, from.clone())
+                    .await;
+                if !placeholder && amt > 0 {
+                    let _ = canonical
+                        .issuer_declaration_record(
+                            security_id,
+                            old.amount_per_share_minor,
+                            old.amount_scale,
+                            to.clone(),
+                            "vendor_payable".into(),
+                            recorded_at.to_string(),
+                        )
+                        .await;
+                }
+            }
+        }
+    }
+    for pay_on in &plan.add {
+        let rec = IssuerPayDateRecord {
+            pay_date_id: Uuid::new_v4(),
+            security_id,
+            pay_on: pay_on.clone(),
+            source: "vendor_payable".into(),
+            recorded_at: recorded_at.to_string(),
+        };
+        if canonical.issuer_pay_date_insert(rec).await.is_ok() {
+            wrote = wrote.saturating_add(1);
+        }
+    }
+    for conflict in &plan.conflicts {
+        let _ = work_ticket_raise_or_bump(
+            canonical,
+            security_id,
+            symbol,
+            "paid_payable_supersede",
+            &format!(
+                "Vendor payable {} would silent-supersede paid/occurred {}.",
+                conflict.vendor_pay_on,
+                if conflict.existing_pay_on.is_empty() {
+                    "row"
+                } else {
+                    conflict.existing_pay_on.as_str()
+                }
+            ),
+            "",
+        )
+        .await;
+    }
+    ticket_if_remaining_count_mismatch(canonical, security_id, symbol, as_of, payment_frequency)
+        .await;
+    if plan.conflicts.is_empty() {
+        work_ticket_auto_resolve_codes(canonical, security_id, &["paid_payable_supersede"]).await;
+    }
+    let _ = align_unoccurred_declarations_to_plan(canonical, security_id, as_of).await;
+    wrote
+}
+
+async fn align_unoccurred_declarations_to_plan(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    as_of: &str,
+) -> u64 {
+    let decls = canonical
+        .issuer_declaration_list(security_id)
+        .await
+        .unwrap_or_default();
+    let pay_ons = canonical
+        .issuer_pay_date_list(security_id)
+        .await
+        .unwrap_or_default();
+    let pay_refs: Vec<&str> = pay_ons.iter().map(|p| p.pay_on.as_str()).collect();
+    let occurred: Vec<(i64, u8)> = decls
+        .iter()
+        .filter(|d| {
+            d.amount_per_share_minor.unwrap_or(0) > 0
+                && financial_domain::schedule::period_has_occurred(&d.payment_period, as_of)
+        })
+        .filter_map(|d| d.amount_per_share_minor.map(|a| (a, d.amount_scale)))
+        .collect();
+    let mut n = 0u64;
+    for d in &decls {
+        let amt = d.amount_per_share_minor.unwrap_or(0);
+        if amt <= 0 {
+            continue;
+        }
+        if !financial_domain::schedule::unoccurred_declaration_is_placeholder(
+            &d.payment_period,
+            amt,
+            d.amount_scale,
+            as_of,
+            &occurred,
+            &pay_refs,
+        ) {
+            continue;
+        }
+        if canonical
+            .issuer_declaration_supersede_period(security_id, d.payment_period.clone())
+            .await
+            .ok()
+            .unwrap_or(0)
+            > 0
+        {
+            n = n.saturating_add(1);
+        }
+    }
+    n
+}
+
+async fn work_ticket_auto_resolve_codes(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    codes: &[&str],
+) {
+    let Ok(open) = canonical
+        .work_ticket_list(Some(security_id), Some("open".into()))
+        .await
+    else {
+        return;
+    };
+    let today = today_iso();
+    for mut t in open {
+        if !codes.iter().any(|c| t.code == *c) {
+            continue;
+        }
+        t.status = "done".into();
+        t.filed_on = today.clone();
+        t.completed_how = "auto_resolved".into();
+        t.last_seen_on = today.clone();
+        let _ = canonical.work_ticket_update(t).await;
+    }
+}
+
+async fn ticket_if_remaining_count_mismatch(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    symbol: &str,
+    as_of: &str,
+    payment_frequency: &str,
+) {
+    if financial_domain::calculator::PaymentCadence::parse(payment_frequency)
+        .and_then(financial_domain::calculator::PaymentCadence::periods)
+        .is_none()
+    {
+        return;
+    }
+    let pays = canonical
+        .issuer_pay_date_list(security_id)
+        .await
+        .unwrap_or_default();
+    let stored_ons: Vec<&str> = pays.iter().map(|p| p.pay_on.as_str()).collect();
+    let vendor_ons: Vec<&str> = pays
+        .iter()
+        .filter(|p| !p.source.eq_ignore_ascii_case("derived_walk"))
+        .map(|p| p.pay_on.as_str())
+        .collect();
+    if financial_domain::collector::remaining_year_dates_disagree(&stored_ons, &vendor_ons, as_of)
+    {
+        let _ = work_ticket_raise_or_bump(
+            canonical,
+            security_id,
+            symbol,
+            "remaining_year",
+            "Remaining-year stored dates disagree with the issuer list through 31 Dec.",
+            "",
+        )
+        .await;
+    }
+}
+
+fn work_ticket_resolve_body(ticket: &WorkTicketRecord, ok: bool, code: &str, message: &str) -> String {
+    serde_json::json!({
+        "ok": ok,
+        "code": code,
+        "message": message,
+        "ticketId": ticket.ticket_id,
+        "securityId": ticket.security_id,
+        "symbol": ticket.symbol,
+        "tool": ticket.tool,
+        "status": ticket.status,
+    })
+    .to_string()
 }
 
 fn required_paid_count(inception_on: &str, payment_frequency: &str) -> u8 {
@@ -1437,10 +3628,14 @@ async fn div1_compliance_summary(
         }
         let decls = canonical.issuer_declaration_list(item.security_id).await?;
         let pay_dates = canonical.issuer_pay_date_list(item.security_id).await?;
-        let future_pay_dates_qty = pay_dates
+        let mut future_pay_dates: Vec<String> = pay_dates
             .iter()
             .filter(|d| d.pay_on.as_str() > as_of.as_str())
-            .count() as u64;
+            .map(|d| d.pay_on.clone())
+            .collect();
+        future_pay_dates.sort();
+        future_pay_dates.dedup();
+        let future_pay_dates_qty = future_pay_dates.len() as u64;
         let paid: Vec<_> = decls
             .iter()
             .filter(|d| d.amount_per_share_minor.map(|a| a > 0).unwrap_or(false))
@@ -1451,6 +3646,7 @@ async fn div1_compliance_summary(
             security_id: item.security_id,
             symbol: item.symbol,
             future_pay_dates_qty,
+            future_pay_dates,
             prior_declarations_qty,
             current_declaration_amount_minor: latest.and_then(|d| d.amount_per_share_minor),
             current_declaration_amount_scale: latest.map(|d| d.amount_scale),
@@ -1504,6 +3700,7 @@ async fn data_summary_view(
     }
     let today = today_iso();
     let mut last_price_count = 0u64;
+    let mut last_price_refreshed_on: Option<String> = None;
     let mut market_value_minor = 0i64;
     let mut any_market_value = false;
     let mut market_value_complete = !qty.is_empty();
@@ -1513,6 +3710,18 @@ async fn data_summary_view(
             .await?;
         if price.price_derived_valid {
             last_price_count += 1;
+            if let Some(as_of) = price
+                .as_of_at
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let day = as_of.get(..10).unwrap_or(as_of);
+                last_price_refreshed_on = Some(match last_price_refreshed_on {
+                    Some(prev) if prev.as_str() >= day => prev,
+                    _ => day.to_string(),
+                });
+            }
             if let Some(px) = price.price_minor {
                 market_value_minor += financial_domain::calculator::plan_payment_cents(
                     *remaining_quantity_minor,
@@ -1529,6 +3738,36 @@ async fn data_summary_view(
     if qty.is_empty() {
         market_value_complete = true;
     }
+    let declaration_as_of = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let mut declaration_count = 0u64;
+    let mut declaration_collector_count = 0u64;
+    let mut declaration_refreshed_on: Option<String> = None;
+    if let Ok(set) = canonical.collector_set().await {
+        for item in set.items {
+            if !item.open_lots
+                || !item.collector_enabled
+                || item.declaration_source.trim().is_empty()
+            {
+                continue;
+            }
+            declaration_collector_count += 1;
+            if financial_domain::collector::declaration_daily_retrieve_current(
+                item.last_run_ok,
+                &item.last_run_at,
+                &declaration_as_of,
+            ) {
+                declaration_count += 1;
+            }
+            let stamp = item.last_run_at.trim();
+            if stamp.len() >= 10 {
+                let day = stamp.get(..10).unwrap_or(stamp);
+                declaration_refreshed_on = Some(match declaration_refreshed_on {
+                    Some(prev) if prev.as_str() >= day => prev,
+                    _ => day.to_string(),
+                });
+            }
+        }
+    }
     Ok(DataSummaryBody {
         account_count: accounts
             .iter()
@@ -1543,6 +3782,11 @@ async fn data_summary_view(
         open_performance_minor: basis.open_performance_minor,
         open_tax_minor: basis.open_tax_minor,
         last_price_count,
+        last_price_refreshed_on,
+        declaration_count,
+        declaration_collector_count,
+        declaration_refreshed_on,
+        declaration_as_of,
         market_value_minor: if any_market_value {
             Some(market_value_minor)
         } else {
@@ -1595,6 +3839,11 @@ async fn calculator_view(canonical: &dyn Canonical) -> Result<CalculatorGetBody,
             .copied()
             .unwrap_or((0, 0, 0));
         if remaining_quantity_minor <= 0 {
+            continue;
+        }
+        if financial_domain::calculator::is_non_paying(
+            ch.map(|c| c.payment_frequency.as_str()).unwrap_or(""),
+        ) {
             continue;
         }
         let plan_known = plan.is_some();
@@ -1658,6 +3907,153 @@ async fn calculator_view(canonical: &dyn Canonical) -> Result<CalculatorGetBody,
         plan_count: plans.len() as u64,
         rows,
         scale: 2,
+    })
+}
+
+fn cadence_filter_matches(stored: &str, filter: &str) -> bool {
+    let filter = filter.trim();
+    if filter.is_empty() || filter.eq_ignore_ascii_case("all") {
+        return true;
+    }
+    let Some(want) = financial_domain::calculator::PaymentCadence::parse(filter) else {
+        return false;
+    };
+    financial_domain::calculator::PaymentCadence::parse(stored) == Some(want)
+}
+
+fn cadence_sort_rank(freq: &str) -> u8 {
+    match financial_domain::calculator::PaymentCadence::parse(freq) {
+        Some(financial_domain::calculator::PaymentCadence::Weekly) => 0,
+        Some(financial_domain::calculator::PaymentCadence::Monthly) => 1,
+        Some(financial_domain::calculator::PaymentCadence::Quarterly) => 2,
+        _ => 3,
+    }
+}
+
+async fn declaration_history_view(
+    canonical: &dyn Canonical,
+    as_of: &str,
+    cadence_filter: &str,
+    start_on: Option<&str>,
+    end_on: Option<&str>,
+    week_count: Option<u32>,
+) -> Result<DeclarationHistoryGetBody, PlatformError> {
+    let as_of_date = parse_iso_date(as_of)
+        .or_else(|| parse_iso_date(&today_iso()))
+        .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(2026, 9, 2).unwrap());
+    let end_date = end_on
+        .and_then(parse_iso_date)
+        .unwrap_or(as_of_date);
+    let start_date = start_on.and_then(parse_iso_date).unwrap_or_else(|| {
+        if let Some(n) = week_count {
+            let newest = financial_domain::week::week_containing(end_date).end;
+            newest - chrono::Duration::days(7 * (n.clamp(1, 52).saturating_sub(1) as i64))
+        } else {
+            financial_domain::week::history_window_start(end_date)
+        }
+    });
+    let week_ends: Vec<String> =
+        financial_domain::week::friday_week_ends_in_range(start_date, end_date)
+            .into_iter()
+            .map(|d| d.to_string())
+            .collect();
+    let week_ids: Vec<financial_domain::week::WeekId> = week_ends
+        .iter()
+        .filter_map(|friday| {
+            financial_domain::week::parse_iso_day(friday)
+                .map(financial_domain::week::week_id_containing)
+        })
+        .collect();
+    let week_starts: Vec<String> = week_ids
+        .iter()
+        .map(|id| id.week.start.to_string())
+        .collect();
+    let week_years: Vec<i32> = week_ids.iter().map(|id| id.year).collect();
+    let week_numbers: Vec<u8> = week_ids.iter().map(|id| id.number).collect();
+    let securities = canonical.security_list().await?;
+    let characteristics = canonical.position_characteristic_list().await?;
+    let char_by_sec: std::collections::HashMap<_, _> = characteristics
+        .iter()
+        .map(|c| (c.security_id, c))
+        .collect();
+    let basis = canonical.basis_get().await?;
+    let mut open_qty: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+    for lot in &basis.lots {
+        if lot.remaining_quantity_minor > 0 {
+            open_qty.insert(lot.security_id);
+        }
+    }
+    let mut rows = Vec::new();
+    for security in &securities {
+        if !open_qty.contains(&security.security_id) {
+            continue;
+        }
+        let freq = char_by_sec
+            .get(&security.security_id)
+            .map(|c| c.payment_frequency.as_str())
+            .unwrap_or("");
+        if financial_domain::calculator::is_non_paying(freq) {
+            continue;
+        }
+        if !cadence_filter_matches(freq, cadence_filter) {
+            continue;
+        }
+        let decls = canonical
+            .issuer_declaration_list(security.security_id)
+            .await
+            .unwrap_or_default();
+        let mut by_week: std::collections::HashMap<String, (String, i64, u8)> =
+            std::collections::HashMap::new();
+        for d in decls {
+            let Some(amt) = d.amount_per_share_minor.filter(|a| *a > 0) else {
+                continue;
+            };
+            let Some(pay_on) = financial_domain::week::parse_iso_day(&d.payment_period) else {
+                continue;
+            };
+            let week_end = financial_domain::week::week_end_for_pay_on(pay_on).to_string();
+            let key = d.payment_period.clone();
+            match by_week.get(&week_end) {
+                Some((prev, _, _)) if prev.as_str() >= key.as_str() => {}
+                _ => {
+                    by_week.insert(week_end, (key, amt, d.amount_scale));
+                }
+            }
+        }
+        let cells = week_ends
+            .iter()
+            .map(|week| match by_week.get(week) {
+                Some((_, amt, scale)) => DeclarationHistoryCellBody {
+                    amount_per_share_minor: Some(*amt),
+                    amount_scale: *scale,
+                },
+                None => DeclarationHistoryCellBody {
+                    amount_per_share_minor: None,
+                    amount_scale: 0,
+                },
+            })
+            .collect();
+        rows.push(DeclarationHistoryRowBody {
+            symbol: security.symbol.clone(),
+            payment_frequency: freq.to_string(),
+            cells,
+        });
+    }
+    rows.sort_by(|a, b| {
+        cadence_sort_rank(&a.payment_frequency)
+            .cmp(&cadence_sort_rank(&b.payment_frequency))
+            .then_with(|| a.symbol.cmp(&b.symbol))
+    });
+    Ok(DeclarationHistoryGetBody {
+        as_of_date: as_of_date.to_string(),
+        start_on: start_date.to_string(),
+        end_on: end_date.to_string(),
+        cadence_filter: cadence_filter.to_string(),
+        week_ends,
+        week_starts,
+        week_years,
+        week_numbers,
+        rows,
     })
 }
 
@@ -1992,6 +4388,7 @@ async fn investment_view(
     let roc_est = latest_roc_estimate(&observations);
     let roc_research_completed_at =
         roc_research_completed_at(&roc_research_status, &observations);
+    let collector = collector_status_for(canonical, security_id, &security.symbol, &as_of).await;
     Ok(InvestmentGetBody {
         security_id,
         symbol: security.symbol,
@@ -2106,6 +4503,8 @@ async fn investment_view(
             .unwrap_or_default(),
         roc_research_completed_at,
         lookthrough: ch.map(|c| c.lookthrough.clone()).unwrap_or_default(),
+        collector_complete: collector.complete,
+        collector_gaps: collector.gaps,
         scale: 2,
     })
 }
@@ -2238,6 +4637,16 @@ async fn mark_needs_roc_research(canonical: &dyn Canonical, security_id: Uuid) {
         .into_iter()
         .find(|c| c.security_id == security_id)
         .unwrap_or_else(|| empty_characteristic(security_id));
+    let symbol = canonical
+        .security_get(security_id)
+        .await
+        .map(|s| s.symbol)
+        .unwrap_or_default();
+    if !financial_domain::collector::needs_roc_research_on_create(&rec.div_type, &symbol) {
+        rec.needs_roc_research = false;
+        let _ = canonical.position_characteristic_upsert(rec).await;
+        return;
+    }
     if rec.needs_roc_research {
         return;
     }
@@ -2247,7 +4656,7 @@ async fn mark_needs_roc_research(canonical: &dyn Canonical, security_id: Uuid) {
 
 /// Persist provider from URL/vendor, optional page title name, underlying + lookthrough.
 /// Writes only holes — never overwrites set provider/underlying/lookthrough or applies risk_tier.
-/// Sets needs_roc_research true.
+/// Income payers get DIV-1 on create. CASH stays CASH and does not need ROC.
 async fn persist_process_a_identity(
     canonical: &dyn Canonical,
     security: &crate::contracts::SecurityRecord,
@@ -2307,7 +4716,13 @@ async fn persist_process_a_identity(
     {
         rec.lookthrough = lookthrough;
     }
-    rec.needs_roc_research = true;
+    rec.div_type = financial_domain::collector::div_type_on_create(
+        symbol,
+        jstr(json, "divType").unwrap_or_default().as_str(),
+        rec.div_type.as_str(),
+    );
+    rec.needs_roc_research =
+        financial_domain::collector::needs_roc_research_on_create(&rec.div_type, symbol);
     let _ = canonical.position_characteristic_upsert(rec).await;
 }
 
@@ -3289,7 +5704,7 @@ async fn remaining_year_income_view(
         .or_else(|| jstr(json, "openedOn"))
         .unwrap_or_else(|| as_of.clone());
     let position_qty = existing_qty.saturating_add(this_lot_qty.unwrap_or(0));
-    let latest = latest_declaration_period(canonical, security_id).await?;
+    let latest = latest_declaration_period(canonical, security_id, &as_of).await?;
     let stored = stored_date_overrides(canonical, security_id).await?;
     let overrides = merge_date_overrides(stored, draft_date_overrides(json));
     let issuer = canonical.issuer_pay_date_list(security_id).await?;
@@ -3533,7 +5948,7 @@ async fn roc_research_view(
                 .find(|c| c.security_id == security_id)
                 .and_then(|c| cadence_periods(&c.payment_frequency))
                 .unwrap_or(0);
-            let latest = latest_declaration_period(canonical, security_id).await?;
+            let latest = latest_declaration_period(canonical, security_id, &as_of).await?;
             let overrides = stored_date_overrides(canonical, security_id).await?;
             if let Some(year) = financial_domain::roc::remaining_year_plan(
                 &as_of,
@@ -3616,9 +6031,18 @@ fn candidate_from_observation(obs: &RocResearchObservation) -> RocCandidateBody 
 }
 
 fn is_system_19a1(c: &RocCandidateBody) -> bool {
-    !c.owner_override
-        && c.roc_pct_minor.is_some()
-        && (c.method == "19a-1-current-year" || c.source == "19a-1")
+    if c.owner_override {
+        return false;
+    }
+    let Some(p) = c.roc_pct_minor else {
+        return false;
+    };
+    let from_notice = c.method == "19a-1-current-year";
+    let from_table = c.method == "table-roc-current";
+    if from_notice {
+        return (0..=10_000).contains(&p);
+    }
+    from_table && p > 0
 }
 
 fn parse_roc_candidates(v: &Value) -> Vec<RocCandidateBody> {
@@ -3748,11 +6172,12 @@ async fn roc_plan_confirm(
             scale,
             tax_year: financial_domain::roc::tax_year(&as_of),
             source: "owner-override".into(),
-            source_url: String::new(),
+            source_url: jstr(json, "sourceUrl").unwrap_or_default(),
             method: "owner-override".into(),
             as_of: as_of.clone(),
             kind: "estimate".into(),
-            established_how: "owner typed percent".into(),
+            established_how: jstr(json, "establishedHow")
+                .unwrap_or_else(|| "owner typed percent".into()),
             owner_override: true,
         });
     }
@@ -3912,6 +6337,11 @@ async fn position_research_seed(
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
 
+    let existing_template = canonical
+        .retrieval_template_get(security.security_id)
+        .await
+        .ok()
+        .flatten();
     if let Err(err) = canonical
         .retrieval_template_set(RetrievalTemplateRecord {
             security_id: security.security_id,
@@ -3925,9 +6355,22 @@ async fn position_research_seed(
             last_run_at: String::new(),
             last_run_ok: None,
             last_run_message: String::new(),
-            last_content_hash: String::new(),
+            last_content_hash: existing_template
+                .as_ref()
+                .map(|t| t.last_content_hash.clone())
+                .unwrap_or_default(),
             collector_enabled,
-            inception_on: jstr(json, "inceptionOn").unwrap_or_default(),
+            inception_on: jstr(json, "inceptionOn")
+                .or_else(|| existing_template.as_ref().map(|t| t.inception_on.clone()))
+                .unwrap_or_default(),
+            roc_source_url: jstr(json, "rocSourceUrl")
+                .or_else(|| existing_template.as_ref().map(|t| t.roc_source_url.clone()))
+                .unwrap_or_default(),
+            history_url_attempts: existing_template
+                .as_ref()
+                .filter(|t| t.source_url == source_url)
+                .map(|t| t.history_url_attempts)
+                .unwrap_or(0),
         })
         .await
     {
@@ -3947,19 +6390,8 @@ async fn position_research_seed(
                 declaration_source,
                 source_url,
                 calendar_policy,
-                payment_frequency: String::new(),
-                retrieve_ok: false,
-                retrieve_code: String::new(),
-                retrieve_message: String::new(),
-                roc_pct_minor: None,
                 roc_scale: financial_domain::roc::ROC_PCT_SCALE,
-                roc_source_url: String::new(),
-                roc_method: String::new(),
-                roc_kind: String::new(),
-                roc_as_of: String::new(),
-                roc_established_how: String::new(),
-                roc_complete: false,
-                roc_probes: Vec::new(),
+                ..PositionResearchSeedBody::default()
             })
             .unwrap_or_else(|_| "{}".into()),
         );
@@ -3996,22 +6428,9 @@ async fn position_research_seed(
                 symbol: symbol.clone(),
                 declaration_source: declaration_source.clone(),
                 source_url: source_url.clone(),
-                provider: String::new(),
-                underlying: String::new(),
-                payment_frequency: String::new(),
-                retrieve_ok: false,
-                retrieve_code: String::new(),
-                retrieve_message: String::new(),
-                roc_pct_minor: None,
                 roc_scale: financial_domain::roc::ROC_PCT_SCALE,
-                roc_source_url: String::new(),
-                roc_method: String::new(),
-                roc_kind: String::new(),
-                roc_as_of: String::new(),
-                roc_established_how: String::new(),
-                roc_complete: false,
-                roc_probes: Vec::new(),
                 needs_roc_research: true,
+                ..PositionResearchRefreshBody::default()
             },
         );
 
@@ -4036,6 +6455,14 @@ async fn position_research_seed(
             roc_established_how: body.roc_established_how,
             roc_complete: false,
             roc_probes: body.roc_probes,
+            needs_second_url: body.needs_second_url,
+            second_url_tried: body.second_url_tried,
+            adapter_failed: body.adapter_failed,
+            paid_count: body.paid_count,
+            needs_inception_confirm: body.needs_inception_confirm,
+            inception_candidate: body.inception_candidate,
+            expected_paid_since_inception: body.expected_paid_since_inception,
+            inception_search_miss: body.inception_search_miss,
         })
         .unwrap_or_else(|_| "{}".into()),
     )
@@ -4043,6 +6470,7 @@ async fn position_research_seed(
 
 /// Shared research hole-fill: provider / name / underlying / frequency / last price / 19a-1 ROC.
 /// Inputs: securityId or symbol. Writes blanks only; never wipes lots, PlanHistory, or decls.
+/// Never writes PlanHistory — imported / owner plan amounts (e.g. AMDW $0.55) stay.
 /// Does not auto-apply tier. Nested command path accepts injected payloads (golden); live
 /// enrichers run in the Tauri host before this dispatch.
 async fn position_research_refresh(
@@ -4081,6 +6509,49 @@ async fn position_research_refresh(
         })
         .unwrap_or_else(|| "issuer".into());
 
+    if !source_url.is_empty() {
+        if let Some(existing) = template.as_ref() {
+            if !existing.source_url.is_empty()
+                && source_url != existing.source_url
+                && !financial_domain::work_ticket::retry_url_matches_assigned_adapter(
+                    &declaration_source,
+                    &source_url,
+                )
+            {
+                return command_ok(
+                    request,
+                    serde_json::to_string(&PositionResearchRefreshBody {
+                        security_id: security.security_id,
+                        symbol,
+                        declaration_source,
+                        source_url: existing.source_url.clone(),
+                        retrieve_ok: false,
+                        retrieve_code: financial_domain::work_ticket::CODE_ADAPTER_URL_MISMATCH
+                            .into(),
+                        retrieve_message:
+                            "Second URL must stay on the assigned issuer. Manual adapter is parked."
+                                .into(),
+                        needs_second_url: existing.history_url_attempts < 2,
+                        second_url_tried: existing.history_url_attempts >= 1,
+                        adapter_failed: false,
+                        roc_scale: financial_domain::roc::ROC_PCT_SCALE,
+                        needs_roc_research: true,
+                        ..PositionResearchRefreshBody::default()
+                    })
+                    .unwrap_or_else(|_| "{}".into()),
+                );
+            }
+            if source_url != existing.source_url {
+                let _ = persist_template_url_same_adapter(
+                    canonical,
+                    security.security_id,
+                    &source_url,
+                )
+                .await;
+            }
+        }
+    }
+
     persist_process_a_identity(canonical, &security, &symbol, &declaration_source, json).await;
 
     let mut retrieve_body = serde_json::json!({
@@ -4117,12 +6588,15 @@ async fn position_research_refresh(
         "contentHash",
         "unchanged",
         "knownPaymentPeriods",
+        "knownDeclarationAmounts",
         "missExplanation",
         "suggestedFrequency",
         "sourceAnalytics",
         "researchAttempts",
         "fetchedSourceUrl",
         "fetchedPaymentCalendarUrl",
+        "fetchedPage",
+        "pagePaid",
     ] {
         if let Some(v) = json.get(key) {
             retrieve_body[key] = v.clone();
@@ -4181,6 +6655,23 @@ async fn position_research_refresh(
     )
     .await;
 
+    let mut roc_json = json.clone();
+    if roc_json.get("rocSourceUrl").is_none() {
+        if let Some(url) = template
+            .as_ref()
+            .map(|t| t.roc_source_url.clone())
+            .filter(|s| !s.trim().is_empty())
+        {
+            roc_json["rocSourceUrl"] = serde_json::json!(url);
+        }
+    }
+    if let Some(url) = jstr(&roc_json, "rocSourceUrl").filter(|s| !s.trim().is_empty()) {
+        roc_json["sourceUrl"] = serde_json::json!(url);
+        if let Ok(Some(mut rec)) = canonical.retrieval_template_get(security.security_id).await {
+            rec.roc_source_url = url;
+            let _ = canonical.retrieval_template_set(rec).await;
+        }
+    }
     let roc = process_a_propose_roc_estimate(
         platform,
         canonical,
@@ -4188,7 +6679,7 @@ async fn position_research_refresh(
         security.security_id,
         &symbol,
         &declaration_source,
-        json,
+        &roc_json,
     )
     .await;
     let mut roc_probes = roc.roc_probes.clone();
@@ -4265,6 +6756,36 @@ async fn position_research_refresh(
     };
     let needs = ch.map(|c| c.needs_roc_research).unwrap_or(true);
 
+    let mut ticket_json = json.clone();
+    if ticket_json.get("sourceUrl").is_none() {
+        ticket_json["sourceUrl"] = serde_json::json!(source_url);
+    }
+    if !roc_probes.is_empty() {
+        ticket_json["rocProbes"] = serde_json::json!(roc_probes.clone());
+    }
+    raise_collector_identity_tickets(canonical, security.security_id, &symbol, &ticket_json).await;
+
+    let establish = apply_phase_i_establish(
+        canonical,
+        security.security_id,
+        &symbol,
+        &source_url,
+        &freq,
+        retrieve_ok,
+        &retrieve_code,
+        &retrieve_message,
+        json,
+    )
+    .await;
+    if !roc.roc_source_url.trim().is_empty() {
+        if let Ok(Some(mut rec)) = canonical.retrieval_template_get(security.security_id).await {
+            if rec.roc_source_url.trim().is_empty() {
+                rec.roc_source_url = roc.roc_source_url.clone();
+                let _ = canonical.retrieval_template_set(rec).await;
+            }
+        }
+    }
+
     command_ok(
         request,
         serde_json::to_string(&PositionResearchRefreshBody {
@@ -4277,7 +6798,7 @@ async fn position_research_refresh(
             payment_frequency: freq,
             retrieve_ok,
             retrieve_code,
-            retrieve_message,
+            retrieve_message: establish.retrieve_message,
             roc_pct_minor: roc.roc_pct_minor,
             roc_scale: roc.roc_scale,
             roc_source_url: roc.roc_source_url,
@@ -4288,6 +6809,14 @@ async fn position_research_refresh(
             roc_complete: false,
             roc_probes,
             needs_roc_research: needs,
+            needs_second_url: establish.needs_second_url,
+            second_url_tried: establish.second_url_tried,
+            adapter_failed: establish.adapter_failed,
+            paid_count: establish.paid_count,
+            needs_inception_confirm: establish.needs_inception_confirm,
+            inception_candidate: establish.inception_candidate,
+            expected_paid_since_inception: establish.expected_paid_since_inception,
+            inception_search_miss: establish.inception_search_miss,
         })
         .unwrap_or_else(|_| "{}".into()),
     )
@@ -4316,12 +6845,176 @@ async fn resolve_security(
         .ok_or_else(|| "security_not_found".to_string())
 }
 
+async fn collector_fleet_grid(
+    canonical: &dyn Canonical,
+    as_of: &str,
+) -> Result<CollectorSetBody, PlatformError> {
+    let mut set = canonical.collector_set().await?;
+    let tickets = canonical
+        .work_ticket_list(None, Some("open".into()))
+        .await
+        .unwrap_or_default();
+    let chars = canonical
+        .position_characteristic_list()
+        .await
+        .unwrap_or_default();
+    let basis = canonical.basis_get().await.ok();
+    for item in &mut set.items {
+        let status = collector_status_for(canonical, item.security_id, &item.symbol, as_of).await;
+        item.complete = status.complete;
+        let mut gaps = status.gaps;
+
+        let ch = chars.iter().find(|c| c.security_id == item.security_id);
+        let provider = ch
+            .map(|c| c.provider.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| item.provider.clone());
+        let frequency = ch
+            .map(|c| c.payment_frequency.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| item.payment_frequency.clone());
+        let div_type = ch
+            .map(|c| c.div_type.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| item.div_type.clone());
+        let underlying = ch.map(|c| c.underlying.clone()).unwrap_or_default();
+        let roc_pct = ch.and_then(|c| c.roc_pct_2026_estimate_minor);
+        let holes = financial_domain::collector::runtime_research_gaps(
+            &item.symbol,
+            &provider,
+            &frequency,
+            &div_type,
+            roc_pct,
+            &underlying,
+        );
+        item.fill_gaps_provider_blank = holes.provider_blank;
+        item.fill_gaps_frequency_blank = holes.frequency_blank;
+        item.fill_gaps_div_type_blank = holes.div_type_blank;
+        item.fill_gaps_roc_blank = holes.roc_estimate_blank;
+        item.underlying = underlying;
+        item.roc_estimate_minor = roc_pct;
+        item.roc_scale = ch.and_then(|c| c.roc_scale).unwrap_or(2);
+        item.roc_tax_year = if roc_pct.is_some() {
+            as_of.get(..4).unwrap_or("").to_string()
+        } else {
+            String::new()
+        };
+        item.provider = provider;
+        item.payment_frequency = frequency.clone();
+        item.div_type = div_type.clone();
+        let has_miss_ticket = tickets.iter().any(|t| {
+            t.security_id == item.security_id
+                && t.status == "open"
+                && financial_domain::work_ticket::is_retrieve_failure_code(&t.code)
+        });
+        if financial_domain::collector::needs_owner_seed_url(
+            &div_type,
+            &item.symbol,
+            &item.source_url,
+            item.last_run_ok,
+            has_miss_ticket,
+        ) {
+            gaps.push("seed_url".into());
+        }
+        item.gaps = financial_domain::collector::fleet_gap_labels(&gaps, status.complete);
+
+        let decls = canonical
+            .issuer_declaration_list(item.security_id)
+            .await
+            .unwrap_or_default();
+        item.paid_declaration_count = decls
+            .iter()
+            .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+            .count()
+            .min(255) as u8;
+
+        let pays = canonical
+            .issuer_pay_date_list(item.security_id)
+            .await
+            .unwrap_or_default();
+        let pay_refs: Vec<&str> = pays.iter().map(|p| p.pay_on.as_str()).collect();
+        item.last_payable_on = pay_refs
+            .iter()
+            .max()
+            .map(|s| (*s).to_string())
+            .unwrap_or_default();
+        let cash = financial_domain::current_price::uses_cash_par(&div_type, &item.symbol);
+        if cash {
+            item.remaining_planned = None;
+            item.remaining_expected = None;
+        } else {
+            item.remaining_planned = Some(financial_domain::collector::stored_remaining_planned(
+                &pay_refs, as_of,
+            ));
+            let periods = financial_domain::calculator::PaymentCadence::parse(&frequency)
+                .and_then(financial_domain::calculator::PaymentCadence::periods);
+            item.remaining_expected =
+                periods.and_then(|p| financial_domain::schedule::remaining_periods_to_year_end(as_of, p));
+        }
+
+        let runs = canonical
+            .retrieve_run_list(Some(item.security_id), 200)
+            .await
+            .unwrap_or_default();
+        let decl_runs: Vec<_> = runs.iter().filter(|r| r.kind == "declaration").collect();
+        item.successful_run_count = decl_runs.iter().filter(|r| r.ok).count() as u64;
+        let open_for: Vec<_> = tickets
+            .iter()
+            .filter(|t| t.security_id == item.security_id && t.status == "open")
+            .collect();
+        item.open_ticket_count = open_for.len() as u64;
+        item.latest_ticket_field = open_for
+            .iter()
+            .max_by(|a, b| a.last_seen_on.cmp(&b.last_seen_on))
+            .map(|t| {
+                if t.field.trim().is_empty() {
+                    t.code.clone()
+                } else {
+                    t.field.clone()
+                }
+            })
+            .unwrap_or_default();
+        let miss_runs = decl_runs.iter().filter(|r| !r.ok).count() as u64;
+        item.failure_count = miss_runs.saturating_add(item.open_ticket_count);
+
+        if let Ok(price) = canonical.current_price_get(item.security_id, as_of.to_string()).await
+        {
+            item.last_price_as_of = price.as_of_at.unwrap_or_default();
+            item.last_price_freshness = match price.freshness.as_str() {
+                "current" | "manual_override" => "Current".into(),
+                "stale" => "Stale".into(),
+                _ => "Unavailable".into(),
+            };
+            if price.price_minor.is_none() || !price.price_derived_valid {
+                item.last_price_freshness = "Unavailable".into();
+            }
+        } else {
+            item.last_price_freshness = "Unavailable".into();
+        }
+
+        item.open_lot_count = basis
+            .as_ref()
+            .map(|b| {
+                b.lots
+                    .iter()
+                    .filter(|l| l.security_id == item.security_id && l.remaining_quantity_minor > 0)
+                    .count() as u64
+            })
+            .unwrap_or(0);
+
+        if item.declaration_source.eq_ignore_ascii_case("derived_walk") {
+            item.declaration_source.clear();
+        }
+    }
+    Ok(set)
+}
+
 async fn research_gaps_get(canonical: &dyn Canonical) -> Result<ResearchGapsGetBody, PlatformError> {
     let set = canonical.collector_set().await?;
     let chars = canonical.position_characteristic_list().await?;
     let mut items = Vec::new();
     for item in set.items {
-        if !item.collector_enabled {
+        if !item.collector_enabled || !item.open_lots {
             continue;
         }
         let ch = chars.iter().find(|c| c.security_id == item.security_id);
@@ -4334,25 +7027,27 @@ async fn research_gaps_get(canonical: &dyn Canonical) -> Result<ResearchGapsGetB
         let frequency = ch
             .map(|c| c.payment_frequency.trim().to_string())
             .unwrap_or_else(|| item.payment_frequency.trim().to_string());
-        let freq_ok = financial_domain::calculator::PaymentCadence::parse(&frequency)
-            .and_then(financial_domain::calculator::PaymentCadence::periods)
-            .is_some();
-        let obs = canonical
-            .roc_observation_list(item.security_id)
-            .await
-            .unwrap_or_default();
-        let provider_blank = provider.is_empty();
-        let underlying_blank = underlying.is_empty();
-        let frequency_blank = !freq_ok;
-        let roc_observation_blank = obs.is_empty();
-        if provider_blank || underlying_blank || frequency_blank || roc_observation_blank {
+        let div_type = ch
+            .map(|c| c.div_type.as_str())
+            .unwrap_or("");
+        let holes = financial_domain::collector::runtime_research_gaps(
+            &item.symbol,
+            &provider,
+            &frequency,
+            div_type,
+            ch.and_then(|c| c.roc_pct_2026_estimate_minor),
+            &underlying,
+        );
+        if holes.is_hole() {
             items.push(ResearchGapItem {
                 security_id: item.security_id,
                 symbol: item.symbol,
-                provider_blank,
-                underlying_blank,
-                frequency_blank,
-                roc_observation_blank,
+                provider_blank: holes.provider_blank,
+                underlying_blank: holes.underlying_blank,
+                frequency_blank: holes.frequency_blank,
+                roc_observation_blank: holes.roc_estimate_blank,
+                div_type_blank: holes.div_type_blank,
+                roc_estimate_blank: holes.roc_estimate_blank,
             });
         }
     }
@@ -4386,6 +7081,20 @@ async fn process_a_propose_roc_estimate(
         roc_scale: financial_domain::roc::ROC_PCT_SCALE,
         ..ProcessARocPropose::default()
     };
+    if financial_domain::current_price::uses_cash_par("", symbol) {
+        return out;
+    }
+    let chars = canonical
+        .position_characteristic_list()
+        .await
+        .unwrap_or_default();
+    if chars
+        .iter()
+        .find(|c| c.security_id == security_id)
+        .is_some_and(|c| financial_domain::current_price::uses_cash_par(&c.div_type, symbol))
+    {
+        return out;
+    }
     let paid = canonical
         .issuer_declaration_list(security_id)
         .await
@@ -4406,7 +7115,8 @@ async fn process_a_propose_roc_estimate(
         "symbol": symbol,
         "declarationSource": declaration_source,
         "asOfDate": today_iso(),
-        "sourceUrl": jstr(json, "sourceUrl")
+        "sourceUrl": jstr(json, "rocSourceUrl")
+            .or_else(|| jstr(json, "sourceUrl"))
             .or_else(|| jstr(json, "distributionUrl"))
             .unwrap_or_default(),
     });
@@ -4473,23 +7183,32 @@ async fn propose_characteristic_roc_estimate(
     let Ok(list) = canonical.position_characteristic_list().await else {
         return;
     };
-    let mut rec = list
-        .into_iter()
-        .find(|c| c.security_id == security_id)
-        .unwrap_or_else(|| empty_characteristic(security_id));
-    if financial_domain::calculator::PaymentCadence::parse(&rec.payment_frequency).is_none() {
+    // Existing identity only — do not insert a blank characteristic. Cadence is not required
+    // to persist a parsed 19a-1 estimate. Never write 2025 actual here.
+    let Some(mut rec) = list.into_iter().find(|c| c.security_id == security_id) else {
         return;
-    }
-    // Do not overwrite a confirmed 2026 actual or an existing estimate (holes only).
+    };
+    // Do not overwrite a 1099 2026 actual. Live 19a-1 replaces seed/stale
+    // estimates. Owner-confirmed override (RocPlanConfirm) is kept.
+    // Parsed 0% is valid only when the notice said 0.
     if rec.roc_pct_2026_actual_minor.is_some() {
         return;
     }
-    if rec.roc_pct_2026_estimate_minor.is_some() {
-        rec.needs_roc_research = true;
-        let _ = canonical.position_characteristic_upsert(rec).await;
+    let live = system.roc_pct_minor.filter(|p| (0..=10_000).contains(p));
+    let Some(pct) = live else {
+        return;
+    };
+    let owner_locked = !rec.needs_roc_research
+        && canonical
+            .roc_observation_list(security_id)
+            .await
+            .ok()
+            .map(|obs| obs.iter().any(|o| o.owner_override))
+            .unwrap_or(false);
+    if owner_locked {
         return;
     }
-    rec.roc_pct_2026_estimate_minor = system.roc_pct_minor;
+    rec.roc_pct_2026_estimate_minor = Some(pct);
     rec.roc_scale = Some(system.scale);
     rec.needs_roc_research = true;
     let _ = canonical.position_characteristic_upsert(rec).await;
@@ -4566,6 +7285,12 @@ pub async fn execute_query_on(
             Some(id) => map_q(&request, canonical.import_batch_get(id).await),
             None => query_err(&request, "missing_batch_id"),
         },
+        "ImportPendingGet" => map_q(
+            &request,
+            canonical.import_pending_get().await.map(|batch| {
+                crate::contracts::ImportPendingBody { batch }
+            }),
+        ),
         "ActivityGet" => match juuid(&json, "activityId") {
             Some(id) => map_q(&request, canonical.activity_get(id).await),
             None => query_err(&request, "missing_activity_id"),
@@ -4573,6 +7298,28 @@ pub async fn execute_query_on(
         "ActivityList" => map_q(&request, canonical.activity_list().await),
         "AuditList" => map_q(&request, canonical.audit_list().await),
         "ExceptionList" => map_q(&request, canonical.exception_list().await),
+        "WorkTicketList" => {
+            let security_id = juuid(&json, "securityId");
+            let status = jstr(&json, "status");
+            match canonical.work_ticket_list(security_id, status).await {
+                Ok(items) => {
+                    let open: Vec<_> = items.iter().filter(|t| t.status == "open").collect();
+                    let mut symbols = std::collections::HashSet::new();
+                    for t in &open {
+                        symbols.insert(t.symbol.clone());
+                    }
+                    map_q(
+                        &request,
+                        Ok(WorkTicketListBody {
+                            open_count: open.len() as u64,
+                            symbol_count: symbols.len() as u64,
+                            items,
+                        }),
+                    )
+                }
+                Err(err) => query_err(&request, &err.code),
+            }
+        }
         "CashDividendCoverageGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
             map_q(&request, cash_dividend_coverage_refresh(canonical, &as_of).await)
@@ -4583,7 +7330,52 @@ pub async fn execute_query_on(
         }
         "IncomePlanWeekGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_default();
-            map_q(&request, income_plan_week_view(canonical, as_of).await)
+            let pick = jstr(&json, "weekEnding")
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| as_of.clone());
+            map_q(&request, income_plan_week_view(canonical, pick, as_of).await)
+        }
+        "IncomePlanGridGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            let hist = json
+                .get("historicalWeeks")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(6);
+            let fut = json
+                .get("futureWeeks")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(6);
+            let accounts: Vec<String> = json
+                .get("accounts")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let selected = jstr(&json, "weekEnding").unwrap_or_default();
+            map_q(
+                &request,
+                income_plan_grid_view(
+                    canonical,
+                    as_of,
+                    financial_domain::income_plan::clamp_week_count(hist),
+                    financial_domain::income_plan::clamp_week_count(fut),
+                    accounts,
+                    selected,
+                )
+                .await,
+            )
+        }
+        "IncomePlanExportGet" => map_q(&request, income_plan_export_view(canonical, &json).await),
+        "DividendPerformanceGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_default();
+            let range = jstr(&json, "range").unwrap_or_else(|| "ytd".into());
+            map_q(
+                &request,
+                dividend_performance_view(canonical, as_of, range).await,
+            )
         }
         "DashboardBurndownGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_default();
@@ -4592,6 +7384,28 @@ pub async fn execute_query_on(
         "HoldingsGet" => map_q(&request, holdings_view(canonical).await),
         "DataSummaryGet" => map_q(&request, data_summary_view(canonical).await),
         "CalculatorGet" => map_q(&request, calculator_view(canonical).await),
+        "DeclarationHistoryGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            let cadence = jstr(&json, "cadence").unwrap_or_else(|| "all".into());
+            let start_on = jstr(&json, "startOn");
+            let end_on = jstr(&json, "endOn");
+            let week_count = json
+                .get("weekCount")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32);
+            map_q(
+                &request,
+                declaration_history_view(
+                    canonical,
+                    &as_of,
+                    &cadence,
+                    start_on.as_deref(),
+                    end_on.as_deref(),
+                    week_count,
+                )
+                .await,
+            )
+        }
         "PlanReviewGet" => match juuid(&json, "securityId") {
             Some(id) => map_q(&request, plan_review_view(canonical, id).await),
             None => query_err(&request, "missing_security_id"),
@@ -4629,7 +7443,10 @@ pub async fn execute_query_on(
             }
         },
         "PriceRetrievalSetGet" => map_q(&request, canonical.price_retrieval_set().await),
-        "CollectorSetGet" => map_q(&request, canonical.collector_set().await),
+        "CollectorSetGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            map_q(&request, collector_fleet_grid(canonical, &as_of).await)
+        }
         "ResearchGapsGet" => map_q(&request, research_gaps_get(canonical).await),
         "CollectorStatsGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
@@ -4938,6 +7755,317 @@ pub async fn execute_command_on(
             Some(id) => map_c(&request, canonical.exception_acknowledge(id).await),
             None => command_err(&request, "missing_exception_id"),
         },
+        "WorkTicketSyncMisses" => map_c(&request, work_ticket_sync_misses(canonical).await),
+        "WorkTicketFile" => match juuid(&json, "ticketId") {
+            Some(id) => map_c(
+                &request,
+                work_ticket_file_on(
+                    canonical,
+                    id,
+                    &jstr(&json, "note").or_else(|| jstr(&json, "ownerNote")).unwrap_or_default(),
+                )
+                .await,
+            ),
+            None => command_err(&request, "missing_ticket_id"),
+        },
+        "WorkTicketResolve" => match juuid(&json, "ticketId") {
+            Some(ticket_id) => {
+                let ticket = match canonical.work_ticket_get(ticket_id).await {
+                    Ok(t) => t,
+                    Err(err) => return command_err(&request, &err.code),
+                };
+                let Some(expected_tool) = financial_domain::work_ticket::tool_for_code(&ticket.code)
+                else {
+                    return command_err(&request, "ticket_missing_tool");
+                };
+                let tool = expected_tool.to_string();
+                if tool == financial_domain::work_ticket::TOOL_RETRY_RETRIEVE {
+                    let template = canonical
+                        .retrieval_template_get(ticket.security_id)
+                        .await
+                        .ok()
+                        .flatten();
+                    let assigned = template
+                        .as_ref()
+                        .map(|t| t.declaration_source.clone())
+                        .unwrap_or_default();
+                    let retry_url = jstr(&json, "sourceUrl").unwrap_or_default();
+                    if !retry_url.is_empty()
+                        && !financial_domain::work_ticket::retry_url_matches_assigned_adapter(
+                            &assigned,
+                            &retry_url,
+                        )
+                    {
+                        let mut t = ticket.clone();
+                        t.reason = format!(
+                            "Assigned adapter {assigned} refused URL {retry_url}. Adapter unchanged."
+                        );
+                        t.urls_tried = append_tried_url(&t.urls_tried, &retry_url);
+                        t.last_seen_on = today_iso();
+                        let t = match canonical.work_ticket_update(t).await {
+                            Ok(row) => row,
+                            Err(err) => return command_err(&request, &err.code),
+                        };
+                        return command_ok(
+                            &request,
+                            work_ticket_resolve_body(
+                                &t,
+                                false,
+                                financial_domain::work_ticket::CODE_ADAPTER_URL_MISMATCH,
+                                &t.reason,
+                            ),
+                        );
+                    }
+                    if !retry_url.is_empty() {
+                        if let Err(err) =
+                            persist_template_url_same_adapter(canonical, ticket.security_id, &retry_url)
+                                .await
+                        {
+                            return command_err(&request, &err.code);
+                        }
+                    }
+                    let mut t = ticket.clone();
+                    t.urls_tried = append_tried_url(&t.urls_tried, &retry_url);
+                    t.last_seen_on = today_iso();
+                    if !retry_url.is_empty() {
+                        t.reason = format!(
+                            "Retry URL kept on assigned adapter {assigned}."
+                        );
+                    }
+                    let t = match canonical.work_ticket_update(t).await {
+                        Ok(row) => row,
+                        Err(err) => return command_err(&request, &err.code),
+                    };
+                    return command_ok(
+                        &request,
+                        work_ticket_resolve_body(
+                            &t,
+                            true,
+                            "",
+                            "Retrying stored adapter URL.",
+                        ),
+                    );
+                }
+                if tool == financial_domain::work_ticket::TOOL_LOCK_CADENCE
+                    || tool == financial_domain::work_ticket::TOOL_SET_DIV_TYPE
+                    || tool == financial_domain::work_ticket::TOOL_SET_UNDERLYING
+                {
+                    let mut upsert = serde_json::json!({
+                        "securityId": ticket.security_id,
+                    });
+                    if let Some(freq) = jstr(&json, "paymentFrequency") {
+                        upsert["paymentFrequency"] = serde_json::json!(freq);
+                    }
+                    if let Some(div) = jstr(&json, "divType") {
+                        upsert["divType"] = serde_json::json!(div);
+                    }
+                    if let Some(und) = jstr(&json, "underlying") {
+                        upsert["underlying"] = serde_json::json!(und);
+                    }
+                    let nested = Box::pin(execute_command_on(
+                        platform,
+                        canonical,
+                        CommandRequest {
+                            contract_version: request.contract_version.clone(),
+                            command_name: "PositionCharacteristicUpsert".into(),
+                            correlation_id: request.correlation_id,
+                            body_json: Some(upsert.to_string()),
+                            expected_version: None,
+                        },
+                    ))
+                    .await;
+                    if !nested.ok {
+                        return command_err(
+                            &request,
+                            nested
+                                .error_code
+                                .as_deref()
+                                .unwrap_or("ticket_tool_noop"),
+                        );
+                    }
+                    let latest = canonical
+                        .work_ticket_get(ticket_id)
+                        .await
+                        .unwrap_or(ticket);
+                    return command_ok(
+                        &request,
+                        work_ticket_resolve_body(&latest, true, "", "characteristic saved"),
+                    );
+                }
+                if tool == financial_domain::work_ticket::TOOL_SET_INCEPTION {
+                    let inception = jstr(&json, "inceptionOn").unwrap_or_default();
+                    let Some(mut rec) = canonical
+                        .retrieval_template_get(ticket.security_id)
+                        .await
+                        .ok()
+                        .flatten()
+                    else {
+                        return command_err(&request, "not_found");
+                    };
+                    rec.inception_on = inception;
+                    if let Err(err) = canonical.retrieval_template_set(rec).await {
+                        return command_err(&request, &err.code);
+                    }
+                    let latest = canonical
+                        .work_ticket_get(ticket_id)
+                        .await
+                        .unwrap_or(ticket);
+                    return command_ok(
+                        &request,
+                        work_ticket_resolve_body(&latest, true, "", "inception saved"),
+                    );
+                }
+                if tool == financial_domain::work_ticket::TOOL_ENTER_DECLARED_AMOUNT {
+                    let period = jstr(&json, "paymentPeriod")
+                        .or_else(|| payment_period_from_ticket_reason(&ticket.reason))
+                        .unwrap_or_default();
+                    if period.is_empty() {
+                        return command_err(&request, "missing_payment_period");
+                    }
+                    let (minor, scale) = if let Some(m) = json
+                        .get("amountPerShareMinor")
+                        .and_then(|x| x.as_i64())
+                        .filter(|a| *a > 0)
+                    {
+                        (m, ju8(&json, "amountScale", 4))
+                    } else if let Some(raw) = jstr(&json, "amount").or_else(|| jstr(&json, "dollars"))
+                    {
+                        match parse_owner_per_unit_amount(&raw) {
+                            Some(v) => v,
+                            None => return command_err(&request, "missing_amount"),
+                        }
+                    } else {
+                        return command_err(&request, "missing_amount");
+                    };
+                    if let Err(err) = canonical
+                        .issuer_declaration_record(
+                            ticket.security_id,
+                            Some(minor),
+                            scale,
+                            period,
+                            "owner".into(),
+                            today_iso(),
+                        )
+                        .await
+                    {
+                        return command_err(&request, &err.code);
+                    }
+                    match work_ticket_file_on(
+                        canonical,
+                        ticket_id,
+                        &jstr(&json, "note").unwrap_or_else(|| {
+                            format!("owner declared {minor} scale {scale}")
+                        }),
+                    )
+                    .await
+                    {
+                        Ok(t) => {
+                            return command_ok(
+                                &request,
+                                work_ticket_resolve_body(&t, true, "", "declared amount saved"),
+                            )
+                        }
+                        Err(err) => return command_err(&request, &err.code),
+                    }
+                }
+                if tool == financial_domain::work_ticket::TOOL_AMOUNT_CONFIRM
+                    || tool == financial_domain::work_ticket::TOOL_PLAN_VS_DECL
+                {
+                    let action = jstr(&json, "action").unwrap_or_default();
+                    if action.eq_ignore_ascii_case("reject")
+                        && tool == financial_domain::work_ticket::TOOL_AMOUNT_CONFIRM
+                    {
+                        if let Some(period) = payment_period_from_ticket_reason(&ticket.reason) {
+                            let today = today_iso();
+                            if let Err(err) = canonical
+                                .issuer_declaration_record(
+                                    ticket.security_id,
+                                    None,
+                                    2,
+                                    period,
+                                    "owner".into(),
+                                    today,
+                                )
+                                .await
+                            {
+                                return command_err(&request, &err.code);
+                            }
+                        }
+                        match work_ticket_file_on(
+                            canonical,
+                            ticket_id,
+                            &jstr(&json, "note")
+                                .unwrap_or_else(|| "rejected: vendor amount discarded".into()),
+                        )
+                        .await
+                        {
+                            Ok(t) => {
+                                return command_ok(
+                                    &request,
+                                    work_ticket_resolve_body(&t, true, "", "rejected"),
+                                )
+                            }
+                            Err(err) => return command_err(&request, &err.code),
+                        }
+                    }
+                    let keep_plan = json
+                        .get("keepPlan")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    if !keep_plan {
+                        return command_err(&request, "ticket_wrote_plan");
+                    }
+                    match work_ticket_file_on(
+                        canonical,
+                        ticket_id,
+                        &jstr(&json, "note")
+                            .unwrap_or_else(|| "excepted: vendor amount accepted".into()),
+                    )
+                    .await
+                    {
+                        Ok(t) => {
+                            return command_ok(
+                                &request,
+                                work_ticket_resolve_body(&t, true, "", "excepted"),
+                            )
+                        }
+                        Err(err) => return command_err(&request, &err.code),
+                    }
+                }
+                if tool == financial_domain::work_ticket::TOOL_RUN_ROC {
+                    let mut roc = json.clone();
+                    roc["securityId"] = serde_json::json!(ticket.security_id);
+                    roc["symbol"] = serde_json::json!(ticket.symbol);
+                    let nested = Box::pin(execute_command_on(
+                        platform,
+                        canonical,
+                        CommandRequest {
+                            contract_version: request.contract_version.clone(),
+                            command_name: "RocResearchRetrieve".into(),
+                            correlation_id: request.correlation_id,
+                            body_json: Some(roc.to_string()),
+                            expected_version: None,
+                        },
+                    ))
+                    .await;
+                    let latest = canonical
+                        .work_ticket_get(ticket_id)
+                        .await
+                        .unwrap_or(ticket);
+                    return command_ok(
+                        &request,
+                        work_ticket_resolve_body(
+                            &latest,
+                            nested.ok,
+                            nested.error_code.as_deref().unwrap_or(""),
+                            "roc retrieve",
+                        ),
+                    );
+                }
+                command_err(&request, "ticket_missing_tool")
+            }
+            None => command_err(&request, "missing_ticket_id"),
+        },
         "DividendDeclare" => map_c(
             &request,
             canonical
@@ -4992,6 +8120,23 @@ pub async fn execute_command_on(
                     Ok(None) => return command_err(&request, "not_researched"),
                     Err(err) => return command_err(&request, &err.code),
                     Ok(Some(_)) => {}
+                }
+                let basis = match canonical.basis_get().await {
+                    Ok(b) => b,
+                    Err(err) => return command_err(&request, &err.code),
+                };
+                let already_has_lots = basis.lots.iter().any(|l| l.security_id == security_id);
+                if !already_has_lots {
+                    let symbol = canonical
+                        .security_get(security_id)
+                        .await
+                        .map(|s| s.symbol)
+                        .unwrap_or_default();
+                    let as_of = today_iso();
+                    let status = collector_status_for(canonical, security_id, &symbol, &as_of).await;
+                    if !status.complete {
+                        return command_err(&request, "collector_incomplete");
+                    }
                 }
                 let opened_on = jstr(&json, "openedOn").unwrap_or_default();
                 if opened_on.trim().is_empty() {
@@ -5298,6 +8443,11 @@ pub async fn execute_command_on(
         },
         "RetrievalTemplateSet" => match juuid(&json, "securityId") {
             Some(security_id) => {
+                let existing = canonical
+                    .retrieval_template_get(security_id)
+                    .await
+                    .ok()
+                    .flatten();
                 let declaration_source =
                     jstr(&json, "declarationSource").unwrap_or_default();
                 let collector_enabled = json
@@ -5324,12 +8474,75 @@ pub async fn execute_command_on(
                             last_run_at: String::new(),
                             last_run_ok: None,
                             last_run_message: String::new(),
-                            last_content_hash: String::new(),
+                            last_content_hash: jstr(&json, "lastContentHash")
+                                .filter(|s| !s.trim().is_empty())
+                                .or_else(|| existing.as_ref().map(|e| e.last_content_hash.clone()))
+                                .unwrap_or_default(),
                             collector_enabled,
-                            inception_on: jstr(&json, "inceptionOn").unwrap_or_default(),
+                            inception_on: jstr(&json, "inceptionOn")
+                                .or_else(|| existing.as_ref().map(|e| e.inception_on.clone()))
+                                .unwrap_or_default(),
+                            roc_source_url: jstr(&json, "rocSourceUrl")
+                                .or_else(|| existing.as_ref().map(|e| e.roc_source_url.clone()))
+                                .unwrap_or_default(),
+                            history_url_attempts: json
+                                .get("historyUrlAttempts")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as u8)
+                                .or_else(|| existing.as_ref().map(|e| e.history_url_attempts))
+                                .unwrap_or(0),
                         })
                         .await,
                 )
+            }
+            None => command_err(&request, "missing_security_id"),
+        },
+        "CollectorFieldDecisionSet" => match juuid(&json, "securityId") {
+            Some(security_id) => {
+                let field = jstr(&json, "field").unwrap_or_default();
+                let decision = jstr(&json, "decision").unwrap_or_default();
+                let field_ok = financial_domain::collector::REQUIRED_FIELDS
+                    .iter()
+                    .any(|r| r.eq_ignore_ascii_case(&field))
+                    || field.eq_ignore_ascii_case("backtest");
+                let decision_ok = decision.eq_ignore_ascii_case("accept")
+                    || decision.eq_ignore_ascii_case("skip");
+                if field.trim().is_empty() || !field_ok {
+                    command_err(&request, "invalid_field")
+                } else if !decision_ok {
+                    command_err(&request, "invalid_decision")
+                } else {
+                    let rec = CollectorFieldDecisionRecord {
+                        security_id,
+                        field: field.to_ascii_lowercase(),
+                        decision: decision.to_ascii_lowercase(),
+                        noted_on: today_iso(),
+                    };
+                    if rec.decision == "skip"
+                        && !rec.field.eq_ignore_ascii_case("backtest")
+                    {
+                        let symbol = resolve_security(canonical, &json)
+                            .await
+                            .map(|s| s.symbol)
+                            .unwrap_or_default();
+                        if financial_domain::work_ticket::tool_for_code(&rec.field).is_some()
+                        {
+                            let _ = work_ticket_raise_or_bump(
+                                canonical,
+                                security_id,
+                                &symbol,
+                                &rec.field,
+                                &format!("Owner skipped required field {}.", rec.field),
+                                "",
+                            )
+                            .await;
+                        }
+                    }
+                    map_c(
+                        &request,
+                        canonical.collector_field_decision_set(rec).await,
+                    )
+                }
             }
             None => command_err(&request, "missing_security_id"),
         },
@@ -5340,56 +8553,83 @@ pub async fn execute_command_on(
                     Err(err) => return command_err(&request, &err.code),
                 };
                 let base = existing.unwrap_or_else(|| empty_characteristic(security_id));
-                let freq_raw = if json.get("paymentFrequency").is_some() {
-                    jstr(&json, "paymentFrequency").unwrap_or_default()
-                } else {
+                let replace_cadence = jbool(&json, "replaceCadence", false);
+                let base_locked = financial_domain::calculator::PaymentCadence::parse(
+                    &base.payment_frequency,
+                )
+                .and_then(financial_domain::calculator::PaymentCadence::periods)
+                .is_some();
+                let payment_frequency = if base_locked && !replace_cadence {
                     base.payment_frequency.clone()
+                } else {
+                    let freq_raw = if json.get("paymentFrequency").is_some() {
+                        jstr(&json, "paymentFrequency").unwrap_or_default()
+                    } else {
+                        base.payment_frequency.clone()
+                    };
+                    match locked_cadence(&freq_raw) {
+                        Ok(c) => c.label().to_string(),
+                        Err(err) => return command_err(&request, &err.code),
+                    }
                 };
-                let cadence = match locked_cadence(&freq_raw) {
-                    Ok(c) => c,
-                    Err(err) => return command_err(&request, &err.code),
+                let rec = PositionCharacteristicRecord {
+                    security_id,
+                    payment_frequency,
+                    risk_tier: jstr_keep(&json, "riskTier", base.risk_tier),
+                    provider: jstr_keep(&json, "provider", base.provider),
+                    underlying: jstr_keep(&json, "underlying", base.underlying),
+                    roc_pct_2025_actual_minor: ji64_keep(
+                        &json,
+                        "rocPct2025ActualMinor",
+                        base.roc_pct_2025_actual_minor,
+                    ),
+                    roc_pct_2026_estimate_minor: ji64_keep(
+                        &json,
+                        "rocPct2026EstimateMinor",
+                        base.roc_pct_2026_estimate_minor,
+                    ),
+                    roc_pct_2026_actual_minor: ji64_keep(
+                        &json,
+                        "rocPct2026ActualMinor",
+                        base.roc_pct_2026_actual_minor,
+                    ),
+                    roc_pct_2024_actual_minor: ji64_keep(
+                        &json,
+                        "rocPct2024ActualMinor",
+                        base.roc_pct_2024_actual_minor,
+                    ),
+                    roc_scale: ju8_opt_keep(&json, "rocScale", base.roc_scale),
+                    div_type: jstr_keep(&json, "divType", base.div_type),
+                    needs_roc_research: jbool_keep(
+                        &json,
+                        "needsRocResearch",
+                        base.needs_roc_research,
+                    ),
+                    notes: jstr_keep(&json, "notes", base.notes),
+                    is_active: jbool_keep(&json, "isActive", base.is_active),
+                    lookthrough: jlookthrough_keep(&json, "lookthrough", base.lookthrough),
                 };
+                if rec.div_type.trim().is_empty()
+                    && !financial_domain::calculator::is_non_paying(&rec.payment_frequency)
+                {
+                    let symbol = canonical
+                        .security_get(security_id)
+                        .await
+                        .map(|s| s.symbol)
+                        .unwrap_or_default();
+                    let _ = work_ticket_raise_or_bump(
+                        canonical,
+                        security_id,
+                        &symbol,
+                        "div_type",
+                        "DIV-1 (or CASH) is empty — owner must set it.",
+                        "",
+                    )
+                    .await;
+                }
                 map_c(
                     &request,
-                    canonical
-                        .position_characteristic_upsert(PositionCharacteristicRecord {
-                            security_id,
-                            payment_frequency: cadence.label().to_string(),
-                            risk_tier: jstr_keep(&json, "riskTier", base.risk_tier),
-                            provider: jstr_keep(&json, "provider", base.provider),
-                            underlying: jstr_keep(&json, "underlying", base.underlying),
-                            roc_pct_2025_actual_minor: ji64_keep(
-                                &json,
-                                "rocPct2025ActualMinor",
-                                base.roc_pct_2025_actual_minor,
-                            ),
-                            roc_pct_2026_estimate_minor: ji64_keep(
-                                &json,
-                                "rocPct2026EstimateMinor",
-                                base.roc_pct_2026_estimate_minor,
-                            ),
-                            roc_pct_2026_actual_minor: ji64_keep(
-                                &json,
-                                "rocPct2026ActualMinor",
-                                base.roc_pct_2026_actual_minor,
-                            ),
-                            roc_pct_2024_actual_minor: ji64_keep(
-                                &json,
-                                "rocPct2024ActualMinor",
-                                base.roc_pct_2024_actual_minor,
-                            ),
-                            roc_scale: ju8_opt_keep(&json, "rocScale", base.roc_scale),
-                            div_type: jstr_keep(&json, "divType", base.div_type),
-                            needs_roc_research: jbool_keep(
-                                &json,
-                                "needsRocResearch",
-                                base.needs_roc_research,
-                            ),
-                            notes: jstr_keep(&json, "notes", base.notes),
-                            is_active: jbool_keep(&json, "isActive", base.is_active),
-                            lookthrough: jlookthrough_keep(&json, "lookthrough", base.lookthrough),
-                        })
-                        .await,
+                    canonical.position_characteristic_upsert(rec).await,
                 )
             }
             None => command_err(&request, "missing_security_id"),
@@ -5641,7 +8881,7 @@ pub async fn execute_command_on(
                     Err(_) => skipped += 1,
                 }
             }
-            let ran_at = today_iso();
+            let ran_at = run_stamp_local();
             let misses = json
                 .get("misses")
                 .and_then(|m| m.as_array())
@@ -5739,6 +8979,10 @@ pub async fn execute_command_on(
                     skipped += 1;
                     continue;
                 }
+                if is_cash_rate_candidate(&decl) {
+                    skipped += 1;
+                    continue;
+                }
                 match canonical
                     .issuer_declaration_record(
                         security_id,
@@ -5757,7 +9001,7 @@ pub async fn execute_command_on(
                     Err(_) => skipped += 1,
                 }
             }
-            let ran_at = today_iso();
+            let ran_at = run_stamp_local();
             let pay_dates = json
                 .get("payDates")
                 .and_then(|q| q.as_array())
@@ -5766,68 +9010,128 @@ pub async fn execute_command_on(
             for row in &pay_dates {
                 capture_hash(row, &mut hashes);
             }
-            let mut by_security: std::collections::HashMap<Uuid, Vec<IssuerPayDateRecord>> =
+            let mut by_security: std::collections::HashMap<Uuid, Vec<Value>> =
                 std::collections::HashMap::new();
             for row in pay_dates {
                 let Some(security_id) = juuid(&row, "securityId") else {
                     continue;
                 };
-                let pay_on = jstr(&row, "payOn")
-                    .or_else(|| jstr(&row, "paymentPeriod"))
-                    .unwrap_or_default();
-                if pay_on.is_empty() {
-                    continue;
-                }
-                by_security.entry(security_id).or_default().push(IssuerPayDateRecord {
-                    pay_date_id: Uuid::new_v4(),
-                    security_id,
-                    pay_on,
-                    source: jstr(&row, "source").unwrap_or_default(),
-                    recorded_at: ran_at.clone(),
-                });
+                by_security.entry(security_id).or_default().push(row);
             }
-            for (security_id, dates) in by_security {
-                if dates.is_empty() {
+            let chars = canonical
+                .position_characteristic_list()
+                .await
+                .unwrap_or_default();
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            for (security_id, rows) in by_security {
+                if rows.is_empty() {
                     continue;
                 }
-                let as_of = dates
-                    .iter()
-                    .map(|d| d.pay_on.as_str())
-                    .min()
-                    .unwrap_or(ran_at.as_str())
-                    .to_string();
-                let pay_count = dates.len();
-                let calendar_url = payment_calendar_url_for(&json, security_id);
-                match canonical
-                    .issuer_pay_date_replace(security_id, as_of, dates)
+                let symbol = canonical
+                    .security_get(security_id)
                     .await
-                {
-                    Ok(_) => {
-                        ok_ids.insert(security_id);
-                        promote_vendor_calendar_template(
-                            canonical,
-                            security_id,
-                            pay_count,
-                            &calendar_url,
-                        )
-                        .await;
-                    }
-                    Err(_) => skipped += 1,
+                    .map(|s| s.symbol)
+                    .unwrap_or_default();
+                let freq = chars
+                    .iter()
+                    .find(|c| c.security_id == security_id)
+                    .map(|c| c.payment_frequency.clone())
+                    .unwrap_or_default();
+                let tmpl = canonical
+                    .retrieval_template_get(security_id)
+                    .await
+                    .ok()
+                    .flatten();
+                let src = tmpl
+                    .as_ref()
+                    .map(|t| t.declaration_source.as_str())
+                    .unwrap_or("");
+                let decls = json
+                    .get("declarations")
+                    .or_else(|| json.get("candidates"))
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|d| juuid(d, "securityId") == Some(security_id))
+                    .collect::<Vec<_>>();
+                let wrote = if financial_domain::mlp_sec::is_adapter_kind(src) {
+                    apply_mlp_sec_8k_payables(
+                        canonical,
+                        security_id,
+                        &symbol,
+                        &as_of,
+                        &decls,
+                        &rows,
+                        &ran_at,
+                    )
+                    .await
+                } else {
+                    apply_runtime_vendor_payables(
+                        canonical,
+                        security_id,
+                        &symbol,
+                        &as_of,
+                        &freq,
+                        &rows,
+                        &ran_at,
+                    )
+                    .await
+                };
+                if wrote > 0 {
+                    ok_ids.insert(security_id);
                 }
             }
             for security_id in &ok_ids {
                 let hash = hashes.get(security_id).cloned().unwrap_or_default();
                 let source_url = fetched_source_url_for(&json, Some(*security_id));
-                let _ = canonical
-                    .retrieval_template_touch_run(
+                let tmpl = canonical
+                    .retrieval_template_get(*security_id)
+                    .await
+                    .ok()
+                    .flatten();
+                let src = tmpl
+                    .as_ref()
+                    .map(|t| t.declaration_source.as_str())
+                    .unwrap_or("");
+                if financial_domain::mlp_sec::is_adapter_kind(src)
+                    || financial_domain::mlp_sec::routes_fetch(src, Some(source_url.as_str()))
+                    || tmpl
+                        .as_ref()
+                        .is_some_and(|t| {
+                            financial_domain::mlp_sec::routes_fetch(
+                                &t.declaration_source,
+                                Some(t.source_url.as_str()),
+                            )
+                        })
+                {
+                    let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+                    let _ = persist_mlp_sec_last_run(
+                        canonical,
                         *security_id,
-                        true,
-                        "declaration retrieve recorded".into(),
+                        &as_of,
+                        "page",
                         ran_at.clone(),
                         hash,
-                        &source_url,
                     )
                     .await;
+                } else {
+                    let persist_url = if financial_domain::mlp_sec::is_ir_url(&source_url) {
+                        String::new()
+                    } else {
+                        source_url
+                    };
+                    let _ = canonical
+                        .retrieval_template_touch_run(
+                            *security_id,
+                            true,
+                            "declaration retrieve recorded".into(),
+                            ran_at.clone(),
+                            hash,
+                            &persist_url,
+                        )
+                        .await;
+                }
             }
             let unchanged = json
                 .get("unchanged")
@@ -5863,20 +9167,40 @@ pub async fn execute_command_on(
                     .await
                     .unwrap_or_default();
                 let paid_count = count_paid_declarations(&decls);
+                let source = existing
+                    .as_ref()
+                    .map(|t| t.declaration_source.as_str())
+                    .unwrap_or("");
+                let lookback_owner_accepted = canonical
+                    .collector_field_decision_list(security_id)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|d| {
+                        d.field.eq_ignore_ascii_case("paid_history")
+                            && d.decision.eq_ignore_ascii_case("accept")
+                    });
                 let gate = declaration_retrieve_gate(
                     paid_count,
                     inception_on,
                     payment_frequency,
-                    div_type,
+                    declaration_lookback_applies(div_type, source, ""),
+                    lookback_owner_accepted,
                 );
-                let ok = gate.ok;
                 let message = if gate.message.is_empty() {
                     "declaration retrieve unchanged".into()
                 } else {
                     gate.message
                 };
                 let _ = canonical
-                    .retrieval_template_touch_run(security_id, ok, message.clone(), ran_at.clone(), hash, "")
+                    .retrieval_template_touch_run(
+                        security_id,
+                        true,
+                        message.clone(),
+                        ran_at.clone(),
+                        hash,
+                        "",
+                    )
                     .await;
             }
             let misses = json
@@ -5895,7 +9219,9 @@ pub async fn execute_command_on(
                     .issuer_declaration_list(*security_id)
                     .await
                     .unwrap_or_default();
-                let verify_issues = declaration_store_verify_issues(&decls, &stored_declarations);
+                let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+                let verify_issues =
+                    declaration_store_verify_issues(&decls, &stored_declarations, &as_of);
                 if !verify_issues.is_empty() {
                     let message = verify_issues.join("; ");
                     let _ = canonical
@@ -5988,10 +9314,40 @@ pub async fn execute_command_on(
                 .unwrap_or_else(|_| "{\"attempted\":0,\"recorded\":0,\"skipped\":0}".into()),
             )
         }
+        "CollectorAlignFutureToPlan" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            let set = canonical
+                .collector_set()
+                .await
+                .unwrap_or(CollectorSetBody { items: Vec::new() });
+            let only = juuid(&json, "securityId");
+            let mut aligned = 0u64;
+            let mut symbols = 0u64;
+            for item in set.items {
+                if let Some(sid) = only {
+                    if item.security_id != sid {
+                        continue;
+                    }
+                }
+                if !item.collector_enabled {
+                    continue;
+                }
+                symbols = symbols.saturating_add(1);
+                aligned = aligned.saturating_add(
+                    align_unoccurred_declarations_to_plan(canonical, item.security_id, &as_of)
+                        .await,
+                );
+            }
+            command_ok(
+                &request,
+                serde_json::json!({ "asOfDate": as_of, "symbols": symbols, "superseded": aligned })
+                    .to_string(),
+            )
+        }
         "CollectorRetrieve" => match juuid(&json, "securityId") {
             Some(security_id) => {
                 let symbol = jstr(&json, "symbol").unwrap_or_default();
-                let ran_at = today_iso();
+                let ran_at = run_stamp_local();
                 let mut recorded = 0u64;
                 let mut skipped = 0u64;
                 let mut unchanged = 0u64;
@@ -6006,14 +9362,37 @@ pub async fn execute_command_on(
                             .and_then(|c| jstr(c, "contentHash"))
                     })
                     .unwrap_or_default();
-                let source_url = fetched_source_url_for(
+                let mut source_url = fetched_source_url_for(
                     &json,
                     Some(security_id),
                 );
 
-                let div_type = jstr(&json, "divType").unwrap_or_default();
-                let inception_on = jstr(&json, "inceptionOn").unwrap_or_default();
-                let payment_frequency = jstr(&json, "paymentFrequency").unwrap_or_default();
+                let declaration_source = jstr(&json, "declarationSource").unwrap_or_default();
+                let characteristics = canonical
+                    .position_characteristic_list()
+                    .await
+                    .unwrap_or_default();
+                let ch = characteristics.iter().find(|c| c.security_id == security_id);
+                let mut div_type = jstr(&json, "divType").unwrap_or_default();
+                if div_type.is_empty() {
+                    div_type = ch.map(|c| c.div_type.clone()).unwrap_or_default();
+                }
+                let existing = canonical
+                    .retrieval_template_get(security_id)
+                    .await
+                    .ok()
+                    .flatten();
+                let mut inception_on = jstr(&json, "inceptionOn").unwrap_or_default();
+                if inception_on.is_empty() {
+                    inception_on = existing
+                        .as_ref()
+                        .map(|t| t.inception_on.clone())
+                        .unwrap_or_default();
+                }
+                let mut payment_frequency = jstr(&json, "paymentFrequency").unwrap_or_default();
+                if payment_frequency.is_empty() {
+                    payment_frequency = ch.map(|c| c.payment_frequency.clone()).unwrap_or_default();
+                }
                 let is_unchanged = json
                     .get("unchanged")
                     .and_then(|v| v.as_bool())
@@ -6023,12 +9402,89 @@ pub async fn execute_command_on(
                     message = "declaration retrieve unchanged".into();
                 }
 
-                let declarations = json
-                    .get("candidates")
-                    .or_else(|| json.get("declarations"))
-                    .and_then(|q| q.as_array())
-                    .cloned()
+                let open_tickets = canonical
+                    .work_ticket_list(Some(security_id), Some("open".into()))
+                    .await
                     .unwrap_or_default();
+                let has_miss_ticket = open_tickets.iter().any(|t| {
+                    financial_domain::work_ticket::is_retrieve_failure_code(&t.code)
+                });
+                let stored_url = existing
+                    .as_ref()
+                    .map(|t| t.source_url.as_str())
+                    .unwrap_or("");
+                let last_ok = existing.as_ref().and_then(|t| t.last_run_ok);
+                let seed_blocked = !is_unchanged
+                    && financial_domain::collector::needs_owner_seed_url(
+                        &div_type,
+                        &symbol,
+                        stored_url,
+                        last_ok,
+                        has_miss_ticket,
+                    );
+                if seed_blocked {
+                    ok = false;
+                    code = financial_domain::work_ticket::CODE_MISSING_SEED_URL.into();
+                    message = "Owner must paste an issuer declaration URL. Probe-only is blocked."
+                        .into();
+                }
+
+                let declarations = if seed_blocked {
+                    Vec::new()
+                } else {
+                    json
+                        .get("candidates")
+                        .or_else(|| json.get("declarations"))
+                        .and_then(|q| q.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|d| {
+                            let url = jstr(d, "sourceUrl")
+                                .or_else(|| jstr(d, "url"))
+                                .unwrap_or_default();
+                            url.is_empty()
+                                || !financial_domain::div1::is_third_party_declaration_url(&url)
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+                let leftover_src = json
+                    .get("pagePaid")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_else(|| declarations.clone());
+                let _ = align_unoccurred_declarations_to_plan(canonical, security_id, &as_of).await;
+                let _ = apply_leftover_ex_to_payable(
+                    canonical,
+                    security_id,
+                    &leftover_src,
+                    &ran_at,
+                )
+                .await;
+                let stored_before = canonical
+                    .issuer_declaration_list(security_id)
+                    .await
+                    .unwrap_or_default();
+                let pay_refs: Vec<String> = canonical
+                    .issuer_pay_date_list(security_id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| p.pay_on)
+                    .collect();
+                let pay_ref_strs: Vec<&str> = pay_refs.iter().map(String::as_str).collect();
+                let occurred_amts: Vec<(i64, u8)> = stored_before
+                    .iter()
+                    .filter(|d| {
+                        d.amount_per_share_minor.unwrap_or(0) > 0
+                            && financial_domain::schedule::period_has_occurred(
+                                &d.payment_period,
+                                &as_of,
+                            )
+                    })
+                    .filter_map(|d| d.amount_per_share_minor.map(|a| (a, d.amount_scale)))
+                    .collect();
                 for decl in &declarations {
                     let amount = decl.get("amountPerShareMinor").and_then(|x| {
                         if x.is_null() {
@@ -6041,12 +9497,85 @@ pub async fn execute_command_on(
                         skipped += 1;
                         continue;
                     }
+                    if is_cash_rate_candidate(decl) {
+                        skipped += 1;
+                        continue;
+                    }
+                    let period = jstr(decl, "paymentPeriod").unwrap_or_default();
+                    if !financial_domain::mlp_sec::is_adapter_kind(&declaration_source)
+                        && financial_domain::schedule::unoccurred_declaration_is_placeholder(
+                            &period,
+                            amount.unwrap_or(0),
+                            ju8(decl, "amountScale", 2),
+                            &as_of,
+                            &occurred_amts,
+                            &pay_ref_strs,
+                        )
+                    {
+                        skipped += 1;
+                        continue;
+                    }
+                    let period_key = payment_period_key(&period);
+                    let already_paid = stored_before.iter().any(|d| {
+                        payment_period_key(&d.payment_period) == period_key
+                            && d.amount_per_share_minor.unwrap_or(0) > 0
+                    });
+                    if already_paid {
+                        if financial_domain::mlp_sec::is_adapter_kind(&declaration_source) {
+                            if let Some(old) = stored_before.iter().find(|d| {
+                                payment_period_key(&d.payment_period) == period_key
+                                    && d.amount_per_share_minor.unwrap_or(0) > 0
+                            }) {
+                                let new_amt = amount.unwrap_or(0);
+                                let new_scale = ju8(decl, "amountScale", 2);
+                                if !financial_domain::money::amounts_equal(
+                                    old.amount_per_share_minor.unwrap_or(0),
+                                    old.amount_scale,
+                                    new_amt,
+                                    new_scale,
+                                ) {
+                                    let _ = work_ticket_raise_or_bump(
+                                        canonical,
+                                        security_id,
+                                        &symbol,
+                                        "declaration_amount_variation",
+                                        &format!(
+                                            "Paid row {} amount would change; 8-K not applied.",
+                                            old.payment_period
+                                        ),
+                                        "",
+                                    )
+                                    .await;
+                                } else if !old
+                                    .source
+                                    .eq_ignore_ascii_case(financial_domain::mlp_sec::SOURCE_SEC_8K)
+                                {
+                                    if canonical
+                                        .issuer_declaration_record(
+                                            security_id,
+                                            old.amount_per_share_minor,
+                                            old.amount_scale,
+                                            old.payment_period.clone(),
+                                            financial_domain::mlp_sec::SOURCE_SEC_8K.into(),
+                                            ran_at.clone(),
+                                        )
+                                        .await
+                                        .is_ok()
+                                    {
+                                        recorded = recorded.saturating_add(1);
+                                    }
+                                }
+                            }
+                        }
+                        unchanged = unchanged.saturating_add(1);
+                        continue;
+                    }
                     match canonical
                         .issuer_declaration_record(
                             security_id,
                             amount,
                             ju8(decl, "amountScale", 2),
-                            jstr(decl, "paymentPeriod").unwrap_or_default(),
+                            period,
                             jstr(decl, "source").unwrap_or_else(|| "issuer".into()),
                             jstr(decl, "enteredAt").unwrap_or_else(|| ran_at.clone()),
                         )
@@ -6057,95 +9586,68 @@ pub async fn execute_command_on(
                     }
                 }
 
-                let pay_dates = json
-                    .get("upcomingPays")
-                    .or_else(|| json.get("payDates"))
-                    .and_then(|q| q.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                if !pay_dates.is_empty() {
-                    let dates: Vec<IssuerPayDateRecord> = pay_dates
-                        .iter()
-                        .filter_map(|row| {
-                            let pay_on = jstr(row, "payOn")
-                                .or_else(|| jstr(row, "paymentPeriod"))
-                                .unwrap_or_default();
-                            if pay_on.is_empty() {
-                                return None;
-                            }
-                            Some(IssuerPayDateRecord {
-                                pay_date_id: Uuid::new_v4(),
-                                security_id,
-                                pay_on,
-                                source: jstr(row, "source").unwrap_or_default(),
-                                recorded_at: ran_at.clone(),
-                            })
-                        })
-                        .collect();
-                    if !dates.is_empty() {
-                        let as_of = dates
-                            .iter()
-                            .map(|d| d.pay_on.as_str())
-                            .min()
-                            .unwrap_or(ran_at.as_str())
-                            .to_string();
-                        let pay_count = dates.len();
-                        let calendar_url = payment_calendar_url_for(&json, security_id);
-                        if canonical
-                            .issuer_pay_date_replace(security_id, as_of, dates)
-                            .await
-                            .is_ok()
-                        {
-                            recorded = recorded.saturating_add(1);
-                            promote_vendor_calendar_template(
-                                canonical,
-                                security_id,
-                                pay_count,
-                                &calendar_url,
-                            )
-                            .await;
-                        }
-                    }
+                let pay_dates = if seed_blocked {
+                    Vec::new()
+                } else {
+                    json
+                        .get("upcomingPays")
+                        .or_else(|| json.get("payDates"))
+                        .and_then(|q| q.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                let _ = canonical.issuer_pay_date_dedupe(security_id).await;
+                if financial_domain::mlp_sec::is_adapter_kind(&declaration_source) {
+                    let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+                    let wrote = apply_mlp_sec_8k_payables(
+                        canonical,
+                        security_id,
+                        &symbol,
+                        &as_of,
+                        &declarations,
+                        &pay_dates,
+                        &ran_at,
+                    )
+                    .await;
+                    recorded = recorded.saturating_add(wrote);
+                } else if !pay_dates.is_empty() {
+                    let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+                    let wrote = apply_runtime_vendor_payables(
+                        canonical,
+                        security_id,
+                        &symbol,
+                        &as_of,
+                        &payment_frequency,
+                        &pay_dates,
+                        &ran_at,
+                    )
+                    .await;
+                    recorded = recorded.saturating_add(wrote);
                 }
 
-                if let Some(quote) = json.get("quote") {
-                    // Fresh-today / unchanged retrieve must not append another Yahoo quote.
-                    let skip_quote = is_unchanged;
-                    if !skip_quote {
-                        if let Some(price_minor) = ji64(quote, "priceMinor").filter(|p| *p > 0) {
-                            let source = jstr(quote, "source").unwrap_or_else(|| "yahoo".into());
-                            // CASH par is authoritative via CurrentPriceGet; skip writing Yahoo-style quotes.
-                            if source != "par" {
-                                let _ = canonical
-                                    .price_quote_record(
-                                        security_id,
-                                        price_minor,
-                                        ju8(quote, "scale", 2),
-                                        jstr(quote, "asOfAt").unwrap_or_else(|| ran_at.clone()),
-                                        source,
-                                    )
-                                    .await;
-                                recorded = recorded.saturating_add(1);
-                            }
-                        }
-                    }
-                }
-
-                let cash_posted = apply_cash_moneymarket_followups(
-                    canonical,
-                    security_id,
-                    &declarations,
-                    &jstr(&json, "declarationSource").unwrap_or_else(|| "issuer".into()),
-                    &ran_at,
-                )
-                .await;
+                let cash_posted = if seed_blocked {
+                    0
+                } else {
+                    apply_cash_moneymarket_followups(
+                        canonical,
+                        security_id,
+                        &declarations,
+                        &jstr(&json, "declarationSource").unwrap_or_else(|| "issuer".into()),
+                        &ran_at,
+                    )
+                    .await
+                };
                 recorded = recorded.saturating_add(cash_posted);
 
-                let misses = json
-                    .get("misses")
-                    .and_then(|m| m.as_array())
-                    .cloned()
-                    .unwrap_or_default();
+                let misses = if seed_blocked {
+                    Vec::new()
+                } else {
+                    json
+                        .get("misses")
+                        .and_then(|m| m.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                };
                 if !misses.is_empty() {
                     ok = false;
                     code = jstr(&misses[0], "code")
@@ -6154,84 +9656,229 @@ pub async fn execute_command_on(
                         .unwrap_or_else(|| "retrieve miss".into());
                     let _ = raise_retrieve_misses(canonical, &misses, &ran_at).await;
                     skipped = skipped.saturating_add(misses.len() as u64);
-                } else if jstr(&json, "declarationSource")
-                    .map(|s| {
-                        matches!(
-                            s.to_ascii_lowercase().as_str(),
-                            "fidelity" | "schwab"
-                        )
-                    })
-                    .unwrap_or(false)
-                {
-                    message = jstr(&json, "missExplanation").unwrap_or_else(|| {
-                        "money-market standing (par); issuer distribution page unavailable"
-                            .into()
-                    });
-                    unchanged = unchanged.saturating_add(1);
                 }
 
                 let stored_declarations = canonical
                     .issuer_declaration_list(security_id)
                     .await
                     .unwrap_or_default();
-                let page_label = jstr(&json, "suggestedFrequency")
-                    .or_else(|| jstr(&json, "paymentFrequency"))
-                    .filter(|s| !s.trim().is_empty());
-                let _ = persist_inferred_frequency_if_unknown(
-                    canonical,
-                    security_id,
-                    page_label.as_deref(),
-                )
-                .await;
-                let verify_issues =
-                    declaration_store_verify_issues(&declarations, &stored_declarations);
-                if !verify_issues.is_empty() {
-                    ok = false;
-                    code = "declaration_stored_mismatch".into();
-                    message = verify_issues.join("; ");
+                let page_paid = json
+                    .get("pagePaid")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let mut post_issues = Vec::new();
+                if !is_unchanged && !seed_blocked {
+                    let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+                    let verify_issues = declaration_store_verify_issues(
+                        &declarations,
+                        &stored_declarations,
+                        &as_of,
+                    );
+                    for msg in verify_issues {
+                        if msg.starts_with("amount mismatch")
+                            || msg.starts_with("missing stored")
+                        {
+                            continue;
+                        }
+                        post_issues.push(("declaration_stored_mismatch".into(), msg));
+                    }
+                    post_issues.extend(declaration_post_check_issues(
+                        &stored_before,
+                        &stored_declarations,
+                        &declarations,
+                        &page_paid,
+                        &payment_frequency,
+                        count_paid_declarations(&stored_before),
+                    ));
+                }
+                if !post_issues.is_empty() {
+                    let blocking: Vec<_> = post_issues
+                        .iter()
+                        .filter(|(c, _)| {
+                            !financial_domain::work_ticket::is_amount_confirm_code(c)
+                        })
+                        .cloned()
+                        .collect();
+                    let extra = post_issues
+                        .iter()
+                        .map(|(_, m)| m.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    if !blocking.is_empty() {
+                        ok = false;
+                        if code.is_empty() {
+                            code = blocking[0].0.clone();
+                        }
+                    } else if code.is_empty() {
+                        code = post_issues[0].0.clone();
+                    }
+                    if message.is_empty() {
+                        message = extra;
+                    } else {
+                        message = format!("{message}; {extra}");
+                    }
                 }
                 let paid_count = count_paid_declarations(&stored_declarations);
+                let apply_lookback = declaration_lookback_applies(
+                    &div_type,
+                    &declaration_source,
+                    &symbol,
+                );
+                let lookback_owner_accepted = canonical
+                    .collector_field_decision_list(security_id)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|d| {
+                        d.field.eq_ignore_ascii_case("paid_history")
+                            && d.decision.eq_ignore_ascii_case("accept")
+                    });
                 let gate = declaration_retrieve_gate(
                     paid_count,
                     &inception_on,
                     &payment_frequency,
-                    &div_type,
+                    apply_lookback && !is_unchanged,
+                    lookback_owner_accepted,
                 );
-                if financial_domain::div1::is_div1(&div_type) {
-                    ok = gate.ok;
-                    if !gate.code.is_empty() {
-                        code = gate.code;
+                if !gate.ok {
+                    ok = false;
+                    if code.is_empty() {
+                        code = gate.code.clone();
                     }
-                    if !gate.message.is_empty() {
-                        message = gate.message;
+                    if message.is_empty() {
+                        message = gate.message.clone();
+                    } else if !gate.message.is_empty() {
+                        message = format!("{message}; {}", gate.message);
+                    }
+                } else if ok && apply_lookback && !is_unchanged && message.is_empty() {
+                    message = gate.message;
+                }
+                if ok
+                    && post_issues
+                        .iter()
+                        .any(|(c, _)| financial_domain::work_ticket::is_amount_confirm_code(c))
+                {
+                    let first = post_issues
+                        .iter()
+                        .find(|(c, _)| financial_domain::work_ticket::is_amount_confirm_code(c))
+                        .map(|(_, m)| m.as_str())
+                        .unwrap_or("amount variation");
+                    message = format!(
+                        "collector retrieve recorded — Except or Reject amount variation ({first})"
+                    );
+                }
+                let post_checks = serde_json::json!({
+                    "c5Match": post_issues.iter().all(|(c, _)| c != "declaration_stored_mismatch"),
+                    "previousAligned": post_issues.iter().all(|(c, _)| c != "declaration_history_dropped"),
+                    "cadenceOk": post_issues.iter().all(|(c, _)| c != "declaration_cadence_mismatch"),
+                    "amountVariationOk": post_issues.iter().all(|(c, _)| c != "declaration_amount_variation"),
+                    "lookbackOk": gate.ok,
+                    "amountVariationPct": financial_domain::declaration_post::AMOUNT_VARIATION_PCT,
+                    "issues": post_issues.iter().map(|(c, m)| serde_json::json!({"code": c, "message": m})).collect::<Vec<_>>(),
+                });
+                let mlp_kind = financial_domain::mlp_sec::is_adapter_kind(&declaration_source)
+                    || financial_domain::mlp_sec::routes_fetch(
+                        &declaration_source,
+                        Some(source_url.as_str()),
+                    )
+                    || financial_domain::mlp_sec::routes_fetch(
+                        existing
+                            .as_ref()
+                            .map(|t| t.declaration_source.as_str())
+                            .unwrap_or(""),
+                        existing.as_ref().map(|t| t.source_url.as_str()),
+                    );
+                if mlp_kind {
+                    let as_of_mlp = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+                    let outcome = if misses.iter().any(|m| {
+                        jstr(m, "code").as_deref() == Some(financial_domain::mlp_sec::CODE_SEC_403)
+                            || jstr(m, "reason")
+                                .unwrap_or_default()
+                                .contains("sec_403")
+                    }) {
+                        "sec_403"
+                    } else if declarations.iter().any(|d| {
+                        jstr(d, "source").as_deref()
+                            == Some(financial_domain::mlp_sec::SOURCE_SEC_8K)
+                            && d.get("amountPerShareMinor")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0)
+                                > 0
+                    }) || leftover_src.iter().any(|d| {
+                        d.get("amountPerShareMinor")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0)
+                            > 0
+                    }) {
+                        "page"
+                    } else {
+                        "empty"
+                    };
+                    let (kind_ok, stamp, persist_url) = persist_mlp_sec_last_run(
+                        canonical,
+                        security_id,
+                        &as_of_mlp,
+                        outcome,
+                        ran_at.clone(),
+                        hash.clone(),
+                    )
+                    .await;
+                    source_url = persist_url;
+                    message = stamp;
+                    ok = kind_ok;
+                    if message.ends_with(":need_owner") {
+                        let stored_now = canonical
+                            .issuer_declaration_list(security_id)
+                            .await
+                            .unwrap_or_default();
+                        let paid_refs: Vec<&str> = stored_now
+                            .iter()
+                            .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+                            .map(|d| d.payment_period.as_str())
+                            .collect();
+                        let needed = financial_domain::schedule::derive_quarterly_template_pay_ons(
+                            &as_of_mlp,
+                            &paid_refs,
+                        );
+                        if let Some(pay) = needed.first() {
+                            let _ = work_ticket_raise_or_bump(
+                                canonical,
+                                security_id,
+                                &symbol,
+                                financial_domain::mlp_sec::CODE_OWNER_AMOUNT,
+                                &financial_domain::mlp_sec::owner_amount_reason(pay),
+                                &source_url,
+                            )
+                            .await;
+                        }
+                    }
+                }
+                if !mlp_kind && (apply_lookback || recorded > 0 || !post_issues.is_empty() || seed_blocked) {
+                    if message.is_empty() {
+                        message = if ok {
+                            "collector retrieve recorded".into()
+                        } else {
+                            "collector retrieve miss".into()
+                        };
                     }
                     let _ = canonical
                         .retrieval_template_touch_run(
                             security_id,
-                            gate.ok,
+                            ok,
                             message.clone(),
                             ran_at.clone(),
                             hash.clone(),
                             &source_url,
                         )
                         .await;
-                } else if recorded > 0 {
-                    let _ = canonical
-                        .retrieval_template_touch_run(
-                            security_id,
-                            true,
-                            "collector retrieve recorded".into(),
-                            ran_at.clone(),
-                            hash.clone(),
-                            &source_url,
-                        )
-                        .await;
-                    message = "collector retrieve recorded".into();
                 }
 
                 let attempted = recorded + skipped + unchanged;
                 let run_id = Uuid::new_v4();
-                let payload_json = serde_json::to_string(&json).unwrap_or_else(|_| "{}".into());
+                let mut payload = json.clone();
+                payload["postChecks"] = post_checks;
+                let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
                 let _ = canonical
                     .retrieve_run_record(RetrieveRunRecord {
                         run_id,
@@ -6248,6 +9895,48 @@ pub async fn execute_command_on(
                         payload_json: payload_json.clone(),
                     })
                     .await;
+                if ok {
+                    work_ticket_auto_file_declaration(canonical, security_id, run_id).await;
+                }
+                close_stale_expected_4_remaining_year(
+                    canonical,
+                    security_id,
+                    &symbol,
+                    &jstr(&json, "asOfDate").unwrap_or_else(today_iso),
+                )
+                .await;
+                if !is_unchanged {
+                    if !ok && !code.is_empty() {
+                        let ticket_url = source_url.as_str();
+                        let _ = work_ticket_raise_or_bump(
+                            canonical,
+                            security_id,
+                            &symbol,
+                            &code,
+                            &message,
+                            ticket_url,
+                        )
+                        .await;
+                    }
+                    let ticket_url = source_url.as_str();
+                    for (c, m) in &post_issues {
+                        if financial_domain::work_ticket::is_retrieve_failure_code(c) && ok {
+                            continue;
+                        }
+                        if !ok && *c == code {
+                            continue;
+                        }
+                        let _ = work_ticket_raise_or_bump(
+                            canonical,
+                            security_id,
+                            &symbol,
+                            c,
+                            m,
+                            ticket_url,
+                        )
+                        .await;
+                    }
+                }
                 command_ok(
                     &request,
                     serde_json::to_string(&CollectorRetrieveBody {

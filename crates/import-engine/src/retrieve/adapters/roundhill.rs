@@ -1,10 +1,11 @@
 //! Roundhill: live distributions via PHP API (HTML calHisDistri tbody is empty on GET).
-//! Fallback: HTML table, then CSV href. Empty stays unknown — not Yahoo.
+//! Same-host HTML table or Roundhill CSV only. Empty stays unknown — not Yahoo, not a calendar.
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::retrieve::html::{
-    distribution_candidate, parse_issuer_amount, parse_issuer_date, sort_newest_first, strip_html,
+    candidate_from_headers, json_amount, json_pay_date, parse_distribution_csv,
+    parse_distribution_tables, sort_newest_first,
 };
 use crate::retrieve::{first_percent, http_get};
 use super::{html_names_symbol, page_is_not_found};
@@ -21,8 +22,25 @@ pub fn roundhill_api_ticker(symbol: &str) -> String {
     }
 }
 
-/// Parse JSON from `distribution-call.php`: rows are
-/// `[Declaration, Ex Date, Record Date, Pay Date, Amount]`.
+/// Vendor documents these column names on `distribution-call.php` array rows.
+const ROUNDHILL_API_HEADERS: &[&str] = &[
+    "Declaration",
+    "Ex Date",
+    "Record Date",
+    "Pay Date",
+    "Amount",
+];
+
+fn json_cell_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Parse JSON from `distribution-call.php`. Array rows are mapped through the
+/// documented headers so Pay Date is found by name, not by position or Ex Date.
 pub fn parse_roundhill_distribution_api(body: &str) -> Vec<Value> {
     let trimmed = body.trim();
     if !trimmed.starts_with('[') {
@@ -33,30 +51,33 @@ pub fn parse_roundhill_distribution_api(body: &str) -> Vec<Value> {
     };
     let mut out = Vec::new();
     for row in rows {
-        let Value::Array(cols) = row else {
-            continue;
-        };
-        if cols.len() < 5 {
-            continue;
+        match row {
+            Value::Array(cols) => {
+                let cells: Vec<String> = cols.iter().map(json_cell_text).collect();
+                if cells
+                    .first()
+                    .map(|c| c.eq_ignore_ascii_case("declaration"))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if let Some(cand) =
+                    candidate_from_headers("roundhill", ROUNDHILL_API_HEADERS, &cells)
+                {
+                    out.push(cand);
+                }
+            }
+            Value::Object(_) => {
+                let Some(pay) = json_pay_date(&row) else {
+                    continue;
+                };
+                let amount = json_amount(&row);
+                out.push(crate::retrieve::html::distribution_candidate(
+                    "roundhill", pay, amount, None,
+                ));
+            }
+            _ => {}
         }
-        let pay = cols
-            .get(3)
-            .and_then(|c| c.as_str())
-            .and_then(parse_issuer_date)
-            .or_else(|| {
-                cols.get(1)
-                    .and_then(|c| c.as_str())
-                    .and_then(parse_issuer_date)
-            });
-        let Some(pay) = pay else {
-            continue;
-        };
-        let amount = match cols.get(4) {
-            Some(Value::Number(n)) => parse_issuer_amount(&n.to_string()),
-            Some(Value::String(s)) if !s.trim().is_empty() => parse_issuer_amount(s),
-            _ => None,
-        };
-        out.push(distribution_candidate("roundhill", pay, amount, None));
     }
     sort_newest_first(&mut out);
     out
@@ -67,94 +88,11 @@ pub fn parse_roundhill_distributions(html: &str) -> Vec<Value> {
     if !api.is_empty() {
         return api;
     }
-    let mut out = Vec::new();
-    let lower = html.to_ascii_lowercase();
-    for (idx, _) in lower.match_indices("<tr") {
-        let rest = html.get(idx..).unwrap_or("");
-        let end = rest.to_ascii_lowercase().find("</tr>").unwrap_or(rest.len().min(4000));
-        let row = rest.get(..end).unwrap_or("");
-        if row.to_ascii_lowercase().contains("<th") {
-            continue;
-        }
-        let mut cells = Vec::new();
-        let row_l = row.to_ascii_lowercase();
-        let mut search = 0usize;
-        while let Some(rel) = row_l.get(search..).and_then(|s| s.find("<td")) {
-            let start = search + rel;
-            let after = row.get(start..).unwrap_or("");
-            let close = after.to_ascii_lowercase().find("</td>").unwrap_or(after.len().min(400));
-            let cell_html = after.get(..close).unwrap_or("");
-            cells.push(strip_html(cell_html).trim().to_string());
-            search = start + close + 5;
-        }
-        if cells.len() < 5 {
-            continue;
-        }
-        let pay = parse_issuer_date(&cells[3]).or_else(|| parse_issuer_date(&cells[1]));
-        let Some(payment_period) = pay else {
-            continue;
-        };
-        let Some((amount, scale)) = parse_issuer_amount(&cells[4]) else {
-            continue;
-        };
-        if amount <= 0 {
-            continue;
-        }
-        out.push(json!({
-            "amountPerShareMinor": amount,
-            "amountScale": scale,
-            "paymentPeriod": payment_period,
-            "source": "roundhill"
-        }));
-    }
-    if out.is_empty() {
-        let text = strip_html(html);
-        let tokens: Vec<&str> = text.split_whitespace().collect();
-        let mut i = 0;
-        while i + 4 < tokens.len() {
-            let pay = parse_issuer_date(tokens[i + 3]);
-            let amt = parse_issuer_amount(tokens[i + 4]);
-            if let (Some(payment_period), Some((amount, scale))) = (pay, amt) {
-                if amount > 0 {
-                    out.push(json!({
-                        "amountPerShareMinor": amount,
-                        "amountScale": scale,
-                        "paymentPeriod": payment_period,
-                        "source": "roundhill"
-                    }));
-                    i += 5;
-                    continue;
-                }
-            }
-            i += 1;
-        }
-    }
-    out
+    parse_distribution_tables("roundhill", html)
 }
+
 pub(crate) fn parse_roundhill_csv(text: &str) -> Vec<Value> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let cols: Vec<&str> = line
-            .split(',')
-            .map(|s| s.trim().trim_matches('"'))
-            .collect();
-        if cols.len() < 5 {
-            continue;
-        }
-        if cols[0].to_ascii_lowercase().contains("declaration") {
-            continue;
-        }
-        let Some(pay) = parse_issuer_date(cols[3]).or_else(|| parse_issuer_date(cols[1]))
-        else {
-            continue;
-        };
-        let amount = parse_issuer_amount(cols[4]);
-        if amount.is_none() {
-            continue;
-        }
-        out.push(distribution_candidate("roundhill", pay, amount, None));
-    }
-    out
+    parse_distribution_csv("roundhill", text)
 }
 
 fn csv_hrefs(html: &str) -> Vec<String> {
@@ -198,6 +136,38 @@ pub(crate) fn hrefs_matching(html: &str, needle: &str, base: &str) -> Vec<String
     urls
 }
 
+/// Same-host document URLs embedded in JS (not only `href=`).
+pub(crate) fn https_urls_matching(html: &str, needle: &str) -> Vec<String> {
+    let lower = html.to_ascii_lowercase();
+    let needle_l = needle.to_ascii_lowercase();
+    let mut urls = Vec::new();
+    let mut search = 0usize;
+    while let Some(rel) = lower.get(search..).and_then(|s| s.find("https://")) {
+        let start = search + rel;
+        let rest = html.get(start..).unwrap_or("");
+        let end = rest
+            .find(|c: char| {
+                c.is_whitespace()
+                    || c == '"'
+                    || c == '\''
+                    || c == '<'
+                    || c == '>'
+                    || c == ')'
+                    || c == '\\'
+            })
+            .unwrap_or(rest.len().min(400));
+        let url = rest
+            .get(..end)
+            .unwrap_or("")
+            .trim_end_matches([',', ';', '.', ']']);
+        if url.to_ascii_lowercase().contains(&needle_l) {
+            urls.push(url.to_string());
+        }
+        search = start + 8;
+    }
+    urls
+}
+
 pub(crate) fn parse_roundhill_roc_html(html: &str) -> Option<i64> {
     let lower = html.to_ascii_lowercase();
     for needle in [
@@ -219,15 +189,15 @@ pub(crate) fn parse_vendor_distributions_with_csv(source: &str, html: &str) -> V
     let mut cands = super::parse_vendor_distributions(source, html);
     if cands.is_empty() && source.eq_ignore_ascii_case("roundhill") {
         for href in csv_hrefs(html) {
+            if !financial_domain::div1::declaration_url_matches_source("roundhill", &href) {
+                continue;
+            }
             if let Ok(csv) = http_get(&href) {
                 cands = parse_roundhill_csv(&csv);
                 if !cands.is_empty() {
                     break;
                 }
             }
-        }
-        if cands.is_empty() {
-            cands = super::parse_generic_distributions(source, html);
         }
     }
     cands

@@ -81,6 +81,30 @@ async fn seed_identity_in(
     )
 }
 
+async fn ready_first_lot(platform: &LocalPlatform, security_id: &str, symbol: &str) {
+    golden_harness::complete_collector_for_first_lot(platform, security_id, symbol)
+        .await
+        .expect("complete collector");
+}
+
+async fn ready_first_lot_as(
+    platform: &LocalPlatform,
+    security_id: &str,
+    symbol: &str,
+    cadence: &str,
+    replace_dates: bool,
+) {
+    golden_harness::complete_collector_for_first_lot_as(
+        platform,
+        security_id,
+        symbol,
+        cadence,
+        replace_dates,
+    )
+    .await
+    .expect("complete collector");
+}
+
 async fn record_decls(platform: &LocalPlatform, security_id: &str, n: usize) {
     for i in 0..n {
         must_ok(
@@ -183,6 +207,7 @@ async fn wz_first_lot_then_calculator_and_income_plan() {
         }),
     )
     .await;
+    ready_first_lot_as(&platform, &security_id, "NEW2", "Weekly", true).await;
     must_ok(
         &platform,
         "LotOpen",
@@ -573,6 +598,7 @@ async fn wz_roc_does_not_change_original_cost() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
     let (account_id, security_id) = seed_identity(&platform, "ROC1").await;
+    ready_first_lot(&platform, &security_id, "ROC1").await;
     must_ok(
         &platform,
         "LotOpen",
@@ -665,6 +691,7 @@ async fn wz_monthly_remaining_year_without_actuals_schedules_income_plan() {
         }),
     )
     .await;
+    ready_first_lot_as(&platform, &security_id, "HAKY2", "Monthly", false).await;
     must_ok(
         &platform,
         "LotOpen",
@@ -702,13 +729,13 @@ async fn wz_monthly_remaining_year_without_actuals_schedules_income_plan() {
         .collect();
     assert_eq!(
         dates,
-        ["2026-08-30", "2026-09-29", "2026-10-29", "2026-11-28", "2026-12-28"]
+        ["2026-08-31", "2026-09-30", "2026-10-31", "2026-11-30", "2026-12-31"]
     );
     assert_eq!(remaining["months"].as_array().unwrap().len(), 5);
     let week = query_json(
         &platform,
         "IncomePlanWeekGet",
-        serde_json::json!({"asOfDate": "2026-08-30"}),
+        serde_json::json!({"asOfDate": "2026-08-31"}),
     )
     .await;
     let income = week["lines"]
@@ -728,7 +755,7 @@ async fn wz_monthly_remaining_year_without_actuals_schedules_income_plan() {
         .find(|p| p["symbol"] == "HAKY2")
         .expect("HAKY2 in by-position week");
     assert_eq!(haky2["cadence"], "Monthly");
-    assert_eq!(haky2["payOn"], "2026-08-30");
+    assert_eq!(haky2["payOn"], "2026-08-31");
     assert_eq!(haky2["planKnown"], true);
     assert!(haky2["plannedMinor"].as_i64().unwrap_or(0) > 0);
     assert_eq!(haky2["actualMinor"].as_i64().unwrap(), 0);
@@ -756,6 +783,7 @@ async fn last_price_stale_still_shows_on_calculator() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
     let (account_id, security_id) = seed_identity(&platform, "LP1").await;
+    ready_first_lot(&platform, &security_id, "LP1").await;
     must_ok(
         &platform,
         "LotOpen",
@@ -785,6 +813,11 @@ async fn last_price_stale_still_shows_on_calculator() {
     let summary_none = query_json(&platform, "DataSummaryGet", serde_json::json!({})).await;
     assert_eq!(summary_none["openPerformanceMinor"].as_i64(), Some(100_000));
     assert_eq!(summary_none["lastPriceCount"].as_u64(), Some(0));
+    assert_eq!(summary_none["declarationCount"].as_u64(), Some(0));
+    assert!(
+        summary_none["declarationCollectorCount"].as_u64().unwrap_or(0)
+            <= summary_none["symbolCount"].as_u64().unwrap_or(0)
+    );
     assert!(summary_none["marketValueMinor"].is_null());
 
     let refresh = must_ok(
@@ -962,7 +995,8 @@ async fn issuer_calendar_remaining_year_uses_published_dates() {
             "sourceUrl": "https://amplifyetfs.com/haky3/",
             "calendarPolicy": "issuer_calendar",
             "lookbackCount": 12,
-            "paymentSource": "import"
+            "paymentSource": "import",
+            "inceptionOn": "2026-09-04"
         }),
     )
     .await;
@@ -1009,6 +1043,7 @@ async fn issuer_calendar_remaining_year_uses_published_dates() {
         }),
     )
     .await;
+    ready_first_lot_as(&platform, &security_id, "HAKY3", "Monthly", false).await;
     must_ok(
         &platform,
         "LotOpen",
@@ -1101,6 +1136,7 @@ async fn add_lot_mid_year_increases_later_pay_dates_only() {
         }),
     )
     .await;
+    ready_first_lot_as(&platform, &security_id, "ADD2", "Monthly", false).await;
     must_ok(
         &platform,
         "LotOpen",
@@ -1130,8 +1166,8 @@ async fn add_lot_mid_year_increases_later_pay_dates_only() {
     )
     .await;
     let payments = preview["payments"].as_array().unwrap();
-    let aug = payments.iter().find(|p| p["payOn"] == "2026-08-30").unwrap();
-    let oct = payments.iter().find(|p| p["payOn"] == "2026-10-29").unwrap();
+    let aug = payments.iter().find(|p| p["payOn"] == "2026-08-31").unwrap();
+    let oct = payments.iter().find(|p| p["payOn"] == "2026-10-31").unwrap();
     assert_eq!(aug["thisLotCashMinor"].as_i64(), Some(0));
     assert!(oct["thisLotCashMinor"].as_i64().unwrap() > 0);
     assert!(
@@ -1215,6 +1251,7 @@ async fn issuer_calendar_replace_orphans_owner_override() {
         }),
     )
     .await;
+    ready_first_lot(&platform, &security_id, "MOVE1").await;
     must_ok(
         &platform,
         "LotOpen",
@@ -1229,6 +1266,30 @@ async fn issuer_calendar_replace_orphans_owner_override() {
             "taxBasisMinor": 100,
             "scale": 2,
             "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-08-22",
+            "dates": [
+                {"payOn": "2026-09-10", "source": "amplify"},
+                {"payOn": "2026-10-10", "source": "amplify"}
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RemainingPaymentDateOverride",
+        serde_json::json!({
+            "securityId": security_id,
+            "originalPayOn": "2026-09-10",
+            "payOn": "2026-09-11",
+            "recordedAt": "2026-08-22"
         }),
     )
     .await;
@@ -1412,16 +1473,16 @@ async fn process_a_seed_symbol_and_url_only() {
     assert_eq!(inv["paymentFrequency"], "");
     assert_eq!(inv["riskTier"], "");
     assert_eq!(inv["provider"], "Amplify");
+    assert_eq!(inv["divType"], "DIV-1");
+    assert_eq!(inv["collectorComplete"], false);
     assert_eq!(inv["needsRocResearch"], true);
 
     let set = query_json(&platform, "CollectorSetGet", serde_json::json!({})).await;
     let items = set["items"].as_array().unwrap();
-    let haky = items
-        .iter()
-        .find(|i| i["symbol"] == "HAKY")
-        .expect("HAKY in collector set via research template URL");
-    assert_eq!(haky["sourceUrl"], url);
-    assert_eq!(haky["declarationSource"], "amplify");
+    assert!(
+        !items.iter().any(|i| i["symbol"] == seed["symbol"]),
+        "saved-but-incomplete names stay out of the daily fleet: {set}"
+    );
 
     // Injected miss stays unknown - seed command still succeeds; no $0 declaration invented.
     let seeded_miss = must_ok(
@@ -1451,8 +1512,9 @@ async fn process_a_seed_symbol_and_url_only() {
     assert!(inv2["lots"].as_array().unwrap().is_empty());
 }
 
-/// Process A: ?2 paid monthly declarations (or issuer Monthly label) ? frequency Monthly.
+/// Process A: ≥2 paid monthly declarations (or issuer Monthly label) → frequency Monthly.
 /// Owner does not type frequency. No lots. No auto Plan confirm.
+/// Lookback stays a miss until 12 paid or inception — cadence inference is independent.
 #[tokio::test]
 async fn process_a_infers_monthly_from_seven_paid_haky_decls() {
     let dir = tempfile::tempdir().unwrap();
@@ -1491,7 +1553,8 @@ async fn process_a_infers_monthly_from_seven_paid_haky_decls() {
     )
     .await;
     assert_eq!(seed["paymentFrequency"], "Monthly");
-    assert_eq!(seed["retrieveOk"], true);
+    assert_eq!(seed["retrieveOk"], false);
+    assert_eq!(seed["retrieveCode"], "declaration_lookback_short");
     let security_id = seed["securityId"].as_str().unwrap();
     let inv = query_json(
         &platform,
@@ -1713,7 +1776,9 @@ async fn validate_current_roc_estimate_fills_hole_without_reasking() {
     .await;
     assert_eq!(inv["rocPct2026EstimateMinor"], 8750);
     assert_eq!(inv["rocPct2026ActualMinor"], serde_json::Value::Null);
+    assert_eq!(inv["rocPct2025ActualMinor"], serde_json::Value::Null);
     assert_eq!(inv["rocEstimateSourceUrl"], notice);
+    assert_eq!(inv["rocResearchCompletedAt"], "2026-08-29");
     assert_eq!(inv["rocResearchStatus"], "estimate-only · N/A 2025");
     assert_eq!(inv["needsRocResearch"], true);
     assert_eq!(inv["planKnown"], false);
@@ -1798,6 +1863,7 @@ async fn position_research_refresh_fills_haky_holes_preserves_lots_and_decls() {
         }),
     )
     .await;
+    ready_first_lot(&platform, &security_id, "HAKY").await;
     must_ok(
         &platform,
         "LotOpen",
@@ -1810,6 +1876,21 @@ async fn position_research_refresh_fills_haky_holes_preserves_lots_and_decls() {
             "performanceCostMinor": 250000,
             "taxCostMinor": 250000,
             "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "provider": "",
+            "underlying": "",
+            "needsRocResearch": true,
+            "isActive": true,
+            "divType": "DIV-1",
+            "rocPct2026EstimateMinor": null
         }),
     )
     .await;
@@ -1844,8 +1925,8 @@ async fn position_research_refresh_fills_haky_holes_preserves_lots_and_decls() {
         .map(|i| i["symbol"].as_str().unwrap().to_string())
         .collect();
     assert!(
-        gap_syms.iter().any(|s| s == "HAKY"),
-        "HAKY should be on research gap list before refresh: {gaps_before}"
+        gap_syms.iter().any(|s| Some(s.as_str()) == before["symbol"].as_str()),
+        "open-lot payer missing provider or ROC estimate is a fill-gaps hole: {gaps_before}"
     );
 
     let refresh = must_ok(
@@ -1914,8 +1995,8 @@ async fn position_research_refresh_fills_haky_holes_preserves_lots_and_decls() {
         .map(|i| i["symbol"].as_str().unwrap().to_string())
         .collect();
     assert!(
-        !gap_after.iter().any(|s| s == "HAKY"),
-        "HAKY must leave gap list after ROC observation: {gaps_after}"
+        !gap_after.iter().any(|s| Some(s.as_str()) == after["symbol"].as_str()),
+        "provider + frequency + DIV-1 + ROC estimate clears the fill-gaps hole: {gaps_after}"
     );
 }
 
@@ -1980,4 +2061,901 @@ async fn position_research_refresh_19a1_miss_lists_probes_never_zero() {
     .await;
     assert!(inv["rocPct2026EstimateMinor"].is_null());
     assert_eq!(inv["needsRocResearch"], true);
+}
+
+/// Complete research must replace a stored 0% / stale seed estimate with live 19a-1.
+/// 0% is unknown, not an estimate. Seed needsRocResearch=false is not owner-lock.
+#[tokio::test]
+async fn complete_research_replaces_zero_and_stale_unconfirmed_estimate() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let url = "https://amplifyetfs.com/haky/#distributions";
+    let notice = "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_04-30-26_HAKY.pdf";
+    let candidates = vec![serde_json::json!({
+        "amountPerShareMinor": 1000,
+        "amountScale": 4,
+        "paymentPeriod": "2026-07-31",
+        "source": "amplify"
+    })];
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": url,
+            "candidates": candidates,
+            "suggestedFrequency": "Monthly"
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "rocPct2026EstimateMinor": 0,
+            "rocScale": 2,
+            "needsRocResearch": false,
+            "isActive": true
+        }),
+    )
+    .await;
+    let zero_cand = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "HAKY",
+            "candidates": candidates,
+            "rocCandidates": [{
+                "rocPctMinor": 0,
+                "scale": 2,
+                "taxYear": "2026",
+                "source": "19a-1",
+                "sourceUrl": notice,
+                "method": "table-roc-current",
+                "asOf": "2026-08-21",
+                "kind": "estimate",
+                "establishedHow": "latest distribution table ROC percent",
+                "ownerOverride": false
+            }]
+        }),
+    )
+    .await;
+    assert!(
+        zero_cand["rocPctMinor"].is_null(),
+        "0% table row is not an estimate: {zero_cand}"
+    );
+
+    let stale = must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "rocPct2026EstimateMinor": 1000,
+            "rocScale": 2,
+            "needsRocResearch": false,
+            "isActive": true
+        }),
+    )
+    .await;
+    let _ = stale;
+    let refresh = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "HAKY",
+            "candidates": candidates,
+            "rocCandidates": [{
+                "rocPctMinor": 9874,
+                "scale": 2,
+                "taxYear": "2026",
+                "source": "19a-1",
+                "sourceUrl": notice,
+                "method": "table-roc-current",
+                "asOf": "2026-08-14",
+                "kind": "estimate",
+                "establishedHow": "latest distribution table ROC percent",
+                "ownerOverride": false
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(refresh["rocPctMinor"], 9874);
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-29" }),
+    )
+    .await;
+    assert_eq!(inv["rocPct2026EstimateMinor"], 9874);
+    assert_eq!(inv["needsRocResearch"], true);
+}
+
+/// Imported Calculator plans are owner data. Adapter research must not replace any of them.
+#[tokio::test]
+async fn adapter_research_does_not_replace_imported_plan_amounts() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let imported = [
+        ("AMDW", "Weekly", 52, 55, 2, "roundhill", "https://www.roundhillinvestments.com/etf/amdw"),
+        ("CRF", "Monthly", 12, 1168, 4, "cornerstone", "https://www.cornerstonetotalreturn.com/"),
+        ("EPD", "Quarterly", 4, 55, 2, "enterprise", "https://www.enterpriseproducts.com/"),
+    ];
+    for (symbol, freq, periods, minor, scale, source, url) in imported {
+        let security = must_ok(
+            &platform,
+            "SecurityRegister",
+            serde_json::json!({"symbol": symbol, "name": symbol}),
+        )
+        .await;
+        let security_id = security["securityId"].as_str().unwrap();
+        must_ok(
+            &platform,
+            "PositionCharacteristicUpsert",
+            serde_json::json!({
+                "securityId": security_id,
+                "paymentFrequency": freq,
+                "riskTier": "Risk On",
+                "provider": source,
+                "divType": "DIV-1",
+                "needsRocResearch": true,
+                "isActive": true
+            }),
+        )
+        .await;
+        must_ok(
+            &platform,
+            "IssuerDeclarationRecord",
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": minor,
+                "amountScale": scale,
+                "paymentPeriod": "2026-08-12",
+                "source": "import",
+                "enteredAt": "2026-08-12"
+            }),
+        )
+        .await;
+        must_ok(
+            &platform,
+            "PlanHistoryConfirm",
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": minor,
+                "amountScale": scale,
+                "planningPeriodsPerYear": periods,
+                "effectiveFrom": "2026-08-12",
+                "decisionReason": "Locked Calculator from initial load on 2026-08-12",
+                "incompleteAnalysisReason": "Fewer than 6 observations"
+            }),
+        )
+        .await;
+        must_ok(
+            &platform,
+            "PositionResearchRefresh",
+            serde_json::json!({
+                "securityId": security_id,
+                "symbol": symbol,
+                "declarationSource": source,
+                "sourceUrl": url,
+                "candidates": [{
+                    "amountPerShareMinor": 9999,
+                    "amountScale": 4,
+                    "paymentPeriod": "2026-09-04",
+                    "source": source
+                }]
+            }),
+        )
+        .await;
+        let after = query_json(
+            &platform,
+            "InvestmentGet",
+            serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-02" }),
+        )
+        .await;
+        assert_eq!(after["planKnown"], true, "{symbol}");
+        assert_eq!(after["planPerShareMinor"], minor, "{symbol}");
+        assert_eq!(after["planScale"], scale, "{symbol}");
+    }
+}
+
+fn seven_paid_amplify() -> Vec<serde_json::Value> {
+    [
+        "2026-01-30",
+        "2026-02-27",
+        "2026-03-31",
+        "2026-04-30",
+        "2026-05-29",
+        "2026-06-30",
+        "2026-07-31",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, pay)| {
+        serde_json::json!({
+            "amountPerShareMinor": 10 + i as i64,
+            "amountScale": 2,
+            "paymentPeriod": pay,
+            "source": "amplify"
+        })
+    })
+    .collect()
+}
+
+/// First history parse fail prompts a second same-adapter URL once, then loud fail.
+#[tokio::test]
+async fn process_a_second_url_once_then_loud_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let first = "https://amplifyetfs.com/haky/#distributions";
+    let second = "https://amplifyetfs.com/haky/distributions/";
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": first,
+            "misses": [{
+                "symbol": "HAKY",
+                "code": "declaration_retrieve_miss",
+                "reason": "Issuer page empty."
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(seed["retrieveOk"], false);
+    assert_eq!(seed["needsSecondUrl"], true);
+    assert_eq!(seed["adapterFailed"], false);
+    let security_id = seed["securityId"].as_str().unwrap();
+
+    let foreign = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "sourceUrl": "https://www.roundhillinvestments.com/etf/topw/",
+            "secondUrlAttempt": true
+        }),
+    )
+    .await;
+    assert_eq!(foreign["retrieveCode"], "adapter_url_mismatch");
+    assert_eq!(foreign["sourceUrl"], first);
+
+    let loud = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "sourceUrl": second,
+            "secondUrlAttempt": true,
+            "misses": [{
+                "securityId": security_id,
+                "symbol": "HAKY",
+                "code": "declaration_retrieve_miss",
+                "reason": "Second page empty."
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(loud["retrieveOk"], false);
+    assert_eq!(loud["secondUrlTried"], true);
+    assert_eq!(loud["adapterFailed"], true);
+    assert!(
+        loud["retrieveMessage"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Manual adapter is parked")
+    );
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-29" }),
+    )
+    .await;
+    assert_eq!(inv["collectorComplete"], false);
+    assert!(inv["lots"].as_array().unwrap().is_empty());
+}
+
+/// After A, paid < 12: Yes stores inception_on; lookback can complete via expected periods.
+#[tokio::test]
+async fn process_a_inception_yes_stores_date() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let url = "https://amplifyetfs.com/haky/#distributions";
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": url,
+            "candidates": seven_paid_amplify(),
+            "suggestedFrequency": "Monthly",
+            "asOfDate": "2026-09-05",
+            "inceptionHits": [{
+                "title": "HAKY inception 2026-02-01",
+                "snippet": "Fund launched 2026-02-01"
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(seed["retrieveCode"], "declaration_lookback_short");
+    assert_eq!(seed["needsInceptionConfirm"], true);
+    assert_eq!(seed["inceptionCandidate"], "2026-02-01");
+    let security_id = seed["securityId"].as_str().unwrap();
+
+    let yes = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "sourceUrl": url,
+            "candidates": seven_paid_amplify(),
+            "suggestedFrequency": "Monthly",
+            "asOfDate": "2026-09-05",
+            "inceptionOn": "2026-02-01",
+            "inceptionConfirmed": true
+        }),
+    )
+    .await;
+    assert_eq!(yes["expectedPaidSinceInception"], 7);
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(inv["template"]["inceptionOn"], "2026-02-01");
+    let gaps = inv["collectorGaps"].as_array().unwrap();
+    assert!(
+        !gaps.iter().any(|g| g == "paid_history"),
+        "inception Yes should clear paid_history: {gaps:?}"
+    );
+    assert_eq!(inv["collectorComplete"], false);
+}
+
+/// Owner No or search miss keeps the lookback ticket and collector incomplete.
+#[tokio::test]
+async fn process_a_inception_no_stays_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let url = "https://amplifyetfs.com/haky/#distributions";
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": url,
+            "candidates": seven_paid_amplify(),
+            "suggestedFrequency": "Monthly",
+            "asOfDate": "2026-09-05"
+        }),
+    )
+    .await;
+    assert_eq!(seed["inceptionSearchMiss"], true);
+    let security_id = seed["securityId"].as_str().unwrap();
+    let no = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "sourceUrl": url,
+            "candidates": seven_paid_amplify(),
+            "inceptionConfirmed": false,
+            "asOfDate": "2026-09-05"
+        }),
+    )
+    .await;
+    assert_eq!(no["inceptionSearchMiss"], true);
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    let items = tickets["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|t| t["code"] == "declaration_lookback_short"),
+        "{items:?}"
+    );
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(inv["collectorComplete"], false);
+    assert!(inv["collectorGaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|g| g == "paid_history"));
+}
+
+/// Phase I derive uses last calendar day / remaining periods through 31 Dec.
+#[tokio::test]
+async fn process_a_phase_i_derives_remaining_year_last_calendar_day() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": "https://amplifyetfs.com/haky/#distributions",
+            "candidates": seven_paid_amplify(),
+            "suggestedFrequency": "Monthly",
+            "asOfDate": "2026-08-22"
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    let remaining = query_json(
+        &platform,
+        "RemainingYearIncomeGet",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-08-22"
+        }),
+    )
+    .await;
+    let dates: Vec<_> = remaining["payments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["payOn"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        dates,
+        ["2026-08-31", "2026-09-30", "2026-10-31", "2026-11-30", "2026-12-31"]
+    );
+    assert_eq!(remaining["remainingPeriods"].as_i64(), Some(5));
+}
+
+/// After C search miss: owner ROC URL is stored as the reusable template and parsed 0% is kept.
+#[tokio::test]
+async fn process_a_owner_roc_url_parses_zero_when_notice_says_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let url = "https://amplifyetfs.com/haky/#distributions";
+    let roc_url = "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_05-29-26_HAKY.pdf";
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": url,
+            "candidates": seven_paid_amplify(),
+            "suggestedFrequency": "Monthly"
+        }),
+    )
+    .await;
+    assert_eq!(seed["rocPctMinor"], serde_json::Value::Null);
+    let security_id = seed["securityId"].as_str().unwrap();
+    let refresh = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "sourceUrl": url,
+            "candidates": seven_paid_amplify(),
+            "rocSourceUrl": roc_url,
+            "rocCandidates": [{
+                "rocPctMinor": 0,
+                "scale": 2,
+                "taxYear": "2026",
+                "source": "19a-1",
+                "sourceUrl": roc_url,
+                "method": "19a-1-current-year",
+                "asOf": "2026-05-29",
+                "kind": "estimate",
+                "establishedHow": "current distribution 19a-1 estimate",
+                "ownerOverride": false
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(refresh["rocPctMinor"], 0);
+    assert_eq!(refresh["rocSourceUrl"], roc_url);
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-29" }),
+    )
+    .await;
+    assert_eq!(inv["rocPct2026EstimateMinor"], 0);
+    assert_eq!(inv["template"]["rocSourceUrl"], roc_url);
+    assert_eq!(inv["collectorComplete"], false);
+}
+
+/// Required Skip raises a ticket and is not complete. Backtest Skip does not block.
+#[tokio::test]
+async fn process_a_required_skip_blocks_complete_backtest_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "HAKY",
+            "sourceUrl": "https://amplifyetfs.com/haky/#distributions",
+            "candidates": seven_paid_amplify()
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    golden_harness::complete_collector_for_first_lot(&platform, security_id, "HAKY")
+        .await
+        .expect("complete");
+    let as_of = chrono::Utc::now().date_naive().to_string();
+    let ready = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": as_of }),
+    )
+    .await;
+    assert_eq!(ready["collectorComplete"], true);
+
+    must_ok(
+        &platform,
+        "CollectorFieldDecisionSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "field": "roc_estimate",
+            "decision": "skip"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorFieldDecisionSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "field": "backtest",
+            "decision": "skip"
+        }),
+    )
+    .await;
+    let skipped = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": as_of }),
+    )
+    .await;
+    assert_eq!(skipped["collectorComplete"], false);
+    assert!(skipped["collectorGaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|g| g == "roc_estimate"));
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(tickets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["code"] == "roc_estimate"));
+
+    must_ok(
+        &platform,
+        "CollectorFieldDecisionSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "field": "roc_estimate",
+            "decision": "accept"
+        }),
+    )
+    .await;
+    let accepted = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": as_of }),
+    )
+    .await;
+    assert_eq!(accepted["collectorComplete"], true);
+}
+
+/// Income payers get DIV-1 on create. Empty div_type is a ticket and not complete.
+#[tokio::test]
+async fn new1_income_payer_gets_div1_on_create_blank_is_ticket() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "NEW1",
+            "sourceUrl": "https://example.test/new1/distributions",
+            "skipRefresh": true
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(inv["divType"], "DIV-1");
+    assert_eq!(inv["collectorComplete"], false);
+
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "divType": "",
+            "isActive": true
+        }),
+    )
+    .await;
+    let after = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(after["divType"], "");
+    assert_eq!(after["collectorComplete"], false);
+    assert!(after["collectorGaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|g| g == "div_type"));
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["code"] == "div_type"),
+        "empty div_type must ticket: {tickets}"
+    );
+}
+
+/// CASH1 stays CASH. Refresh must not write DIV-1 onto cash. No ROC estimate required.
+#[tokio::test]
+async fn cash1_stays_cash_and_does_not_need_roc() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "CASH1",
+            "sourceUrl": "https://example.test/cash1",
+            "divType": "CASH",
+            "skipRefresh": true
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(inv["divType"], "CASH");
+    assert_eq!(inv["needsRocResearch"], false);
+    must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "sourceUrl": "https://example.test/cash1",
+            "divType": "DIV-1"
+        }),
+    )
+    .await;
+    let after = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(after["divType"], "CASH");
+    assert_eq!(after["needsRocResearch"], false);
+}
+
+/// Checklist characteristics persist. Suggested tier is not auto-applied.
+#[tokio::test]
+async fn pay1_characteristics_surface_and_risk_is_owner_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "PAY1",
+            "sourceUrl": "https://example.test/pay1/distributions",
+            "underlying": "UNDR",
+            "lookthrough": {
+                "themeStrategy": "Covered Call + Leveraged",
+                "primaryRiskDriver": "Look-through UNDR",
+                "coveredCall": true,
+                "leveraged": true,
+                "riskTierSuggestion": "Risk On",
+                "riskTierSuggestionReason": "Covered-call overlay"
+            },
+            "skipRefresh": true
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(inv["divType"], "DIV-1");
+    assert_eq!(inv["underlying"], "UNDR");
+    assert_eq!(inv["lookthrough"]["coveredCall"], true);
+    assert_eq!(inv["lookthrough"]["leveraged"], true);
+    assert_eq!(inv["lookthrough"]["riskTierSuggestion"], "Risk On");
+    assert_eq!(inv["riskTier"], "");
+}
+
+/// Standing ROC URL is stored and reused on the next Complete research / Fill gaps.
+#[tokio::test]
+async fn pay1_roc_source_url_persists_on_template() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let roc_url = "https://issuer.example/files/19a-1_Notice_05-29-26_PAY1.pdf";
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "PAY1",
+            "sourceUrl": "https://example.test/pay1/distributions",
+            "rocSourceUrl": roc_url,
+            "skipRefresh": true
+        }),
+    )
+    .await;
+    let security_id = seed["securityId"].as_str().unwrap();
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(inv["template"]["rocSourceUrl"], roc_url);
+    let refresh = must_ok(
+        &platform,
+        "PositionResearchRefresh",
+        serde_json::json!({
+            "securityId": security_id,
+            "sourceUrl": "https://example.test/pay1/distributions"
+        }),
+    )
+    .await;
+    let _ = refresh;
+    let after = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(after["template"]["rocSourceUrl"], roc_url);
+}
+
+/// Grandfather is already-has-open-lots, not a named symbol.
+#[tokio::test]
+async fn lot_open_grandfather_is_already_has_open_lots() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let seed = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "NEW1",
+            "sourceUrl": "https://example.test/new1/distributions",
+            "skipRefresh": true
+        }),
+    )
+    .await;
+    let new1 = seed["securityId"].as_str().unwrap();
+    let blocked = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "LotOpen",
+            serde_json::json!({
+                "accountId": account["accountId"],
+                "securityId": new1,
+                "openedOn": "2026-01-02",
+                "quantityMinor": 10,
+                "quantityScale": 0,
+                "performanceCostMinor": 1000,
+                "taxCostMinor": 1000,
+                "scale": 2
+            }),
+        ),
+    )
+    .await;
+    assert!(!blocked.ok);
+    assert_eq!(blocked.error_code.as_deref(), Some("collector_incomplete"));
+
+    let pay = must_ok(
+        &platform,
+        "PositionResearchSeed",
+        serde_json::json!({
+            "symbol": "PAY1",
+            "sourceUrl": "https://example.test/pay1/distributions",
+            "skipRefresh": true
+        }),
+    )
+    .await;
+    let pay1 = pay["securityId"].as_str().unwrap().to_string();
+    ready_first_lot(&platform, &pay1, "PAY1").await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account["accountId"],
+            "securityId": pay1,
+            "openedOn": "2026-01-02",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceCostMinor": 1000,
+            "taxCostMinor": 1000,
+            "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": pay1,
+            "riskTier": "",
+            "isActive": true
+        }),
+    )
+    .await;
+    let incomplete = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": pay1, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    assert_eq!(incomplete["collectorComplete"], false);
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account["accountId"],
+            "securityId": pay1,
+            "openedOn": "2026-02-02",
+            "quantityMinor": 5,
+            "quantityScale": 0,
+            "performanceCostMinor": 500,
+            "taxCostMinor": 500,
+            "scale": 2
+        }),
+    )
+    .await;
 }

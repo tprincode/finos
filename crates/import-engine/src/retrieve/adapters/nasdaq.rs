@@ -1,13 +1,14 @@
-//! Nasdaq quote dividends JSON — used when issuer pages are SPA/Cloudflare empty.
-//! Not Yahoo. Empty rows stay a loud miss.
+//! Nasdaq quote dividends JSON parser — fixture-only. Fetch never uses Nasdaq
+//! or dividendhistory.org; those are not vendor adapters.
 
 use serde_json::Value;
 
 use crate::retrieve::html::{
-    distribution_candidate, parse_issuer_amount, parse_issuer_date, sort_newest_first,
+    distribution_candidate, json_amount, json_pay_date, sort_newest_first,
 };
 
-/// `assetclass` query value for Nasdaq dividends API.
+/// `assetclass` query value for Nasdaq dividends API (fixture parser only).
+#[allow(dead_code)]
 pub fn nasdaq_asset_class(symbol: &str) -> &'static str {
     match symbol.trim().to_ascii_uppercase().as_str() {
         // Equities / CEFs / BDCs on Nasdaq dividends API as stocks
@@ -16,6 +17,7 @@ pub fn nasdaq_asset_class(symbol: &str) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 pub fn nasdaq_dividends_url(symbol: &str) -> String {
     let sym = symbol.trim().to_ascii_uppercase();
     format!(
@@ -25,7 +27,8 @@ pub fn nasdaq_dividends_url(symbol: &str) -> String {
     )
 }
 
-/// Third-party HTML calendar when issuer/Nasdaq have no plain history (not Yahoo).
+/// Not fetched. Kept so tests can prove this host is rejected.
+#[allow(dead_code)]
 pub fn dividendhistory_url(symbol: &str) -> String {
     format!(
         "https://dividendhistory.org/payout/{}/",
@@ -33,7 +36,7 @@ pub fn dividendhistory_url(symbol: &str) -> String {
     )
 }
 
-/// Parse `api.nasdaq.com/.../dividends` JSON body.
+/// Parse `api.nasdaq.com/.../dividends` JSON body. Payment date by field name only.
 pub fn parse_nasdaq_dividends(source: &str, body: &str) -> Vec<Value> {
     let trimmed = body.trim();
     if !trimmed.starts_with('{') {
@@ -49,22 +52,10 @@ pub fn parse_nasdaq_dividends(source: &str, body: &str) -> Vec<Value> {
         .unwrap_or_default();
     let mut out = Vec::new();
     for row in rows {
-        let pay = row
-            .get("paymentDate")
-            .and_then(|x| x.as_str())
-            .and_then(parse_issuer_date)
-            .or_else(|| {
-                row.get("exOrEffDate")
-                    .and_then(|x| x.as_str())
-                    .and_then(parse_issuer_date)
-            });
-        let Some(pay) = pay else {
+        let Some(pay) = json_pay_date(&row) else {
             continue;
         };
-        let amount = row
-            .get("amount")
-            .and_then(|x| x.as_str())
-            .and_then(parse_issuer_amount);
+        let amount = json_amount(&row);
         out.push(distribution_candidate(source, pay, amount, None));
     }
     sort_newest_first(&mut out);

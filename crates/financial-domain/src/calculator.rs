@@ -57,6 +57,11 @@ pub fn periods_from_frequency(frequency: &str) -> Option<u8> {
     PaymentCadence::parse(frequency).and_then(PaymentCadence::periods)
 }
 
+/// Owner-tagged "does not pay". Empty/unidentified is not this — those still list until cadence is set.
+pub fn is_non_paying(frequency: &str) -> bool {
+    matches!(PaymentCadence::parse(frequency), Some(PaymentCadence::None))
+}
+
 /// Infer Weekly / Monthly / Quarterly from paid declaration dates and/or an issuer page label.
 /// Returns `None` (unknown) when history cannot support 52 / 12 / 4 — never invents a cadence.
 /// Owner does not type frequency; Process A persists the suggestion when present.
@@ -205,6 +210,9 @@ mod tests {
         assert!(PaymentCadence::parse_periods(0).is_none());
         assert!(periods_from_frequency("").is_none());
         assert!(periods_from_frequency("None").is_none());
+        assert!(is_non_paying("None"));
+        assert!(!is_non_paying(""));
+        assert!(!is_non_paying("Quarterly"));
     }
 
     #[test]

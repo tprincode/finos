@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { formatUsd } from "@finos/ui-components";
+import { formatUsd, formatWeekChooserLabel } from "@finos/ui-components";
 
 export type TrendsWeekCapture = {
   periodStart: string;
   periodEnd: string;
+  weekYear?: number;
+  weekNumber?: number;
   capturedAt: string;
   closed: boolean;
   exists: boolean;
@@ -160,7 +162,7 @@ export function TrendsCapturePanel({
     <div className="trends-capture" aria-label="Trends weekly capture">
       <div className="trends-period-bar">
         <label className="trends-period-label">
-          Week ending (Friday)
+          Week
           <input
             type="date"
             aria-label="Trends capture as-of date"
@@ -185,7 +187,7 @@ export function TrendsCapturePanel({
           Copy prior
         </button>
         <span>
-          {capture.periodStart} → {capture.periodEnd}
+          {formatWeekChooserLabel(capture.periodStart || asOf || capture.periodEnd)}
           {capture.closed ? " (closed)" : " (open)"}
         </span>
       </div>
