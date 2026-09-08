@@ -6095,6 +6095,18 @@ export default function App() {
           >
             Home
           </button>
+          <button
+            type="button"
+            className="menubar-trigger"
+            aria-label="Trends"
+            aria-current={screen === "trends" ? "page" : undefined}
+            onClick={() => {
+              setOpenMenu(null);
+              leaveWithoutSaving(() => setScreen("trends"), "trends");
+            }}
+          >
+            Trends
+          </button>
           {menuGroup(
             "file",
             "File",
@@ -6185,7 +6197,20 @@ export default function App() {
       </nav>
       <main className="container" aria-label="finos">
       {screen === "home" ? (
-        summary ? (
+        <>
+        <div className="home-shortcuts">
+          <button
+            type="button"
+            aria-label="Open Trends"
+            disabled={busy}
+            onClick={() => {
+              leaveWithoutSaving(() => setScreen("trends"), "trends");
+            }}
+          >
+            Open Trends — weekly capture and charts
+          </button>
+        </div>
+        {summary ? (
         <section aria-label="Portfolio summary">
           <dl className="portfolio-summary">
             <div className="ps-cell ps-mv">
@@ -6315,7 +6340,8 @@ export default function App() {
         </section>
         ) : (
           <p role="status">Loading portfolio summary…</p>
-        )
+        )}
+        </>
       ) : null}
       {pdDirty || wizDirty || addLotDirty ? (
         <div className="blocked unsaved-bar" role="alert">

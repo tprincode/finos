@@ -216,6 +216,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "label=\"Filter calculator\"",
         "label=\"Filter position lots\"",
         "label=\"Filter dashboard\"",
+        "aria-label=\"Open Trends\"",
         "aria-label=\"Trends weekly capture\"",
         "aria-label=\"Save Trends week\"",
         "aria-label=\"Correct Trends week\"",
