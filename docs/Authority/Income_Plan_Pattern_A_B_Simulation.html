@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FinOS Income Plan — Pattern A / Pattern B simulation</title>
+<style>
+  :root {
+    --navy: #1b365d;
+    --navy-2: #152a4a;
+    --teal: #1f6b4a;
+    --green: #1f7a4d;
+    --green-bg: #d8f0e2;
+    --amber: #8a5a00;
+    --amber-bg: #ffe8b8;
+    --red: #8b1e1e;
+    --red-bg: #f8d0d4;
+    --line: #d5dde6;
+    --bg: #eef2f6;
+    --paper: #ffffff;
+    --muted: #5b6b7c;
+    --ink: #1c2430;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: "Segoe UI", Arial, sans-serif; background: var(--bg); color: var(--ink); }
+  .app { display: flex; flex-direction: column; height: 100%; }
+  header.appbar {
+    background: linear-gradient(90deg, var(--navy), #2a4d7a);
+    color: #fff; padding: 10px 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header.appbar h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .02em; }
+  header.appbar .sub { font-size: 11px; opacity: .8; }
+  .tabs { display: flex; gap: 6px; margin-left: auto; }
+  .tab {
+    border: 0; background: rgba(255,255,255,.12); color: #fff; padding: 7px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;
+  }
+  .tab.active { background: #fff; color: var(--navy); }
+  .toolbar {
+    background: var(--paper); border-bottom: 1px solid var(--line);
+    padding: 8px 16px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; font-size: 12px;
+  }
+  .accounts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .chip {
+    display: flex; align-items: center; gap: 4px; background: #f3f6fa; border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px 8px; cursor: pointer; user-select: none;
+  }
+  .chip input { margin: 0; }
+  .chip.off { opacity: .45; }
+  .num { width: 48px; padding: 3px 6px; }
+  label.ctrl { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+  .hint { color: var(--muted); font-size: 11px; }
+  main { flex: 1; overflow: auto; padding: 12px 16px 28px; }
+  .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+  .panel h2 {
+    margin: 0; font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+    background: #f4f7fb; border-bottom: 1px solid var(--line); padding: 8px 12px; color: var(--navy);
+  }
+  table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 12px; }
+  th, td { border: 1px solid var(--line); padding: 4px 8px; white-space: nowrap; }
+  th { background: var(--navy); color: #fff; font-weight: 600; position: sticky; top: 0; z-index: 3; }
+  th.week { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  th.week:hover, td.weekhead:hover { background: #2d5a8f; }
+  th.week.selected, .week-pill.active { background: #c9a227; color: #1c2430; }
+  .sticky { position: sticky; left: 0; z-index: 2; background: #fff; }
+  th.sticky { z-index: 4; background: var(--navy); }
+  .money { text-align: right; font-variant-numeric: tabular-nums; }
+  .grp { background: #e7eef6; font-weight: 700; color: var(--navy); }
+  .total { background: #1f6b4a; color: #fff; font-weight: 700; }
+  .planrow { background: #eef8f1; }
+  .actrow { background: #f7fafc; }
+  .diffneg { color: var(--red); }
+  .diffpos { color: var(--teal); }
+  .s-ok { background: var(--green-bg); }
+  .s-var { background: var(--amber-bg); }
+  .s-miss { background: var(--red-bg); }
+  .s-future { background: #f7f8fa; color: #334; }
+  .s-empty { background: #fff; color: #c0c6ce; }
+  .yearcol { background: #e8eaee; font-weight: 600; }
+  .plan-total td.money, .plan-total .money { background: #22c55e; color: #111; font-weight: 700; }
+  .act-total td.money { background: #86efac; font-weight: 700; }
+  .act-future { background: #86efac; }
+  .acct-plan { color: #1f6b4a; }
+  .sec-note { font-size: 11px; color: var(--muted); padding: 6px 12px 10px; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); padding: 6px 0 0; }
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; border: 1px solid #bbb; vertical-align: -2px; margin-right: 4px; }
+  .week-nav { display: flex; gap: 8px; align-items: center; }
+  .week-pill {
+    border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 5px 9px;
+    cursor: pointer; font-size: 12px; font-weight: 600;
+  }
+  .btn {
+    background: var(--navy); color: #fff; border: 0; border-radius: 6px; padding: 6px 10px;
+    cursor: pointer; font-size: 12px; font-weight: 600;
+  }
+  .btn.ghost { background: #e8eef5; color: var(--navy); }
+  .kpi { display: flex; gap: 10px; flex-wrap: wrap; padding: 10px 12px; }
+  .kpi .box { background: #f4f7fb; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; min-width: 130px; }
+  .kpi .box b { display: block; font-size: 16px; }
+  .kpi .box span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .hidden { display: none; }
+  .cell-btn { all: unset; cursor: pointer; display: block; width: 100%; text-align: right; }
+  footer.note { font-size: 11px; color: var(--muted); padding: 0 4px 8px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="appbar">
+    <div>
+      <h1>FinOS Income Plan</h1>
+      <div class="sub">Graphical simulation — 8 Sep 2026 &nbsp;|&nbsp; Sat–Fri week labeled by Friday ending</div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" id="tabA" onclick="showA()">Pattern A · Weekly grid</button>
+      <button class="tab" id="tabB" onclick="showB()">Pattern B · Week drill-down</button>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div class="accounts" id="acctBar"></div>
+    <label class="ctrl">Historical weeks <input class="num" type="number" id="hist" min="0" max="26" value="6" onchange="rebuild()"></label>
+    <label class="ctrl">Future weeks <input class="num" type="number" id="fut" min="0" max="26" value="4" onchange="rebuild()"></label>
+    <span class="hint">Click a week header or a $ cell to open Pattern B for that week. In Pattern B, pick another week or return to the grid.</span>
+  </div>
+
+  <main>
+    <section id="viewA"></section>
+    <section id="viewB" class="hidden"></section>
+    <div class="legend">
+      <span><i class="sw" style="background:#d8f0e2"></i>Past · actual ≈ plan</span>
+      <span><i class="sw" style="background:#ffe8b8"></i>Past · variance</span>
+      <span><i class="sw" style="background:#f8d0d4"></i>Past · miss</span>
+      <span><i class="sw" style="background:#f7f8fa"></i>Future plan</span>
+      <span><i class="sw" style="background:#fff"></i>Not a pay week</span>
+    </div>
+    <footer class="note">
+      Simulated household-shaped dollars from the 8 Sep live grid (rounded). Plan lock demo: AMDY uses $0.31/sh through 14-Aug and $0.33/sh after — past weeks stay on the old plan.
+      Last Update = last successful declaration collector run (not price).
+      Default accounts: Income, Car, Health, FI Roth, 9. Speculation / Energy / Robinhood stay off.
+    </footer>
+  </main>
+</div>
+
+<script>
+const ACCOUNTS = [
+  { id: "Income", on: true },
+  { id: "Car", on: true },
+  { id: "Health", on: true },
+  { id: "FI Roth", on: true },
+  { id: "9", on: true },
+  { id: "Speculation", on: false },
+  { id: "Energy", on: false },
+  { id: "Robinhood", on: false },
+];
+
+const WEEKS = [
+  { id: "2026-07-24", label: "24-Jul", past: true },
+  { id: "2026-07-31", label: "31-Jul", past: true },
+  { id: "2026-08-07", label: "7-Aug", past: true },
+  { id: "2026-08-14", label: "14-Aug", past: true },
+  { id: "2026-08-21", label: "21-Aug", past: true },
+  { id: "2026-08-28", label: "28-Aug", past: true },
+  { id: "2026-09-04", label: "4-Sep", past: true },
+  { id: "2026-09-11", label: "11-Sep", past: false },
+  { id: "2026-09-18", label: "18-Sep", past: false },
+  { id: "2026-09-25", label: "25-Sep", past: false },
+  { id: "2026-10-02", label: "2-Oct", past: false },
+];
+const TODAY_IDX = 7; // 11-Sep first future; 4-Sep last closed week with actuals
+
+const POS = [
+  { sym:"BITO", freq:"Monthly", last:"2026-07-28", shares:{Income:68}, plan:[93,0,51,0,0,0,51,0,0,0,0], act:[93,0,51,0,0,0,51,0,0,0,0] },
+  { sym:"CEFS", freq:"Monthly", last:"2026-08-27", shares:{Income:252}, plan:[0,35,0,0,0,35,0,0,35,0,0], act:[0,35,0,0,0,35,0,0,0,0,0] },
+  { sym:"CRF", freq:"Monthly", last:"2026-08-29", shares:{Income:600, "FI Roth":27, Car:91}, plan:[0,122,0,0,0,103,20,0,0,0,122], act:[0,118,0,0,0,103,19,0,0,0,0] },
+  { sym:"EFC", freq:"Monthly", last:"2026-08-26", shares:{Income:632}, plan:[0,82,0,0,0,82,0,0,0,0,82], act:[0,82,0,0,0,82,0,0,0,0,0] },
+  { sym:"GLAD", freq:"Monthly", last:"2026-08-27", shares:{Income:317}, plan:[0,48,0,0,0,48,0,0,0,0,48], act:[0,48,0,0,0,48,0,0,0,0,0] },
+  { sym:"JEPQ", freq:"Monthly", last:"2026-08-06", shares:{Income:412}, plan:[0,0,185,0,0,0,185,0,0,0,0], act:[0,0,185,0,0,0,185,0,0,0,0] },
+  { sym:"ORC", freq:"Monthly", last:"2026-08-27", shares:{Income:460}, plan:[0,55,0,0,0,55,0,0,0,0,55], act:[0,55,0,0,0,55,0,0,0,0,0] },
+  { sym:"QQQI", freq:"Monthly", last:"2026-07-29", shares:{Car:107, Income:200}, plan:[0,218,0,0,0,218,0,0,0,0,218], act:[0,218,0,0,0,210,0,0,0,0,0] },
+  { sym:"QYLD", freq:"Monthly", last:"2026-08-20", shares:{Income:235}, plan:[39,0,0,0,39,0,0,0,39,0,0], act:[39,0,0,0,39,0,0,0,0,0,0] },
+  { sym:"SPYI", freq:"Monthly", last:"2026-08-27", shares:{Car:12}, plan:[0,9,0,0,0,9,0,0,9,0,0], act:[0,9,0,0,0,0,0,0,0,0,0] },
+  { sym:"SVOL", freq:"Monthly", last:"2026-08-27", shares:{Income:184}, plan:[0,55,0,0,0,55,0,0,0,0,55], act:[0,55,0,0,0,55,0,0,0,0,0] },
+  { sym:"TRIN", freq:"Monthly", last:"2026-07-30", shares:{Income:300}, plan:[0,51,0,0,0,51,0,0,0,0,51], act:[0,51,0,0,0,51,0,0,0,0,0] },
+  { sym:"TSPY", freq:"Monthly", last:"2026-07-22", shares:{Income:167}, plan:[46,0,46,0,46,0,46,0,0,0,46], act:[46,0,0,0,0,0,45,0,0,0,0] },
+  { sym:"XPAY", freq:"Monthly", last:"2026-09-04", shares:{Car:153, Health:50, Income:180}, plan:[0,0,0,345,0,0,0,345,0,0,0], act:[0,0,0,345,0,0,0,0,0,0,0] },
+  { sym:"QDVO", freq:"Monthly", last:"2026-08-27", shares:{Income:678}, plan:[0,163,0,0,0,163,0,0,0,0,163], act:[0,163,0,0,0,163,0,0,0,0,0] },
+  { sym:"CLM", freq:"Monthly", last:"2026-08-27", shares:{Income:283}, plan:[0,35,0,0,0,35,0,0,0,0,35], act:[0,35,0,0,0,35,0,0,0,0,0] },
+  { sym:"SWVXX", freq:"Monthly", last:"2026-09-03", shares:{ "9": 10000 }, plan:[0,0,15,0,0,0,15,0,0,0,15], act:[0,0,15,0,0,0,15,0,0,0,0] },
+  { sym:"FDRXX", freq:"Monthly", last:"2026-09-03", shares:{ Health: 182 }, plan:[0,0,0,0,0,0,0,0,0,0,0], act:[0,0,0,0,0,0,0,0,0,0,0] },
+  { sym:"HAKY", freq:"Monthly", last:"2026-09-01", shares:{Income:70}, plan:[0,0,0,0,0,0,25,0,0,0,25], act:[0,0,0,0,0,0,25,0,0,0,0] },
+  { sym:"EPD", freq:"Quarterly", last:"2026-08-13", shares:{Income:138}, plan:[0,0,0,76,0,0,0,0,0,0,0], act:[0,0,0,76,0,0,0,0,0,0,0] },
+  { sym:"ET", freq:"Quarterly", last:"2026-08-19", shares:{Income:1020}, plan:[0,0,0,0,342,0,0,0,0,0,0], act:[0,0,0,0,342,0,0,0,0,0,0] },
+  { sym:"MPLX", freq:"Quarterly", last:"2026-08-13", shares:{Income:284}, plan:[0,0,0,270,0,0,0,0,0,0,0], act:[0,0,0,0,0,0,0,0,0,0,0] },
+  { sym:"AMDY", freq:"Weekly", last:"2026-09-03", shares:{Car:20, Income:32}, plan:[16,16,16,16,16,16,16,16,16,16,16], act:[16,16,15,16,17,16,16,0,0,0,0], note:"Plan lock: $0.31 through 14-Aug, $0.33 after. Past weeks keep 16." },
+  { sym:"AMZY", freq:"Weekly", last:"2026-09-03", shares:{Car:40, Income:120}, plan:[13,13,13,13,13,13,13,13,13,13,13], act:[13,13,13,12,13,13,13,0,0,0,0] },
+  { sym:"CONY", freq:"Weekly", last:"2026-09-03", shares:{Income:19}, plan:[6,6,6,6,6,6,6,6,6,6,6], act:[6,6,6,6,6,5,6,0,0,0,0] },
+  { sym:"MSTY", freq:"Weekly", last:"2026-09-03", shares:{Health:20, Income:11}, plan:[7,7,7,7,7,7,7,7,7,7,7], act:[7,7,7,7,6,7,7,0,0,0,0] },
+  { sym:"NFLY", freq:"Weekly", last:"2026-09-03", shares:{Car:5, Income:542}, plan:[33,33,33,33,33,33,33,33,33,33,33], act:[33,32,33,33,33,33,31,0,0,0,0] },
+  { sym:"QDTE", freq:"Weekly", last:"2026-09-02", shares:{Health:101, Car:117, Income:299}, plan:[67,67,67,67,67,67,67,67,67,67,67], act:[67,67,66,67,67,68,67,0,0,0,0] },
+  { sym:"RDTE", freq:"Weekly", last:"2026-09-02", shares:{Health:40, Income:67}, plan:[17,17,17,17,17,17,17,17,17,17,17], act:[17,17,17,17,17,17,17,0,0,0,0] },
+  { sym:"XDTE", freq:"Weekly", last:"2026-09-02", shares:{Car:69, Health:40, Income:93}, plan:[24,24,24,24,24,24,24,24,24,24,24], act:[24,24,24,23,24,24,24,0,0,0,0] },
+  { sym:"YBTC", freq:"Weekly", last:"2026-09-01", shares:{Health:20, Income:37}, plan:[6,6,6,6,6,6,6,6,6,6,6], act:[6,6,6,6,6,6,6,0,0,0,0] },
+  { sym:"YMAX", freq:"Weekly", last:"2026-09-01", shares:{Car:200, Income:342}, plan:[38,38,38,38,38,38,38,38,38,38,38], act:[38,37,38,40,38,38,38,0,0,0,0] },
+  { sym:"PLTW", freq:"Weekly", last:"2026-09-02", shares:{Car:12, Health:20, Income:241}, plan:[49,49,49,49,49,49,49,49,49,49,49], act:[49,49,49,49,50,49,49,0,0,0,0] },
+  { sym:"TSLW", freq:"Weekly", last:"2026-09-02", shares:{Car:31, Health:20, Income:245}, plan:[56,56,56,56,56,56,56,56,56,56,56], act:[56,56,55,56,56,56,56,0,0,0,0] },
+  { sym:"NVDW", freq:"Weekly", last:"2026-09-02", shares:{Car:33, Income:182}, plan:[75,75,75,75,75,75,75,75,75,75,75], act:[75,75,75,74,75,75,75,0,0,0,0] },
+  { sym:"AMDW", freq:"Weekly", last:"2026-09-02", shares:{Car:30, Income:39}, plan:[38,38,38,38,38,38,38,38,38,38,38], act:[38,38,38,38,38,38,38,0,0,0,0] },
+  { sym:"TOPW", freq:"Weekly", last:"2026-09-02", shares:{Car:296, Health:75, Income:614, "FI Roth":38}, plan:[255,255,255,255,255,255,255,255,255,255,255], act:[255,250,255,258,255,255,254,0,0,0,0] },
+];
+
+const ACCT_SPLIT = {
+  Income: 0.62, Car: 0.18, Health: 0.08, "FI Roth": 0.07, "9": 0.05,
+  Speculation: 0, Energy: 0, Robinhood: 0
+};
+
+let view = "A";
+let selectedWeek = "2026-09-04";
+
+function money(n) {
+  if (n == null || n === "") return "";
+  const v = Math.round(n);
+  return v.toLocaleString("en-US");
+}
+function selectedAccounts() { return ACCOUNTS.filter(a => a.on).map(a => a.id); }
+function acctWeight() {
+  const sel = selectedAccounts();
+  const w = sel.reduce((s, id) => s + (ACCT_SPLIT[id] || 0), 0);
+  return w <= 0 ? 1 : w;
+}
+function scale(n) { return Math.round((n || 0) * acctWeight() / 1.00); }
+
+function visibleWeeks() {
+  const hist = Math.max(0, Math.min(26, +document.getElementById("hist").value || 0));
+  const fut = Math.max(0, Math.min(26, +document.getElementById("fut").value || 0));
+  const start = Math.max(0, TODAY_IDX - hist);
+  const end = Math.min(WEEKS.length, TODAY_IDX + fut);
+  return WEEKS.slice(start, end).map((w, i) => ({ ...w, idx: WEEKS.indexOf(w) }));
+}
+
+function stateClass(plan, act, past) {
+  if (!plan && !act) return "s-empty";
+  if (!past) return "s-future";
+  if (plan && !act) return "s-miss";
+  if (Math.abs((act||0) - (plan||0)) <= 1) return "s-ok";
+  if (act) return "s-var";
+  return "s-empty";
+}
+
+function renderAcctBar() {
+  document.getElementById("acctBar").innerHTML = ACCOUNTS.map(a =>
+    `<label class="chip ${a.on?"":"off"}"><input type="checkbox" ${a.on?"checked":""} onchange="toggleAcct('${a.id}', this.checked)"> ${a.id}</label>`
+  ).join("");
+}
+function toggleAcct(id, on) {
+  ACCOUNTS.find(a => a.id === id).on = on;
+  rebuild();
+}
+
+function headerTotals(weeks) {
+  const plan = weeks.map(w => POS.reduce((s,p) => s + scale(p.plan[w.idx]), 0));
+  const act = weeks.map(w => w.past ? POS.reduce((s,p) => s + scale(p.act[w.idx]), 0) : null);
+  return { plan, act };
+}
+
+/* Top section is ACCOUNT-ONLY. Numbers below match the live sheet crop (year col + week cols).
+   This block must never grow a Last Update / symbol / collector column. */
+const HEADER_WEEKS = ["7-Aug","14-Aug","21-Aug","28-Aug","4-Sep","5-Sep","11-Sep","18-Sep","25-Sep"];
+const HEADER_WEEK_IDS = ["2026-08-07","2026-08-14","2026-08-21","2026-08-28","2026-09-04","2026-09-05","2026-09-11","2026-09-18","2026-09-25"];
+const HEADER = {
+  yearLabel: "2025",
+  deltaYear: "13.89%",
+  delta: ["12.45%","29.92%","41.30%","-48.41%","52.77%","","","",""],
+  planYear: 42306.26,
+  plan: { Total:[987,1122,1089,1553,1050,700,1045,792,1650],
+          Income:[712,688,858,1074,743,472,610,558,1090],
+          Health:[65,92,55,121,84,55,91,55,141],
+          Roth:[44,49,44,53,44,38,49,38,56],
+          "9":[15,22,null,52,26,null,22,null,78],
+          CAR:[150,272,134,252,151,136,273,141,285] },
+  planAvg: { Income:808.31, Health:81.32, Roth:57.16, "9":42.16, CAR:162.69 },
+  actYear: 48181.46,
+  act: { Total:[1110,1458,1538,801,1604,null,null,null,null],
+         Income:[793,1004,1089,487,1209,null,null,null,null],
+         Health:[73,100,106,56,132,null,null,null,null],
+         Roth:[36,52,64,41,56,null,null,null,null],
+         "9":[44,22,14,1,null,null,null,null,null],
+         CAR:[164,282,265,140,207,null,null,null,null] },
+  actAvg: { Income:903.21, Health:99.87, Roth:56.11, "9":42.89, CAR:202.58 },
+  diffYear: 5875.20,
+  diff: [122.84,335.85,449.59,-751.60,554.10,null,null,null,null]
+};
+const HEADER_ACCT_ORDER = ["Income","Health","Roth","9","CAR"];
+
+function fmtDollar(n, digits) {
+  if (n == null || n === "") return "";
+  const d = digits == null ? 0 : digits;
+  return "$ " + Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+function renderA() {
+  const weeks = visibleWeeks();
+  const tot = headerTotals(weeks);
+  const acctsOn = selectedAccounts();
+
+  const weekHeadsPos = weeks.map(w =>
+    `<th class="week ${w.id===selectedWeek?"selected":""}" onclick="openWeek('${w.id}')">${w.label}</th>`
+  ).join("");
+
+  const hHeads = HEADER_WEEKS.map((lab,i) =>
+    `<th class="week ${HEADER_WEEK_IDS[i]===selectedWeek?"selected":""}" onclick="openWeek('${HEADER_WEEK_IDS[i]}')">${lab}</th>`
+  ).join("");
+
+  function showAcct(name) {
+    if (name === "Roth") return acctsOn.includes("FI Roth") || acctsOn.includes("Roth");
+    if (name === "CAR") return acctsOn.includes("Car") || acctsOn.includes("CAR");
+    return acctsOn.includes(name);
+  }
+
+  const planAcctRows = HEADER_ACCT_ORDER.filter(showAcct).map(a => {
+    const cells = HEADER.plan[a].map(v => `<td class="money">${v==null?"":fmtDollar(v,0)}</td>`).join("");
+    return `<tr class="planrow"><td class="sticky acct-plan">${a}</td><td class="money yearcol">${fmtDollar(HEADER.planAvg[a],2)}</td>${cells}</tr>`;
+  }).join("");
+
+  const actAcctRows = HEADER_ACCT_ORDER.filter(showAcct).map(a => {
+    const cells = HEADER.act[a].map((v,i) => {
+      const future = HEADER.act.Total[i] == null;
+      return `<td class="money ${future?"act-future":""}">${v==null?"":fmtDollar(v,0)}</td>`;
+    }).join("");
+    return `<tr class="actrow"><td class="sticky">${a}</td><td class="money yearcol">${fmtDollar(HEADER.actAvg[a],2)}</td>${cells}</tr>`;
+  }).join("");
+
+  const deltaCells = HEADER.delta.map(v => `<td class="money ${String(v).startsWith("-")?"diffneg":"diffpos"}">${v}</td>`).join("");
+  const planTot = HEADER.plan.Total.map(v => `<td class="money">${fmtDollar(v,0)}</td>`).join("");
+  const actTot = HEADER.act.Total.map((v,i) => `<td class="money ${v==null?"act-future":""}">${v==null?"":fmtDollar(v,0)}</td>`).join("");
+  const diffCells = HEADER.diff.map(v => {
+    if (v == null) return `<td class="money"></td>`;
+    const cls = v < 0 ? "diffneg" : "diffpos";
+    const txt = v < 0 ? fmtDollar(Math.abs(v),2).replace("$ ","$ (") + ")" : fmtDollar(v,2);
+    return `<td class="money ${cls}">${txt}</td>`;
+  }).join("");
+
+  const freqs = ["Monthly","Quarterly","Weekly"];
+  let body = "";
+  freqs.forEach(freq => {
+    const rows = POS.filter(p => p.freq === freq);
+    const gPlan = weeks.map(w => rows.reduce((s,p)=>s+scale(p.plan[w.idx]),0));
+    body += `<tr class="grp"><td class="sticky grp">${freq}</td><td class="grp"></td>${
+      weeks.map((w,i)=>`<td class="money grp">${money(gPlan[i])||""}</td>`).join("")
+    }</tr>`;
+    rows.forEach(p => {
+      const cells = weeks.map(w => {
+        const plan = scale(p.plan[w.idx]);
+        const act = w.past ? scale(p.act[w.idx]) : 0;
+        const cls = stateClass(plan, act, w.past);
+        const shown = plan ? money(plan) : "";
+        return `<td class="money ${cls}"><button class="cell-btn" onclick="openWeek('${w.id}')">${shown}</button></td>`;
+      }).join("");
+      body += `<tr><td class="sticky">${p.sym}</td><td>${p.last}</td>${cells}</tr>`;
+    });
+  });
+
+  const grand = weeks.map((w,i) => `<td class="money">${money(tot.plan[i])}</td>`).join("");
+
+  document.getElementById("viewA").innerHTML = `
+    <div class="panel">
+      <h2>Pattern A §1 — Account rollup only (year totals / averages + weekly account $)</h2>
+      <div class="sec-note">This table has no collector column and no symbols. Year column = current-year total on Total rows and weekly average on account rows. Week headers open Pattern B.</div>
+      <div style="overflow:auto">
+      <table>
+        <thead>
+          <tr>
+            <th class="sticky"></th>
+            <th class="yearcol" style="background:#4b5563">${HEADER.yearLabel}</th>
+            ${hHeads}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="sticky">Delta to plan</td>
+            <td class="money yearcol">${HEADER.deltaYear}</td>
+            ${deltaCells}
+          </tr>
+          <tr class="plan-total">
+            <td class="sticky"><b>Total Plan</b></td>
+            <td class="money yearcol">${fmtDollar(HEADER.planYear,2)}</td>
+            ${planTot}
+          </tr>
+          ${planAcctRows}
+          <tr class="act-total">
+            <td class="sticky"><b>Total Actual</b></td>
+            <td class="money yearcol">${fmtDollar(HEADER.actYear,2)}</td>
+            ${actTot}
+          </tr>
+          ${actAcctRows}
+          <tr>
+            <td class="sticky"><b>Total Difference</b></td>
+            <td class="money yearcol">${fmtDollar(HEADER.diffYear,2)}</td>
+            ${diffCells}
+          </tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Pattern A §2 — Position plan grid (separate table)</h2>
+      <div class="sec-note">Last Update lives only here. It replaces Sum of Quantity / Sum of Total $ / Average Annual %. Not part of §1.</div>
+      <div style="overflow:auto">
+      <table>
+        <thead>
+          <tr><th class="sticky">Symbol</th><th>Last Update</th>${weekHeadsPos}</tr>
+        </thead>
+        <tbody>
+          ${body}
+          <tr class="total"><td class="sticky total">Grand Total</td><td class="total"></td>${grand}</tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderB() {
+  const weeks = visibleWeeks();
+  let w = WEEKS.find(x => x.id === selectedWeek) || WEEKS[TODAY_IDX-1];
+  selectedWeek = w.id;
+  const idx = WEEKS.indexOf(w);
+  const rows = POS.map(p => {
+    const plan = scale(p.plan[idx]);
+    const act = w.past ? scale(p.act[idx]) : null;
+    const decl = plan ? Math.round(plan * (p.sym === "TSPY" && idx===2 ? 0 : 1)) : 0;
+    return { ...p, plan, act, decl, var: (act==null?null:(act||0)-plan) };
+  }).filter(r => r.plan || r.act);
+
+  const tPlan = rows.reduce((s,r)=>s+r.plan,0);
+  const tAct = w.past ? rows.reduce((s,r)=>s+(r.act||0),0) : null;
+  const tVar = tAct==null ? null : tAct - tPlan;
+  const misses = rows.filter(r => r.plan && w.past && !r.act);
+  const vars = rows.filter(r => r.var != null && Math.abs(r.var) > 1);
+
+  const pills = weeks.map(x =>
+    `<button class="week-pill ${x.id===w.id?"active":""}" onclick="openWeek('${x.id}')">${x.label}</button>`
+  ).join("");
+
+  const body = rows.map(r => {
+    const cls = stateClass(r.plan, r.act||0, w.past);
+    return `<tr>
+      <td class="sticky">${r.sym}</td>
+      <td>${r.freq}</td>
+      <td>${r.last}</td>
+      <td class="money">${money(r.plan)||""}</td>
+      <td class="money">${r.decl?money(r.decl):""}</td>
+      <td class="money ${cls}">${w.past?(money(r.act)||""):""}</td>
+      <td class="money ${r.var>0?"diffpos":r.var<0?"diffneg":""}">${w.past&&r.var!=null?((r.var>0?"+":"")+money(r.var)):""}</td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("viewB").innerHTML = `
+    <div class="panel">
+      <h2>Pattern B — week drill-down &nbsp;·&nbsp; ${w.label} 2026 &nbsp;·&nbsp; Sat–Fri week ending Friday</h2>
+      <div class="kpi">
+        <div class="box"><span>Week plan</span><b>$${money(tPlan)}</b></div>
+        <div class="box"><span>Week actual</span><b>${w.past?"$"+money(tAct):"— future"}</b></div>
+        <div class="box"><span>Variance</span><b class="${tVar>0?"diffpos":tVar<0?"diffneg":""}">${tVar==null?"—":(tVar>=0?"+$":"-$")+money(Math.abs(tVar))}</b></div>
+        <div class="box"><span>Misses</span><b>${w.past?misses.length:"n/a"}</b></div>
+        <div class="box"><span>Amount exceptions</span><b>${w.past?vars.length:"n/a"}</b></div>
+      </div>
+      <div class="toolbar" style="border:0">
+        <button class="btn ghost" onclick="showA()">← Back to Pattern A grid</button>
+        <div class="week-nav">${pills}</div>
+        <span class="hint">Selecting a week stays in Pattern B and reloads this grid. Use Back to return to the multi-week view centered on this week.</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Positions in this week — Plan (locked for past dates) vs declaration vs actual</h2>
+      <div style="overflow:auto">
+      <table>
+        <thead>
+          <tr>
+            <th class="sticky">Symbol</th><th>Freq</th><th>Last Update</th>
+            <th>Plan $</th><th>Declaration $</th><th>Actual $</th><th>Variance</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+      </div>
+    </div>
+    ${misses.length && w.past ? `<div class="panel"><h2>Exceptions</h2>
+      <div style="padding:10px 12px;font-size:12px">Planned not paid: ${misses.map(m=>m.sym).join(", ")||"none"}.</div></div>` : ""}
+  `;
+}
+
+function openWeek(id) {
+  if (!WEEKS.some(w => w.id === id)) {
+    const map = { "2026-09-05": "2026-09-04" };
+    id = map[id] || selectedWeek;
+  }
+  selectedWeek = id;
+  showB();
+}
+function showA() {
+  view = "A";
+  document.getElementById("tabA").classList.add("active");
+  document.getElementById("tabB").classList.remove("active");
+  document.getElementById("viewA").classList.remove("hidden");
+  document.getElementById("viewB").classList.add("hidden");
+  renderA();
+}
+function showB() {
+  view = "B";
+  document.getElementById("tabB").classList.add("active");
+  document.getElementById("tabA").classList.remove("active");
+  document.getElementById("viewB").classList.remove("hidden");
+  document.getElementById("viewA").classList.add("hidden");
+  renderB();
+}
+function rebuild() {
+  renderAcctBar();
+  if (view === "A") renderA(); else renderB();
+}
+
+renderAcctBar();
+renderA();
+</script>
+</body>
+</html>

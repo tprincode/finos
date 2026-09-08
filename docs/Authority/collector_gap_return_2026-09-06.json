@@ -1,0 +1,622 @@
+{
+  "as_of": "2026-09-06",
+  "researcher": "grok-4.6-research-extractor",
+  "items": [
+    {
+      "symbol": "GLAD",
+      "adapter": "gladstone",
+      "gaps_addressed": ["A_last_run", "A_history", "B_dates"],
+      "declaration": {
+        "working_url": "https://www.gladstonecapital.com/newsroom/detail/394/gladstone-capital-announces-monthly-cash-distributions-for",
+        "http_status": 200,
+        "content_type": "text/html",
+        "parse_kind": "press",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": [
+            "https://www.gladstonecapital.com/investors/stock-data/dividend-history",
+            "https://www.gladstonecapital.com/newsroom/detail/394/gladstone-capital-announces-monthly-cash-distributions-for"
+          ],
+          "selector_or_json_path": "newsroom press HTML tables: Record Date / Payment Date / Cash Distribution for Common Stock only (ignore Series A Preferred $0.130208)",
+          "date_column": "Payment Date",
+          "amount_column": "Cash Distribution",
+          "symbol_filter": "GLAD common",
+          "notes": "Dividend-history page is a JS widget and returns empty to non-browser clients (QuoteMedia qmod webmasterId 93303 Invalid product). Parse quarterly press on gladstonecapital.com/newsroom: Common Stock $0.15 monthly. Payable date is Payment Date. Years need inferred from press date (July 14, 2026 release = Jul/Aug/Sep 2026)."
+        },
+        "rows": [
+          {"payable_on": "2026-09-30", "record_on": "2026-09-21", "ex_on": "2026-09-21", "amount_per_share": "0.15", "status": "upcoming", "source_url": "https://www.gladstonecapital.com/newsroom/detail/394/gladstone-capital-announces-monthly-cash-distributions-for"},
+          {"payable_on": "2026-08-31", "record_on": "2026-08-18", "ex_on": "2026-08-18", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/newsroom/detail/394/gladstone-capital-announces-monthly-cash-distributions-for"},
+          {"payable_on": "2026-07-31", "record_on": "2026-07-24", "ex_on": "2026-07-24", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/newsroom/detail/394/gladstone-capital-announces-monthly-cash-distributions-for"},
+          {"payable_on": "2026-06-30", "record_on": "2026-06-23", "ex_on": "2026-06-23", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history"},
+          {"payable_on": "2026-05-29", "record_on": "2026-05-20", "ex_on": "2026-05-20", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history"},
+          {"payable_on": "2026-04-30", "record_on": "2026-04-24", "ex_on": "2026-04-24", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history"},
+          {"payable_on": "2026-03-31", "record_on": "2026-03-23", "ex_on": "2026-03-23", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history"},
+          {"payable_on": "2026-02-27", "record_on": "2026-02-18", "ex_on": "2026-02-18", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history"},
+          {"payable_on": "2026-01-30", "record_on": "2026-01-23", "ex_on": "2026-01-23", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history"},
+          {"payable_on": "2025-12-31", "record_on": "2025-12-22", "ex_on": "2025-12-22", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history"},
+          {"payable_on": "2025-11-26", "record_on": "2025-11-17", "ex_on": "2025-11-17", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history"},
+          {"payable_on": "2025-10-31", "record_on": "2025-10-24", "ex_on": "2025-10-24", "amount_per_share": "0.15", "status": "paid", "source_url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history"}
+        ],
+        "blocked": null
+      },
+      "identity": {
+        "inception_on": null,
+        "inception_source_url": null,
+        "inception_quote": null,
+        "div_type": "DIV-1",
+        "div_type_quote": "Gladstone Capital Corporation (Nasdaq:GLAD) ... pays monthly cash distributions to its stockholders",
+        "payment_frequency": "Monthly",
+        "frequency_quote": "Common Stock: $0.15 per share of common stock for each of July, August and September 2026",
+        "underlying": null,
+        "underlying_quote": "BDC that invests in lower middle market businesses — not a single-ticker underlying"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": null,
+        "source_url": null,
+        "http_status": null,
+        "notice_date": null,
+        "quote": null,
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://www.gladstonecapital.com/investors/stock-data/dividend-history", "http_status": 200},
+          {"url": "https://www.gladstonecompanies.com/dividend-and-other-info/gladstone-dividend", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [],
+      "cannot_fill": "No 2026 19a-1 on gladstone hosts. BDC year-end 1099 is the tax actual. 2025 10-Q on same host said calendar 2025 distributions were 93.7% ordinary / 6.3% capital gains — that is 2025 1099 character, not a 2026 estimate. Do not store 0."
+    },
+    {
+      "symbol": "JEPQ",
+      "adapter": "jpmorgan",
+      "gaps_addressed": ["B_dates"],
+      "declaration": {
+        "working_url": "https://am.jpmorgan.com/content/dam/jpm-am-aem/americas/us/en/supplemental/income-distribution-rates/jpmorgan-etfs-2026-distribution-notice.pdf",
+        "http_status": 200,
+        "content_type": "application/pdf",
+        "parse_kind": "pdf",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": [
+            "https://am.jpmorgan.com/us/en/asset-management/adv/products/jpmorgan-nasdaq-equity-premium-income-etf-etf-46654q203"
+          ],
+          "selector_or_json_path": "US 2026 dividend calendar PDF: Monthly Distributing ETFs Group 1 includes JEPQ. Columns Ex-Date/Record Date and Pay Date only — no $/share.",
+          "date_column": "Pay Date",
+          "amount_column": null,
+          "symbol_filter": "JEPQ",
+          "notes": "Product HTML page is JS-empty to extractors. Same-host calendar PDF has dates, not amounts. Do not scrape Yahoo/Nasdaq for $."
+        },
+        "rows": [
+          {"payable_on": "2026-09-03", "record_on": "2026-09-01", "ex_on": "2026-09-01", "amount_per_share": null, "status": "paid", "source_url": "https://am.jpmorgan.com/content/dam/jpm-am-aem/americas/us/en/supplemental/income-distribution-rates/jpmorgan-etfs-2026-distribution-notice.pdf"},
+          {"payable_on": "2026-10-05", "record_on": "2026-10-01", "ex_on": "2026-10-01", "amount_per_share": null, "status": "upcoming", "source_url": "https://am.jpmorgan.com/content/dam/jpm-am-aem/americas/us/en/supplemental/income-distribution-rates/jpmorgan-etfs-2026-distribution-notice.pdf"},
+          {"payable_on": "2026-11-04", "record_on": "2026-11-02", "ex_on": "2026-11-02", "amount_per_share": null, "status": "upcoming", "source_url": "https://am.jpmorgan.com/content/dam/jpm-am-aem/americas/us/en/supplemental/income-distribution-rates/jpmorgan-etfs-2026-distribution-notice.pdf"},
+          {"payable_on": "2026-12-03", "record_on": "2026-12-01", "ex_on": "2026-12-01", "amount_per_share": null, "status": "upcoming", "source_url": "https://am.jpmorgan.com/content/dam/jpm-am-aem/americas/us/en/supplemental/income-distribution-rates/jpmorgan-etfs-2026-distribution-notice.pdf"}
+        ],
+        "blocked": {"kind": "dates_without_amount", "detail": "US JEPQ product page and 2026 calendar PDF do not print $/share. UCITS/CAD fact sheets are other share classes — do not use those amounts."}
+      },
+      "identity": {
+        "inception_on": "2022-05-03",
+        "inception_source_url": "https://am.jpmorgan.com/content/dam/jpm-am-aem/americas/us/en/literature/fact-sheet/etfs/FS-JEPQ.PDF",
+        "inception_quote": "Class launch May 3, 2022",
+        "div_type": "DIV-1",
+        "div_type_quote": "Designed to provide current income while maintaining prospects for capital appreciation",
+        "payment_frequency": "Monthly",
+        "frequency_quote": "seeking to deliver a monthly income stream",
+        "underlying": "NDX",
+        "underlying_quote": "Nasdaq-100 Index / Nasdaq Equity Premium Income"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": null,
+        "source_url": null,
+        "http_status": null,
+        "notice_date": null,
+        "quote": null,
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://am.jpmorgan.com/us/en/asset-management/adv/products/jpmorgan-nasdaq-equity-premium-income-etf-etf-46654q203", "http_status": 200},
+          {"url": "https://am.jpmorgan.com/content/dam/jpm-am-aem/americas/us/en/literature/fact-sheet/etfs/FS-JEPQ.PDF", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [],
+      "cannot_fill": "No same-host US 19a-1 PDF with a printed 2026 ROC % found. Do not invent 0. Amounts remain blocked until Fund Documents posts a history table with $."
+    },
+    {
+      "symbol": "QYLD",
+      "adapter": "globalx",
+      "gaps_addressed": ["A_last_run", "B_dates", "C_roc_url"],
+      "declaration": {
+        "working_url": "https://www.globalxetfs.com/filings-and-tax-supplements/qyld",
+        "http_status": 200,
+        "content_type": "text/html",
+        "parse_kind": "html_table",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": [
+            "https://www.globalxetfs.com/funds/qyld/",
+            "https://assets.globalxetfs.com/funds/tax_supplements/"
+          ],
+          "selector_or_json_path": "Tax supplements page lists Form 19a by date. Each 2026 file is QYLD_Form-19a_MMDDYYYY.docx on assets.globalxetfs.com. Parse Record Date, Pay Date, Distribution Amount Per Share, Return of Capital % from the notice.",
+          "date_column": "Pay Date",
+          "amount_column": "Distribution Amount Per Share",
+          "symbol_filter": "QYLD",
+          "notes": "Product /funds/qyld/ is Next.js and empty to extractors. Do not guess /distributions APIs (404). Seed the tax-supplements URL and parse each 19a file."
+        },
+        "rows": [
+          {"payable_on": "2026-08-27", "record_on": "2026-08-24", "ex_on": null, "amount_per_share": "0.1829", "status": "paid", "source_url": "https://assets.globalxetfs.com/funds/tax_supplements/QYLD_Form-19a_08242026.docx"}
+        ],
+        "blocked": null
+      },
+      "identity": {
+        "inception_on": null,
+        "inception_source_url": null,
+        "inception_quote": null,
+        "div_type": "DIV-1",
+        "div_type_quote": "Global X NASDAQ 100 Covered Call ETF",
+        "payment_frequency": "Monthly",
+        "frequency_quote": null,
+        "underlying": "NDX",
+        "underlying_quote": "NASDAQ 100 Covered Call"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": 99.72,
+        "source_url": "https://assets.globalxetfs.com/funds/tax_supplements/QYLD_Form-19a_08242026.docx",
+        "http_status": 200,
+        "notice_date": "2026-08-24",
+        "quote": "Return of Capital Percent: 99.72%. Notice also: QYLD currently estimates it has distributed more than its income; therefore, a portion of your distribution may be return of capital.",
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://www.globalxetfs.com/filings-and-tax-supplements/qyld", "http_status": 200},
+          {"url": "https://assets.globalxetfs.com/funds/tax_supplements/QYLD_Form-19a_08242026.docx", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [
+        {"kind": "roc_accept", "payable_on": "2026-08-27", "stored_amount": null, "issuer_amount": "0.1829", "candidate_date": "2026-08-24", "evidence": "Aug 24 2026 Form 19a prints $0.1829 and 99.72% ROC", "do_not": "overwrite stored paid rows"}
+      ],
+      "cannot_fill": null
+    },
+    {
+      "symbol": "MSTU",
+      "adapter": "trex",
+      "gaps_addressed": [],
+      "declaration": {
+        "working_url": "https://www.rexshares.com/mstr-etfs/",
+        "http_status": 200,
+        "content_type": "text/html",
+        "parse_kind": "unknown",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": ["https://www.rexshares.com/mstr-etfs/"],
+          "selector_or_json_path": "MSTU product block only — do not mix MSTP/MSTX/MSTZ",
+          "date_column": null,
+          "amount_column": null,
+          "symbol_filter": "MSTU",
+          "notes": "Page describes the 2X MSTR product. No payable+$ table extracted."
+        },
+        "rows": [],
+        "blocked": {"kind": "dates_without_amount", "detail": "rexshares.com/mstr-etfs/ does not print a MSTU cash-amount distribution table in the extracted HTML."}
+      },
+      "identity": {
+        "inception_on": "2024-09-18",
+        "inception_source_url": "https://www.rexshares.com/mstr-etfs/",
+        "inception_quote": "first 2X leveraged MSTR ETF listed in the United States",
+        "div_type": "DIV-1",
+        "div_type_quote": null,
+        "payment_frequency": null,
+        "frequency_quote": null,
+        "underlying": "MSTR",
+        "underlying_quote": "200% of the daily performance of MSTR"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": null,
+        "source_url": null,
+        "http_status": null,
+        "notice_date": null,
+        "quote": null,
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://www.rexshares.com/mstr-etfs/", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [],
+      "cannot_fill": "No 19a-1 on rexshares that prints 0% or any %. Owner prior lock of 0% is not a notice. Do not emit estimate_pct 0."
+    },
+    {
+      "symbol": "SOXL",
+      "adapter": "direxion",
+      "gaps_addressed": [],
+      "declaration": {
+        "working_url": "https://www.direxion.com/product/daily-semiconductor-bull-3x-etf",
+        "http_status": null,
+        "content_type": null,
+        "parse_kind": "unknown",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": ["https://www.direxion.com/product/daily-semiconductor-bull-3x-etf"],
+          "selector_or_json_path": "Distributions table on product page if the browser renders it",
+          "date_column": "Pay Date",
+          "amount_column": "Income Dividend",
+          "symbol_filter": "SOXL",
+          "notes": "Cloudflare often 403 to non-browser. Fact sheet PDF has inception and performance only, no current distribution table."
+        },
+        "rows": [],
+        "blocked": {"kind": "cloudflare_403", "detail": "direxion.com product HTML frequently 403/empty to extractors. Human browser can open the product URL."}
+      },
+      "identity": {
+        "inception_on": "2010-03-11",
+        "inception_source_url": "https://www.direxion.com/uploads/SOXL-SOXS-Fact-Sheet.pdf",
+        "inception_quote": "Inception Date 03/11/2010",
+        "div_type": "DIV-1",
+        "div_type_quote": null,
+        "payment_frequency": "Quarterly",
+        "frequency_quote": null,
+        "underlying": "SOX",
+        "underlying_quote": "NYSE Semiconductor Index (ICESEMIT)"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": null,
+        "source_url": null,
+        "http_status": null,
+        "notice_date": null,
+        "quote": null,
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://www.direxion.com/product/daily-semiconductor-bull-3x-etf", "http_status": null},
+          {"url": "https://www.direxion.com/uploads/SOXL-SOXS-Fact-Sheet.pdf", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [],
+      "cannot_fill": "No Direxion 19a-1 that prints 0. Do not emit estimate_pct 0 from the owner lock."
+    },
+    {
+      "symbol": "TSLL",
+      "adapter": "direxion",
+      "gaps_addressed": ["A_last_run"],
+      "declaration": {
+        "working_url": "https://www.direxion.com/product/daily-tsla-bull-and-bear-leveraged-single-stock-etfs",
+        "http_status": 200,
+        "content_type": "text/html",
+        "parse_kind": "html_table",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": ["https://www.direxion.com/product/daily-tsla-bull-and-bear-leveraged-single-stock-etfs"],
+          "selector_or_json_path": "Heading TSLL Direxion Daily TSLA Bull 2X ETF then table Record Date / Ex Date / Pay Date / Income Dividend / STCG / LTCG. Ignore TSLS block.",
+          "date_column": "Pay Date",
+          "amount_column": "Income Dividend",
+          "symbol_filter": "TSLL",
+          "notes": "Cloudflare may 403; when HTML renders, TSLL table is on the product page. Quarterly cadence from the printed rows."
+        },
+        "rows": [
+          {"payable_on": "2026-06-30", "record_on": "2026-06-23", "ex_on": "2026-06-23", "amount_per_share": "0.10488", "status": "paid", "source_url": "https://www.direxion.com/product/daily-tsla-bull-and-bear-leveraged-single-stock-etfs"},
+          {"payable_on": "2026-03-31", "record_on": "2026-03-24", "ex_on": "2026-03-24", "amount_per_share": "0.09941", "status": "paid", "source_url": "https://www.direxion.com/product/daily-tsla-bull-and-bear-leveraged-single-stock-etfs"},
+          {"payable_on": "2025-12-31", "record_on": "2025-12-23", "ex_on": "2025-12-23", "amount_per_share": "0.11222", "status": "paid", "source_url": "https://www.direxion.com/product/daily-tsla-bull-and-bear-leveraged-single-stock-etfs"}
+        ],
+        "blocked": null
+      },
+      "identity": {
+        "inception_on": "2022-08-09",
+        "inception_source_url": "https://www.direxion.com/uploads/TSLL-TSLS-Fact-Sheet.pdf",
+        "inception_quote": "Inception Date 08/09/2022",
+        "div_type": "DIV-1",
+        "div_type_quote": null,
+        "payment_frequency": "Quarterly",
+        "frequency_quote": "printed TSLL rows are March / June / December quarter-ends",
+        "underlying": "TSLA",
+        "underlying_quote": "200% of the daily performance of Tesla, Inc. (NASDAQ: TSLA)"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": null,
+        "source_url": null,
+        "http_status": null,
+        "notice_date": null,
+        "quote": null,
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://www.direxion.com/product/daily-tsla-bull-and-bear-leveraged-single-stock-etfs", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [],
+      "cannot_fill": "No Direxion 19a-1 that prints 0 for TSLL. Do not emit estimate_pct 0."
+    },
+    {
+      "symbol": "MPLX",
+      "adapter": "mplx",
+      "gaps_addressed": ["A_last_run", "A_history", "B_dates"],
+      "declaration": {
+        "working_url": "https://ir.mplx.com/CorporateProfile/stock-information/stock-information/default.aspx",
+        "http_status": 200,
+        "content_type": "text/html",
+        "parse_kind": "html_table",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": [
+            "https://ir.mplx.com/CorporateProfile/stock-information/stock-information/default.aspx",
+            "https://ir.mplx.com/CorporateProfile/Investor-Data/Qualified-Notices/default.aspx"
+          ],
+          "selector_or_json_path": "Distribution History tables by year: Type / Record Date / Pay Date / Distribution per Unit as Paid",
+          "date_column": "Pay Date",
+          "amount_column": "Distribution per Unit as Paid",
+          "symbol_filter": "MPLX",
+          "notes": "Cloudflare may 403. When HTML is visible, yearly tables list quarterly cash distributions. Payable date = Pay Date."
+        },
+        "rows": [
+          {"payable_on": "2026-08-14", "record_on": "2026-08-07", "ex_on": null, "amount_per_share": "1.0765", "status": "paid", "source_url": "https://ir.mplx.com/CorporateProfile/stock-information/stock-information/default.aspx"},
+          {"payable_on": "2026-05-15", "record_on": "2026-05-08", "ex_on": null, "amount_per_share": "1.0765", "status": "paid", "source_url": "https://ir.mplx.com/CorporateProfile/stock-information/stock-information/default.aspx"},
+          {"payable_on": "2026-02-17", "record_on": "2026-02-09", "ex_on": null, "amount_per_share": "1.0765", "status": "paid", "source_url": "https://ir.mplx.com/CorporateProfile/stock-information/stock-information/default.aspx"},
+          {"payable_on": "2025-11-14", "record_on": "2025-11-07", "ex_on": null, "amount_per_share": "1.0765", "status": "paid", "source_url": "https://ir.mplx.com/CorporateProfile/stock-information/stock-information/default.aspx"}
+        ],
+        "blocked": null
+      },
+      "identity": {
+        "inception_on": null,
+        "inception_source_url": null,
+        "inception_quote": null,
+        "div_type": "DIV-1",
+        "div_type_quote": null,
+        "payment_frequency": "Quarterly",
+        "frequency_quote": "Cash, quarterly",
+        "underlying": null,
+        "underlying_quote": "MLP common units — not an ETF underlying ticker"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": null,
+        "source_url": "https://ir.mplx.com/CorporateProfile/Investor-Data/Qualified-Notices/default.aspx",
+        "http_status": 200,
+        "notice_date": null,
+        "quote": null,
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://ir.mplx.com/CorporateProfile/Investor-Data/Qualified-Notices/default.aspx", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [],
+      "cannot_fill": "MLP. Tax is Schedule K-1 / Section 1446(f) qualified notices, not Form 19a-1. No printed 0% ROC on those notices. Do not emit estimate_pct 0."
+    },
+    {
+      "symbol": "HAKY",
+      "adapter": "amplify",
+      "gaps_addressed": ["A_history", "C_roc_url"],
+      "declaration": {
+        "working_url": "https://amplifyetfs.com/haky/",
+        "http_status": 200,
+        "content_type": "text/html",
+        "parse_kind": "press",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": [
+            "https://amplifyetfs.com/haky/",
+            "https://amplifyetfs.com/tax-center/",
+            "https://blog.amplifyetfs.com/news/amplify-etfs-declares-june-2026-income-distributions-for-its-income-etfs"
+          ],
+          "selector_or_json_path": "Product distributions widget is JS. Monthly income press on blog.amplifyetfs.com lists HAKY Amount / Ex / Record / Payable. 19a PDFs: amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_MM-DD-YY_HAKY.pdf",
+          "date_column": "Payable Date",
+          "amount_column": "Amount Per Share",
+          "symbol_filter": "HAKY",
+          "notes": "Do not overwrite stored paid Firestore amounts. Use press + 19a as evidence only."
+        },
+        "rows": [
+          {"payable_on": "2026-06-30", "record_on": "2026-06-29", "ex_on": "2026-06-29", "amount_per_share": "0.46150", "status": "paid", "source_url": "https://blog.amplifyetfs.com/news/amplify-etfs-declares-june-2026-income-distributions-for-its-income-etfs"},
+          {"payable_on": "2026-04-30", "record_on": "2026-04-29", "ex_on": null, "amount_per_share": "0.362", "status": "paid", "source_url": "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_04-30-26_HAKY.pdf"}
+        ],
+        "blocked": null
+      },
+      "identity": {
+        "inception_on": "2026-01-20",
+        "inception_source_url": "https://amplifyetfs.com/wp-content/uploads/files/Amplify_HAKY_FactSheet.pdf",
+        "inception_quote": "Fund inception date: 1/20/2026. Product page also prints Launch Date 01/21/2026.",
+        "div_type": "DIV-1",
+        "div_type_quote": "HAKY seeks to pay monthly distributions that include targeted option premiums; Amplify HACK Cybersecurity Covered Call ETF",
+        "payment_frequency": "Monthly",
+        "frequency_quote": "Distribution Frequency Monthly",
+        "underlying": "HACK",
+        "underlying_quote": "Buy long exposure to cybersecurity companies via underlying equities of HACK, or via the HACK ETF."
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": 100.0,
+        "source_url": "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_04-30-26_HAKY.pdf",
+        "http_status": 200,
+        "notice_date": "2026-04-30",
+        "quote": "In connection with the monthly dividend payment of $0.362 per share payable on April 30, 2026 to shareholders of record on April 29, 2026, it is anticipated that 100% of such dividend will be a return of capital.",
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://amplifyetfs.com/tax-center/", "http_status": 200},
+          {"url": "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_04-30-26_HAKY.pdf", "http_status": 200},
+          {"url": "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_05-29-26_HAKY.pdf", "http_status": null}
+        ]
+      },
+      "owner_decisions_needed": [
+        {"kind": "inception_confirm", "payable_on": null, "stored_amount": null, "issuer_amount": null, "candidate_date": "2026-01-20", "evidence": "Fact sheet: Fund inception date: 1/20/2026. Product page Launch Date 01/21/2026. Owner Yes/No; do not auto-write.", "do_not": "overwrite stored paid rows"},
+        {"kind": "roc_accept", "payable_on": "2026-04-30", "stored_amount": null, "issuer_amount": "0.362", "candidate_date": "2026-04-30", "evidence": "April 30 2026 19a-1 prints 100% ROC. Seed URL 05-29-26 was cited in the brief; this extract did not retrieve a newer PDF body than 04-30-26.", "do_not": "overwrite stored paid rows"}
+      ],
+      "cannot_fill": "Could not confirm a 19a-1 newer than 05-29-26 from tax-center HTML (JS). Use 04-30-26 notice as latest parsed quote."
+    },
+    {
+      "symbol": "TSPY",
+      "adapter": "tappalpha",
+      "gaps_addressed": ["A_last_run", "A_history", "B_dates", "C_roc_url"],
+      "declaration": {
+        "working_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all",
+        "http_status": 200,
+        "content_type": "application/json",
+        "parse_kind": "xhr_json",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": [
+            "https://www.tappalphafunds.com/etfs/tspy",
+            "https://tappalphafunds.com/tspy"
+          ],
+          "selector_or_json_path": "Allowed vendor API already in adapter: fund-public-api?ticker=TSPY&view=all. Pay Date + Amount + ROC + 19a PDF on supabase storage host listed in the brief.",
+          "date_column": "Pay Date",
+          "amount_column": "Amount",
+          "symbol_filter": "TSPY",
+          "notes": "Current issuer print for payable 2026-09-02 is $0.2954 not $0.30007. Payable 2026-10-07 is listed with null amount (upcoming). Do not overwrite stored $0.30007."
+        },
+        "rows": [
+          {"payable_on": "2026-12-02", "record_on": "2026-12-01", "ex_on": "2026-12-01", "amount_per_share": null, "status": "upcoming", "source_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all"},
+          {"payable_on": "2026-11-04", "record_on": "2026-11-03", "ex_on": "2026-11-03", "amount_per_share": null, "status": "upcoming", "source_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all"},
+          {"payable_on": "2026-10-07", "record_on": "2026-10-06", "ex_on": "2026-10-06", "amount_per_share": null, "status": "upcoming", "source_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all"},
+          {"payable_on": "2026-09-02", "record_on": "2026-09-01", "ex_on": "2026-09-01", "amount_per_share": "0.2954", "status": "paid", "source_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all"},
+          {"payable_on": "2026-08-05", "record_on": "2026-08-04", "ex_on": "2026-08-04", "amount_per_share": "0.30007", "status": "paid", "source_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all"},
+          {"payable_on": "2026-07-01", "record_on": "2026-06-30", "ex_on": "2026-06-30", "amount_per_share": "0.29518", "status": "paid", "source_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all"},
+          {"payable_on": "2026-06-03", "record_on": "2026-06-02", "ex_on": "2026-06-02", "amount_per_share": "0.2975", "status": "paid", "source_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all"},
+          {"payable_on": "2026-05-06", "record_on": "2026-05-05", "ex_on": "2026-05-05", "amount_per_share": "0.2931", "status": "paid", "source_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all"}
+        ],
+        "blocked": null
+      },
+      "identity": {
+        "inception_on": "2024-08-15",
+        "inception_source_url": "https://tappalphafunds.com/tspy",
+        "inception_quote": "Launch Date: August 15, 2024",
+        "div_type": "DIV-1",
+        "div_type_quote": "TappAlpha S&P 500 Growth & Daily Income ETF",
+        "payment_frequency": "Monthly",
+        "frequency_quote": "The Fund currently expects, but does not guarantee, to make distributions on a monthly basis.",
+        "underlying": "SPY",
+        "underlying_quote": "exposure to the performance of the SPDR S&P 500 ETF Trust (SPY)"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": 100.0,
+        "source_url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/storage/v1/object/public/fund-docs/c685d68b-454c-4875-b620-15f0daf1e3ba/81d5fd12-019b-44c4-93ae-565cbf7c5c45/19a1_1788358207562_TSPY_19a-1_Notice_Ex_9.1.26.pdf",
+        "http_status": 200,
+        "notice_date": "2026-09-01",
+        "quote": "Issuer API prints ROC Percent 100 for payable 2026-09-02 amount 0.2954",
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker=TSPY&view=all", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [
+        {"kind": "amount_confirm", "payable_on": "2026-09-02", "stored_amount": "0.30007", "issuer_amount": "0.2954", "candidate_date": "2026-09-02", "evidence": "Current issuer API prints $0.2954 for payable 2026-09-02. Stored $0.30007 is the Aug 5 paid amount on the same feed. Ticket both; do not overwrite.", "do_not": "overwrite stored paid rows"},
+        {"kind": "roc_accept", "payable_on": "2026-09-02", "stored_amount": null, "issuer_amount": "0.2954", "candidate_date": "2026-09-01", "evidence": "Latest 19a-1 on the allowed supabase host prints 100% ROC for the 9/1/26 ex.", "do_not": "overwrite stored paid rows"}
+      ],
+      "cannot_fill": null
+    },
+    {
+      "symbol": "SVOL",
+      "adapter": "simplify",
+      "gaps_addressed": ["A_last_run", "B_dates", "C_roc_url"],
+      "declaration": {
+        "working_url": "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf",
+        "http_status": 200,
+        "content_type": "text/html",
+        "parse_kind": "html_table",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": [
+            "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf",
+            "https://www.simplify.us/sites/default/files/2026-06/S19a_Notice_2026_June_M.pdf"
+          ],
+          "selector_or_json_path": "Recent Distributions table: Ex-Dividend Date / Record Date / Payable Date / Total Distribution. Short /etfs/svol is 404; use the long slug. Full 2021–2025 history is not on this table.",
+          "date_column": "Payable Date",
+          "amount_column": "Total Distribution",
+          "symbol_filter": "SVOL",
+          "notes": "Do not wipe stored 2021–2026 paid rows that this short table omits. Ticket history drop."
+        },
+        "rows": [
+          {"payable_on": "2026-09-30", "record_on": "2026-09-25", "ex_on": "2026-09-25", "amount_per_share": null, "status": "upcoming", "source_url": "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf"},
+          {"payable_on": "2026-08-31", "record_on": "2026-08-26", "ex_on": "2026-08-26", "amount_per_share": "0.28000", "status": "paid", "source_url": "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf"},
+          {"payable_on": "2026-07-31", "record_on": "2026-07-28", "ex_on": "2026-07-28", "amount_per_share": "0.28000", "status": "paid", "source_url": "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf"},
+          {"payable_on": "2026-06-30", "record_on": "2026-06-25", "ex_on": "2026-06-25", "amount_per_share": "0.28000", "status": "paid", "source_url": "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf"},
+          {"payable_on": "2026-05-29", "record_on": "2026-05-26", "ex_on": "2026-05-26", "amount_per_share": "0.28000", "status": "paid", "source_url": "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf"}
+        ],
+        "blocked": {"kind": "empty_table", "detail": "Product page only shows the last four paid months plus one upcoming N/A. Full 2021–2026 ledger is not on this URL."}
+      },
+      "identity": {
+        "inception_on": "2021-05-12",
+        "inception_source_url": "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf",
+        "inception_quote": "Inception Date 05/12/2021",
+        "div_type": "DIV-1",
+        "div_type_quote": "Simplify Volatility Premium ETF",
+        "payment_frequency": "Monthly",
+        "frequency_quote": "Distribution Frequency Monthly",
+        "underlying": "VIX",
+        "underlying_quote": "inverse of the performance of the Cboe Volatility Index (VIX) short-term futures index"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": 85.5,
+        "source_url": "https://www.simplify.us/sites/default/files/2026-06/S19a_Notice_2026_June_M.pdf",
+        "http_status": 200,
+        "notice_date": "2026-06-30",
+        "quote": "SVOL Total Distribution Per Share $0.2800; Net Income $0.0406; Return of Capital $0.2394 (0.2394/0.2800 = 85.5%).",
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf", "http_status": 200},
+          {"url": "https://www.simplify.us/sites/default/files/2026-06/S19a_Notice_2026_June_M.pdf", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [
+        {"kind": "roc_accept", "payable_on": "2026-06-30", "stored_amount": "0.28000", "issuer_amount": "0.28000", "candidate_date": "2026-06-30", "evidence": "June 2026 S19a notice prints $0.2800 with $0.2394 ROC.", "do_not": "overwrite stored paid rows"}
+      ],
+      "cannot_fill": "Full historical paid table 2021–early 2026 not on the current product page. Do not delete stored older rows."
+    },
+    {
+      "symbol": "AMDW",
+      "adapter": "roundhill",
+      "gaps_addressed": ["C_roc_url"],
+      "declaration": {
+        "working_url": "https://www.roundhillinvestments.com/etf/amdw/",
+        "http_status": 200,
+        "content_type": "text/html",
+        "parse_kind": "unknown",
+        "parse_recipe": {
+          "method": "GET",
+          "follow_same_host": [
+            "https://www.roundhillinvestments.com/etf/amdw/",
+            "https://www.roundhillinvestments.com/assets/data/rh_filings/"
+          ],
+          "selector_or_json_path": "Distribution widgets on product page are JS-empty. 19a multi-ticker PDFs under /assets/data/rh_filings/19a-notice-*-AMDW-*-M-D-YYYY.pdf. Parse the AMD WeeklyPay block only.",
+          "date_column": "payable",
+          "amount_column": "Total (per common share)",
+          "symbol_filter": "AMDW",
+          "notes": "Do not use other WeeklyPay tickers from the same PDF."
+        },
+        "rows": [
+          {"payable_on": "2026-06-09", "record_on": null, "ex_on": null, "amount_per_share": "2.078370", "status": "paid", "source_url": "https://www.roundhillinvestments.com/assets/data/rh_filings/19a-notice-AAPW-COIW-NVDW-PLTW-TSLW-AMZW-METW-BRKW-HOOW-NFLW-AMDW-GOOW-MSFW-AVGW-MSTW-UBEW-BABW-ARMW-COSW-GLDW-GDXW-TSYW-UNHW-6-8-2026.pdf"},
+          {"payable_on": "2026-04-28", "record_on": null, "ex_on": null, "amount_per_share": "0.806407", "status": "paid", "source_url": "https://www.roundhillinvestments.com/assets/data/rh_filings/19a-notice-AAPW-COIW-NVDW-PLTW-TSLW-AMZW-METW-BRKW-HOOW-NFLW-AMDW-GOOW-MSFW-AVGW-MSTW-UBEW-BABW-ARMW-COSW-GLDW-GDXW-TSYW-UNHW-4-27-2026.pdf"}
+        ],
+        "blocked": {"kind": "js_only", "detail": "Product distribution history table did not render to the extractor."}
+      },
+      "identity": {
+        "inception_on": "2025-07-23",
+        "inception_source_url": "https://www.roundhillinvestments.com/assets/pdfs/roundhill_weeklypay_semi-annual_financial_statements_other_information.pdf",
+        "inception_quote": "Roundhill AMD WeeklyPay ETF ... Commencement of Operations July 23, 2025. Product page Launch 7/24/25.",
+        "div_type": "DIV-1",
+        "div_type_quote": "AMDW aims to provide weekly distributions",
+        "payment_frequency": "Weekly",
+        "frequency_quote": "AMDW pays distributions every week",
+        "underlying": "AMD",
+        "underlying_quote": "1.2 times (120%) the calendar week total return of Advanced Micro Devices common shares (Nasdaq: AMD)"
+      },
+      "roc": {
+        "tax_year": 2026,
+        "estimate_pct": 100.0,
+        "source_url": "https://www.roundhillinvestments.com/assets/data/rh_filings/19a-notice-AAPW-COIW-NVDW-PLTW-TSLW-AMZW-METW-BRKW-HOOW-NFLW-AMDW-GOOW-MSFW-AVGW-MSTW-UBEW-BABW-ARMW-COSW-GLDW-GDXW-TSYW-UNHW-6-8-2026.pdf",
+        "http_status": 200,
+        "notice_date": "2026-06-08",
+        "quote": "The estimated per share composition of the distribution for the Roundhill AMD WeeklyPay ETF, payable June 9, 2026 ... Estimated Return of Capital $2.078370 100%. Product page: Per the Fund’s most recent 19a-1 notice, the estimated per share composition of the distribution includes return of capital (ROC) of 100%.",
+        "notice_says_zero": false,
+        "search_urls_tried": [
+          {"url": "https://www.roundhillinvestments.com/etf/amdw/", "http_status": 200},
+          {"url": "https://www.roundhillinvestments.com/assets/data/rh_filings/19a-notice-AAPW-COIW-NVDW-PLTW-TSLW-AMZW-METW-BRKW-HOOW-NFLW-AMDW-GOOW-MSFW-AVGW-MSTW-UBEW-BABW-ARMW-COSW-GLDW-GDXW-TSYW-UNHW-6-8-2026.pdf", "http_status": 200}
+        ]
+      },
+      "owner_decisions_needed": [
+        {"kind": "roc_accept", "payable_on": "2026-06-09", "stored_amount": null, "issuer_amount": "2.078370", "candidate_date": "2026-06-08", "evidence": "June 8 2026 multi-ticker 19a prints AMDW 100% ROC.", "do_not": "overwrite stored paid rows"}
+      ],
+      "cannot_fill": null
+    }
+  ],
+  "skipped": [
+    {"symbol": "FDRXX", "reason": "CASH adapter — no 19a-1"},
+    {"symbol": "SPAXX", "reason": "CASH adapter — no 19a-1"},
+    {"symbol": "SWVXX", "reason": "CASH adapter — no 19a-1"}
+  ]
+}

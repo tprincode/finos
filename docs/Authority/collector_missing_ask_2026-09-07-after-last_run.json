@@ -1,0 +1,119 @@
+{
+  "as_of": "2026-09-07",
+  "purpose": "Issuer-host facts only for remaining last_run / Step A holes after the last_run repair. Do not persist. Do not invent spec or 0% ROC.",
+  "authority": [
+    "Collector_Requirements_Initial_and_Runtime_Locked_2026-09-04",
+    "Adapter_Collector_Owner_Decisions_Locked_2026-09-02",
+    "F1/F2 Collector_Implementation_Plan_Audit_2026-09-04"
+  ],
+  "code_fixed_do_not_reask": [
+    "lookback this-page count (GLAD 6 of 12 with 295 stored)",
+    "C5 short increment last_run fail (TSPY / SVOL history-drop)",
+    "stale remaining_year expected 4 (CLM CRF GLAD SVOL TSPY) — do not invent December"
+  ],
+  "bans": [
+    "yahoo.com",
+    "finance.yahoo.com",
+    "nasdaq.com",
+    "dividendhistory.org",
+    "dividendinvestor.com",
+    "aggregators",
+    "invented 0% ROC",
+    "overwrite stored paid rows",
+    "change locked cadence / Plan $ / risk",
+    "persist owner clicks",
+    "proxy"
+  ],
+  "do_not_overwrite": [
+    {"symbol": "TSPY", "payment_period": "2026-09-02", "stored_amount_per_share": "0.30007"},
+    {"symbol": "SVOL", "keep_paid_row_count": 64}
+  ],
+  "items": [
+    {
+      "symbol": "EFC",
+      "adapter": "ellington",
+      "gaps": ["A_true_empty"],
+      "seed_url": "https://www.ellingtonfinancial.com/dividends",
+      "stored_paid_n": 188,
+      "stored_remaining_2026": ["2026-09-30", "2026-10-30"],
+      "ask": ["working_same_host_url", "http_status", "parse_recipe", "recent_paid_rows"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "ET",
+      "adapter": "energytransfer",
+      "gaps": ["A_true_empty"],
+      "seed_url": "https://ir.energytransfer.com/distribution-history-et",
+      "stored_paid_n": 168,
+      "roc_scope": "NotInScope",
+      "ask": ["working_same_host_url", "http_status", "parse_recipe", "recent_paid_rows"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "JEPQ",
+      "adapter": "jpmorgan",
+      "gaps": ["A_true_empty"],
+      "seed_url": "https://am.jpmorgan.com/us/en/asset-management/adv/products/jpmorgan-nasdaq-equity-premium-income-etf-etf-46654q203",
+      "stored_paid_n": 65,
+      "ask": ["working_same_host_url", "http_status", "parse_recipe", "dollar_per_share_rows"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "MPLX",
+      "adapter": "mplx",
+      "gaps": ["A_cloudflare_403"],
+      "seed_url": "https://ir.mplx.com/CorporateProfile/stock-information/stock-information/default.aspx",
+      "stored_paid_n": 57,
+      "roc_scope": "NotInScope",
+      "ask": ["working_same_host_url", "http_status", "parse_recipe"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "QYLD",
+      "adapter": "globalx",
+      "gaps": ["A_js_empty"],
+      "seed_url": "https://www.globalxetfs.com/funds/qyld/",
+      "stored_paid_n": 154,
+      "ask": ["working_same_host_url", "http_status", "parse_recipe", "dollar_per_share_rows"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "SOXL",
+      "adapter": "direxion",
+      "gaps": ["A_true_empty"],
+      "stored_paid_n": 29,
+      "roc_scope": "NotInScope",
+      "ask": ["working_same_host_url", "http_status", "parse_recipe"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "TSLL",
+      "adapter": "direxion",
+      "gaps": ["A_true_empty"],
+      "stored_paid_n": 22,
+      "roc_scope": "NotInScope",
+      "ask": ["working_same_host_url", "http_status", "parse_recipe"],
+      "do_not_wipe_history": true
+    },
+    {
+      "symbol": "MSTU",
+      "adapter": "trex",
+      "gaps": ["A_never_established", "frequency_None"],
+      "seed_url": "https://www.rexshares.com/mstr-etfs/",
+      "stored_paid_n": 0,
+      "roc_scope": "NotInScope",
+      "ask": ["working_same_host_url", "http_status", "parse_recipe", "paid_rows_or_none", "frequency_quote"],
+      "notes": "Do not invent ROC 0."
+    },
+    {
+      "symbol": "HAKY",
+      "adapter": "amplify",
+      "gaps": ["C_template"],
+      "seed_url": "https://amplifyetfs.com/haky/",
+      "stored_paid_n": 7,
+      "ask": ["19a1_url_quote_or_none"],
+      "do_not_persist_owner_clicks": true,
+      "notes": "last_run stays fail until owner inception Yes/No. Do not persist DIV-1 / ROC accept."
+    }
+  ]
+}
