@@ -17,6 +17,21 @@ fn is_disbursement(activity_type: &str) -> bool {
     )
 }
 
+fn unique_seed_yield_keys(doc: &ProductionSeedDocument) -> usize {
+    let mut keys = std::collections::HashSet::new();
+    for batch in &doc.yield_batches {
+        for c in &batch.candidates {
+            keys.insert((
+                c.account_name.clone(),
+                c.symbol.clone().unwrap_or_default(),
+                c.occurred_on.clone(),
+                c.amount_minor,
+            ));
+        }
+    }
+    keys.len()
+}
+
 fn yield_count(activities: &[ActivityRecord]) -> usize {
     activities
         .iter()
@@ -194,6 +209,17 @@ pub async fn apply_production_seed(
     let accounts = canonical.account_list().await?;
     let securities = canonical.security_list().await?;
     let lots = canonical.basis_get().await?;
+    let posted = canonical.activity_list().await?;
+    let unique_yield = unique_seed_yield_keys(&doc);
+    let posted_yield = yield_count(&posted);
+    if posted_yield < unique_yield {
+        return Err(PlatformError::new(
+            "seed_yield_short",
+            format!(
+                "posted {posted_yield} unique yields; template has {unique_yield} distinct keys (exact copies are skipped, missing keys are not)"
+            ),
+        ));
+    }
     apply_calculator_seed(canonical, &doc).await?;
     apply_trends_seed(canonical, &doc).await?;
     Ok(ProductionSeedLoadBody {

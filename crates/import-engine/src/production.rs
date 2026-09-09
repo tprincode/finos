@@ -523,6 +523,49 @@ fn merge_plans(
     Ok(out)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YieldTemplateAudit {
+    pub row_count: u64,
+    pub unique_count: u64,
+    pub unique_amount_minor: i64,
+    pub extra_duplicate_rows: Vec<String>,
+}
+
+/// Exact account+symbol+date+amount copies in the locked yield template.
+/// Import posts one row per key; extras are skipped, not invented as $0.
+pub fn audit_yield_template(production_dir: &Path) -> Result<YieldTemplateAudit, String> {
+    let yield_rows = read_data_rows(&production_dir.join("Template_Transactions_Yield.xlsx"))?;
+    let mut seen = HashSet::new();
+    let mut extra = Vec::new();
+    let mut unique_amount_minor = 0i64;
+    for row in &yield_rows {
+        let amount = get(row, "amount");
+        if amount.is_empty() {
+            return Err("yield blank amount (must stay unknown, not coerced)".into());
+        }
+        let amount_minor = to_minor(amount, 2)?;
+        let key = format!(
+            "{}|{}|{}|{}",
+            get(row, "account_name"),
+            data_symbol(get(row, "account_name"), get(row, "symbol")),
+            as_iso_date(get(row, "txn_date")),
+            amount_minor
+        );
+        if seen.insert(key.clone()) {
+            unique_amount_minor += amount_minor;
+        } else {
+            extra.push(key);
+        }
+    }
+    extra.sort();
+    Ok(YieldTemplateAudit {
+        row_count: yield_rows.len() as u64,
+        unique_count: seen.len() as u64,
+        unique_amount_minor,
+        extra_duplicate_rows: extra,
+    })
+}
+
 /// Template money from the xlsx source facts (not from posted ledger).
 pub fn production_template_totals(
     production_dir: &Path,
@@ -639,5 +682,21 @@ mod tests {
                 .map(|r| r.payment_frequency.as_str()),
             Some("None")
         );
+    }
+
+    #[test]
+    fn locked_yield_template_names_exact_duplicate_rows() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../database/seed/production");
+        let audit = audit_yield_template(&dir).expect("yield audit");
+        assert_eq!(audit.row_count, 5862, "locked yield template row count");
+        assert_eq!(audit.unique_count, 5857, "unique account|symbol|date|amount");
+        assert_eq!(audit.unique_amount_minor, 16_763_298);
+        assert_eq!(
+            audit.extra_duplicate_rows.len(),
+            5,
+            "exact copies skipped on post: {:?}",
+            audit.extra_duplicate_rows
+        );
+        eprintln!("exact yield copies skipped: {:?}", audit.extra_duplicate_rows);
     }
 }

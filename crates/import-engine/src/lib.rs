@@ -15,7 +15,8 @@ pub use gap::{
     GapKind, GapRow,
 };
 pub use production::{
-    parse_production_templates, production_template_basis_totals, production_template_totals,
+    audit_yield_template, parse_production_templates, production_template_basis_totals,
+    production_template_totals, YieldTemplateAudit,
 };
 pub use retrieve::{
     collect_declaration_candidates_for, collect_declarations_for, collect_from_fetched_page,

@@ -17,7 +17,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: MAGI pack on the production path
         run: cargo test -p golden-harness --features magi-gate --test magi_pack
-      - name: Synthetic M2 seed and production data counts
-        run: cargo test -p golden-harness -- seed_counts
+
+  seed-counts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Synthetic M2 seed_counts
+        run: cargo test -p golden-harness --test seed_reconcile -- seed_counts
+      - name: Production seed unique yields vs locked template
+        run: cargo test -p golden-harness --test production_seed -- production_seed_counts
+
+  lots-roi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: CRF lots policy
         run: cargo test -p golden-harness --test lots_roi

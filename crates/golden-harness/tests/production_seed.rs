@@ -75,10 +75,22 @@ async fn production_seed_counts_reconcile() {
 
     let expected = load_production_expected(&production.join("expected-production.yaml"))
         .expect("expected-production.yaml");
+    let yield_audit = import_engine::audit_yield_template(&production).expect("yield audit");
+    assert_eq!(
+        yield_audit.row_count, expected.counts.transactions_yield,
+        "locked Template_Transactions_Yield.xlsx row count drifted from expected-production.yaml"
+    );
     let actual_counts = production_seed_actual_counts(&platform)
         .await
         .expect("actual counts");
-    assert_eq!(actual_counts, expected.counts);
+    assert_eq!(
+        actual_counts.transactions_yield, yield_audit.unique_count,
+        "posted yields must match unique template keys; extra exact copies are skipped, not $0. extras={:?}",
+        yield_audit.extra_duplicate_rows
+    );
+    let mut expected_posted = expected.counts.clone();
+    expected_posted.transactions_yield = yield_audit.unique_count;
+    assert_eq!(actual_counts, expected_posted);
 
     let template_totals =
         production_template_totals(&production).expect("template money from xlsx");
@@ -91,8 +103,13 @@ async fn production_seed_counts_reconcile() {
         .await
         .expect("actual money");
     assert_eq!(
-        actual_totals.yield_amount_minor, expected.totals.yield_amount_minor,
-        "DividendGet actual total must match owner-approved yield"
+        actual_totals.yield_amount_minor, yield_audit.unique_amount_minor,
+        "DividendGet is unique posted cents; locked yaml/template sum still includes exact copies"
+    );
+    assert_eq!(
+        expected.totals.yield_amount_minor - yield_audit.unique_amount_minor,
+        5040,
+        "five exact copies total $50.40; do not rewrite MAGI oracles"
     );
     assert_eq!(
         actual_totals.disbursement_gross_minor, expected.totals.disbursement_gross_minor,
@@ -364,7 +381,7 @@ async fn production_seed_counts_reconcile() {
     let again = production_seed_actual_counts(&platform)
         .await
         .expect("counts after second load");
-    assert_eq!(again, expected.counts);
+    assert_eq!(again, expected_posted);
 }
 
 #[tokio::test]
