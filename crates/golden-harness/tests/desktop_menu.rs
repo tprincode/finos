@@ -28,6 +28,7 @@ fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
 /// Every FinanceClient query the desktop nav actually issues.
 const MENU_QUERIES: &[&str] = &[
     "HealthGet",
+    "CoreFunctionsGet",
     "ConfigGet",
     "HandoffStatusGet",
     "IncomePlanWeekGet",
@@ -154,14 +155,16 @@ fn native_and_in_app_menus_list_screens() {
     let week =
         std::fs::read_to_string(root.join("packages/ui-components/src/week.ts")).unwrap();
     for needle in [
+        "SubmenuBuilder::new(app, \"Income Plan\")",
         "SubmenuBuilder::new(app, \"Plan\")",
         "SubmenuBuilder::new(app, \"Positions\")",
         "SubmenuBuilder::new(app, \"Data\")",
         "SubmenuBuilder::new(app, \"Tools\")",
         ".text(\"home\", \"Home\")",
         ".text(\"income-plan\", \"Income Plan\")",
-        ".text(\"income-print\", \"Print current view\")",
-        ".text(\"income-export\", \"Export current view\")",
+        ".text(\"data-snapshot\", \"Save data snapshot\")",
+        ".text(\"app-restart\", \"Restart Application\")",
+        "start-finos-dev.bat",
         ".text(\"tickets\", \"Tickets\")",
         ".text(\"collector-establish\", \"Reevaluate collector\")",
         "finos-navigate",
@@ -173,12 +176,36 @@ fn native_and_in_app_menus_list_screens() {
         "in-app menubar must include Home"
     );
     assert!(
-        app.contains("Print current view"),
-        "in-app File menu must include Print current view"
+        app.contains("aria-label=\"Income Plan\""),
+        "in-app menubar must include Income Plan"
     );
     assert!(
-        app.contains("Export current view"),
-        "in-app File menu must include Export current view"
+        !app.contains("navButton(\"income-plan\", \"Income Plan\")"),
+        "Income Plan is a top-level menubar item, not under Plan"
+    );
+    assert!(
+        !app.contains("Print current view"),
+        "Print current view is not a File menu item"
+    );
+    assert!(
+        !app.contains("Export current view"),
+        "Export current view is not a File menu item"
+    );
+    assert!(
+        !lib.contains("income-print") && !lib.contains("income-export"),
+        "native File menu must not include print/export current view"
+    );
+    assert!(
+        app.contains("Save data snapshot"),
+        "in-app File menu must include Save data snapshot"
+    );
+    assert!(
+        app.contains("aria-label=\"Confirm save data snapshot\""),
+        "Save data snapshot must ask before writing"
+    );
+    assert!(
+        app.contains("Restart Application"),
+        "in-app File menu must include Restart Application"
     );
     assert!(
         app.contains("navButton(\"collector-establish\", \"Reevaluate collector\")"),

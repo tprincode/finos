@@ -102,6 +102,17 @@ export type HandoffStatus = {
   publishedHead: SnapshotIdentity | null;
 };
 
+export type CoreFunctionsGet = {
+  items: Array<{
+    id: string;
+    menuArea: string;
+    function: string;
+    lastChanged: string;
+    lastVerified: string;
+    sentinels: Array<{ path: string; mustContain: string }>;
+  }>;
+};
+
 export type DeviceConfig = {
   deviceId: string;
   deviceName: string;
@@ -239,6 +250,10 @@ export type IncomePlanWeekGet = {
     planKnown: boolean;
     declarationMinor?: number;
     declarationKnown?: boolean;
+    declarationPerShareMinor?: number | null;
+    declarationPerShareScale?: number;
+    declarationEnteredOn?: string | null;
+    declarationCurrent?: boolean;
     scale: number;
     accounts?: Array<{
       accountName: string;
@@ -292,6 +307,10 @@ export type IncomePlanGridGet = {
       symbol: string;
       cadence: string;
       lastUpdate: string | null;
+      declarationPerShareMinor?: number | null;
+      declarationPerShareScale?: number;
+      declarationEnteredOn?: string | null;
+      declarationCurrent?: boolean;
       cells: IncomePlanMoneyCell[];
     }>;
   }>;
@@ -582,6 +601,42 @@ export type BrokerLotReconcileGet = {
   unmatchedSells: number;
   matched: boolean;
   quantityScale: number;
+};
+
+export type AccountValuePoint = {
+  asOf: string;
+  marketValueMinor: number | null;
+  marketValueComplete: boolean;
+};
+
+export type AccountValueSeries = {
+  accountId: string;
+  accountName: string;
+  custodian: string;
+  currentMinor: number | null;
+  currentComplete: boolean;
+  points: AccountValuePoint[];
+  trendsPoints?: AccountValuePoint[];
+  scale: number;
+};
+
+export type AccountValueHomeGet = {
+  asOf: string;
+  accounts: AccountValueSeries[];
+  fidelity: AccountValueSeries;
+  schwab?: AccountValueSeries;
+  note: string;
+  scale: number;
+};
+
+export type DataSnapshotExport = {
+  asOf: string;
+  folder: string;
+  files: string[];
+  accountCount: number;
+  lotCount: number;
+  yieldCount: number;
+  note: string;
 };
 
 export type AccountPositionTotal = {

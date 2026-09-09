@@ -12,8 +12,9 @@ use crate::contracts::{
     IncomePlanWeekBody,
 };
 use financial_domain::income_plan::{
-    account_key_from_display, actuals_known, cadence_group, delta_to_plan_pct_minor,
-    display_account_label, table2_cell_tone, GridWeekKind, DEFAULT_ACCOUNTS_ON, TABLE1_ACCOUNT_ORDER,
+    account_key_from_display, actuals_known, cadence_group, declaration_is_current,
+    delta_to_plan_pct_minor, display_account_label, table2_cell_tone, GridWeekKind,
+    DEFAULT_ACCOUNTS_ON, TABLE1_ACCOUNT_ORDER,
 };
 
 const HTML_MOCK: &str = "Income_Plan_Pattern_A_B_Simulation.html";
@@ -31,6 +32,53 @@ pub fn normalize_selected_accounts(raw: &[String]) -> Vec<String> {
         .collect::<HashSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn take_newer_declaration(
+    entry: &mut IncomePlanTable2Row,
+    pos: &crate::contracts::IncomePlanPositionBody,
+) {
+    if pos.declaration_per_share_minor.is_none() {
+        return;
+    }
+    let incoming = pos.declaration_entered_on.as_deref().unwrap_or("");
+    let existing = entry.declaration_entered_on.as_deref().unwrap_or("");
+    if entry.declaration_per_share_minor.is_none() || incoming > existing {
+        entry.declaration_per_share_minor = pos.declaration_per_share_minor;
+        entry.declaration_per_share_scale = pos.declaration_per_share_scale;
+        entry.declaration_entered_on = pos.declaration_entered_on.clone();
+    }
+}
+
+fn week_positions_by_cadence(
+    week: &IncomePlanWeekBody,
+) -> Vec<(&'static str, Vec<&crate::contracts::IncomePlanPositionBody>)> {
+    ["Monthly", "Quarterly", "Weekly", "Other"]
+        .into_iter()
+        .filter_map(|name| {
+            let rows: Vec<_> = week
+                .positions
+                .iter()
+                .filter(|pos| cadence_group(&pos.cadence) == name)
+                .collect();
+            (!rows.is_empty()).then_some((name, rows))
+        })
+        .collect()
+}
+
+fn fmt_per_share(amt: Option<i64>, scale: u8) -> String {
+    let Some(minor) = amt else {
+        return String::new();
+    };
+    let places = scale as usize;
+    let sign = if minor < 0 { "-" } else { "" };
+    let digits = minor.unsigned_abs().to_string();
+    if places == 0 {
+        return format!("{sign}${digits}");
+    }
+    let pad = format!("{digits:0>width$}", width = places + 1);
+    let split = pad.len() - places;
+    format!("{sign}${}.{}", &pad[..split], &pad[split..])
 }
 
 fn selected_keys(accounts: &[String]) -> HashSet<String> {
@@ -338,6 +386,10 @@ pub fn assemble_grid(
                         symbol: pos.symbol.clone(),
                         cadence: pos.cadence.clone(),
                         last_update: pos.last_update.clone(),
+                        declaration_per_share_minor: None,
+                        declaration_per_share_scale: 0,
+                        declaration_entered_on: None,
+                        declaration_current: false,
                         cells: week_ends
                             .iter()
                             .map(|end| IncomePlanMoneyCell {
@@ -351,6 +403,7 @@ pub fn assemble_grid(
                 if entry.last_update.is_none() {
                     entry.last_update = pos.last_update.clone();
                 }
+                take_newer_declaration(entry, pos);
                 if let Some(cell) = entry.cells.iter_mut().find(|c| c.week_end == week.end) {
                     let tone = table2_cell_tone(planned, actual, *kind);
                     cell.amount_minor = planned.filter(|p| *p != 0).or(planned);
@@ -371,7 +424,12 @@ pub fn assemble_grid(
     }
 
     let mut groups: BTreeMap<&str, Vec<IncomePlanTable2Row>> = BTreeMap::new();
-    for row in by_symbol.into_values() {
+    for mut row in by_symbol.into_values() {
+        row.declaration_current = row.declaration_per_share_minor.is_some()
+            && declaration_is_current(
+                row.declaration_entered_on.as_deref().unwrap_or(""),
+                &as_of_date,
+            );
         groups
             .entry(cadence_group(&row.cadence))
             .or_default()
@@ -588,7 +646,7 @@ fn print_html(
                 html.push_str("</tr>");
             }
             html.push_str("</table><h2>PositionGrid</h2><table>");
-            html.push_str("<tr><th>symbol</th><th>last_update</th>");
+            html.push_str("<tr><th>symbol</th><th>last_update</th><th>decl_per_share</th>");
             if let Some(g) = grid.table2.first() {
                 if let Some(r) = g.rows.first() {
                     for cell in &r.cells {
@@ -599,7 +657,7 @@ fn print_html(
             html.push_str("</tr>");
             for group in &grid.table2 {
                 html.push_str(&format!(
-                    "<tr><th colspan=\"2\">{}</th></tr>",
+                    "<tr><th colspan=\"3\">{}</th></tr>",
                     escape(&group.cadence)
                 ));
                 for row in &group.rows {
@@ -608,6 +666,13 @@ fn print_html(
                     html.push_str(&format!(
                         "<td>{}</td>",
                         escape(row.last_update.as_deref().unwrap_or(""))
+                    ));
+                    html.push_str(&format!(
+                        "<td>{}</td>",
+                        escape(&fmt_per_share(
+                            row.declaration_per_share_minor,
+                            row.declaration_per_share_scale
+                        ))
                     ));
                     for cell in &row.cells {
                         html.push_str(&format!("<td>{}</td>", escape(&fmt_cell(cell.amount_minor))));
@@ -620,24 +685,30 @@ fn print_html(
     } else if let Some(week) = week {
         html.push_str("<h2>WeekDetail</h2><table>");
         html.push_str(
-            "<tr><th>symbol</th><th>frequency</th><th>last_update</th><th>Plan $</th><th>Declaration $</th><th>Actual $</th><th>Variance</th></tr>",
+            "<tr><th>symbol</th><th>last_update</th><th>decl_per_share</th><th>Plan $</th><th>Declaration $</th><th>Actual $</th><th>Variance</th></tr>",
         );
-        for pos in &week.positions {
-            let var = if pos.plan_known && pos.actual_known {
-                fmt_cell(Some(pos.actual_minor - pos.planned_minor))
-            } else {
-                String::new()
-            };
+        for (group_name, rows) in week_positions_by_cadence(week) {
             html.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                escape(&pos.symbol),
-                escape(&pos.cadence),
-                escape(pos.last_update.as_deref().unwrap_or("")),
-                escape(&fmt_cell(pos.plan_known.then_some(pos.planned_minor))),
-                escape(&fmt_cell(pos.declaration_known.then_some(pos.declaration_minor))),
-                escape(&fmt_cell(pos.actual_known.then_some(pos.actual_minor))),
-                escape(&var),
+                "<tr><th colspan=\"7\">{}</th></tr>",
+                escape(group_name)
             ));
+            for pos in rows {
+                let var = if pos.plan_known && pos.actual_known {
+                    fmt_cell(Some(pos.actual_minor - pos.planned_minor))
+                } else {
+                    String::new()
+                };
+                html.push_str(&format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    escape(&pos.symbol),
+                    escape(pos.last_update.as_deref().unwrap_or("")),
+                    escape(&fmt_per_share(pos.declaration_per_share_minor, pos.declaration_per_share_scale)),
+                    escape(&fmt_cell(pos.plan_known.then_some(pos.planned_minor))),
+                    escape(&fmt_cell(pos.declaration_known.then_some(pos.declaration_minor))),
+                    escape(&fmt_cell(pos.actual_known.then_some(pos.actual_minor))),
+                    escape(&var),
+                ));
+            }
         }
         html.push_str("</table>");
     }
@@ -686,14 +757,18 @@ fn pdf_bytes(
                 text.push('\n');
             }
             text.push_str("PositionGrid\n");
-            text.push_str("symbol | last_update | weeks\n");
+            text.push_str("symbol | last_update | decl_per_share | weeks\n");
             for group in &grid.table2 {
                 text.push_str(&format!("group {}\n", group.cadence));
                 for row in &group.rows {
                     let mut line = format!(
-                        "{} | {}",
+                        "{} | {} | {}",
                         row.symbol,
-                        row.last_update.clone().unwrap_or_default()
+                        row.last_update.clone().unwrap_or_default(),
+                        fmt_per_share(
+                            row.declaration_per_share_minor,
+                            row.declaration_per_share_scale
+                        )
                     );
                     for cell in &row.cells {
                         line.push_str(" | ");
@@ -706,23 +781,26 @@ fn pdf_bytes(
         }
     } else {
         text.push_str("WeekDetail\n");
-        text.push_str("symbol | frequency | last_update | Plan $ | Declaration $ | Actual $ | Variance\n");
+        text.push_str("symbol | last_update | decl_per_share | Plan $ | Declaration $ | Actual $ | Variance\n");
         if let Some(week) = week {
-            for pos in &week.positions {
-                text.push_str(&format!(
-                    "{} | {} | {} | {} | {} | {} | {}\n",
-                    pos.symbol,
-                    pos.cadence,
-                    pos.last_update.clone().unwrap_or_default(),
-                    fmt_cell(pos.plan_known.then_some(pos.planned_minor)),
-                    fmt_cell(pos.declaration_known.then_some(pos.declaration_minor)),
-                    fmt_cell(pos.actual_known.then_some(pos.actual_minor)),
-                    if pos.plan_known && pos.actual_known {
-                        fmt_cell(Some(pos.actual_minor - pos.planned_minor))
-                    } else {
-                        String::new()
-                    }
-                ));
+            for (group_name, rows) in week_positions_by_cadence(week) {
+                text.push_str(&format!("group {group_name}\n"));
+                for pos in rows {
+                    text.push_str(&format!(
+                        "{} | {} | {} | {} | {} | {} | {}\n",
+                        pos.symbol,
+                        pos.last_update.clone().unwrap_or_default(),
+                        fmt_per_share(pos.declaration_per_share_minor, pos.declaration_per_share_scale),
+                        fmt_cell(pos.plan_known.then_some(pos.planned_minor)),
+                        fmt_cell(pos.declaration_known.then_some(pos.declaration_minor)),
+                        fmt_cell(pos.actual_known.then_some(pos.actual_minor)),
+                        if pos.plan_known && pos.actual_known {
+                            fmt_cell(Some(pos.actual_minor - pos.planned_minor))
+                        } else {
+                            String::new()
+                        }
+                    ));
+                }
             }
         }
     }
@@ -853,10 +931,13 @@ fn write_position_grid(wb: &mut Workbook, grid: &IncomePlanGridBody) -> Result<(
     sheet
         .write_string(0, 1, "last_update")
         .map_err(|e| e.to_string())?;
+    sheet
+        .write_string(0, 2, "decl_per_share")
+        .map_err(|e| e.to_string())?;
     let week_ends: Vec<String> = grid.weeks.iter().map(|w| w.end.clone()).collect();
     for (i, end) in week_ends.iter().enumerate() {
         sheet
-            .write_string(0, (i + 2) as u16, end)
+            .write_string(0, (i + 3) as u16, end)
             .map_err(|e| e.to_string())?;
     }
     let mut r = 1u32;
@@ -872,9 +953,19 @@ fn write_position_grid(wb: &mut Workbook, grid: &IncomePlanGridBody) -> Result<(
             sheet
                 .write_string(r, 1, row.last_update.as_deref().unwrap_or(""))
                 .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(
+                    r,
+                    2,
+                    &fmt_per_share(
+                        row.declaration_per_share_minor,
+                        row.declaration_per_share_scale,
+                    ),
+                )
+                .map_err(|e| e.to_string())?;
             for (c, cell) in row.cells.iter().enumerate() {
                 sheet
-                    .write_string(r, (c + 2) as u16, &fmt_cell(cell.amount_minor))
+                    .write_string(r, (c + 3) as u16, &fmt_cell(cell.amount_minor))
                     .map_err(|e| e.to_string())?;
             }
             r += 1;
@@ -888,8 +979,8 @@ fn write_week_detail(wb: &mut Workbook, week: &IncomePlanWeekBody) -> Result<(),
     sheet.set_name("WeekDetail").map_err(|e| e.to_string())?;
     for (i, h) in [
         "symbol",
-        "frequency",
         "last_update",
+        "decl_per_share",
         "Plan $",
         "Declaration $",
         "Actual $",
@@ -902,36 +993,50 @@ fn write_week_detail(wb: &mut Workbook, week: &IncomePlanWeekBody) -> Result<(),
             .write_string(0, i as u16, *h)
             .map_err(|e| e.to_string())?;
     }
-    for (r, pos) in week.positions.iter().enumerate() {
-        let row = (r + 1) as u32;
+    let mut r = 1u32;
+    for (group_name, rows) in week_positions_by_cadence(week) {
         sheet
-            .write_string(row, 0, &pos.symbol)
+            .write_string(r, 0, group_name)
             .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 1, &pos.cadence)
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 2, pos.last_update.as_deref().unwrap_or(""))
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 3, &fmt_cell(pos.plan_known.then_some(pos.planned_minor)))
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(
-                row,
-                4,
-                &fmt_cell(pos.declaration_known.then_some(pos.declaration_minor)),
-            )
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 5, &fmt_cell(pos.actual_known.then_some(pos.actual_minor)))
-            .map_err(|e| e.to_string())?;
-        let var = if pos.plan_known && pos.actual_known {
-            fmt_cell(Some(pos.actual_minor - pos.planned_minor))
-        } else {
-            String::new()
-        };
-        sheet.write_string(row, 6, &var).map_err(|e| e.to_string())?;
+        r += 1;
+        for pos in rows {
+            sheet
+                .write_string(r, 0, &pos.symbol)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(r, 1, pos.last_update.as_deref().unwrap_or(""))
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(
+                    r,
+                    2,
+                    &fmt_per_share(
+                        pos.declaration_per_share_minor,
+                        pos.declaration_per_share_scale,
+                    ),
+                )
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(r, 3, &fmt_cell(pos.plan_known.then_some(pos.planned_minor)))
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(
+                    r,
+                    4,
+                    &fmt_cell(pos.declaration_known.then_some(pos.declaration_minor)),
+                )
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(r, 5, &fmt_cell(pos.actual_known.then_some(pos.actual_minor)))
+                .map_err(|e| e.to_string())?;
+            let var = if pos.plan_known && pos.actual_known {
+                fmt_cell(Some(pos.actual_minor - pos.planned_minor))
+            } else {
+                String::new()
+            };
+            sheet.write_string(r, 6, &var).map_err(|e| e.to_string())?;
+            r += 1;
+        }
     }
     Ok(())
 }

@@ -761,10 +761,10 @@ async fn g_ip_p06_excel_table2_has_last_update_not_qty() {
 #[test]
 fn g_ip_p07_file_menu_delegates() {
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
-    assert!(app.contains("Print current view"));
+    assert!(!app.contains("Print current view"));
+    assert!(!app.contains("Export current view"));
     assert!(app.contains("runIncomeExport(\"print\")"));
     assert!(app.contains("aria-label=\"Print to page\""));
-    assert!(app.contains("finos-income-print"));
 }
 
 #[test]

@@ -1,5 +1,7 @@
 //! Platform ports for identity, snapshots and handoff (no SQLite, no Tauri).
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -64,5 +66,9 @@ pub trait Platform: Send + Sync {
     }
     async fn writes_allowed(&self) -> Result<bool, PlatformError> {
         ni()
+    }
+    /// Application data directory (same tree as local.sqlite).
+    fn app_data_dir(&self) -> PathBuf {
+        PathBuf::from(".")
     }
 }

@@ -764,6 +764,82 @@ pub struct AccountPositionTotalBody {
     pub scale: u8,
 }
 
+/// One stored day of holdings market value for an account (or the Fidelity rollup).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountMarketValueDailyRecord {
+    pub snapshot_id: String,
+    pub account_id: String,
+    pub account_name: String,
+    pub as_of: String,
+    pub market_value_minor: Option<i64>,
+    pub market_value_complete: bool,
+    pub scale: u8,
+    pub captured_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountValuePointBody {
+    pub as_of: String,
+    pub market_value_minor: Option<i64>,
+    pub market_value_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountValueSeriesBody {
+    pub account_id: String,
+    pub account_name: String,
+    pub custodian: String,
+    pub current_minor: Option<i64>,
+    pub current_complete: bool,
+    pub points: Vec<AccountValuePointBody>,
+    #[serde(default)]
+    pub trends_points: Vec<AccountValuePointBody>,
+    pub scale: u8,
+}
+
+impl Default for AccountValueSeriesBody {
+    fn default() -> Self {
+        Self {
+            account_id: financial_domain::account_value::SCHWAB_TOTAL_ID.to_string(),
+            account_name: financial_domain::account_value::SCHWAB_TOTAL_NAME.to_string(),
+            custodian: "Schwab".into(),
+            current_minor: None,
+            current_complete: false,
+            points: Vec::new(),
+            trends_points: Vec::new(),
+            scale: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountValueHomeBody {
+    pub as_of: String,
+    pub accounts: Vec<AccountValueSeriesBody>,
+    pub fidelity: AccountValueSeriesBody,
+    #[serde(default)]
+    pub schwab: AccountValueSeriesBody,
+    pub note: String,
+    pub scale: u8,
+}
+
+/// Individual importable workbooks written under raw-data/<as_of>/.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSnapshotExportBody {
+    pub as_of: String,
+    pub folder: String,
+    pub files: Vec<String>,
+    pub account_count: u64,
+    pub lot_count: u64,
+    pub yield_count: u64,
+    pub note: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PositionDetailsBody {
@@ -991,6 +1067,14 @@ pub struct IncomePlanPositionBody {
     pub declaration_minor: i64,
     #[serde(default)]
     pub declaration_known: bool,
+    #[serde(default)]
+    pub declaration_per_share_minor: Option<i64>,
+    #[serde(default)]
+    pub declaration_per_share_scale: u8,
+    #[serde(default)]
+    pub declaration_entered_on: Option<String>,
+    #[serde(default)]
+    pub declaration_current: bool,
     pub scale: u8,
     #[serde(default)]
     pub accounts: Vec<IncomePlanPositionAccountBody>,
@@ -1058,6 +1142,14 @@ pub struct IncomePlanTable2Row {
     pub symbol: String,
     pub cadence: String,
     pub last_update: Option<String>,
+    #[serde(default)]
+    pub declaration_per_share_minor: Option<i64>,
+    #[serde(default)]
+    pub declaration_per_share_scale: u8,
+    #[serde(default)]
+    pub declaration_entered_on: Option<String>,
+    #[serde(default)]
+    pub declaration_current: bool,
     pub cells: Vec<IncomePlanMoneyCell>,
 }
 
@@ -2399,5 +2491,29 @@ pub struct Div1ComplianceSummaryBody {
 #[serde(rename_all = "camelCase")]
 pub struct RetrieveRunListBody {
     pub runs: Vec<RetrieveRunRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreFunctionSentinel {
+    pub path: String,
+    pub must_contain: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreFunctionItem {
+    pub id: String,
+    pub menu_area: String,
+    pub function: String,
+    pub last_changed: String,
+    pub last_verified: String,
+    pub sentinels: Vec<CoreFunctionSentinel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreFunctionsGetBody {
+    pub items: Vec<CoreFunctionItem>,
 }
 

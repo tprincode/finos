@@ -1,0 +1,241 @@
+{
+  "items": [
+    {
+      "id": "income-week-decl-per-share",
+      "menuArea": "Income Plan",
+      "function": "Decl $/sh on Weekly report by position",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "By position for the week"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "<th className=\"ip-decl-sh\">Decl $/sh</th>"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "aria-label=\"Income plan by position\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "declaration_per_share_minor"
+        }
+      ]
+    },
+    {
+      "id": "income-decl-per-share-color",
+      "menuArea": "Income Plan",
+      "function": "Color-coded Decl $/sh (current / stale / none)",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "function declShareTone"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "Decl $ per share ${declShareTone"
+        },
+        {
+          "path": "apps/desktop/src/App.css",
+          "mustContain": "td.numeric.ip-decl-current"
+        },
+        {
+          "path": "apps/desktop/src/App.css",
+          "mustContain": "td.numeric.ip-decl-stale"
+        },
+        {
+          "path": "apps/desktop/src/App.css",
+          "mustContain": "td.numeric.ip-decl-none"
+        },
+        {
+          "path": "crates/financial-domain/src/income_plan.rs",
+          "mustContain": "pub fn declaration_is_current"
+        }
+      ]
+    },
+    {
+      "id": "income-grid-decl-per-share",
+      "menuArea": "Income Plan",
+      "function": "Decl $/sh on Weekly grid",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "aria-label=\"Income plan position grid\""
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "Decl $/sh current (\u22645 trading days)"
+        }
+      ]
+    },
+    {
+      "id": "home-declarations-coverage",
+      "menuArea": "Home",
+      "function": "Declarations N of M",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "summary.declarationCollectorCount"
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "declaration_daily_retrieve_current"
+        }
+      ]
+    },
+    {
+      "id": "home-refresh-declarations",
+      "menuArea": "Home",
+      "function": "Refresh declarations",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Refresh declarations\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "executeCommand(\"DeclarationRefresh\""
+        }
+      ]
+    },
+    {
+      "id": "collectors-fleet",
+      "menuArea": "Collectors",
+      "function": "Collector fleet grid",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Collector fleet\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "executeQuery(\"CollectorSetGet\""
+        }
+      ]
+    },
+    {
+      "id": "collectors-run-enabled",
+      "menuArea": "Collectors",
+      "function": "Run enabled collectors",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Run enabled collectors\""
+        }
+      ]
+    },
+    {
+      "id": "tickets-queue",
+      "menuArea": "Tickets",
+      "function": "Work ticket queue",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "navButton(\"tickets\", \"Tickets\")"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "aria-label=\"Work tickets\""
+        }
+      ]
+    },
+    {
+      "id": "tickets-enter-declared",
+      "menuArea": "Tickets",
+      "function": "Enter declared amount",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "Save declared amount"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "enter_declared_amount"
+        }
+      ]
+    },
+    {
+      "id": "settings-retrieval-templates",
+      "menuArea": "Settings",
+      "function": "Retrieval templates",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Retrieval templates\""
+        }
+      ]
+    },
+    {
+      "id": "settings-core-functions",
+      "menuArea": "Settings",
+      "function": "Core functions catalog",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Core functions\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "executeQuery(\"CoreFunctionsGet\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CoreFunctionsGet\""
+        }
+      ]
+    },
+    {
+      "id": "position-hub-declarations",
+      "menuArea": "Position hub",
+      "function": "Declarations panel",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "id=\"hub-declarations\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Declarations\""
+        }
+      ]
+    },
+    {
+      "id": "position-hub-last-price",
+      "menuArea": "Position hub",
+      "function": "Refresh last price for this symbol",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Refresh last price for this symbol\""
+        }
+      ]
+    }
+  ]
+}

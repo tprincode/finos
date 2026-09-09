@@ -13,7 +13,7 @@ use application_core::contracts::{
     TaxProjectionBody, BacktestPeriodRecord, PositionBacktestResultBody,
     RocResearchObservation, RemainingPaymentDateOverride, ExpectedPaymentPattern,
     PositionTaxProfile, IssuerPayDateRecord, AccountBalanceSnapshotRecord, TrendsWeekSourceRecord,
-    WorkTicketRecord, CollectorFieldDecisionRecord,
+    AccountMarketValueDailyRecord, WorkTicketRecord, CollectorFieldDecisionRecord,
 };
 use application_core::ports::canonical::Canonical;
 use application_core::ports::platform::PlatformError;
@@ -2600,6 +2600,21 @@ impl Canonical for LocalPlatform {
     ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> {
         let pool = self.pool.read().await;
         crate::trends::account_balance_snapshot_list(&*pool).await
+    }
+
+    async fn account_market_value_daily_upsert(
+        &self,
+        record: AccountMarketValueDailyRecord,
+    ) -> Result<AccountMarketValueDailyRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::account_value::account_market_value_daily_upsert(&*pool, record).await
+    }
+
+    async fn account_market_value_daily_list(
+        &self,
+    ) -> Result<Vec<AccountMarketValueDailyRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::account_value::account_market_value_daily_list(&*pool).await
     }
 
     async fn position_details_get(&self) -> Result<PositionDetailsBody, PlatformError> {

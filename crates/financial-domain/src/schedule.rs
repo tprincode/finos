@@ -120,6 +120,8 @@ pub fn period_has_occurred(period: &str, as_of: &str) -> bool {
 
 /// Unoccurred copied last-pay / orphan calendar rows. Not an issuer notice.
 /// Future planning $ is Plan $/share, not this row.
+/// A row entered on or after `as_of` is a live issuer notice — keep it even when
+/// the dollar matches a prior paid amount (XPAY and other same-$ monthlies).
 pub fn unoccurred_declaration_is_placeholder(
     period: &str,
     amount: i64,
@@ -127,9 +129,15 @@ pub fn unoccurred_declaration_is_placeholder(
     as_of: &str,
     occurred_amounts: &[(i64, u8)],
     pay_ons: &[&str],
+    entered_at: &str,
 ) -> bool {
     if period_has_occurred(period, as_of) {
         return false;
+    }
+    if let (Some(entered), Some(as_of_d)) = (parse_iso_day(entered_at), parse_iso_day(as_of)) {
+        if entered >= as_of_d {
+            return false;
+        }
     }
     let key = period.trim();
     let key10 = if key.len() >= 10 { &key[..10] } else { key };
@@ -1248,6 +1256,7 @@ mod tests {
             "2026-09-07",
             &[(68255, 5), (70497, 5)],
             &["2026-10-03"],
+            "2026-08-15",
         ));
         assert!(unoccurred_declaration_is_placeholder(
             "2026-09-30",
@@ -1256,6 +1265,7 @@ mod tests {
             "2026-09-07",
             &[(1215, 4)],
             &["2026-09-15"],
+            "2026-08-15",
         ));
         assert!(unoccurred_declaration_is_placeholder(
             "2026-11-06",
@@ -1264,6 +1274,7 @@ mod tests {
             "2026-09-07",
             &[(3400, 4)],
             &["2026-11-06"],
+            "2026-08-15",
         ));
         assert!(!unoccurred_declaration_is_placeholder(
             "2026-09-09",
@@ -1272,6 +1283,7 @@ mod tests {
             "2026-09-07",
             &[(572959, 6)],
             &["2026-09-09"],
+            "2026-08-15",
         ));
         assert!(!unoccurred_declaration_is_placeholder(
             "2026-09-03",
@@ -1280,6 +1292,16 @@ mod tests {
             "2026-09-07",
             &[(68255, 5)],
             &["2026-09-03"],
+            "2026-09-03",
+        ));
+        assert!(!unoccurred_declaration_is_placeholder(
+            "2026-09-10",
+            899537,
+            6,
+            "2026-09-09",
+            &[(899537, 6)],
+            &["2026-09-10", "2026-10-15"],
+            "2026-09-09",
         ));
     }
 

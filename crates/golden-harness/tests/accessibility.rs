@@ -14,6 +14,9 @@ fn accessibility_primary_actions_have_accessible_names() {
     let trends_charts =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/TrendsCharts.tsx"))
             .expect("TrendsCharts.tsx");
+    let home_account_charts =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/HomeAccountCharts.tsx"))
+            .expect("HomeAccountCharts.tsx");
     let decl_chart =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/DeclarationPaymentsChart.tsx"))
             .expect("DeclarationPaymentsChart.tsx");
@@ -24,7 +27,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         std::fs::read_to_string(repo_root().join("apps/desktop/src/DividendWeeks.tsx"))
             .expect("DividendWeeks.tsx");
     let sources = format!(
-        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}"
+        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}"
     );
     for name in [
         "aria-label=\"Import wizard\"",
@@ -45,9 +48,13 @@ fn accessibility_primary_actions_have_accessible_names() {
     for name in [
         "aria-label=\"finos\"",
         "aria-label=\"Save device name\"",
+        "aria-label=\"Save data snapshot\"",
+        "aria-label=\"Confirm save data snapshot\"",
+        "aria-label=\"Cancel save data snapshot\"",
         "aria-label=\"Create snapshot\"",
         "aria-label=\"Restore published\"",
         "aria-label=\"Acknowledge review\"",
+        "aria-label=\"Restart Application\"",
         "aria-label=\"Exit\"",
         "aria-label=\"Import Fidelity or Schwab CSV\"",
         "aria-label=\"Check for updates\"",
@@ -173,6 +180,9 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Record last price\"",
         "aria-label=\"Refresh last prices\"",
         "aria-label=\"Refresh declarations\"",
+        "aria-label=\"Core functions\"",
+        "declaration-refresh-progress",
+        "Refreshing ${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}",
         "aria-label=\"Refresh last price for this symbol\"",
         "aria-label=\"Retrieve declarations for this symbol\"",
         "aria-label=\"Complete research\"",
@@ -208,6 +218,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Next week\"",
         "aria-label=\"Income plan by account\"",
         "aria-label=\"Income plan by position\"",
+        "Decl $ per share ${declShareTone",
         "aria-label=\"Dividend weeks\"",
         "aria-label=\"Dividend week table\"",
         "aria-label=\"Dividend performance period\"",
@@ -216,7 +227,9 @@ fn accessibility_primary_actions_have_accessible_names() {
         "label=\"Filter calculator\"",
         "label=\"Filter position lots\"",
         "label=\"Filter dashboard\"",
-        "aria-label=\"Open Trends\"",
+        "aria-label=\"Account values\"",
+        "aria-label=\"Fidelity total\"",
+        "aria-label=\"Schwab total\"",
         "aria-label=\"Trends weekly capture\"",
         "aria-label=\"Save Trends week\"",
         "aria-label=\"Correct Trends week\"",

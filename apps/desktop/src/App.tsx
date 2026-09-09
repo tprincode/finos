@@ -23,6 +23,7 @@ import {
   type HandoffStatus,
   type HoldingsGet,
   type DataSummaryGet,
+  type CoreFunctionsGet,
   type IncomePlanWeekGet,
   type IncomePlanGridGet,
   type IncomePlanExportGet,
@@ -38,6 +39,8 @@ import {
   type RocResearchGet,
   type SecurityListItem,
   type TrendsGet,
+  type AccountValueHomeGet,
+  type DataSnapshotExport,
 } from "@finos/app-contracts";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
@@ -46,6 +49,7 @@ import { TrendsChartsPanel } from "./TrendsCharts";
 import { DividendWeeksPanel } from "./DividendWeeks";
 import { DeclarationPaymentsChart } from "./DeclarationPaymentsChart";
 import { TrendsCapturePanel, type TrendsWeekCapture } from "./TrendsCapture";
+import { HomeAccountCharts } from "./HomeAccountCharts";
 import { openImportWizardWindow } from "./ImportWizard";
 import {
   CalculatorPanel,
@@ -946,6 +950,7 @@ export default function App() {
   screenRef.current = screen;
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthView | null>(null);
+  const [coreFunctions, setCoreFunctions] = useState<CoreFunctionsGet | null>(null);
   const [handoff, setHandoff] = useState<HandoffStatus | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -963,6 +968,7 @@ export default function App() {
   const [trends, setTrends] = useState<TrendsGet | null>(null);
   const [trendsError, setTrendsError] = useState<string | null>(null);
   const [trendsCapture, setTrendsCapture] = useState<TrendsWeekCapture | null>(null);
+  const [accountValues, setAccountValues] = useState<AccountValueHomeGet | null>(null);
   const [perfRange, setPerfRange] = useState<DividendPerformanceRange>("ytd");
   const [dividendPerf, setDividendPerf] = useState<DividendPerformanceGet | null>(null);
   const perfRangeRef = useRef(perfRange);
@@ -1144,6 +1150,13 @@ export default function App() {
   const [savedPeriodId, setSavedPeriodId] = useState("");
   const [lastPriceBusy, setLastPriceBusy] = useState(false);
   const [declarationBusy, setDeclarationBusy] = useState(false);
+  const [declarationProgress, setDeclarationProgress] = useState<{
+    current: number;
+    total: number;
+    symbol: string;
+  } | null>(null);
+  const [snapshotConfirm, setSnapshotConfirm] = useState(false);
+  const jobsBusyRef = useRef(false);
   const lastPriceKickoff = useRef(false);
   const [collectorItems, setCollectorItems] = useState<CollectorSetItem[]>([]);
   const [collectorStats, setCollectorStats] = useState<CollectorStats | null>(null);
@@ -2156,7 +2169,7 @@ export default function App() {
 
   const refreshData = useCallback(async (asOf: string) => {
     await client.executeQuery("CashDividendCoverageGet", { asOfDate: asOf });
-    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult] =
+    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult, accountValueResult] =
       await Promise.all([
         client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf }),
         client.executeQuery("IncomePlanGridGet", {
@@ -2199,6 +2212,7 @@ export default function App() {
           asOfDate: asOf,
           range: perfRangeRef.current,
         }),
+        client.executeQuery("AccountValueHomeGet", { asOfDate: asOf }),
       ]);
     const failed = [
       weekResult,
@@ -2218,6 +2232,7 @@ export default function App() {
       masterResult,
       coverageResult,
       perfResult,
+      accountValueResult,
     ].filter((r) => !r.ok);
     if (failed.length > 0) {
       const stale = failed.some((r) => r.errorCode === "unknown_query");
@@ -2263,6 +2278,11 @@ export default function App() {
       setDividendPerf(parse<DividendPerformanceGet>(perfResult.bodyJson));
     } else {
       setDividendPerf(null);
+    }
+    if (accountValueResult.ok) {
+      setAccountValues(parse<AccountValueHomeGet>(accountValueResult.bodyJson));
+    } else {
+      setAccountValues(null);
     }
     if (accountResult.bodyJson) {
       try {
@@ -2407,6 +2427,31 @@ export default function App() {
   const runIncomeExportRef = useRef(runIncomeExport);
   runIncomeExportRef.current = runIncomeExport;
 
+  const runDataSnapshot = useCallback(async () => {
+    setBusy(true);
+    setActionMessage(null);
+    try {
+      const result = await client.executeCommand("DataSnapshotExport", {});
+      if (!result.ok || !result.bodyJson) {
+        setActionMessage(`Data snapshot failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      const body = JSON.parse(result.bodyJson) as DataSnapshotExport;
+      setActionMessage(`Saved ${body.files.length} files to ${body.folder}`);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  const requestDataSnapshot = useCallback(() => {
+    setSnapshotConfirm(true);
+  }, []);
+  const requestDataSnapshotRef = useRef(requestDataSnapshot);
+  requestDataSnapshotRef.current = requestDataSnapshot;
+  const runDataSnapshotRef = useRef(runDataSnapshot);
+  runDataSnapshotRef.current = runDataSnapshot;
+
   const refreshLastPrices = useCallback(async () => {
     setLastPriceBusy(true);
     try {
@@ -2418,6 +2463,14 @@ export default function App() {
         );
         return;
       }
+      const snap = await client.executeCommand("AccountValueSnapshotRecord", {
+        asOfDate: asOfDate || undefined,
+      });
+      if (!snap.ok && snap.errorCode !== "unknown_command") {
+        setActionMessage(
+          `Account value snapshot failed: ${snap.errorCode ?? "error"}.`,
+        );
+      }
       await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
@@ -2428,6 +2481,7 @@ export default function App() {
 
   const refreshDeclarations = useCallback(async () => {
     setDeclarationBusy(true);
+    setDeclarationProgress({ current: 0, total: 0, symbol: "" });
     try {
       await client.executeCommand("ProviderDeclarationSourcesApply", {});
       const result = await client.executeCommand("DeclarationRefresh", {});
@@ -2442,6 +2496,7 @@ export default function App() {
       setActionMessage(String(err));
     } finally {
       setDeclarationBusy(false);
+      setDeclarationProgress(null);
     }
   }, [asOfDate, refreshData]);
 
@@ -2709,6 +2764,14 @@ export default function App() {
           error: String(err),
         });
       });
+    client.executeQuery("CoreFunctionsGet").then((result) => {
+      if (cancelled || !result.ok || !result.bodyJson) return;
+      try {
+        setCoreFunctions(JSON.parse(result.bodyJson) as CoreFunctionsGet);
+      } catch {
+        /* ignore */
+      }
+    });
     client.executeQuery("ConfigGet").then((result) => {
       if (cancelled || !result.bodyJson) return;
       try {
@@ -2840,17 +2903,24 @@ export default function App() {
     if (lastPriceKickoff.current) {
       return;
     }
-    if (!summary || summary.openLotCount <= 0) {
+    if (!summary) {
       return;
     }
     lastPriceKickoff.current = true;
     void (async () => {
-      await refreshLastPrices();
-      await refreshDeclarations();
+      if (summary.openLotCount > 0) {
+        await refreshLastPrices();
+        await refreshDeclarations();
+        return;
+      }
+      await client.executeCommand("AccountValueSnapshotRecord", {
+        asOfDate: asOfDate || undefined,
+      });
+      await refreshData(asOfDate);
     })().catch((err: unknown) => {
       setActionMessage(String(err));
     });
-  }, [summary, refreshLastPrices, refreshDeclarations]);
+  }, [summary, refreshLastPrices, refreshDeclarations, refreshData, asOfDate]);
 
   useEffect(() => {
     if (screen !== "new-investment" || !wizSecurityId) {
@@ -4704,6 +4774,8 @@ export default function App() {
     }
   };
 
+  jobsBusyRef.current = busy || lastPriceBusy || declarationBusy;
+
   const leaveWithoutSaving = (next: () => void, target?: Screen) => {
     if (
       (pdDirty || wizDirty || addLotDirty) &&
@@ -4720,6 +4792,34 @@ export default function App() {
   const leaveWithoutSavingRef = useRef(leaveWithoutSaving);
   leaveWithoutSavingRef.current = leaveWithoutSaving;
 
+  const runAppRestart = useCallback(async () => {
+    if (pdDirty || wizDirty || addLotDirty) {
+      setActionMessage(
+        "Save or Cancel before restarting. Restart stays blocked while edits are unsaved.",
+      );
+      return;
+    }
+    setActionMessage("Restarting… pausing jobs and closing the data file.");
+    const deadline = Date.now() + 8000;
+    while (jobsBusyRef.current && Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+    }
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const wizard = await WebviewWindow.getByLabel("import-wizard");
+      await wizard?.close();
+    } catch {
+      /* no extra window */
+    }
+    try {
+      await invoke("app_restart");
+    } catch (err: unknown) {
+      setActionMessage(`Restart failed: ${String(err)}`);
+    }
+  }, [pdDirty, wizDirty, addLotDirty]);
+  const runAppRestartRef = useRef(runAppRestart);
+  runAppRestartRef.current = runAppRestart;
+
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
@@ -4735,26 +4835,36 @@ export default function App() {
           if (!isScreen(id)) return;
           leaveWithoutSavingRef.current(() => setScreen(id), id);
         });
-        const stopPrint = await listen<string>("finos-income-print", () => {
-          if (screenRef.current === "income-plan") {
-            void runIncomeExportRef.current("print");
-          }
+        const stopSnapshot = await listen<string>("finos-data-snapshot", () => {
+          requestDataSnapshotRef.current();
         });
-        const stopExport = await listen<string>("finos-income-export", () => {
-          if (screenRef.current === "income-plan") {
-            void runIncomeExportRef.current("excel");
-          }
+        const stopRestart = await listen<string>("finos-app-restart", () => {
+          void runAppRestartRef.current();
+        });
+        const stopDeclProgress = await listen<{
+          current?: number;
+          total?: number;
+          symbol?: string;
+        }>("declaration-refresh-progress", (event) => {
+          const p = event.payload;
+          setDeclarationProgress({
+            current: p.current ?? 0,
+            total: p.total ?? 0,
+            symbol: p.symbol ?? "",
+          });
         });
         if (cancelled) {
           stop();
-          stopPrint();
-          stopExport();
+          stopSnapshot();
+          stopRestart();
+          stopDeclProgress();
           return;
         }
         unlisten = () => {
           stop();
-          stopPrint();
-          stopExport();
+          stopSnapshot();
+          stopRestart();
+          stopDeclProgress();
         };
       } catch {
         /* browser preview without Tauri events */
@@ -4769,7 +4879,10 @@ export default function App() {
   useEffect(() => {
     const close = () => setOpenMenu(null);
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") {
+        close();
+        setSnapshotConfirm(false);
+      }
       if (
         (event.ctrlKey || event.metaKey) &&
         event.key.toLowerCase() === "p" &&
@@ -6098,6 +6211,18 @@ export default function App() {
           <button
             type="button"
             className="menubar-trigger"
+            aria-label="Income Plan"
+            aria-current={screen === "income-plan" ? "page" : undefined}
+            onClick={() => {
+              setOpenMenu(null);
+              leaveWithoutSaving(() => setScreen("income-plan"), "income-plan");
+            }}
+          >
+            Income Plan
+          </button>
+          <button
+            type="button"
+            className="menubar-trigger"
             aria-label="Trends"
             aria-current={screen === "trends" ? "page" : undefined}
             onClick={() => {
@@ -6115,29 +6240,25 @@ export default function App() {
                 type="button"
                 role="menuitem"
                 className="menubar-item"
-                aria-label="Print current view"
+                aria-label="Save data snapshot"
                 onClick={() => {
                   setOpenMenu(null);
-                  if (screen === "income-plan") {
-                    void runIncomeExport("print");
-                  }
+                  requestDataSnapshot();
                 }}
               >
-                Print current view
+                Save data snapshot
               </button>
               <button
                 type="button"
                 role="menuitem"
                 className="menubar-item"
-                aria-label="Export current view"
+                aria-label="Restart Application"
                 onClick={() => {
                   setOpenMenu(null);
-                  if (screen === "income-plan") {
-                    void runIncomeExport("excel");
-                  }
+                  void runAppRestart();
                 }}
               >
-                Export current view
+                Restart Application
               </button>
               <button
                 type="button"
@@ -6157,7 +6278,6 @@ export default function App() {
             "plan",
             "Plan",
             <>
-              {navButton("income-plan", "Income Plan")}
               {navButton("calculator", "Calculator")}
               {navButton("dashboard", "Dashboard")}
               {navButton("trends", "Trends")}
@@ -6198,18 +6318,6 @@ export default function App() {
       <main className="container" aria-label="finos">
       {screen === "home" ? (
         <>
-        <div className="home-shortcuts">
-          <button
-            type="button"
-            aria-label="Open Trends"
-            disabled={busy}
-            onClick={() => {
-              leaveWithoutSaving(() => setScreen("trends"), "trends");
-            }}
-          >
-            Open Trends — weekly capture and charts
-          </button>
-        </div>
         {summary ? (
         <section aria-label="Portfolio summary">
           <dl className="portfolio-summary">
@@ -6310,12 +6418,21 @@ export default function App() {
               <button
                 type="button"
                 aria-label="Refresh declarations"
+                aria-busy={declarationBusy}
                 disabled={declarationBusy || busy}
                 onClick={() => {
                   void refreshDeclarations();
                 }}
               >
-                {declarationBusy ? "Refreshing declarations…" : "Refresh declarations"}
+                {declarationBusy
+                  ? declarationProgress && declarationProgress.total > 0
+                    ? `Refreshing ${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}${
+                        declarationProgress.symbol
+                          ? `: ${declarationProgress.symbol}`
+                          : ""
+                      }`
+                    : "Refreshing declarations…"
+                  : "Refresh declarations"}
               </button>
             </div>
             <div className="ps-cell ps-count">
@@ -6341,7 +6458,42 @@ export default function App() {
         ) : (
           <p role="status">Loading portfolio summary…</p>
         )}
+        <HomeAccountCharts values={accountValues} />
         </>
+      ) : null}
+      {snapshotConfirm ? (
+        <div
+          className="blocked unsaved-bar"
+          role="alertdialog"
+          aria-label="Confirm save data snapshot"
+          aria-modal="true"
+        >
+          <p>
+            Save a data snapshot under raw-data for today? Workbooks are written from
+            the live database. Today’s folder is replaced if it already exists.
+          </p>
+          <div className="buttons">
+            <button
+              type="button"
+              aria-label="Confirm save data snapshot"
+              disabled={busy}
+              onClick={() => {
+                setSnapshotConfirm(false);
+                void runDataSnapshot();
+              }}
+            >
+              Save snapshot
+            </button>
+            <button
+              type="button"
+              aria-label="Cancel save data snapshot"
+              disabled={busy}
+              onClick={() => setSnapshotConfirm(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       ) : null}
       {pdDirty || wizDirty || addLotDirty ? (
         <div className="blocked unsaved-bar" role="alert">
@@ -6378,7 +6530,11 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      {screen !== "home" && actionMessage ? <p>{actionMessage}</p> : null}
+      {(screen !== "home" ||
+        /snapshot|Saved |Restart/i.test(actionMessage ?? "")) &&
+      actionMessage ? (
+        <p>{actionMessage}</p>
+      ) : null}
       {writesBlocked ? (
         <p className="blocked">Ordinary writes are blocked until restore or explicit review.</p>
       ) : null}
@@ -10914,6 +11070,40 @@ export default function App() {
               <dd>{health.contractVersion}</dd>
             </dl>
           )}
+          <h3>Core functions</h3>
+          <p>
+            Owner-facing functions the golden harness must still find after a
+            change. Last changed is when that function's files last moved. Last
+            verified is when its sentinel last passed.
+          </p>
+          <div className="table-wrap">
+            <table aria-label="Core functions">
+              <thead>
+                <tr>
+                  <th scope="col">Menu area</th>
+                  <th scope="col">Function</th>
+                  <th scope="col">Last changed</th>
+                  <th scope="col">Last verified</th>
+                </tr>
+              </thead>
+              <tbody>
+                {coreFunctions?.items.length ? (
+                  coreFunctions.items.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.menuArea}</td>
+                      <td>{row.function}</td>
+                      <td>{row.lastChanged}</td>
+                      <td>{row.lastVerified}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={4}>Loading core functions…</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
           <h3>Retrieval templates</h3>
           <p>
             Standing template: adapter name, declaration URL, ROC URL, and
@@ -11086,6 +11276,14 @@ export default function App() {
               onClick={() => runCommand("ConfigSet", { deviceName })}
             >
               Save device name
+            </button>
+            <button
+              type="button"
+              aria-label="Save data snapshot"
+              disabled={busy}
+              onClick={() => requestDataSnapshot()}
+            >
+              Save data snapshot
             </button>
             <button
               type="button"

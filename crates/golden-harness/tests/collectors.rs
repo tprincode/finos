@@ -2076,6 +2076,86 @@ async fn sync_misses_tickets_unticketed_declaration_refresh_miss() {
     );
 }
 
+#[tokio::test]
+async fn declaration_refresh_stamps_today_when_incremental_has_nothing_to_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "JEPQ", "jpmorgan").await;
+    must_ok(
+        &platform,
+        "DeclarationRefresh",
+        serde_json::json!({
+            "declarations": [{
+                "securityId": security_id,
+                "kind": "cash_rate",
+                "amountPerShareMinor": 395,
+                "amountScale": 5,
+                "source": "jpmorgan",
+                "contentHash": "incremental-noop"
+            }],
+            "payDates": [{
+                "securityId": security_id,
+                "payOn": "2026-12-31",
+                "amountPerShareMinor": null,
+                "source": "derived_walk"
+            }]
+        }),
+    )
+    .await;
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let summary = query_json(&platform, "DataSummaryGet", serde_json::json!({})).await;
+    assert_eq!(
+        summary["declarationCollectorCount"].as_u64(),
+        Some(1),
+        "{summary}"
+    );
+    assert_eq!(
+        summary["declarationCount"].as_u64(),
+        Some(1),
+        "incremental retrieve with nothing new must still count as today's run: {summary}"
+    );
+    let set = query_json(&platform, "CollectorSetGet", serde_json::json!({})).await;
+    let item = set["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["symbol"] == "JEPQ")
+        .expect("JEPQ in set");
+    assert!(
+        item["lastRunAt"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with(&today),
+        "last_run must be today: {item}"
+    );
+    assert_ne!(item["lastRunOk"], false, "{item}");
+    let runs = query_json(
+        &platform,
+        "RetrieveRunList",
+        serde_json::json!({ "securityId": security_id }),
+    )
+    .await;
+    assert_eq!(runs["runs"][0]["ok"], true, "{runs}");
+}
+
+#[test]
+fn declaration_refresh_uses_standing_order_not_entered_today() {
+    let root = golden_harness::repo_root();
+    let lib = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
+    assert!(
+        lib.contains("declaration_daily_retrieve_current"),
+        "Home Refresh must skip only collectors already retrieved today"
+    );
+    assert!(
+        lib.contains("collector_set()"),
+        "Refresh must use collector_set, not the fleet grid"
+    );
+    assert!(
+        !lib.contains("declaration_entered_today"),
+        "entered_at is not the standing-order skip"
+    );
+}
+
 #[test]
 fn tickets_nav_opens_all_symbol_queue() {
     let root = golden_harness::repo_root();

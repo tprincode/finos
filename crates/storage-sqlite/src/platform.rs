@@ -73,6 +73,13 @@ impl LocalPlatform {
         checkpoint(&*pool).await
     }
 
+    /// Flush WAL and close the live pool so a process restart does not leave SQLite open.
+    pub async fn close_for_shutdown(&self) {
+        let pool = self.pool.write().await;
+        let _ = checkpoint(&*pool).await;
+        pool.close().await;
+    }
+
     async fn status_inner(&self) -> Result<HandoffStatusBody, StorageError> {
         let pool = self.pool.read().await;
         let local = local_head(&*pool).await?;
@@ -314,6 +321,13 @@ impl Platform for LocalPlatform {
 
     async fn writes_allowed(&self) -> Result<bool, PlatformError> {
         Ok(self.status_inner().await.map_err(map_err)?.writes_allowed)
+    }
+
+    fn app_data_dir(&self) -> PathBuf {
+        self.db_path
+            .parent()
+            .unwrap_or(self.db_path.as_path())
+            .to_path_buf()
     }
 }
 

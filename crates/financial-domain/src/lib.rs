@@ -3,6 +3,7 @@
 //! Entities, value objects, policies and deterministic calculations.
 //! Must not depend on database, Tauri, network, broker or AI frameworks.
 
+pub mod account_value;
 pub mod activity;
 pub mod advisory;
 pub mod allocation;

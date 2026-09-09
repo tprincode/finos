@@ -558,6 +558,13 @@ pub trait Canonical: Send + Sync {
     async fn account_balance_snapshot_list(
         &self,
     ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> { ni() }
+    async fn account_market_value_daily_upsert(
+        &self,
+        record: crate::contracts::AccountMarketValueDailyRecord,
+    ) -> Result<crate::contracts::AccountMarketValueDailyRecord, PlatformError> { ni() }
+    async fn account_market_value_daily_list(
+        &self,
+    ) -> Result<Vec<crate::contracts::AccountMarketValueDailyRecord>, PlatformError> { ni() }
 }
 
 /// Test double: every method returns not_implemented.
