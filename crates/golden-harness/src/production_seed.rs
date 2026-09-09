@@ -20,7 +20,7 @@ pub struct ProductionExpected {
     pub totals: ProductionTotals,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct ProductionCounts {
     pub accounts: u64,
     pub positions: u64,

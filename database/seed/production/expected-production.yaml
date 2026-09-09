@@ -24,7 +24,7 @@ totals:
 
 notes:
   - "lots_open 1250 is the frozen Template_Lots working foundation (2026-08-12)."
-  - "Yield row count may be 5862 or 5863 depending on append history; reconcile to template file in this folder."
+  - "Yield row count is 5862 in Template_Transactions_Yield.xlsx. Exact account+symbol+date+amount copies are not posted again; unique posted yield is lower. Do not coerce the extras to $0."
   - "Unknown/blank amounts must remain unknown — never coerce to zero."
   - "CRF zero-cost DRIP: legitimate on CRF DRIP lots; automatic capture only FI Roth."
   - "Money totals are owner-approved from the locked templates (scale 2 USD cents). Do not auto-write from code under test."
