@@ -32,4 +32,10 @@ pub enum DomainError {
     QtyReconcileMismatch,
     #[error("cost recovery cannot use a ROC-reduced economic-cost denominator")]
     CostRecoveryRocReducedDenominator,
+    #[error("cash distribution type is not allowed on this post")]
+    CashDistributionType,
+    #[error("net must equal gross minus withholding and cannot be negative")]
+    CashDistributionIdentity,
+    #[error("Roth distributions cannot have withholding")]
+    RothWithholdingNotAllowed,
 }

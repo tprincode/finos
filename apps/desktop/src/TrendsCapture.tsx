@@ -230,6 +230,7 @@ export function TrendsCapturePanel({
         <button
           type="button"
           aria-label="Save Trends week"
+          className={dirty ? "is-unsaved" : undefined}
           disabled={busy || capture.closed}
           onClick={() => void onSave(buildBody(), false)}
         >

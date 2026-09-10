@@ -12,7 +12,6 @@ use crate::calculator::PaymentCadence;
 use crate::current_price::{is_cash, uses_cash_par};
 use crate::declaration_lookback::{validate_paid_lookback, LookbackValidation};
 use crate::div1::is_div1;
-use crate::plan_review::normalize_risk_tier;
 use crate::schedule::remaining_periods_to_year_end;
 
 /// Required checklist fields. Skip on any of these is incomplete. Backtest is not in this list.
@@ -261,10 +260,7 @@ pub fn remaining_year_dates_disagree(stored: &[&str], issuer: &[&str], as_of: &s
 }
 
 fn risk_accepted(raw: &str) -> bool {
-    matches!(
-        normalize_risk_tier(raw).as_str(),
-        "Foundation" | "Core" | "Risk On"
-    )
+    crate::plan_review::owner_risk_accepted(raw)
 }
 
 /// Runtime Fill-research-gaps flags. `is_hole` ignores underlying.
@@ -353,6 +349,14 @@ pub fn is_div1_or_cash(div_type: &str, symbol: &str) -> bool {
     uses_cash_par(div_type, symbol) || is_div1(div_type)
 }
 
+/// Calculator / Home plan count list DIV-1 and CASH only. `None` cadence stays stored, not shown.
+pub fn calculator_view_includes(div_type: &str, symbol: &str, payment_frequency: &str) -> bool {
+    if crate::calculator::is_non_paying(payment_frequency) {
+        return false;
+    }
+    is_div1_or_cash(div_type, symbol)
+}
+
 /// Failing DIV-1/CASH collector with an empty seed URL. Never-run may probe once.
 pub fn needs_owner_seed_url(
     div_type: &str,
@@ -414,7 +418,7 @@ pub fn declaration_daily_retrieve_current(
     if day.len() < 10 {
         return false;
     }
-    last_run_at.trim().starts_with(day) && last_run_ok != Some(false)
+    last_run_at.trim().starts_with(day) && last_run_ok == Some(true)
 }
 
 /// Unoccurred stored pay dates through 31 Dec. Does not rebuild a year.
@@ -760,13 +764,13 @@ mod tests {
     }
 
     #[test]
-    fn daily_retrieve_current_is_today_and_not_a_miss() {
+    fn daily_retrieve_current_is_today_and_explicit_ok() {
         assert!(declaration_daily_retrieve_current(
             Some(true),
             "2026-09-08T14:00:00",
             "2026-09-08"
         ));
-        assert!(declaration_daily_retrieve_current(
+        assert!(!declaration_daily_retrieve_current(
             None,
             "2026-09-08T14:00:00",
             "2026-09-08"
@@ -826,5 +830,10 @@ mod tests {
         assert!(is_div1_or_cash("DIV-1", "PAY1"));
         assert!(is_div1_or_cash("CASH", "CASH1"));
         assert!(!is_div1_or_cash("", "NEW1"));
+        assert!(calculator_view_includes("DIV-1", "PAY1", "Weekly"));
+        assert!(calculator_view_includes("CASH", "SPAXX", "Monthly"));
+        assert!(!calculator_view_includes("", "BTC-USD", ""));
+        assert!(!calculator_view_includes("", "SOXL", "None"));
+        assert!(!calculator_view_includes("DIV-1", "MSTU", "None"));
     }
 }

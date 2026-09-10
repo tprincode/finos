@@ -18,6 +18,8 @@ struct Item {
     function: String,
     last_changed: String,
     last_verified: String,
+    #[serde(default)]
+    also_verify: Vec<String>,
     sentinels: Vec<Sentinel>,
 }
 
@@ -71,6 +73,16 @@ fn core_functions_catalog_sentinels_still_exist() {
             "{}: at least one sentinel",
             item.id
         );
+        for name in &item.also_verify {
+            let test = root
+                .join("crates/golden-harness/tests")
+                .join(format!("{name}.rs"));
+            assert!(
+                test.is_file(),
+                "{}: alsoVerify {name} must be crates/golden-harness/tests/{name}.rs",
+                item.id
+            );
+        }
         for sentinel in &item.sentinels {
             let path = root.join(&sentinel.path);
             let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -84,5 +96,41 @@ fn core_functions_catalog_sentinels_still_exist() {
                 sentinel.must_contain
             );
         }
+    }
+    let restart = catalog
+        .items
+        .iter()
+        .find(|i| i.id == "file-restart-graceful")
+        .expect("catalog must list file-restart-graceful");
+    assert!(
+        restart.function.contains("restart.token") && restart.function.contains("supervisor"),
+        "file-restart-graceful must name restart.token and supervisor"
+    );
+    assert!(
+        restart
+            .sentinels
+            .iter()
+            .all(|s| !s.must_contain.contains("schtasks")),
+        "file-restart-graceful sentinels must not lock schtasks"
+    );
+    for id in [
+        "file-restart-graceful",
+        "cash-management-post",
+        "cash-management-ssa",
+        "cash-management-magi",
+        "cash-management-month",
+        "settings-core-functions",
+        "home-live-by-risk",
+        "home-risk-symbol-popup",
+        "home-graphing-period",
+        "home-open-tickets",
+        "collectors-stats-truth",
+        "position-details-owner-facts",
+        "save-unsaved-orange",
+    ] {
+        assert!(
+            catalog.items.iter().any(|i| i.id == id),
+            "catalog must list {id}"
+        );
     }
 }

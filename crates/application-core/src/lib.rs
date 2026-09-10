@@ -3,6 +3,7 @@
 //! Use cases, workflows, transactions, approvals and orchestration.
 //! Coordinates domain components through ports; contains no UI logic.
 
+pub mod cash_management;
 pub mod contracts;
 pub mod core_functions;
 pub mod data_snapshot;

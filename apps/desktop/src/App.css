@@ -152,6 +152,12 @@ body,
   min-width: 9rem;
 }
 
+.trends-period-caption {
+  margin: 0;
+  color: #5a6a78;
+  font-size: 0.86rem;
+}
+
 .income-plan-appbar {
   display: flex;
   align-items: center;
@@ -1001,6 +1007,16 @@ dd {
   margin: 0;
 }
 
+.restart-bar {
+  position: sticky;
+  top: 2.4rem;
+  z-index: 49;
+  margin: 0;
+  padding: 0.65rem 1rem;
+  background: #fff4f0;
+  border-bottom: 2px solid #b42318;
+}
+
 .status-stored {
   color: #0a7a32;
 }
@@ -1104,10 +1120,111 @@ table[aria-label="Remaining-year payment dates"] input {
   font-size: 1.15rem;
 }
 
-.home-av-heading p {
+.home-av-legend {
+  margin: 0.45rem 0 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid rgba(26, 43, 60, 0.16);
+  border-radius: 0.5rem;
+  background: #f4f7fa;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.home-av-legend p {
   margin: 0;
-  color: #4a5a68;
-  font-size: 0.92rem;
+  color: #1a2b3c;
+  font-size: 0.86rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.home-av-swatch {
+  width: 1.6rem;
+  height: 0;
+  border-top: 3px solid #1b6b4a;
+  flex: 0 0 auto;
+}
+
+.home-av-swatch.is-trends {
+  border-top-style: dashed;
+  border-top-color: #5a6a78;
+}
+
+.home-av-swatch.is-risk {
+  border-top-style: solid;
+}
+
+.home-av-swatch.is-foundation {
+  border-top-color: #1b6b4a;
+}
+
+.home-av-swatch.is-core {
+  border-top-color: #2a5f8f;
+}
+
+.home-av-swatch.is-risk-on {
+  border-top-color: #8a5a12;
+}
+
+.home-av-card.home-av-risk {
+  margin-bottom: 0.75rem;
+}
+
+.home-av-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(26, 43, 60, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+}
+
+.home-av-dialog {
+  width: min(42rem, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  background: #fff;
+  border-radius: 0.6rem;
+  padding: 0.85rem 1rem 1rem;
+  box-shadow: 0 8px 28px rgba(26, 43, 60, 0.22);
+}
+
+.home-av-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.home-av-dialog h3 {
+  margin: 0;
+}
+
+.home-av-dblclick-hint {
+  margin: 0.35rem 0 0.15rem;
+  font-size: 0.8rem;
+  color: #5a6a78;
+}
+
+.home-av-risk-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.65rem 1rem;
+  margin: 0.35rem 0 0.2rem;
+}
+
+.home-av-risk-groups h4 {
+  margin: 0 0 0.2rem;
+  font-size: 0.95rem;
+}
+
+.home-av-risk-groups ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.1rem;
 }
 
 .home-av-totals {
@@ -1448,6 +1565,13 @@ button {
 
 button:disabled {
   opacity: 0.55;
+}
+
+button.is-unsaved:not(:disabled) {
+  background: #e67a12;
+  color: #fff;
+  border: 1px solid #c45f08;
+  font-weight: 700;
 }
 
 .decl-history-bar {

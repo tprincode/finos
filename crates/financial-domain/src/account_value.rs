@@ -6,6 +6,72 @@ pub const FIDELITY_TOTAL_NAME: &str = "Fidelity Total";
 pub const SCHWAB_TOTAL_ID: &str = "schwab-total";
 pub const SCHWAB_TOTAL_NAME: &str = "Schwab Total";
 
+pub const RISK_FOUNDATION: &str = "Foundation";
+pub const RISK_CORE: &str = "Core";
+pub const RISK_ON: &str = "Risk On";
+pub const RISK_UNDECIDED: &str = "Undecided";
+pub const RISK_FOUNDATION_ID: &str = "risk-Foundation";
+pub const RISK_CORE_ID: &str = "risk-Core";
+pub const RISK_ON_ID: &str = "risk-Risk On";
+pub const RISK_UNDECIDED_ID: &str = "risk-Undecided";
+pub const RISK_TIERS: [&str; 4] = [RISK_FOUNDATION, RISK_CORE, RISK_ON, RISK_UNDECIDED];
+
+/// Owner risk buckets for Home. Blank / unknown is Undecided — never assumed Risk On.
+pub fn risk_bucket(raw: &str) -> &'static str {
+    match crate::plan_review::normalize_risk_tier(raw).as_str() {
+        RISK_FOUNDATION => RISK_FOUNDATION,
+        RISK_CORE => RISK_CORE,
+        RISK_ON => RISK_ON,
+        _ => RISK_UNDECIDED,
+    }
+}
+
+pub fn risk_series_id(tier: &str) -> &'static str {
+    match tier {
+        RISK_FOUNDATION => RISK_FOUNDATION_ID,
+        RISK_CORE => RISK_CORE_ID,
+        RISK_ON => RISK_ON_ID,
+        _ => RISK_UNDECIDED_ID,
+    }
+}
+
+pub fn risk_series_name(tier: &str) -> String {
+    format!("Risk {tier}")
+}
+
+pub fn parse_risk_series_id(account_id: &str) -> Option<&'static str> {
+    match account_id {
+        RISK_FOUNDATION_ID => Some(RISK_FOUNDATION),
+        RISK_CORE_ID => Some(RISK_CORE),
+        RISK_ON_ID => Some(RISK_ON),
+        RISK_UNDECIDED_ID => Some(RISK_UNDECIDED),
+        _ => None,
+    }
+}
+
+/// Sum one risk bucket. Missing last price stays unknown — never $0.
+pub fn risk_bucket_total(values: &[Option<i64>]) -> (Option<i64>, bool) {
+    let mut sum = 0i64;
+    let mut known = 0u32;
+    let mut missing = 0u32;
+    for mv in values {
+        match mv {
+            Some(v) => {
+                sum += *v;
+                known += 1;
+            }
+            None => missing += 1,
+        }
+    }
+    if known == 0 && missing == 0 {
+        return (Some(0), true);
+    }
+    if known == 0 {
+        return (None, false);
+    }
+    (Some(sum), missing == 0)
+}
+
 /// Broker/custodian from the stored Accounts table (`Template_Accounts.xlsx` brokerage).
 /// ENERGYX is Direct. Unknown names are Other — not Fidelity.
 pub fn account_custodian(name: &str) -> &'static str {
@@ -169,5 +235,20 @@ mod tests {
             trends_balance_for_account("ENERGYX", 3100, 320, Some(2100), None, None, None, None),
             None
         );
+    }
+
+    #[test]
+    fn risk_bucket_maps_owner_tiers_and_keeps_blank_undecided() {
+        assert_eq!(risk_bucket("Foundation"), RISK_FOUNDATION);
+        assert_eq!(risk_bucket("core"), RISK_CORE);
+        assert_eq!(risk_bucket("HighRisk"), RISK_ON);
+        assert_eq!(risk_bucket(""), RISK_UNDECIDED);
+        assert_eq!(risk_bucket("maybe later"), RISK_UNDECIDED);
+        assert_eq!(risk_series_id(RISK_ON), RISK_ON_ID);
+        assert_eq!(parse_risk_series_id(RISK_CORE_ID), Some(RISK_CORE));
+        assert_eq!(risk_bucket_total(&[Some(100), Some(50)]), (Some(150), true));
+        assert_eq!(risk_bucket_total(&[Some(100), None]), (Some(100), false));
+        assert_eq!(risk_bucket_total(&[None]), (None, false));
+        assert_eq!(risk_bucket_total(&[]), (Some(0), true));
     }
 }

@@ -35,12 +35,19 @@ if not exist "node_modules\" (
 
 echo Stopping any previous finos desktop so the live SQLite file and port 1420 are free...
 taskkill /IM finos-desktop.exe /F >nul 2>&1
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":1420 .*LISTENING"') do (
-  taskkill /PID %%P /F >nul 2>&1
+call :kill_port 1420
+call :kill_port 1421
+call :wait_port_free 1420
+if errorlevel 1 (
+  echo Port 1420 is still in use. Close the other finos console, then run this file again.
+  echo If you clicked Restart, the old window may show "Lifecycle script `dev` failed" — that is the old Vite exiting. Use this window.
+  pause
+  exit /b 1
 )
 
 echo Starting finos desktop ^(Vite UI + Tauri host + local SQLite^)...
 echo This console is expected for daily coding. Close the window or Ctrl+C to stop.
+echo If Restart opened this window, close the previous finos console. Its "dev failed" line is the old session dying.
 echo.
 call npm run desktop
 if errorlevel 1 (
@@ -50,3 +57,21 @@ if errorlevel 1 (
   exit /b 1
 )
 endlocal
+exit /b 0
+
+:kill_port
+for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr /R /C:":%~1" ^| findstr LISTENING') do (
+  taskkill /PID %%P /T /F >nul 2>&1
+)
+exit /b 0
+
+:wait_port_free
+set /a _wait=0
+:wait_port_free_loop
+netstat -ano 2>nul | findstr /R /C:":%~1" | findstr LISTENING >nul
+if errorlevel 1 exit /b 0
+call :kill_port %~1
+set /a _wait+=1
+if %_wait% GEQ 20 exit /b 1
+timeout /t 1 /nobreak >nul
+goto wait_port_free_loop

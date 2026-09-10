@@ -1,0 +1,9 @@
+---
+description: Save turns orange while owner edits are unsaved
+globs: apps/desktop/src/**/*.{tsx,css}
+alwaysApply: true
+---
+
+# Unsaved Save is orange
+
+Any owner-edit **Save** (or the screen’s commit control: Save period, Save week, Confirm Plan, Open lot) uses `className="is-unsaved"` while that screen’s dirty flag is true. CSS is `button.is-unsaved` in `App.css`. Do not invent a second save affordance. Export/snapshot Save buttons stay unchanged.

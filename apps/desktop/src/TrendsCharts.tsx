@@ -2,6 +2,11 @@ import { useMemo, useState } from "react";
 import ReactECharts from "echarts-for-react";
 import type { TrendsWeekPoint } from "@finos/app-contracts";
 import { formatUsd, formatWeekShort } from "@finos/ui-components";
+import {
+  GRAPH_PERIOD_OPTIONS,
+  graphPeriodStartIso,
+  type GraphPeriod,
+} from "./graphPeriod";
 
 type SeriesSpec = {
   title: string;
@@ -9,15 +14,7 @@ type SeriesSpec = {
   color: string;
 };
 
-type GraphPeriod = "3m" | "6m" | "12m" | "ytd" | "all";
-
-const PERIOD_OPTIONS: Array<{ value: GraphPeriod; label: string }> = [
-  { value: "3m", label: "3 months" },
-  { value: "6m", label: "6 months" },
-  { value: "12m", label: "12 months" },
-  { value: "ytd", label: "YTD" },
-  { value: "all", label: "All data" },
-];
+const PERIOD_OPTIONS = GRAPH_PERIOD_OPTIONS;
 
 const CHARTS: SeriesSpec[] = [
   { title: "Weekly Gross", key: "profitMinor", color: "#1b6b4a" },
@@ -63,42 +60,14 @@ export type TrendsTaxMonitor = {
   scale: number;
 };
 
-function parseIsoDate(iso: string): Date | null {
-  if (!iso || iso.length < 10) return null;
-  const d = new Date(`${iso.slice(0, 10)}T12:00:00`);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function addMonths(date: Date, months: number): Date {
-  const d = new Date(date.getTime());
-  const day = d.getDate();
-  d.setMonth(d.getMonth() + months);
-  if (d.getDate() < day) d.setDate(0);
-  return d;
-}
-
-function toIsoDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
 export function filterWeeksByPeriod(
   weeks: TrendsWeekPoint[],
   period: GraphPeriod,
 ): TrendsWeekPoint[] {
   if (period === "all" || weeks.length === 0) return weeks;
   const asOfIso = weeks[weeks.length - 1]?.periodEnd ?? "";
-  const asOf = parseIsoDate(asOfIso);
-  if (!asOf) return weeks;
-  let startIso: string;
-  if (period === "ytd") {
-    startIso = `${asOf.getFullYear()}-01-01`;
-  } else {
-    const months = period === "3m" ? 3 : period === "6m" ? 6 : 12;
-    startIso = toIsoDate(addMonths(asOf, -months));
-  }
+  const startIso = graphPeriodStartIso(asOfIso, period);
+  if (!startIso) return weeks;
   return weeks.filter((w) => w.periodEnd >= startIso && w.periodEnd <= asOfIso);
 }
 

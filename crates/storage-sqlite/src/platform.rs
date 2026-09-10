@@ -73,11 +73,12 @@ impl LocalPlatform {
         checkpoint(&*pool).await
     }
 
-    /// Flush WAL and close the live pool so a process restart does not leave SQLite open.
-    pub async fn close_for_shutdown(&self) {
+    /// Wait for in-flight pool users, flush WAL, then close so restart does not leave SQLite open.
+    pub async fn close_for_shutdown(&self) -> Result<(), StorageError> {
         let pool = self.pool.write().await;
-        let _ = checkpoint(&*pool).await;
+        checkpoint(&*pool).await?;
         pool.close().await;
+        Ok(())
     }
 
     async fn status_inner(&self) -> Result<HandoffStatusBody, StorageError> {
@@ -339,6 +340,24 @@ mod tests {
     };
     use application_core::queries::execute_command_on;
     use snapshot_service::sha256_file;
+
+    #[tokio::test]
+    async fn close_for_shutdown_checkpoints_then_refuses_new_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = LocalPlatform::open(dir.path().join("app-data"))
+            .await
+            .unwrap();
+        platform
+            .config_set(Some("shutdown-device".into()))
+            .await
+            .unwrap();
+        platform.close_for_shutdown().await.unwrap();
+        let err = platform.config_get().await.unwrap_err();
+        assert!(
+            !err.message.is_empty(),
+            "closed pool must not serve a new read"
+        );
+    }
 
     #[tokio::test]
     async fn restore_round_trip_hashes_match() {

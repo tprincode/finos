@@ -61,6 +61,9 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::RegimePeriodIncomplete => "regime_period_incomplete",
         DomainError::QtyReconcileMismatch => "qty_reconcile_mismatch",
         DomainError::CostRecoveryRocReducedDenominator => "cost_recovery_roc_reduced_denominator",
+        DomainError::CashDistributionType => "cash_distribution_type",
+        DomainError::CashDistributionIdentity => "cash_distribution_identity",
+        DomainError::RothWithholdingNotAllowed => "roth_withholding_not_allowed",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -460,6 +463,8 @@ impl Canonical for PostgresPlatform {
             corrects_activity_id: prepared.corrects_activity_id,
             import_batch_id,
             idempotency_key: key,
+            federal_withholding_minor: 0,
+            state_withholding_minor: 0,
         };
         match insert_activity(&self.pool, &record).await {
             Ok(()) => {
@@ -496,6 +501,8 @@ impl Canonical for PostgresPlatform {
                     idempotency_key: row
                         .try_get("idempotency_key")
                         .map_err(|e| map_err(e.into()))?,
+                    federal_withholding_minor: 0,
+                    state_withholding_minor: 0,
                 };
                 remember_dividend_actual(&self.pool, &existing).await?;
                 Ok(existing)

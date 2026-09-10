@@ -18,6 +18,13 @@ mod tests {
     fn catalog_parses_and_has_decl_per_share() {
         let body = core_functions_catalog().expect("catalog");
         assert!(body.items.iter().any(|i| i.id == "income-week-decl-per-share"));
+        assert!(body.items.iter().any(|i| i.id == "file-restart-graceful"));
         assert!(body.items.iter().all(|i| !i.last_changed.is_empty()));
+        let restart = body
+            .items
+            .iter()
+            .find(|i| i.id == "file-restart-graceful")
+            .expect("restart");
+        assert!(restart.also_verify.iter().any(|n| n == "desktop_menu"));
     }
 }

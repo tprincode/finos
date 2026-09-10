@@ -1,7 +1,8 @@
 //! Collector standing order, retrieve_run ledger, and on-demand retrieve.
 
 use application_core::contracts::{
-    CommandRequest, QueryRequest, WorkTicketRecord, FINANCE_CLIENT_CONTRACT_VERSION,
+    CommandRequest, QueryRequest, RetrieveRunRecord, WorkTicketRecord,
+    FINANCE_CLIENT_CONTRACT_VERSION,
 };
 use application_core::ports::canonical::Canonical;
 use application_core::queries::{execute_command_on, execute_query_on};
@@ -2712,6 +2713,193 @@ async fn collector_retrieve_tickets_paid_payable_and_keeps_plan() {
     assert_eq!(inv["planScale"], 4);
 }
 
+/// Weekly 9/04 paid + vendor 9/11 as of 9/10: add the next Friday, no supersede ticket.
+#[tokio::test]
+async fn weekly_paid_sep04_vendor_sep11_adds_without_supersede_ticket() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "AMDY", "yieldmax").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "provider": "YieldMax",
+            "divType": "DIV-1",
+            "isActive": true,
+            "replaceCadence": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 12,
+            "amountScale": 2,
+            "paymentPeriod": "2026-09-04",
+            "source": "issuer",
+            "enteredAt": "2026-09-04"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1200,
+            "amountScale": 4,
+            "planningPeriodsPerYear": 52,
+            "effectiveFrom": "2026-08-01",
+            "decisionReason": "owner",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-01",
+            "dates": [
+                {"payOn": "2026-09-04", "source": "issuer"},
+                {"payOn": "2026-09-18", "source": "derived_walk"}
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "AMDY",
+            "declarationSource": "yieldmax",
+            "asOfDate": "2026-09-10",
+            "candidates": [
+                {
+                    "securityId": security_id,
+                    "amountPerShareMinor": 12,
+                    "amountScale": 2,
+                    "paymentPeriod": "2026-09-04",
+                    "source": "yieldmax"
+                }
+            ],
+            "upcomingPays": [{"payOn": "2026-09-11", "source": "issuer"}]
+        }),
+    )
+    .await;
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["code"] != "paid_payable_supersede"),
+        "{tickets}"
+    );
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let pays = platform.issuer_pay_date_list(sid).await.unwrap();
+    let dates: Vec<_> = pays.iter().map(|p| p.pay_on.clone()).collect();
+    assert!(dates.contains(&"2026-09-04".to_string()), "{dates:?}");
+    assert!(dates.contains(&"2026-09-11".to_string()), "{dates:?}");
+}
+
+/// Stale weekly 9/04-vs-9/11 supersede tickets file on sync; amount-variation stays open.
+#[tokio::test]
+async fn weekly_false_paid_payable_supersede_files_on_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let weekly_id = seed_div1_monthly(&platform, "AMDY", "yieldmax").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": weekly_id,
+            "paymentFrequency": "Weekly",
+            "provider": "YieldMax",
+            "divType": "DIV-1",
+            "isActive": true,
+            "replaceCadence": true
+        }),
+    )
+    .await;
+    let weekly_sid = Uuid::parse_str(&weekly_id).unwrap();
+    platform
+        .work_ticket_raise(WorkTicketRecord {
+            ticket_id: Uuid::new_v4(),
+            security_id: weekly_sid,
+            symbol: "AMDY".into(),
+            field: "remaining_year".into(),
+            code: "paid_payable_supersede".into(),
+            tool: "fix_remaining_year".into(),
+            reason: "Vendor payable 2026-09-11 would silent-supersede paid/occurred 2026-09-04."
+                .into(),
+            urls_tried: "[]".into(),
+            opened_on: "2026-09-10".into(),
+            last_seen_on: "2026-09-10".into(),
+            status: "open".into(),
+            filed_on: String::new(),
+            completed_how: String::new(),
+            owner_note: String::new(),
+            retrieve_run_id: String::new(),
+        })
+        .await
+        .expect("raise weekly false supersede");
+    platform
+        .work_ticket_raise(WorkTicketRecord {
+            ticket_id: Uuid::new_v4(),
+            security_id: weekly_sid,
+            symbol: "AMDY".into(),
+            field: "last_run".into(),
+            code: "declaration_amount_variation".into(),
+            tool: "amount_confirm".into(),
+            reason: "Vendor amount differs from stored paid period.".into(),
+            urls_tried: "[]".into(),
+            opened_on: "2026-09-10".into(),
+            last_seen_on: "2026-09-10".into(),
+            status: "open".into(),
+            filed_on: String::new(),
+            completed_how: String::new(),
+            owner_note: String::new(),
+            retrieve_run_id: String::new(),
+        })
+        .await
+        .expect("raise amount variation");
+    must_ok(&platform, "WorkTicketSyncMisses", serde_json::json!({})).await;
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": weekly_id }),
+    )
+    .await;
+    let filed = tickets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["code"] == "paid_payable_supersede")
+        .expect("weekly ticket");
+    assert_eq!(filed["status"], "done", "{tickets}");
+    assert_eq!(filed["completedHow"], "auto_resolved", "{tickets}");
+    assert!(
+        tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["code"] == "declaration_amount_variation" && t["status"] == "open"),
+        "{tickets}"
+    );
+}
+
 /// CollectorRetrieve does not write Yahoo quotes. Price is LastPriceRefresh.
 #[tokio::test]
 async fn collector_retrieve_does_not_write_yahoo_quote() {
@@ -4211,4 +4399,175 @@ async fn mlp_sec_8k_asks_owner_amount_on_nov_7() {
             && d.amount_per_share_minor == Some(3425)),
         "{decls:?}"
     );
+}
+
+#[tokio::test]
+async fn collector_stats_fleet_scopes_ran_and_splits_miss() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .expect("open sqlite");
+    let security_id = seed_div1_monthly(&platform, "JEPQ", "jpmorgan").await;
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let stamp = format!("{today}T09:00:00");
+    platform
+        .retrieve_run_record(RetrieveRunRecord {
+            run_id: Uuid::new_v4(),
+            security_id: sid,
+            kind: "declaration".into(),
+            requested_at: stamp.clone(),
+            ok: false,
+            code: "empty".into(),
+            message: "Issuer page empty.".into(),
+            attempted: 1,
+            recorded: 0,
+            skipped: 1,
+            unchanged: 0,
+            payload_json: "{}".into(),
+        })
+        .await
+        .expect("record miss");
+    must_ok(
+        &platform,
+        "DeclarationRefresh",
+        serde_json::json!({
+            "declarations": [{
+                "securityId": security_id,
+                "kind": "cash_rate",
+                "amountPerShareMinor": 395,
+                "amountScale": 5,
+                "source": "jpmorgan",
+                "contentHash": "retry-ok"
+            }],
+            "payDates": [{
+                "securityId": security_id,
+                "payOn": "2026-12-31",
+                "amountPerShareMinor": null,
+                "source": "derived_walk"
+            }]
+        }),
+    )
+    .await;
+
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Risk", "kind": "taxable"}),
+    )
+    .await;
+    let soxl = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "SOXL", "name": "SOXL"}),
+    )
+    .await;
+    let soxl_id = soxl["securityId"].as_str().unwrap().to_string();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": soxl_id,
+            "sourceSymbol": "SOXL",
+            "declarationSource": "direxion",
+            "sourceUrl": "https://example.test/soxl",
+            "calendarPolicy": "none",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot(&platform, &soxl_id, "SOXL")
+        .await
+        .expect("complete soxl");
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account["accountId"],
+            "securityId": soxl_id,
+            "openedOn": "2026-01-02",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceCostMinor": 1000,
+            "taxCostMinor": 1000,
+            "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": soxl_id,
+            "paymentFrequency": "None",
+            "replaceCadence": true,
+            "provider": "Direxion",
+            "divType": "",
+            "isActive": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": soxl_id,
+            "declarationSource": "direxion",
+            "sourceSymbol": "SOXL",
+            "sourceUrl": "https://example.test/soxl",
+            "calendarPolicy": "none",
+            "collectorEnabled": true
+        }),
+    )
+    .await;
+    platform
+        .retrieve_run_record(RetrieveRunRecord {
+            run_id: Uuid::new_v4(),
+            security_id: Uuid::parse_str(&soxl_id).unwrap(),
+            kind: "declaration".into(),
+            requested_at: format!("{today}T10:00:00"),
+            ok: true,
+            code: "".into(),
+            message: "".into(),
+            attempted: 1,
+            recorded: 0,
+            skipped: 0,
+            unchanged: 1,
+            payload_json: "{}".into(),
+        })
+        .await
+        .expect("record soxl run");
+
+    let stats = query_json(
+        &platform,
+        "CollectorStatsGet",
+        serde_json::json!({ "asOfDate": today }),
+    )
+    .await;
+    assert!(
+        stats["ranToday"].as_u64().unwrap_or(0) <= stats["enabled"].as_u64().unwrap_or(0),
+        "Ran must stay on the income fleet: {stats}"
+    );
+    assert_eq!(stats["ranToday"].as_u64(), Some(1), "{stats}");
+    assert_eq!(stats["hadMissToday"].as_u64(), Some(1), "{stats}");
+    assert_eq!(stats["stillMiss"].as_u64(), Some(0), "{stats}");
+    let empty_outside: Vec<serde_json::Value> = Vec::new();
+    let outside: Vec<&str> = stats["ranOutsideFleet"]
+        .as_array()
+        .unwrap_or(&empty_outside)
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        outside.iter().any(|s| *s == "SOXL"),
+        "SOXL is not income fleet: {stats}"
+    );
+
+    let summary = query_json(&platform, "DataSummaryGet", serde_json::json!({})).await;
+    let n = summary["declarationCount"].as_u64().unwrap_or(0);
+    let m = summary["declarationCollectorCount"].as_u64().unwrap_or(0);
+    let still = stats["stillMiss"].as_u64().unwrap_or(0);
+    assert_eq!(n + still, m, "Home N + Still miss = Enabled: {summary} {stats}");
+    assert!(summary["openTicketCount"].is_number(), "{summary}");
 }

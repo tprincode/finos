@@ -1160,14 +1160,14 @@ export function ExceptionList({
   const open = exceptions.filter((e) => !e.acknowledged);
   const summary = issuerRetrieveMissSummary(exceptions);
   if (open.length === 0 && exceptions.length === 0) {
-    return <p aria-label="Exception summary">No open exceptions.</p>;
+    return <p aria-label="Exceptions">No open exceptions.</p>;
   }
   const countLine =
     open.length === 0
       ? `${exceptions.length} acknowledged exception${exceptions.length === 1 ? "" : "s"}`
       : `${open.length} open exception${open.length === 1 ? "" : "s"}`;
   return (
-    <div aria-label="Exception summary">
+    <div aria-label="Exceptions">
       {summary ? <p aria-label="Issuer retrieve miss summary">{summary}</p> : null}
       <p>
         {countLine}

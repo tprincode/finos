@@ -488,3 +488,108 @@ async fn declaration_history_grid_filters_by_cadence_and_friday_columns() {
     let epd = all_rows.iter().find(|r| r["symbol"] == "EPD").unwrap();
     assert_eq!(epd["cells"][0]["amountPerShareMinor"].as_i64(), Some(5500));
 }
+
+#[tokio::test]
+async fn calculator_lists_div1_and_cash_only_keeps_removed_plans() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    open_named(&platform, "AMDW", "Weekly").await;
+    let (soxl_id, _) = open_named(&platform, "SOXL", "Weekly").await;
+    let (btc_id, _) = open_named(&platform, "BTC-USD", "Weekly").await;
+    must_ok(
+        &platform,
+        "ProductionSeedLoad",
+        serde_json::json!({
+            "accounts": [],
+            "securities": [],
+            "lots": [],
+            "yieldBatches": [],
+            "disbursements": [],
+            "plans": [
+                {
+                    "symbol": "AMDW",
+                    "amountPerShareMinor": 55,
+                    "amountScale": 2,
+                    "planningPeriodsPerYear": 52,
+                    "effectiveFrom": "2026-08-12",
+                    "decisionReason": "test"
+                },
+                {
+                    "symbol": "SOXL",
+                    "amountPerShareMinor": 10,
+                    "amountScale": 2,
+                    "planningPeriodsPerYear": 12,
+                    "effectiveFrom": "2026-08-12",
+                    "decisionReason": "removed-from-collectors"
+                }
+            ],
+            "characteristics": []
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": soxl_id,
+            "paymentFrequency": "None",
+            "replaceCadence": true,
+            "divType": "",
+            "riskTier": "Risk On",
+            "isActive": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": btc_id,
+            "divType": "",
+            "riskTier": "Risk On",
+            "isActive": true
+        }),
+    )
+    .await;
+
+    let calc = query_json(&platform, "CalculatorGet", serde_json::json!({})).await;
+    let calc_rows = calc["rows"].as_array().unwrap();
+    assert!(calc_rows.iter().any(|r| r["symbol"] == "AMDW"));
+    assert!(
+        calc_rows.iter().all(|r| r["symbol"] != "SOXL"),
+        "removed collector stays off Calculator: {calc}"
+    );
+    assert!(
+        calc_rows.iter().all(|r| r["symbol"] != "BTC-USD"),
+        "non DIV-1 stays off Calculator: {calc}"
+    );
+    assert_eq!(calc["planCount"].as_u64().unwrap(), 1);
+
+    let soxl = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": soxl_id, "asOfDate": "2026-09-02" }),
+    )
+    .await;
+    assert_eq!(soxl["planPerShareMinor"].as_i64(), Some(10));
+    assert_eq!(soxl["paymentFrequency"], "None");
+
+    let summary = query_json(&platform, "DataSummaryGet", serde_json::json!({})).await;
+    assert_eq!(summary["planCount"].as_u64().unwrap(), 1);
+
+    let history = query_json(
+        &platform,
+        "DeclarationHistoryGet",
+        serde_json::json!({
+            "asOfDate": "2026-09-02",
+            "cadence": "all"
+        }),
+    )
+    .await;
+    let hist_rows = history["rows"].as_array().unwrap();
+    assert!(hist_rows.iter().any(|r| r["symbol"] == "AMDW"));
+    assert!(hist_rows.iter().all(|r| r["symbol"] != "SOXL"));
+    assert!(hist_rows.iter().all(|r| r["symbol"] != "BTC-USD"));
+}

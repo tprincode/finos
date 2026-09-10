@@ -112,6 +112,12 @@ pub trait Canonical: Send + Sync {
         activity_id: Uuid,
         security_id: Uuid,
     ) -> Result<ActivityRecord, PlatformError> { ni() }
+    async fn activity_withholding_set(
+        &self,
+        activity_id: Uuid,
+        federal_withholding_minor: i64,
+        state_withholding_minor: i64,
+    ) -> Result<ActivityRecord, PlatformError> { ni() }
 
     async fn audit_list(&self) -> Result<Vec<AuditRecord>, PlatformError> { ni() }
     async fn exception_acknowledge(

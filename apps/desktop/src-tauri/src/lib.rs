@@ -1392,54 +1392,21 @@ fn app_exit(app: AppHandle) {
     app.exit(0);
 }
 
-/// Coding launch (`tauri dev` / `start-finos-dev.bat`) serves the UI from Vite on
-/// localhost:1420. `AppHandle::restart` only relaunches this exe. The Tauri CLI
-/// treats that as the app quitting and kills Vite, so the new window shows
-/// Chrome's "can't reach this page" / connection refused. Household release
-/// bundles the UI and can use `app.restart()`.
-fn dev_stack_bat() -> Option<PathBuf> {
-    let compile_time =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("start-finos-dev.bat");
-    if compile_time.is_file() {
-        return Some(compile_time);
-    }
-    let Ok(exe) = std::env::current_exe() else {
-        return None;
-    };
-    for dir in exe.ancestors().take(8) {
-        let nested = dir.join("apps").join("desktop").join("start-finos-dev.bat");
-        if nested.is_file() {
-            return Some(nested);
-        }
-        let beside = dir.join("start-finos-dev.bat");
-        if beside.is_file() {
-            return Some(beside);
-        }
-    }
-    None
-}
-
-fn spawn_dev_stack(bat: &std::path::Path) -> Result<(), String> {
-    let bat = std::fs::canonicalize(bat).map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    {
-        // New console, same as starting from a DOS prompt. Delay so this process
-        // and the Tauri CLI release SQLite and port 1420 before the bat starts.
-        let script = format!(
-            "timeout /t 2 /nobreak >nul & call \"{}\"",
-            bat.display()
-        );
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", "cmd", "/C", &script])
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = bat;
-        Err("dev stack restart is Windows-only".into())
-    }
+/// Coding launch serves the UI from Vite on localhost:1420. The host writes
+/// `%LOCALAPPDATA%\com.finos.desktop\restart.token` and exits. The already-running
+/// supervisor Start-Process-es the titled finos (dev) stack. Household release
+/// bundles the UI and uses `app.restart()`.
+fn write_restart_token() -> Result<(), String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
+    let dir = local.join("com.finos.desktop");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("restart.token dir: {e}"))?;
+    let path = dir.join("restart.token");
+    let stamp = chrono::Utc::now().to_rfc3339();
+    std::fs::write(&path, format!("{stamp}\nreason=file-restart\n"))
+        .map_err(|e| format!("restart.token: {e}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1447,16 +1414,17 @@ async fn app_restart(
     app: AppHandle,
     platform: State<'_, Arc<LocalPlatform>>,
 ) -> Result<(), String> {
-    platform.close_for_shutdown().await;
+    platform
+        .close_for_shutdown()
+        .await
+        .map_err(|e| format!("data file still open: {e}"))?;
     for (_label, window) in app.webview_windows() {
         let _ = window.destroy();
     }
     if cfg!(debug_assertions) {
-        if let Some(bat) = dev_stack_bat() {
-            spawn_dev_stack(&bat)?;
-            app.exit(0);
-            return Ok(());
-        }
+        write_restart_token()?;
+        app.exit(0);
+        return Ok(());
     }
     app.restart();
 }
@@ -1507,6 +1475,7 @@ pub fn run() {
                 .text("calculator", "Calculator")
                 .text("dashboard", "Dashboard")
                 .text("trends", "Trends")
+                .text("cash-management", "Cash Management")
                 .build()?;
             let positions_menu = SubmenuBuilder::new(app, "Positions")
                 .text("position-details", "Position Details")
@@ -1555,6 +1524,7 @@ pub fn run() {
                     | "calculator"
                     | "dashboard"
                     | "trends"
+                    | "cash-management"
                     | "position-details"
                     | "holdings"
                     | "new-investment"

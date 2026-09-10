@@ -2,10 +2,10 @@
 
 Profile A product only. Local data SQLite is the system of record. Seed is a separate CLI, not an owner screen.
 
-**Now:** Miss loop until 0 miss on enabled payers. MSTU is long-hold — do not collect.
-**Next:** Owner desktop rebuild so Tickets can take a declared $ if a quarterly ask opens (first window 7 Nov 2026). Fully quit the app, then `npm run desktop`, then File → Save data snapshot and confirm `raw-data/<today>/` under the app data dir.
+**Now:** CM-4 import — disbursement import writes the same parent + withholding components (TR-AC-15). Do not delete the 129 seed rows.
+**Next:** CM-5 Trends distribution/tax blocks become read-only Cash Management summaries. Then miss loop until 0 miss on enabled payers (MSTU long-hold — do not collect).
 **Ops (parallel):** none.
-**Done this turn:** Decl $/sh color (current green / stale amber / none gray) beats `.numeric` black. Core functions catalog lists that color rule. MAGI oracles unchanged.
+**Done this turn:** CM-1 prove-subtotal. CM-2 Saturday Income draft + Tom SSA $2,865 confirm. CM-3 MAGI preview (read MagiProjectionGet). CM-4 month board (event date). Home live-by-risk stacked chart + shared graphing period. Home open tickets + collector-stat truth (fleet-scoped Ran; Still miss vs Had a miss today). Weekly vendor payables merge by Sat–Fri week or 3-day window (not YYYY-MM); false weekly `paid_payable_supersede` auto-files. Live by risk: each stored last-price day reconstructed from current risk assignment (no carry-forward); double-click symbol text list. Position Details owner facts edit in the Position information table (catalog-locked). Risk is mandatory Foundation / Core / Risk On — Undecided removed from dropdowns and the Live by risk legend. Owner-edit Save turns orange while unsaved (`is-unsaved`). MAGI oracles unchanged.
 **Parked:** M1 macOS; SQLite→Postgres cutover; live OIDC; public CA; Python connectors posting; Shopping Cart; MAGI oracle rewrite; M8/M9 theater; watchlist; live collector inventory fix until gate green (slice E); full position-liquidity classification replacing Acct9 interim heuristic
 
 `App.tsx` stays `LocalTauriFinanceClient`. No UI SQL. Never regenerate MAGI oracles.
@@ -16,14 +16,20 @@ Owner facts use in-row display/edit in the same field. Save or Cancel; leaving w
 ## Two jobs
 
 1. **Seed (once):** `npm run data-seed` writes `database/seed/production` into `%LOCALAPPDATA%\com.finos.desktop` (or `%LOCALAPPDATA%\finos` if that path is a sync folder). Gate: 8 / 75 / 1679 / 1250 / 5862 / 129 and open cost $466,946.66 / tax $461,356.29. Complete data is a no-op. Desktop never searches for xlsx.
-2. **Daily use:** desktop opens that SQLite file and queries it. Last prices refresh on open for open lots; a stored last price still displays when stale. Missing last price stays unknown, never $0. No load prompts. On open, ProviderDeclarationSourcesApply fills empty templates then DeclarationRefresh runs enabled collectors. **Coding launch** this month: Desktop `finos.bat` → `apps/desktop/start-finos-dev.bat` (`npm run desktop`). Console is expected. **Household launch** (no console): Desktop `finos-installed.bat` → `%LOCALAPPDATA%\finos\finos-desktop.exe` after an owner-requested `npm run desktop:build`. Do not run both copies. Do not `desktop:build` on every host change.
+2. **Daily use:** desktop opens that SQLite file and queries it. Last prices refresh on open for open lots; a stored last price still displays when stale. Missing last price stays unknown, never $0. No load prompts. On open, ProviderDeclarationSourcesApply fills empty templates then DeclarationRefresh runs enabled collectors. **Coding launch** this month: start `apps/desktop/start-finos-supervisor.bat` (keeps a `finos supervisor` window). File → Restart writes `restart.token` and exits; the supervisor Start-Process-es `start-finos-dev.bat`. Do not start the host with File → Restart from a stack that has no supervisor. Console is expected. **Household launch** (no console): Desktop `finos-installed.bat` → `%LOCALAPPDATA%\finos\finos-desktop.exe` after an owner-requested `npm run desktop:build`. Do not run both copies. Do not `desktop:build` on every host change.
+
+## CM-4 import steps
+
+1. Import of IRA / Roth / SSA / withdrawal / 1099 writes `activity_event` plus federal/state withholding columns. Net stays calculated.
+2. Idempotent against the 129 seed disbursements. Unknown amount stays blank. Do not invent $0 SSA.
+3. Golden: imported row appears on Cash Management week and month boards with the same identity as a manual post.
 
 ## Pass
 
 ```
 cargo test -p financial-domain
 cargo test -p golden-harness --test new_investment --test add_lot --test position_details --test roc_plan
-cargo test -p golden-harness --test accessibility --test invariants --test calculator_plan --test lots_roi --test dividend_slice --test production_seed --test collectors --test data_snapshot --test desktop_menu --test core_functions --test income_plan_week
+cargo test -p golden-harness --test accessibility --test invariants --test calculator_plan --test lots_roi --test dividend_slice --test production_seed --test collectors --test data_snapshot --test desktop_menu --test core_functions --test income_plan_week --test cash_management
 ```
 
 Desktop stays SQLite.

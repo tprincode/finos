@@ -109,6 +109,7 @@ export type CoreFunctionsGet = {
     function: string;
     lastChanged: string;
     lastVerified: string;
+    alsoVerify?: string[];
     sentinels: Array<{ path: string; mustContain: string }>;
   }>;
 };
@@ -413,6 +414,8 @@ export type DataSummaryGet = {
   declarationRefreshedOn: string | null;
   /** Local calendar day of the standing DeclarationRefresh. */
   declarationAsOf: string;
+  /** Open work tickets. Owner queue — not today's miss count. */
+  openTicketCount: number;
   marketValueMinor: number | null;
   marketValueComplete: boolean;
   /** Lifetime paid dividends (all yield actuals). */
@@ -531,6 +534,86 @@ export type TrendsWeekPoint = {
   scale: number;
 };
 
+export type CashManagementWeekRow = {
+  activityId: string;
+  accountId: string;
+  accountName: string;
+  activityType: string;
+  occurredOn: string;
+  grossMinor: number;
+  federalWithholdingMinor: number;
+  stateWithholdingMinor: number;
+  netMinor: number;
+  scale: number;
+};
+
+export type CashManagementWeekGet = {
+  periodStart: string;
+  periodEnd: string;
+  rows: CashManagementWeekRow[];
+  weekGrossMinor: number;
+  weekWithholdingMinor: number;
+  weekNetMinor: number;
+  scale: number;
+};
+
+export type CashManagementSaturdayDraft = {
+  open: boolean;
+  activityType: string;
+  suggestedAccountId: string | null;
+  suggestedAccountName: string;
+  occurredOn: string;
+};
+
+export type CashManagementSsaRecent = {
+  occurredOn: string;
+  amountMinor: number;
+  accountName: string;
+  extraAudit: boolean;
+};
+
+export type CashManagementTomSsa = {
+  yearMonth: string;
+  expectedMinor: number;
+  label: string;
+  status: string;
+  postedMinor: number | null;
+  extraAudit: boolean;
+  suggestedAccountId: string | null;
+  suggestedAccountName: string;
+  recent: CashManagementSsaRecent[];
+};
+
+export type CashManagementRemindersGet = {
+  asOfDate: string;
+  saturdayDraft: CashManagementSaturdayDraft;
+  tomSsa: CashManagementTomSsa;
+  scale: number;
+};
+
+export type CashManagementMonthRow = {
+  accountId: string;
+  accountName: string;
+  activityType: string;
+  count: number;
+  grossMinor: number;
+  federalWithholdingMinor: number;
+  stateWithholdingMinor: number;
+  netMinor: number;
+  scale: number;
+};
+
+export type CashManagementMonthGet = {
+  yearMonth: string;
+  periodStart: string;
+  periodEnd: string;
+  rows: CashManagementMonthRow[];
+  monthGrossMinor: number;
+  monthWithholdingMinor: number;
+  monthNetMinor: number;
+  scale: number;
+};
+
 export type TrendsGet = {
   points: Array<{ occurredOn: string; amountMinor: number }>;
   totalMinor: number;
@@ -620,11 +703,44 @@ export type AccountValueSeries = {
   scale: number;
 };
 
+export type RiskSymbolValue = {
+  symbol: string;
+  riskTier: string;
+  marketValueMinor: number | null;
+  marketValueComplete: boolean;
+};
+
+export type RiskGroupValue = {
+  riskTier: string;
+  currentMinor: number | null;
+  currentComplete: boolean;
+  symbols: RiskSymbolValue[];
+};
+
+export type RiskValuePoint = {
+  asOf: string;
+  foundationMinor: number | null;
+  coreMinor: number | null;
+  riskOnMinor: number | null;
+  undecidedMinor: number | null;
+  totalMinor: number | null;
+  marketValueComplete: boolean;
+};
+
+export type RiskValueHome = {
+  currentTotalMinor: number | null;
+  currentComplete: boolean;
+  groups: RiskGroupValue[];
+  points: RiskValuePoint[];
+  scale: number;
+};
+
 export type AccountValueHomeGet = {
   asOf: string;
   accounts: AccountValueSeries[];
   fidelity: AccountValueSeries;
   schwab?: AccountValueSeries;
+  risk?: RiskValueHome;
   note: string;
   scale: number;
 };

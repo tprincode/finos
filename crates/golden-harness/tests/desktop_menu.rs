@@ -40,6 +40,9 @@ const MENU_QUERIES: &[&str] = &[
     "ExceptionList",
     "DataSummaryGet",
     "CalculatorGet",
+    "CashManagementWeekGet",
+    "CashManagementRemindersGet",
+    "CashManagementMonthGet",
     "DeclarationHistoryGet",
     "AccountList",
     "SecurityList",
@@ -164,8 +167,8 @@ fn native_and_in_app_menus_list_screens() {
         ".text(\"income-plan\", \"Income Plan\")",
         ".text(\"data-snapshot\", \"Save data snapshot\")",
         ".text(\"app-restart\", \"Restart Application\")",
-        "start-finos-dev.bat",
         ".text(\"tickets\", \"Tickets\")",
+        ".text(\"cash-management\", \"Cash Management\")",
         ".text(\"collector-establish\", \"Reevaluate collector\")",
         "finos-navigate",
     ] {
@@ -208,8 +211,28 @@ fn native_and_in_app_menus_list_screens() {
         "in-app File menu must include Restart Application"
     );
     assert!(
+        app.contains("Waiting for in-flight work, then closing the data file"),
+        "Restart must wait for in-flight work before closing SQLite"
+    );
+    assert!(
+        app.contains("aria-label=\"Restart in progress\""),
+        "Restart must show an on-screen in-progress banner"
+    );
+    assert!(
+        lib.contains("close_for_shutdown"),
+        "native Restart must close the live SQLite pool"
+    );
+    assert!(
+        lib.contains("data file still open"),
+        "Restart must fail if the data file did not close"
+    );
+    assert!(
         app.contains("navButton(\"collector-establish\", \"Reevaluate collector\")"),
         "in-app Tools must include Reevaluate collector"
+    );
+    assert!(
+        app.contains("navButton(\"cash-management\", \"Cash Management\")"),
+        "in-app Plan must include Cash Management"
     );
     assert!(
         app.contains("formatMenuWeek"),
@@ -222,6 +245,50 @@ fn native_and_in_app_menus_list_screens() {
     assert!(
         week.contains("${formatWeekNumber(id)} ${id.start} – ${id.end}"),
         "menu week must be dates only"
+    );
+    let bat = std::fs::read_to_string(root.join("apps/desktop/start-finos-dev.bat")).unwrap();
+    assert!(
+        bat.contains("wait_port_free") && bat.contains("1420"),
+        "dev start must wait until Vite port 1420 is free"
+    );
+    let supervisor =
+        std::fs::read_to_string(root.join("apps/desktop/start-finos-supervisor.bat")).unwrap();
+    assert!(
+        supervisor.contains("finos supervisor")
+            && supervisor.contains("restart.token")
+            && supervisor.contains("Start-Process -FilePath")
+            && supervisor.contains("start-finos-dev.bat"),
+        "supervisor must Start-Process start-finos-dev.bat on restart.token"
+    );
+    assert!(
+        !supervisor.contains("call start-finos-dev"),
+        "supervisor must not call start-finos-dev.bat as a child"
+    );
+    assert!(
+        lib.contains("restart.token")
+            && lib.contains("close_for_shutdown")
+            && lib.contains("app.restart()"),
+        "coding Restart writes restart.token then exits; household uses app.restart()"
+    );
+    for banned in [
+        "schtasks",
+        "FinosDevRestart",
+        "wmic",
+        "Invoke-CimMethod",
+        "spawn_dev_stack",
+    ] {
+        assert!(
+            !lib.contains(banned),
+            "lib.rs must not contain {banned}"
+        );
+    }
+    assert!(
+        app.contains("supervisor is running"),
+        "Restart copy must name the supervisor"
+    );
+    assert!(
+        !root.join("apps/desktop/spawn-finos-dev.cmd").exists(),
+        "spawn-finos-dev.cmd must be deleted"
     );
 }
 

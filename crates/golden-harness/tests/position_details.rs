@@ -1346,3 +1346,32 @@ async fn pay1_characteristics_are_visible_risk_not_auto_applied() {
     assert_eq!(inv["riskTier"], "");
 }
 
+#[test]
+fn position_information_table_edits_owner_facts_in_row() {
+    let ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/App.tsx"),
+    )
+    .unwrap();
+    let identity = ui
+        .split("id=\"hub-identity\"")
+        .nth(1)
+        .expect("hub-identity");
+    let identity = identity
+        .split("id=\"hub-calculator\"")
+        .next()
+        .expect("hub-calculator after identity");
+    assert!(
+        identity.contains("aria-label=\"Position risk\""),
+        "Risk must edit in the Position information table, not only a collapsed details block"
+    );
+    assert!(identity.contains("aria-label=\"Position frequency\""));
+    assert!(identity.contains("aria-label=\"Position name\""));
+    assert!(identity.contains("aria-label=\"Position provider\""));
+    assert!(identity.contains("aria-label=\"Position underlying\""));
+    assert!(identity.contains("RISK_TIERS"));
+    assert!(
+        !identity.contains("Undecided"),
+        "Undecided is not a permitted owner risk"
+    );
+}
+

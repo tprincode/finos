@@ -9,6 +9,7 @@ pub mod advisory;
 pub mod allocation;
 pub mod backtest;
 pub mod calculator;
+pub mod cash_management;
 pub mod cart;
 pub mod classification;
 pub mod collector;

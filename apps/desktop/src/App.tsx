@@ -39,6 +39,10 @@ import {
   type RocResearchGet,
   type SecurityListItem,
   type TrendsGet,
+  type CashManagementWeekGet,
+  type CashManagementRemindersGet,
+  type CashManagementMonthGet,
+  type MagiProjection,
   type AccountValueHomeGet,
   type DataSnapshotExport,
 } from "@finos/app-contracts";
@@ -49,6 +53,7 @@ import { TrendsChartsPanel } from "./TrendsCharts";
 import { DividendWeeksPanel } from "./DividendWeeks";
 import { DeclarationPaymentsChart } from "./DeclarationPaymentsChart";
 import { TrendsCapturePanel, type TrendsWeekCapture } from "./TrendsCapture";
+import { CashManagementPanel } from "./CashManagement";
 import { HomeAccountCharts } from "./HomeAccountCharts";
 import { openImportWizardWindow } from "./ImportWizard";
 import {
@@ -78,7 +83,6 @@ import {
 import "./App.css";
 
 const RISK_TIERS = ["Foundation", "Core", "Risk On"];
-const OWNER_RISK_CHOICES = ["Foundation", "Core", "Risk On", "Undecided"];
 
 const emptyLookthrough = (): LookthroughResearch => ({
   themeStrategy: "",
@@ -604,6 +608,7 @@ type Screen =
   | "calculator"
   | "dashboard"
   | "trends"
+  | "cash-management"
   | "holdings"
   | "import"
   | "settings"
@@ -620,6 +625,7 @@ const SCREENS: readonly Screen[] = [
   "calculator",
   "dashboard",
   "trends",
+  "cash-management",
   "holdings",
   "import",
   "settings",
@@ -824,12 +830,15 @@ type CollectorStats = {
   assigned: number;
   enabled: number;
   ranToday: number;
+  stillMiss: number;
+  hadMissToday: number;
   missToday: number;
   unchangedToday: number;
   cashPar: number;
   priceCurrent: number;
   priceStale: number;
   openExceptions: number;
+  ranOutsideFleet?: string[];
   asOfDate: string;
 };
 
@@ -954,6 +963,7 @@ export default function App() {
   const [handoff, setHandoff] = useState<HandoffStatus | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [deviceName, setDeviceName] = useState("");
   const [asOfDate, setAsOfDate] = useState(() =>
@@ -968,6 +978,12 @@ export default function App() {
   const [trends, setTrends] = useState<TrendsGet | null>(null);
   const [trendsError, setTrendsError] = useState<string | null>(null);
   const [trendsCapture, setTrendsCapture] = useState<TrendsWeekCapture | null>(null);
+  const [cashWeek, setCashWeek] = useState<CashManagementWeekGet | null>(null);
+  const [cashReminders, setCashReminders] =
+    useState<CashManagementRemindersGet | null>(null);
+  const [cashMonth, setCashMonth] = useState<CashManagementMonthGet | null>(null);
+  const [cashDirty, setCashDirty] = useState(false);
+  const [cashMagi, setCashMagi] = useState<MagiProjection | null>(null);
   const [accountValues, setAccountValues] = useState<AccountValueHomeGet | null>(null);
   const [perfRange, setPerfRange] = useState<DividendPerformanceRange>("ytd");
   const [dividendPerf, setDividendPerf] = useState<DividendPerformanceGet | null>(null);
@@ -1130,7 +1146,7 @@ export default function App() {
     source: string;
   } | null>(null);
   /** Post–Complete research owner risk; never auto-applied. */
-  const [ownerRiskChoice, setOwnerRiskChoice] = useState("Undecided");
+  const [ownerRiskChoice, setOwnerRiskChoice] = useState("");
   const [addLotQuery, setAddLotQuery] = useState("");
   const [addLotSymbolOpen, setAddLotSymbolOpen] = useState(false);
   const [wizTierSuggestion, setWizTierSuggestion] = useState<{
@@ -1157,6 +1173,7 @@ export default function App() {
   } | null>(null);
   const [snapshotConfirm, setSnapshotConfirm] = useState(false);
   const jobsBusyRef = useRef(false);
+  const restartingRef = useRef(false);
   const lastPriceKickoff = useRef(false);
   const [collectorItems, setCollectorItems] = useState<CollectorSetItem[]>([]);
   const [collectorStats, setCollectorStats] = useState<CollectorStats | null>(null);
@@ -2169,7 +2186,7 @@ export default function App() {
 
   const refreshData = useCallback(async (asOf: string) => {
     await client.executeQuery("CashDividendCoverageGet", { asOfDate: asOf });
-    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult, accountValueResult] =
+    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, cashWeekResult, cashRemindersResult, cashMonthResult, cashMagiResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult, accountValueResult] =
       await Promise.all([
         client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf }),
         client.executeQuery("IncomePlanGridGet", {
@@ -2182,6 +2199,10 @@ export default function App() {
         client.executeQuery("DashboardBurndownGet", { asOfDate: asOf }),
         client.executeQuery("TrendsGet", { asOfDate: asOf }),
         client.executeQuery("TrendsWeekGet", { asOfDate: asOf }),
+        client.executeQuery("CashManagementWeekGet", { asOfDate: asOf }),
+        client.executeQuery("CashManagementRemindersGet", { asOfDate: asOf }),
+        client.executeQuery("CashManagementMonthGet", { asOfDate: asOf }),
+        client.executeQuery("MagiProjectionGet"),
         client.executeQuery("HoldingsGet"),
         client.executeQuery("ExceptionList"),
         client.executeQuery("DataSummaryGet"),
@@ -2212,7 +2233,7 @@ export default function App() {
           asOfDate: asOf,
           range: perfRangeRef.current,
         }),
-        client.executeQuery("AccountValueHomeGet", { asOfDate: asOf }),
+        client.executeQuery("AccountValueHomeGet"),
       ]);
     const failed = [
       weekResult,
@@ -2220,6 +2241,9 @@ export default function App() {
       burnResult,
       trendsResult,
       trendsWeekResult,
+      cashWeekResult,
+      cashRemindersResult,
+      cashMonthResult,
       holdingsResult,
       exceptionResult,
       summaryResult,
@@ -2265,6 +2289,22 @@ export default function App() {
     }
     if (trendsWeekResult.ok) {
       setTrendsCapture(parse<TrendsWeekCapture>(trendsWeekResult.bodyJson));
+    }
+    if (cashWeekResult.ok) {
+      setCashWeek(parse<CashManagementWeekGet>(cashWeekResult.bodyJson));
+    }
+    if (cashRemindersResult.ok) {
+      setCashReminders(
+        parse<CashManagementRemindersGet>(cashRemindersResult.bodyJson),
+      );
+    }
+    if (cashMonthResult.ok) {
+      setCashMonth(parse<CashManagementMonthGet>(cashMonthResult.bodyJson));
+    }
+    if (cashMagiResult.ok) {
+      setCashMagi(parse<MagiProjection>(cashMagiResult.bodyJson));
+    } else {
+      setCashMagi(null);
     }
     setHoldings(parse<HoldingsGet>(holdingsResult.bodyJson));
     setCalculator(parse<CalculatorGet>(calcResult.bodyJson));
@@ -2463,9 +2503,7 @@ export default function App() {
         );
         return;
       }
-      const snap = await client.executeCommand("AccountValueSnapshotRecord", {
-        asOfDate: asOfDate || undefined,
-      });
+      const snap = await client.executeCommand("AccountValueSnapshotRecord", {});
       if (!snap.ok && snap.errorCode !== "unknown_command") {
         setActionMessage(
           `Account value snapshot failed: ${snap.errorCode ?? "error"}.`,
@@ -2913,9 +2951,7 @@ export default function App() {
         await refreshDeclarations();
         return;
       }
-      await client.executeCommand("AccountValueSnapshotRecord", {
-        asOfDate: asOfDate || undefined,
-      });
+      await client.executeCommand("AccountValueSnapshotRecord", {});
       await refreshData(asOfDate);
     })().catch((err: unknown) => {
       setActionMessage(String(err));
@@ -4237,7 +4273,7 @@ export default function App() {
         source: "issuer page + AiAnalyze draft",
       });
       setOwnerRiskChoice(
-        RISK_TIERS.includes(nextSuggested) ? nextSuggested : "Undecided",
+        RISK_TIERS.includes(nextSuggested) ? nextSuggested : "",
       );
       setWizAiThesis(overview);
 
@@ -4558,11 +4594,13 @@ export default function App() {
     ...(pdDirty ? (["position-details"] as const) : []),
     ...(wizDirty ? (["new-investment"] as const) : []),
     ...(addLotDirty ? (["add-lot"] as const) : []),
+    ...(cashDirty ? (["cash-management"] as const) : []),
   ];
   const dirtyScreenNames = [
     pdDirty ? "Position Details" : null,
     wizDirty ? "Add Position" : null,
     addLotDirty ? "Add Lot" : null,
+    cashDirty ? "Cash Management" : null,
   ]
     .filter((name): name is string => name != null)
     .join(" and ");
@@ -4595,6 +4633,7 @@ export default function App() {
     if (pdDirty) cancelPositionEdits();
     if (wizDirty) cancelWizEdits();
     if (addLotDirty) cancelAddLotEdits();
+    if (cashDirty) setCashDirty(false);
   };
 
   const saveOwnerPeriod = async () => {
@@ -4723,62 +4762,18 @@ export default function App() {
       return;
     }
     if (!RISK_TIERS.includes(ownerRiskChoice)) {
-      setActionMessage(
-        "Choose Foundation, Core, or Risk On to set risk. Or Leave undecided.",
-      );
+      setActionMessage("Choose Foundation, Core, or Risk On. Risk is mandatory.");
       return;
     }
     await applySuggestedTier(ownerRiskChoice);
     setPdDraft((prev) => (prev ? { ...prev, risk: ownerRiskChoice } : prev));
   };
 
-  const leaveRiskUndecided = async () => {
-    if (!investment) {
-      return;
-    }
-    const cadence =
-      parseCadence(pdDraft?.freq || investment.paymentFrequency || "")?.label ||
-      investment.paymentFrequency ||
-      "";
-    if (!cadence) {
-      setActionMessage("Frequency must be set before leaving risk undecided.");
-      return;
-    }
-    setBusy(true);
-    setActionMessage(null);
-    try {
-      const result = await client.executeCommand("PositionCharacteristicUpsert", {
-        securityId: investment.securityId,
-        paymentFrequency: cadence,
-        riskTier: "Undecided",
-        provider: investment.provider || pdDraft?.provider || undefined,
-        underlying: investment.underlying || pdDraft?.underlying || undefined,
-        needsRocResearch: true,
-        isActive: investment.isActive !== false,
-      });
-      if (!result.ok) {
-        setActionMessage(
-          `Leave undecided failed: ${result.errorCode ?? "error"}`,
-        );
-        return;
-      }
-      setOwnerRiskChoice("Undecided");
-      setPdDraft((prev) => (prev ? { ...prev, risk: "Undecided" } : prev));
-      setActionMessage("Risk left undecided. Overview stays; not auto-applied.");
-      await refreshData(asOfDate);
-      await loadInvestment(investment.symbol, { skipPriceRefresh: true });
-    } catch (err: unknown) {
-      setActionMessage(String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   jobsBusyRef.current = busy || lastPriceBusy || declarationBusy;
 
   const leaveWithoutSaving = (next: () => void, target?: Screen) => {
     if (
-      (pdDirty || wizDirty || addLotDirty) &&
+      (pdDirty || wizDirty || addLotDirty || cashDirty) &&
       (target == null || !dirtyTargets.includes(target))
     ) {
       setActionMessage(
@@ -4793,14 +4788,22 @@ export default function App() {
   leaveWithoutSavingRef.current = leaveWithoutSaving;
 
   const runAppRestart = useCallback(async () => {
-    if (pdDirty || wizDirty || addLotDirty) {
+    if (restartingRef.current) {
+      return;
+    }
+    if (pdDirty || wizDirty || addLotDirty || cashDirty) {
       setActionMessage(
         "Save or Cancel before restarting. Restart stays blocked while edits are unsaved.",
       );
       return;
     }
-    setActionMessage("Restarting… pausing jobs and closing the data file.");
-    const deadline = Date.now() + 8000;
+    restartingRef.current = true;
+    setRestarting(true);
+    setActionMessage(
+      "Restarting coding launch. Waiting for in-flight work, then closing the data file. A new finos (dev) console opens if the supervisor is running.",
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const deadline = Date.now() + 30_000;
     while (jobsBusyRef.current && Date.now() < deadline) {
       await new Promise((resolve) => window.setTimeout(resolve, 200));
     }
@@ -4814,9 +4817,11 @@ export default function App() {
     try {
       await invoke("app_restart");
     } catch (err: unknown) {
+      restartingRef.current = false;
+      setRestarting(false);
       setActionMessage(`Restart failed: ${String(err)}`);
     }
-  }, [pdDirty, wizDirty, addLotDirty]);
+  }, [pdDirty, wizDirty, addLotDirty, cashDirty]);
   const runAppRestartRef = useRef(runAppRestart);
   runAppRestartRef.current = runAppRestart;
 
@@ -4917,10 +4922,8 @@ export default function App() {
       setActionMessage("Choose a symbol first.");
       return;
     }
-    if (!OWNER_RISK_CHOICES.includes(pdDraft.risk)) {
-      setActionMessage(
-        "Choose Foundation, Core, Risk On, or Undecided before saving.",
-      );
+    if (!RISK_TIERS.includes(pdDraft.risk)) {
+      setActionMessage("Choose Foundation, Core, or Risk On before saving.");
       return;
     }
     const cadence = parseCadence(pdDraft.freq);
@@ -6161,7 +6164,7 @@ export default function App() {
       disabled={
         busy ||
         (screen !== id &&
-          (pdDirty || wizDirty || addLotDirty) &&
+          (pdDirty || wizDirty || addLotDirty || cashDirty) &&
           !dirtyTargets.includes(id))
       }
       onClick={() => {
@@ -6253,6 +6256,7 @@ export default function App() {
                 role="menuitem"
                 className="menubar-item"
                 aria-label="Restart Application"
+                disabled={restarting}
                 onClick={() => {
                   setOpenMenu(null);
                   void runAppRestart();
@@ -6281,6 +6285,7 @@ export default function App() {
               {navButton("calculator", "Calculator")}
               {navButton("dashboard", "Dashboard")}
               {navButton("trends", "Trends")}
+              {navButton("cash-management", "Cash Management")}
             </>,
           )}
           {menuGroup(
@@ -6315,6 +6320,19 @@ export default function App() {
           {formatMenuWeek(incomeWeek?.start ?? asOfDate)}
         </p>
       </nav>
+      {restarting ? (
+        <div
+          className="blocked unsaved-bar restart-bar"
+          role="status"
+          aria-busy="true"
+          aria-label="Restart in progress"
+        >
+          <p>
+            Restart in progress. Waiting for in-flight work, then closing the
+            data file. Do not force-quit.
+          </p>
+        </div>
+      ) : null}
       <main className="container" aria-label="finos">
       {screen === "home" ? (
         <>
@@ -6412,8 +6430,8 @@ export default function App() {
                 {formatCount(summary.declarationCollectorCount ?? 0)}
               </dd>
               <p className="ps-note">
-                Today {summary.declarationAsOf?.trim() || "—"}. One issuer retrieve
-                per enabled collector
+                Last retrieve today OK {summary.declarationAsOf?.trim() || "—"}.
+                One issuer retrieve per enabled collector
               </p>
               <button
                 type="button"
@@ -6435,6 +6453,23 @@ export default function App() {
                   : "Refresh declarations"}
               </button>
             </div>
+            <div className="ps-cell ps-coverage">
+              <dt>Open tickets</dt>
+              <dd>{formatCount(summary.openTicketCount ?? 0)}</dd>
+              <p className="ps-note">
+                Stay until filed — not today&apos;s miss count
+              </p>
+              <button
+                type="button"
+                aria-label="Work Tickets"
+                onClick={() => {
+                  setTicketFocusSymbol("");
+                  setScreen("tickets");
+                }}
+              >
+                Work Tickets
+              </button>
+            </div>
             <div className="ps-cell ps-count">
               <dt>Yield events</dt>
               <dd>{formatCount(summary.yieldCount)}</dd>
@@ -6448,6 +6483,7 @@ export default function App() {
             <div className="ps-cell ps-count">
               <dt>Calculator plans</dt>
               <dd>{formatCount(summary.planCount)}</dd>
+              <p className="ps-note">DIV-1 and CASH collector plans</p>
             </div>
             <div className="ps-cell ps-date">
               <dt>Last yield</dt>
@@ -6495,7 +6531,7 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      {pdDirty || wizDirty || addLotDirty ? (
+      {pdDirty || wizDirty || addLotDirty || cashDirty ? (
         <div className="blocked unsaved-bar" role="alert">
           <p>
             Unsaved edits on {dirtyScreenNames}. Save or Cancel. Other screens stay
@@ -6516,7 +6552,9 @@ export default function App() {
                     ? "Position Details"
                     : id === "new-investment"
                       ? "Add Position"
-                      : "Add Lot"}
+                      : id === "cash-management"
+                        ? "Cash Management"
+                        : "Add Lot"}
                 </button>
               ))}
             <button
@@ -6532,7 +6570,8 @@ export default function App() {
       ) : null}
       {(screen !== "home" ||
         /snapshot|Saved |Restart/i.test(actionMessage ?? "")) &&
-      actionMessage ? (
+      actionMessage &&
+      !restarting ? (
         <p>{actionMessage}</p>
       ) : null}
       {writesBlocked ? (
@@ -6734,10 +6773,10 @@ export default function App() {
         <section aria-label="Calculator">
           <h2>Calculator</h2>
           <p>
-            Distribution history for paying positions, Friday columns. Default period is
-            the last 60 days; change From/To or pick This month, 90 days, or year to date.
-            Positions tagged None (does not pay) stay off Calculator. Empty is unknown,
-            not $0.00.
+            Distribution history for DIV-1 and CASH collector positions, Friday columns.
+            Default period is the last 60 days; change From/To or pick This month, 90 days,
+            or year to date. Names removed from collectors stay stored and stay off this
+            view. Empty is unknown, not $0.00.
           </p>
           <DeclarationHistoryPanel
             history={declHistory}
@@ -6880,6 +6919,7 @@ export default function App() {
                 <button
                   type="button"
                   aria-label="Save stored facts"
+                  className={pdDirty ? "is-unsaved" : undefined}
                   disabled={busy || writesBlocked || !pdDirty}
                   onClick={() => void saveStoredFacts()}
                 >
@@ -7038,7 +7078,8 @@ export default function App() {
                           onChange={(e) => setOwnerRiskChoice(e.target.value)}
                           disabled={busy || writesBlocked}
                         >
-                          {OWNER_RISK_CHOICES.map((tier) => (
+                          <option value="">Choose owner tier</option>
+                          {RISK_TIERS.map((tier) => (
                             <option key={tier} value={tier}>
                               {suggested && tier === suggested
                                 ? `${tier} (suggestion)`
@@ -7061,7 +7102,7 @@ export default function App() {
                         </p>
                       ) : (
                         <p role="note">
-                          No suggested tier. Choose one or Leave undecided.
+                          No suggested tier. Choose Foundation, Core, or Risk On.
                         </p>
                       )}
                       <div className="buttons">
@@ -7076,14 +7117,6 @@ export default function App() {
                           onClick={() => void setOwnerRisk()}
                         >
                           Set risk
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Leave undecided"
-                          disabled={busy || writesBlocked}
-                          onClick={() => void leaveRiskUndecided()}
-                        >
-                          Leave undecided
                         </button>
                       </div>
                     </fieldset>
@@ -7196,6 +7229,10 @@ export default function App() {
               </nav>
               <section className="hub-panel" id="hub-identity" aria-label="Position information">
                 <h3>Position information</h3>
+                <p>
+                  Owner facts edit in this table. Risk is mandatory: Foundation, Core,
+                  or Risk On. Frequency is required. Save or Cancel.
+                </p>
                 <div className="table-wrap">
                   <table aria-label="Position information">
                     <thead>
@@ -7211,32 +7248,70 @@ export default function App() {
                       </tr>
                       <tr>
                         <th scope="row">Name</th>
-                        <td>{pdDraft.name.trim() || investment.name || "—"}</td>
+                        <td>
+                          <input
+                            aria-label="Position name"
+                            value={pdDraft.name}
+                            onChange={(e) => patchDraft({ name: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          />
+                        </td>
                       </tr>
                       <tr>
                         <th scope="row">Provider</th>
-                        <td>{pdDraft.provider.trim() || investment.provider || "—"}</td>
+                        <td>
+                          <input
+                            aria-label="Position provider"
+                            value={pdDraft.provider}
+                            onChange={(e) => patchDraft({ provider: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          />
+                        </td>
                       </tr>
                       <tr>
                         <th scope="row">Underlying</th>
                         <td>
-                          {pdDraft.underlying.trim() ||
-                            investment.underlying?.trim() ||
-                            "—"}
+                          <input
+                            aria-label="Position underlying"
+                            value={pdDraft.underlying}
+                            onChange={(e) => patchDraft({ underlying: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          />
                         </td>
                       </tr>
                       <tr>
                         <th scope="row">Risk</th>
                         <td>
-                          {pdDraft.risk.trim() || investment.riskTier || "—"}
+                          <select
+                            aria-label="Position risk"
+                            value={pdDraft.risk}
+                            onChange={(e) => patchDraft({ risk: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          >
+                            <option value="">Choose owner tier</option>
+                            {RISK_TIERS.map((tier) => (
+                              <option key={tier} value={tier}>
+                                {tier}
+                              </option>
+                            ))}
+                          </select>
                         </td>
                       </tr>
                       <tr>
                         <th scope="row">Frequency</th>
                         <td>
-                          {pdDraft.freq.trim() ||
-                            investment.paymentFrequency ||
-                            "—"}
+                          <select
+                            aria-label="Position frequency"
+                            value={pdDraft.freq}
+                            onChange={(e) => patchDraft({ freq: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          >
+                            <option value="">Choose cadence</option>
+                            <option value="Weekly">Weekly (52)</option>
+                            <option value="Monthly">Monthly (12)</option>
+                            <option value="Quarterly">Quarterly (4)</option>
+                            <option value="None">None (does not pay)</option>
+                          </select>
                         </td>
                       </tr>
                       <tr>
@@ -7719,7 +7794,7 @@ export default function App() {
                           disabled={busy || writesBlocked}
                         >
                           <option value="">Choose owner tier</option>
-                          {OWNER_RISK_CHOICES.map((tier) => (
+                          {RISK_TIERS.map((tier) => (
                             <option key={tier} value={tier}>
                               {tier}
                             </option>
@@ -8764,6 +8839,7 @@ export default function App() {
                 <button
                   type="button"
                   aria-label="Save owner period"
+                  className={periodDirty ? "is-unsaved" : undefined}
                   disabled={busy || writesBlocked || !periodReady || !periodDirty}
                   onClick={() => void saveOwnerPeriod()}
                 >
@@ -9128,6 +9204,123 @@ export default function App() {
         </section>
       ) : null}
 
+      {screen === "cash-management" ? (
+        <section aria-label="Cash Management">
+          <h2>Cash Management</h2>
+          <p>
+            Post a distribution once: account, gross, federal and state
+            withholding. Net is calculated. Trends charts stay on Trends.
+          </p>
+          <CashManagementPanel
+            week={cashWeek}
+            month={cashMonth}
+            reminders={cashReminders}
+            magi={cashMagi}
+            accounts={accounts}
+            busy={busy}
+            onDirtyChange={setCashDirty}
+            onReload={(d) => {
+              void (async () => {
+                const [r, rem, mo] = await Promise.all([
+                  client.executeQuery("CashManagementWeekGet", {
+                    asOfDate: d,
+                  }),
+                  client.executeQuery("CashManagementRemindersGet", {
+                    asOfDate: d,
+                  }),
+                  client.executeQuery("CashManagementMonthGet", {
+                    asOfDate: d,
+                  }),
+                ]);
+                if (r.ok && r.bodyJson) {
+                  setCashWeek(JSON.parse(r.bodyJson) as CashManagementWeekGet);
+                }
+                if (rem.ok && rem.bodyJson) {
+                  setCashReminders(
+                    JSON.parse(rem.bodyJson) as CashManagementRemindersGet,
+                  );
+                }
+                if (mo.ok && mo.bodyJson) {
+                  setCashMonth(
+                    JSON.parse(mo.bodyJson) as CashManagementMonthGet,
+                  );
+                }
+              })();
+            }}
+            onSave={async (body) => {
+              const r = await client.executeCommand("CashDistributionPost", body);
+              if (!r.ok) {
+                setActionMessage(
+                  `Cash distribution failed: ${r.errorCode ?? "error"}`,
+                );
+                return false;
+              }
+              const asOf = (body.occurredOn as string) || asOfDate;
+              const [week, rem, mo] = await Promise.all([
+                client.executeQuery("CashManagementWeekGet", {
+                  asOfDate: asOf,
+                }),
+                client.executeQuery("CashManagementRemindersGet", {
+                  asOfDate: asOf,
+                }),
+                client.executeQuery("CashManagementMonthGet", {
+                  asOfDate: asOf,
+                }),
+              ]);
+              if (week.ok && week.bodyJson) {
+                setCashWeek(JSON.parse(week.bodyJson) as CashManagementWeekGet);
+              }
+              if (rem.ok && rem.bodyJson) {
+                setCashReminders(
+                  JSON.parse(rem.bodyJson) as CashManagementRemindersGet,
+                );
+              }
+              if (mo.ok && mo.bodyJson) {
+                setCashMonth(JSON.parse(mo.bodyJson) as CashManagementMonthGet);
+              }
+              setCashDirty(false);
+              setActionMessage("Cash distribution saved.");
+              return true;
+            }}
+            onSsaConfirm={async (body) => {
+              const r = await client.executeCommand("SsaConfirm", body);
+              if (!r.ok) {
+                setActionMessage(
+                  `Social Security retirement confirm failed: ${r.errorCode ?? "error"}`,
+                );
+                return false;
+              }
+              const asOf = (body.occurredOn as string) || asOfDate;
+              const [week, rem, mo] = await Promise.all([
+                client.executeQuery("CashManagementWeekGet", {
+                  asOfDate: asOf,
+                }),
+                client.executeQuery("CashManagementRemindersGet", {
+                  asOfDate: asOf,
+                }),
+                client.executeQuery("CashManagementMonthGet", {
+                  asOfDate: asOf,
+                }),
+              ]);
+              if (week.ok && week.bodyJson) {
+                setCashWeek(JSON.parse(week.bodyJson) as CashManagementWeekGet);
+              }
+              if (rem.ok && rem.bodyJson) {
+                setCashReminders(
+                  JSON.parse(rem.bodyJson) as CashManagementRemindersGet,
+                );
+              }
+              if (mo.ok && mo.bodyJson) {
+                setCashMonth(JSON.parse(mo.bodyJson) as CashManagementMonthGet);
+              }
+              setCashDirty(false);
+              setActionMessage("Tom Social Security retirement confirmed.");
+              return true;
+            }}
+          />
+        </section>
+      ) : null}
+
       {screen === "holdings" ? (
         <section aria-label="Holdings">
           <h2>Holdings</h2>
@@ -9359,6 +9552,7 @@ export default function App() {
               <button
                 type="button"
                 aria-label="Save Process A research"
+                className={wizDirty ? "is-unsaved" : undefined}
                 disabled={busy || writesBlocked || !wizSecurityId}
                 onClick={() => saveProcessAResearch()}
               >
@@ -9844,6 +10038,7 @@ export default function App() {
                   <button
                     type="button"
                     aria-label="Confirm Plan"
+                    className={wizDirty ? "is-unsaved" : undefined}
                     disabled={
                       busy ||
                       writesBlocked ||
@@ -9905,6 +10100,7 @@ export default function App() {
             <button
               type="button"
               aria-label="Open lot"
+              className={addLotDirty ? "is-unsaved" : undefined}
               disabled={
                 busy ||
                 writesBlocked ||
@@ -10519,29 +10715,45 @@ export default function App() {
           ) : null}
           {collectorStats ? (
             <p aria-label="Collector statistics">
-              Assigned {formatCount(collectorStats.assigned)}.
-              Enabled {formatCount(collectorStats.enabled)}.
-              Ran {formatCount(collectorStats.ranToday)} symbols today.
-              Miss {formatCount(collectorStats.missToday)} symbols.
-              Unchanged {formatCount(collectorStats.unchangedToday)} symbols.
-              Price current {formatCount(collectorStats.priceCurrent)} / stale{" "}
-              {formatCount(collectorStats.priceStale)}.
-              Open tickets {formatCount(collectorStats.openExceptions)}.
+              Assigned {formatCount(collectorStats.assigned)}. Enabled{" "}
+              {formatCount(collectorStats.enabled)}. We collect these{" "}
+              {formatCount(collectorStats.enabled)} income names. Ran{" "}
+              {formatCount(collectorStats.ranToday)} of those{" "}
+              {formatCount(collectorStats.enabled)} we asked the issuer about
+              today
+              {(collectorStats.ranOutsideFleet ?? []).length > 0
+                ? ` (also retrieved ${(collectorStats.ranOutsideFleet ?? []).join(", ")} — not income fleet)`
+                : ""}
+              . Still miss {formatCount(collectorStats.stillMiss ?? collectorStats.missToday)}
+              — last ask today is not OK. Had a miss today{" "}
+              {formatCount(collectorStats.hadMissToday ?? 0)} — failed at least
+              once today; a later retry may have worked. Unchanged{" "}
+              {formatCount(collectorStats.unchangedToday)} — issuer page matched
+              the last copy; we did not rewrite Plan $. Price current{" "}
+              {formatCount(collectorStats.priceCurrent)} / stale{" "}
+              {formatCount(collectorStats.priceStale)} — share price quotes, not
+              dividend pages. Open tickets{" "}
+              {formatCount(collectorStats.openExceptions)} — owner work still
+              open, including older days.
             </p>
           ) : null}
           {(() => {
             const today = new Date().toISOString().slice(0, 10);
-            const todayMisses = collectorItems.filter(
+            const fleetEnabled = collectorItems.filter(
               (row) =>
-                row.collectorEnabled &&
-                row.lastRunOk === false &&
-                (row.lastRunAt || "").startsWith(today),
+                row.collectorEnabled && (row.declarationSource || "").trim(),
             );
-            const todayOk = collectorItems.filter(
+            const todayOk = fleetEnabled.filter(
               (row) =>
-                row.collectorEnabled &&
                 row.lastRunOk === true &&
                 (row.lastRunAt || "").startsWith(today),
+            );
+            const todayMisses = fleetEnabled.filter(
+              (row) =>
+                !(
+                  row.lastRunOk === true &&
+                  (row.lastRunAt || "").startsWith(today)
+                ),
             );
             const latestStored = [...todayOk, ...todayMisses]
               .map((row) => row.lastRunAt || "")
@@ -10553,8 +10765,9 @@ export default function App() {
                 <h3>Today&apos;s declaration status</h3>
                 <p>
                   As of {formatCollectorClock(latestStored || collectorStatusAt)}.{" "}
-                  {formatCount(todayOk.length)} ok · {formatCount(todayMisses.length)} miss
-                  of {formatCount(collectorItems.filter((r) => r.collectorEnabled).length)} enabled.
+                  {formatCount(todayOk.length)} last retrieve today OK ·{" "}
+                  {formatCount(todayMisses.length)} still miss of{" "}
+                  {formatCount(fleetEnabled.length)} enabled.
                   Older tickets below are a work queue, not this run.
                 </p>
                 {todayMisses.length > 0 ? (
@@ -11074,7 +11287,8 @@ export default function App() {
           <p>
             Owner-facing functions the golden harness must still find after a
             change. Last changed is when that function's files last moved. Last
-            verified is when its sentinel last passed.
+            verified is when its sentinel last passed. Also verify lists the
+            golden test names that must still pass when that function changes.
           </p>
           <div className="table-wrap">
             <table aria-label="Core functions">
@@ -11084,6 +11298,7 @@ export default function App() {
                   <th scope="col">Function</th>
                   <th scope="col">Last changed</th>
                   <th scope="col">Last verified</th>
+                  <th scope="col">Also verify</th>
                 </tr>
               </thead>
               <tbody>
@@ -11094,11 +11309,12 @@ export default function App() {
                       <td>{row.function}</td>
                       <td>{row.lastChanged}</td>
                       <td>{row.lastVerified}</td>
+                      <td>{row.alsoVerify?.length ? row.alsoVerify.join(", ") : "—"}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={4}>Loading core functions…</td>
+                    <td colSpan={5}>Loading core functions…</td>
                   </tr>
                 )}
               </tbody>
