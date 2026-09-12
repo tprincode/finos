@@ -357,16 +357,21 @@ fn year_month(raw: &str) -> Option<&str> {
     }
 }
 
-/// Issuer declaration belongs on this week's payable: period in the Sat–Fri week,
-/// or same year-month as the week's pay-on.
+/// Issuer declaration belongs on this week's payable: period in the Sat–Fri week.
+/// Monthly leftover-ex may match the same year-month as the week's pay-on.
+/// Weekly (52) never clones a prior-week payable onto this week's forecast pay-on.
 pub fn declaration_belongs_in_week(
     payment_period: &str,
     week_start: &str,
     week_end: &str,
     pay_on: &str,
+    periods_per_year: u8,
 ) -> bool {
     if occurred_in_week(payment_period, week_start, week_end) {
         return true;
+    }
+    if periods_per_year == 52 {
+        return false;
     }
     if pay_on.trim().is_empty() || !occurred_in_week(pay_on, week_start, week_end) {
         return false;
@@ -501,19 +506,47 @@ mod tests {
             "2026-08-31",
             "2026-08-29",
             "2026-09-04",
-            "2026-08-31"
+            "2026-08-31",
+            12
         ));
         assert!(declaration_belongs_in_week(
             "2026-08-31",
             "2026-08-22",
             "2026-08-28",
-            "2026-08-28"
+            "2026-08-28",
+            12
         ));
         assert!(!declaration_belongs_in_week(
             "2026-07-31",
             "2026-08-29",
             "2026-09-04",
-            "2026-08-31"
+            "2026-08-31",
+            12
+        ));
+    }
+
+    #[test]
+    fn weekly_does_not_clone_last_payable_onto_forecast_friday() {
+        assert!(declaration_belongs_in_week(
+            "2026-09-15",
+            "2026-09-12",
+            "2026-09-18",
+            "2026-09-15",
+            52
+        ));
+        assert!(!declaration_belongs_in_week(
+            "2026-09-11",
+            "2026-09-12",
+            "2026-09-18",
+            "2026-09-18",
+            52
+        ));
+        assert!(declaration_belongs_in_week(
+            "2026-09-11",
+            "2026-09-05",
+            "2026-09-11",
+            "2026-09-11",
+            52
         ));
     }
 

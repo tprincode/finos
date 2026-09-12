@@ -365,6 +365,7 @@ fn issuer_declaration_for_week<'a>(
     week_start: &str,
     week_end: &str,
     pay_on: &str,
+    periods_per_year: u8,
 ) -> Option<&'a IssuerDeclarationRecord> {
     decls
         .iter()
@@ -376,6 +377,7 @@ fn issuer_declaration_for_week<'a>(
                     week_start,
                     week_end,
                     pay_on,
+                    periods_per_year,
                 )
         })
         .max_by(|a, b| a.entered_at.as_str().cmp(b.entered_at.as_str()))
@@ -1344,7 +1346,8 @@ async fn income_plan_week_with(
         }
         let decls = decl_cache.get(security_id).map(|v| v.as_slice()).unwrap_or(&[]);
         let pay_hint = calendar_pay.clone().unwrap_or_default();
-        let decl_row = issuer_declaration_for_week(decls, &week.start, &week.end, &pay_hint);
+        let decl_row =
+            issuer_declaration_for_week(decls, &week.start, &week.end, &pay_hint, periods);
         let declaration_known = decl_row.is_some();
         if calendar_pay.is_none() && !actual_known && !declaration_known {
             continue;
