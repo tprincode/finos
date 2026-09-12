@@ -6,6 +6,7 @@ use application_core::contracts::{
     CommandRequest, CommandResult, QueryRequest, QueryResult, FINANCE_CLIENT_CONTRACT_VERSION,
 };
 use application_core::ports::advisory::{Advisory, MissingKeyAdvisory};
+use application_core::ports::canonical::Canonical;
 use application_core::queries::{execute_command_on, execute_query_on};
 use storage_sqlite::LocalPlatform;
 use tauri::menu::{MenuBuilder, SubmenuBuilder};
@@ -13,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 const POSITION_RESEARCH_PROGRESS_EVENT: &str = "position-research-progress";
+const DECLARATION_REFRESH_PROGRESS_EVENT: &str = "declaration-refresh-progress";
 const POSITION_RESEARCH_TOTAL_STEPS: u32 = 4;
 
 #[derive(Clone, serde::Serialize)]
@@ -21,6 +23,38 @@ struct PositionResearchProgressPayload {
     step: u32,
     total: u32,
     label: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeclarationRefreshProgressPayload {
+    current: u32,
+    total: u32,
+    symbol: String,
+}
+
+fn emit_declaration_refresh_progress(app: &AppHandle, current: u32, total: u32, symbol: &str) {
+    let _ = app.emit(
+        DECLARATION_REFRESH_PROGRESS_EVENT,
+        DeclarationRefreshProgressPayload {
+            current,
+            total,
+            symbol: symbol.to_string(),
+        },
+    );
+}
+
+fn merge_declaration_collect(
+    into: &mut import_engine::DeclarationCollectOutcome,
+    add: import_engine::DeclarationCollectOutcome,
+) {
+    into.candidates.extend(add.candidates);
+    into.pay_dates.extend(add.pay_dates);
+    into.misses.extend(add.misses);
+    into.unchanged.extend(add.unchanged);
+    if !add.fetched_source_url.is_empty() {
+        into.fetched_source_url = add.fetched_source_url;
+    }
 }
 
 fn emit_position_research_progress(app: &AppHandle, step: u32, label: &str) {
@@ -81,7 +115,7 @@ async fn finance_command(
         fill_last_price_refresh(platform.inner().as_ref(), &mut request).await;
     }
     if request.command_name == "DeclarationRefresh" {
-        fill_declaration_refresh(platform.inner().as_ref(), &mut request).await;
+        fill_declaration_refresh(&app, platform.inner().as_ref(), &mut request).await;
     }
     if request.command_name == "PositionResearchRefresh" {
         return Ok(run_position_research_refresh(&app, platform.inner().as_ref(), request).await);
@@ -905,28 +939,29 @@ async fn paid_declaration_context(
     (paid, periods, amounts)
 }
 
-async fn declaration_entered_today(platform: &LocalPlatform, security_id: &str, source: &str, today: &str) -> bool {
-    let inv = execute_query_on(
-        platform,
-        platform,
-        qry("InvestmentGet", serde_json::json!({ "securityId": security_id })),
-    )
-    .await;
-    if !inv.ok {
-        return false;
+fn declaration_target_from_item(
+    item: &application_core::contracts::CollectorSetItem,
+    paid_count: u8,
+    known_payment_periods: Vec<String>,
+    known_declaration_amounts: Vec<(String, i64, u8)>,
+) -> import_engine::DeclarationTarget {
+    import_engine::DeclarationTarget {
+        security_id: item.security_id.to_string(),
+        symbol: item.symbol.clone(),
+        declaration_source: item.declaration_source.clone(),
+        source_symbol: item.source_symbol.clone(),
+        source_url: item.source_url.clone(),
+        last_content_hash: item.last_content_hash.clone(),
+        div_type: item.div_type.clone(),
+        force_refresh: false,
+        last_run_ok: item.last_run_ok.unwrap_or(false),
+        last_run_at: item.last_run_at.clone(),
+        inception_on: item.inception_on.clone(),
+        payment_frequency: item.payment_frequency.clone(),
+        paid_count,
+        known_payment_periods,
+        known_declaration_amounts,
     }
-    let val: serde_json::Value =
-        serde_json::from_str(inv.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
-    val.get("declarations")
-        .and_then(|d| d.as_array())
-        .map(|arr| {
-            arr.iter().any(|d| {
-                let src = d.get("source").and_then(|s| s.as_str()).unwrap_or("");
-                let entered = d.get("enteredAt").and_then(|s| s.as_str()).unwrap_or("");
-                src.eq_ignore_ascii_case(source) && entered.starts_with(today)
-            })
-        })
-        .unwrap_or(false)
 }
 
 async fn fill_collector_retrieve(platform: &LocalPlatform, body: &mut serde_json::Value) {
@@ -1115,7 +1150,11 @@ async fn fill_collector_retrieve(platform: &LocalPlatform, body: &mut serde_json
     }
 }
 
-async fn fill_declaration_refresh(platform: &LocalPlatform, request: &mut CommandRequest) {
+async fn fill_declaration_refresh(
+    app: &AppHandle,
+    platform: &LocalPlatform,
+    request: &mut CommandRequest,
+) {
     let mut body: serde_json::Value = request
         .body_json
         .as_deref()
@@ -1127,151 +1166,135 @@ async fn fill_declaration_refresh(platform: &LocalPlatform, request: &mut Comman
     {
         return;
     }
-    let set = execute_query_on(platform, platform, qry("CollectorSetGet", serde_json::json!({}))).await;
-    if !set.ok {
-        body["declarations"] = serde_json::json!([]);
-        request.body_json = Some(body.to_string());
-        return;
-    }
-    let set_val: serde_json::Value =
-        serde_json::from_str(set.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+    let set = match platform.collector_set().await {
+        Ok(set) => set,
+        Err(_) => {
+            body["declarations"] = serde_json::json!([]);
+            request.body_json = Some(body.to_string());
+            return;
+        }
+    };
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut targets = Vec::new();
     let mut disabled_misses = Vec::new();
     let mut already_current = Vec::new();
-    let items = set_val
-        .get("items")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    for item in items {
-        let Some(id) = item.get("securityId").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let open_lots = item
-            .get("openLots")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !open_lots {
+    let mut queued: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for item in &set.items {
+        if !item.open_lots {
             continue;
         }
-        let symbol = item
-            .get("symbol")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let source = item
-            .get("declarationSource")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let div_type = item
-            .get("divType")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let enabled = item
-            .get("collectorEnabled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let id = item.security_id.to_string();
+        let source = item.declaration_source.as_str();
         let registered = import_engine::is_registered_declaration_source(source);
 
-        if registered && enabled {
-            if declaration_entered_today(platform, id, source, &today).await {
-                already_current.push(serde_json::json!({ "securityId": id }));
+        if registered && item.collector_enabled {
+            if financial_domain::collector::declaration_daily_retrieve_current(
+                item.last_run_ok,
+                &item.last_run_at,
+                &today,
+            ) {
+                already_current.push(serde_json::json!({
+                    "securityId": id,
+                    "symbol": item.symbol,
+                }));
+                queued.insert(id);
                 continue;
             }
             let (paid_count, known_payment_periods, known_declaration_amounts) =
-                paid_declaration_context(platform, id).await;
-            targets.push(import_engine::DeclarationTarget {
-                security_id: id.to_string(),
-                symbol,
-                declaration_source: source.to_string(),
-                source_symbol: item
-                    .get("sourceSymbol")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                source_url: item
-                    .get("sourceUrl")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                last_content_hash: item
-                    .get("lastContentHash")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                div_type: div_type.to_string(),
-                force_refresh: false,
-                last_run_ok: item
-                    .get("lastRunOk")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-                last_run_at: item
-                    .get("lastRunAt")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                inception_on: item
-                    .get("inceptionOn")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                payment_frequency: item
-                    .get("paymentFrequency")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                paid_declaration_context(platform, &id).await;
+            targets.push(declaration_target_from_item(
+                item,
                 paid_count,
                 known_payment_periods,
                 known_declaration_amounts,
-            });
+            ));
+            queued.insert(id);
             continue;
         }
 
         // DIV-1 must be assigned and enabled; otherwise raise a loud miss (never Yahoo).
-        if import_engine::div1_adapter_missing(div_type, source) {
+        if import_engine::div1_adapter_missing(&item.div_type, source) {
             targets.push(import_engine::DeclarationTarget {
-                security_id: id.to_string(),
-                symbol,
-                declaration_source: source.to_string(),
-                source_symbol: item
-                    .get("sourceSymbol")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                security_id: id.clone(),
+                symbol: item.symbol.clone(),
+                declaration_source: item.declaration_source.clone(),
+                source_symbol: item.source_symbol.clone(),
                 source_url: String::new(),
                 last_content_hash: String::new(),
-                div_type: div_type.to_string(),
+                div_type: item.div_type.clone(),
                 force_refresh: false,
                 last_run_ok: false,
                 last_run_at: String::new(),
                 inception_on: String::new(),
-                payment_frequency: item
-                    .get("paymentFrequency")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                payment_frequency: item.payment_frequency.clone(),
                 paid_count: 0,
                 known_payment_periods: Vec::new(),
                 known_declaration_amounts: Vec::new(),
             });
+            queued.insert(id);
             continue;
         }
-        if import_engine::is_div1(div_type) && registered && !enabled {
+        if import_engine::is_div1(&item.div_type) && registered && !item.collector_enabled {
             disabled_misses.push(serde_json::json!({
                 "securityId": id,
-                "symbol": symbol,
+                "symbol": item.symbol,
                 "declarationSource": source,
                 "reason": "DIV-1 adapter assigned but collector disabled.",
                 "code": "div1_adapter_missing",
             }));
+            queued.insert(id);
         }
     }
-    let mut outcome = tauri::async_runtime::spawn_blocking(move || {
-        import_engine::collect_declarations_for(targets)
-    })
-    .await
-    .unwrap_or_default();
+    for item in &set.items {
+        if !item.open_lots || !item.collector_enabled {
+            continue;
+        }
+        if !import_engine::is_registered_declaration_source(&item.declaration_source) {
+            continue;
+        }
+        let id = item.security_id.to_string();
+        if queued.contains(&id) {
+            continue;
+        }
+        let (paid_count, known_payment_periods, known_declaration_amounts) =
+            paid_declaration_context(platform, &id).await;
+        targets.push(declaration_target_from_item(
+            item,
+            paid_count,
+            known_payment_periods,
+            known_declaration_amounts,
+        ));
+    }
+    let total = (already_current.len() + targets.len()) as u32;
+    emit_declaration_refresh_progress(app, 0, total, "");
+    let mut done = 0u32;
+    for row in &already_current {
+        done = done.saturating_add(1);
+        let symbol = row.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+        emit_declaration_refresh_progress(app, done, total, symbol);
+    }
+    let mut outcome = import_engine::DeclarationCollectOutcome::default();
+    for target in targets {
+        done = done.saturating_add(1);
+        emit_declaration_refresh_progress(app, done, total, &target.symbol);
+        let stamp_id = target.security_id.clone();
+        let stamp_symbol = target.symbol.clone();
+        let stamp_hash = target.last_content_hash.clone();
+        let mut one = tauri::async_runtime::spawn_blocking(move || {
+            import_engine::collect_declarations_for(vec![target])
+        })
+        .await
+        .unwrap_or_default();
+        let quiet = one.misses.is_empty() && one.unchanged.is_empty();
+        if quiet {
+            one.unchanged.push(serde_json::json!({
+                "securityId": stamp_id,
+                "symbol": stamp_symbol,
+                "contentHash": stamp_hash,
+            }));
+        }
+        merge_declaration_collect(&mut outcome, one);
+    }
     outcome.misses.extend(disabled_misses);
     outcome.unchanged.extend(already_current);
     body["declarations"] = serde_json::Value::Array(outcome.candidates);
@@ -1369,6 +1392,43 @@ fn app_exit(app: AppHandle) {
     app.exit(0);
 }
 
+/// Coding launch serves the UI from Vite on localhost:1420. The host writes
+/// `%LOCALAPPDATA%\com.finos.desktop\restart.token` and exits. The already-running
+/// supervisor Start-Process-es the titled finos (dev) stack. Household release
+/// bundles the UI and uses `app.restart()`.
+fn write_restart_token() -> Result<(), String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
+    let dir = local.join("com.finos.desktop");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("restart.token dir: {e}"))?;
+    let path = dir.join("restart.token");
+    let stamp = chrono::Utc::now().to_rfc3339();
+    std::fs::write(&path, format!("{stamp}\nreason=file-restart\n"))
+        .map_err(|e| format!("restart.token: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn app_restart(
+    app: AppHandle,
+    platform: State<'_, Arc<LocalPlatform>>,
+) -> Result<(), String> {
+    platform
+        .close_for_shutdown()
+        .await
+        .map_err(|e| format!("data file still open: {e}"))?;
+    for (_label, window) in app.webview_windows() {
+        let _ = window.destroy();
+    }
+    if cfg!(debug_assertions) {
+        write_restart_token()?;
+        app.exit(0);
+        return Ok(());
+    }
+    app.restart();
+}
+
 fn looks_like_sync_folder(path: &std::path::Path) -> bool {
     let s = path.to_string_lossy().to_lowercase();
     s.contains("onedrive") || s.contains("dropbox") || s.contains("icloud")
@@ -1404,15 +1464,18 @@ pub fn run() {
             app.manage(Arc::new(platform));
             let file_menu = SubmenuBuilder::new(app, "File")
                 .text("home", "Home")
-                .text("income-print", "Print current view")
-                .text("income-export", "Export current view")
+                .text("data-snapshot", "Save data snapshot")
+                .text("app-restart", "Restart Application")
                 .text("app-exit", "Exit")
                 .build()?;
-            let plan_menu = SubmenuBuilder::new(app, "Plan")
+            let income_menu = SubmenuBuilder::new(app, "Income Plan")
                 .text("income-plan", "Income Plan")
+                .build()?;
+            let plan_menu = SubmenuBuilder::new(app, "Plan")
                 .text("calculator", "Calculator")
                 .text("dashboard", "Dashboard")
                 .text("trends", "Trends")
+                .text("cash-management", "Cash Management")
                 .build()?;
             let positions_menu = SubmenuBuilder::new(app, "Positions")
                 .text("position-details", "Position Details")
@@ -1431,6 +1494,7 @@ pub fn run() {
                 .build()?;
             let menu = MenuBuilder::new(app)
                 .item(&file_menu)
+                .item(&income_menu)
                 .item(&plan_menu)
                 .item(&positions_menu)
                 .item(&data_menu)
@@ -1444,12 +1508,12 @@ pub fn run() {
                 app_exit(app.clone());
                 return;
             }
-            if event.id() == "income-print" {
-                let _ = app.emit("finos-income-print", "print");
+            if event.id() == "data-snapshot" {
+                let _ = app.emit("finos-data-snapshot", "export");
                 return;
             }
-            if event.id() == "income-export" {
-                let _ = app.emit("finos-income-export", "export");
+            if event.id() == "app-restart" {
+                let _ = app.emit("finos-app-restart", "restart");
                 return;
             }
             let id = event.id().as_ref();
@@ -1460,6 +1524,7 @@ pub fn run() {
                     | "calculator"
                     | "dashboard"
                     | "trends"
+                    | "cash-management"
                     | "position-details"
                     | "holdings"
                     | "new-investment"
@@ -1478,7 +1543,8 @@ pub fn run() {
             finance_command,
             open_exception_log,
             save_local_bytes,
-            app_exit
+            app_exit,
+            app_restart
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

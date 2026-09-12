@@ -112,6 +112,12 @@ pub trait Canonical: Send + Sync {
         activity_id: Uuid,
         security_id: Uuid,
     ) -> Result<ActivityRecord, PlatformError> { ni() }
+    async fn activity_withholding_set(
+        &self,
+        activity_id: Uuid,
+        federal_withholding_minor: i64,
+        state_withholding_minor: i64,
+    ) -> Result<ActivityRecord, PlatformError> { ni() }
 
     async fn audit_list(&self) -> Result<Vec<AuditRecord>, PlatformError> { ni() }
     async fn exception_acknowledge(
@@ -558,6 +564,13 @@ pub trait Canonical: Send + Sync {
     async fn account_balance_snapshot_list(
         &self,
     ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> { ni() }
+    async fn account_market_value_daily_upsert(
+        &self,
+        record: crate::contracts::AccountMarketValueDailyRecord,
+    ) -> Result<crate::contracts::AccountMarketValueDailyRecord, PlatformError> { ni() }
+    async fn account_market_value_daily_list(
+        &self,
+    ) -> Result<Vec<crate::contracts::AccountMarketValueDailyRecord>, PlatformError> { ni() }
 }
 
 /// Test double: every method returns not_implemented.

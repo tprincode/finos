@@ -231,6 +231,41 @@ pub fn is_income_cash_activity(activity_type: &str) -> bool {
     )
 }
 
+/// Weekdays (Mon–Fri) used to treat an issuer declaration as current.
+pub const DECLARATION_CURRENT_TRADING_DAYS: u32 = 5;
+
+pub fn parse_iso_date(raw: &str) -> Option<NaiveDate> {
+    let day = raw.get(..10)?;
+    NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()
+}
+
+pub fn subtract_trading_days(as_of: NaiveDate, n: u32) -> NaiveDate {
+    let mut day = as_of;
+    let mut left = n;
+    while left > 0 {
+        day -= Duration::days(1);
+        if day.weekday().number_from_monday() <= 5 {
+            left -= 1;
+        }
+    }
+    day
+}
+
+/// Current when `entered_at` is on or after `as_of` minus five weekdays.
+/// Unparseable dates are not current. A later `entered_at` than `as_of` counts as current.
+pub fn declaration_is_current(entered_at: &str, as_of: &str) -> bool {
+    let Some(entered) = parse_iso_date(entered_at) else {
+        return false;
+    };
+    let Some(as_of_day) = parse_iso_date(as_of) else {
+        return false;
+    };
+    if entered > as_of_day {
+        return true;
+    }
+    entered >= subtract_trading_days(as_of_day, DECLARATION_CURRENT_TRADING_DAYS)
+}
+
 /// Last Update is the last successful declaration-collector run date. Failed is blank.
 pub fn last_update_success(last_run_ok: Option<bool>, last_run_at: &str) -> Option<String> {
     if last_run_ok != Some(true) {
@@ -322,16 +357,21 @@ fn year_month(raw: &str) -> Option<&str> {
     }
 }
 
-/// Issuer declaration belongs on this week's payable: period in the Sat–Fri week,
-/// or same year-month as the week's pay-on.
+/// Issuer declaration belongs on this week's payable: period in the Sat–Fri week.
+/// Monthly leftover-ex may match the same year-month as the week's pay-on.
+/// Weekly (52) never clones a prior-week payable onto this week's forecast pay-on.
 pub fn declaration_belongs_in_week(
     payment_period: &str,
     week_start: &str,
     week_end: &str,
     pay_on: &str,
+    periods_per_year: u8,
 ) -> bool {
     if occurred_in_week(payment_period, week_start, week_end) {
         return true;
+    }
+    if periods_per_year == 52 {
+        return false;
     }
     if pay_on.trim().is_empty() || !occurred_in_week(pay_on, week_start, week_end) {
         return false;
@@ -436,6 +476,25 @@ mod tests {
     }
 
     #[test]
+    fn declaration_current_uses_five_weekdays_not_calendar_days() {
+        let as_of = NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
+        assert_eq!(
+            subtract_trading_days(as_of, DECLARATION_CURRENT_TRADING_DAYS),
+            NaiveDate::from_ymd_opt(2026, 9, 2).unwrap()
+        );
+        assert!(declaration_is_current("2026-09-02", "2026-09-09"));
+        assert!(declaration_is_current("2026-09-08T15:00:00Z", "2026-09-09"));
+        assert!(!declaration_is_current("2026-09-01", "2026-09-09"));
+        assert!(!declaration_is_current("", "2026-09-09"));
+        assert!(declaration_is_current("2026-09-10", "2026-09-09"));
+        let friday = NaiveDate::from_ymd_opt(2026, 9, 4).unwrap();
+        assert_eq!(
+            subtract_trading_days(friday, DECLARATION_CURRENT_TRADING_DAYS),
+            NaiveDate::from_ymd_opt(2026, 8, 28).unwrap()
+        );
+    }
+
+    #[test]
     fn week_filter_uses_iso_dates() {
         assert!(occurred_in_week("2026-08-17", "2026-08-15", "2026-08-21"));
         assert!(!occurred_in_week("2026-08-14", "2026-08-15", "2026-08-21"));
@@ -447,19 +506,47 @@ mod tests {
             "2026-08-31",
             "2026-08-29",
             "2026-09-04",
-            "2026-08-31"
+            "2026-08-31",
+            12
         ));
         assert!(declaration_belongs_in_week(
             "2026-08-31",
             "2026-08-22",
             "2026-08-28",
-            "2026-08-28"
+            "2026-08-28",
+            12
         ));
         assert!(!declaration_belongs_in_week(
             "2026-07-31",
             "2026-08-29",
             "2026-09-04",
-            "2026-08-31"
+            "2026-08-31",
+            12
+        ));
+    }
+
+    #[test]
+    fn weekly_does_not_clone_last_payable_onto_forecast_friday() {
+        assert!(declaration_belongs_in_week(
+            "2026-09-15",
+            "2026-09-12",
+            "2026-09-18",
+            "2026-09-15",
+            52
+        ));
+        assert!(!declaration_belongs_in_week(
+            "2026-09-11",
+            "2026-09-12",
+            "2026-09-18",
+            "2026-09-18",
+            52
+        ));
+        assert!(declaration_belongs_in_week(
+            "2026-09-11",
+            "2026-09-05",
+            "2026-09-11",
+            "2026-09-11",
+            52
         ));
     }
 

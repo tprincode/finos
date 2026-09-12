@@ -151,6 +151,39 @@ pub fn select_current_price(
     }
 }
 
+pub fn quote_day(as_of_at: &str) -> &str {
+    if as_of_at.len() >= 10 {
+        &as_of_at[..10]
+    } else {
+        as_of_at
+    }
+}
+
+/// Newest accepted quote on or before `as_of`. Missing stays unknown — never $0.
+pub fn select_price_on_or_before(
+    quotes_newest_first: &[QuoteObservation],
+    as_of: &str,
+) -> Option<(i64, u8)> {
+    let day = quote_day(as_of);
+    quotes_newest_first.iter().find_map(|q| {
+        if q.accepted && valid_price(q.price_minor) && quote_day(&q.as_of) <= day {
+            Some((q.price_minor, q.scale))
+        } else {
+            None
+        }
+    })
+}
+
+/// Newest accepted quote on that calendar day only. Does not carry a prior mark forward.
+pub fn select_price_on_day(quotes: &[QuoteObservation], as_of: &str) -> Option<(i64, u8)> {
+    let day = quote_day(as_of);
+    quotes
+        .iter()
+        .filter(|q| q.accepted && valid_price(q.price_minor) && quote_day(&q.as_of) == day)
+        .max_by(|a, b| a.as_of.cmp(&b.as_of))
+        .map(|q| (q.price_minor, q.scale))
+}
+
 pub fn price_derived_valid(freshness: PriceFreshness) -> bool {
     matches!(
         freshness,
@@ -196,6 +229,22 @@ mod tests {
         assert_eq!(stale.freshness, PriceFreshness::Stale);
         assert!(price_derived_valid(stale.freshness));
         assert!(!price_derived_valid(PriceFreshness::Unavailable));
+        assert_eq!(
+            select_price_on_or_before(&[q(110, true, "2026-09-10"), q(100, true, "2026-09-09")], "2026-09-09"),
+            Some((100, 2))
+        );
+        assert_eq!(
+            select_price_on_or_before(&[q(110, true, "2026-09-10")], "2026-09-09"),
+            None
+        );
+        assert_eq!(
+            select_price_on_day(&[q(110, true, "2026-09-10"), q(100, true, "2026-09-09")], "2026-09-09"),
+            Some((100, 2))
+        );
+        assert_eq!(
+            select_price_on_day(&[q(110, true, "2026-09-10")], "2026-09-09"),
+            None
+        );
     }
 
     #[test]

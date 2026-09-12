@@ -360,6 +360,131 @@ async fn weekly_payer_lists_every_week_with_plan_even_without_that_week_actual()
 }
 
 #[tokio::test]
+async fn weekly_last_week_issuer_row_does_not_clone_onto_next_forecast_friday() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "AMDY", "name": "AMDY"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id, "AMDY").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "replaceCadence": true,
+            "riskTier": "Risk On"
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        security_id,
+        "AMDY",
+        "Weekly",
+        true,
+    )
+    .await
+    .expect("complete collector");
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 3763,
+            "amountScale": 4,
+            "paymentPeriod": "2026-09-11",
+            "source": "yieldmax",
+            "enteredAt": "2026-09-09"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 40,
+            "amountScale": 2,
+            "planningPeriodsPerYear": 52,
+            "effectiveFrom": "2026-08-01",
+            "decisionReason": "owner",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-01-02",
+            "origin": "purchase",
+            "quantityMinor": 100,
+            "quantityScale": 0,
+            "performanceBasisMinor": 200_000,
+            "taxBasisMinor": 200_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-12",
+            "dates": [
+                {"payOn": "2026-09-11", "source": "yieldmax"},
+                {"payOn": "2026-09-18", "source": "derived_walk"}
+            ]
+        }),
+    )
+    .await;
+    let w36 = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-11" }),
+    )
+    .await;
+    let last = w36["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "AMDY")
+        .unwrap_or_else(|| panic!("AMDY missing W36: {w36}"));
+    assert_eq!(last["declarationKnown"], true, "{last}");
+    assert_eq!(last["payOn"], "2026-09-11");
+    let w37 = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-12" }),
+    )
+    .await;
+    let next = w37["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "AMDY")
+        .unwrap_or_else(|| panic!("AMDY missing W37 forecast row: {w37}"));
+    assert_eq!(next["declarationKnown"], false, "{next}");
+    assert_eq!(next["payOn"], "2026-09-18");
+}
+
+#[tokio::test]
 async fn monthly_with_prior_actual_uses_issuer_date_not_thirty_day_walk() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
@@ -870,6 +995,10 @@ async fn week_carries_plan_declaration_actual_as_three_amounts() {
     assert_eq!(row["plannedMinor"], 120);
     assert_eq!(row["declarationKnown"], true);
     assert_eq!(row["declarationMinor"], 110);
+    assert_eq!(row["declarationPerShareMinor"], 1100);
+    assert_eq!(row["declarationPerShareScale"], 4);
+    assert_eq!(row["declarationEnteredOn"], "2026-08-28");
+    assert_eq!(row["declarationCurrent"], true);
     assert_eq!(row["actualKnown"], false);
     assert_eq!(row["actualMinor"], 0);
     assert_eq!(row["payOn"], "2026-08-31");
@@ -945,4 +1074,42 @@ async fn week_carries_plan_declaration_actual_as_three_amounts() {
     assert_eq!(imported["actualKnown"], true);
     assert_eq!(imported["actualMinor"], 105);
     assert_eq!(imported["declarationKnown"], true);
+}
+
+#[test]
+fn weekly_report_by_position_keeps_decl_per_share_column() {
+    let ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/ui-components/src/index.tsx"),
+    )
+    .expect("ui-components");
+    assert!(
+        ui.contains("By position for the week"),
+        "Weekly report heading must stay"
+    );
+    assert!(
+        ui.contains("aria-label=\"Income plan by position\""),
+        "by-position table must stay"
+    );
+    assert!(
+        ui.contains("<th className=\"ip-decl-sh\">Decl $/sh</th>"),
+        "Decl $/sh column header must stay on Weekly report by position"
+    );
+    assert!(
+        ui.contains("declarationPerShareMinor"),
+        "week rows must still bind per-share declaration"
+    );
+    assert!(
+        ui.contains("function declShareTone") && ui.contains("ip-decl-${declShareTone"),
+        "Decl $/sh must stay color-coded current/stale/none"
+    );
+    let css = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/App.css"),
+    )
+    .expect("App.css");
+    assert!(
+        css.contains("td.numeric.ip-decl-current")
+            && css.contains("td.numeric.ip-decl-stale")
+            && css.contains("td.numeric.ip-decl-none"),
+        "numeric Decl $/sh cells must keep current/stale/none colors"
+    );
 }

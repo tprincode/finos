@@ -345,6 +345,10 @@ pub struct ActivityRecord {
     pub corrects_activity_id: Option<Uuid>,
     pub import_batch_id: Option<Uuid>,
     pub idempotency_key: String,
+    #[serde(default)]
+    pub federal_withholding_minor: i64,
+    #[serde(default)]
+    pub state_withholding_minor: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -764,6 +768,124 @@ pub struct AccountPositionTotalBody {
     pub scale: u8,
 }
 
+/// One stored day of holdings market value for an account (or the Fidelity rollup).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountMarketValueDailyRecord {
+    pub snapshot_id: String,
+    pub account_id: String,
+    pub account_name: String,
+    pub as_of: String,
+    pub market_value_minor: Option<i64>,
+    pub market_value_complete: bool,
+    pub scale: u8,
+    pub captured_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountValuePointBody {
+    pub as_of: String,
+    pub market_value_minor: Option<i64>,
+    pub market_value_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountValueSeriesBody {
+    pub account_id: String,
+    pub account_name: String,
+    pub custodian: String,
+    pub current_minor: Option<i64>,
+    pub current_complete: bool,
+    pub points: Vec<AccountValuePointBody>,
+    #[serde(default)]
+    pub trends_points: Vec<AccountValuePointBody>,
+    pub scale: u8,
+}
+
+impl Default for AccountValueSeriesBody {
+    fn default() -> Self {
+        Self {
+            account_id: financial_domain::account_value::SCHWAB_TOTAL_ID.to_string(),
+            account_name: financial_domain::account_value::SCHWAB_TOTAL_NAME.to_string(),
+            custodian: "Schwab".into(),
+            current_minor: None,
+            current_complete: false,
+            points: Vec::new(),
+            trends_points: Vec::new(),
+            scale: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RiskSymbolValueBody {
+    pub symbol: String,
+    pub risk_tier: String,
+    pub market_value_minor: Option<i64>,
+    pub market_value_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RiskGroupValueBody {
+    pub risk_tier: String,
+    pub current_minor: Option<i64>,
+    pub current_complete: bool,
+    pub symbols: Vec<RiskSymbolValueBody>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RiskValuePointBody {
+    pub as_of: String,
+    pub foundation_minor: Option<i64>,
+    pub core_minor: Option<i64>,
+    pub risk_on_minor: Option<i64>,
+    pub undecided_minor: Option<i64>,
+    pub total_minor: Option<i64>,
+    pub market_value_complete: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RiskValueHomeBody {
+    pub current_total_minor: Option<i64>,
+    pub current_complete: bool,
+    pub groups: Vec<RiskGroupValueBody>,
+    pub points: Vec<RiskValuePointBody>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountValueHomeBody {
+    pub as_of: String,
+    pub accounts: Vec<AccountValueSeriesBody>,
+    pub fidelity: AccountValueSeriesBody,
+    #[serde(default)]
+    pub schwab: AccountValueSeriesBody,
+    #[serde(default)]
+    pub risk: RiskValueHomeBody,
+    pub note: String,
+    pub scale: u8,
+}
+
+/// Individual importable workbooks written under raw-data/<as_of>/.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSnapshotExportBody {
+    pub as_of: String,
+    pub folder: String,
+    pub files: Vec<String>,
+    pub account_count: u64,
+    pub lot_count: u64,
+    pub yield_count: u64,
+    pub note: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PositionDetailsBody {
@@ -991,6 +1113,14 @@ pub struct IncomePlanPositionBody {
     pub declaration_minor: i64,
     #[serde(default)]
     pub declaration_known: bool,
+    #[serde(default)]
+    pub declaration_per_share_minor: Option<i64>,
+    #[serde(default)]
+    pub declaration_per_share_scale: u8,
+    #[serde(default)]
+    pub declaration_entered_on: Option<String>,
+    #[serde(default)]
+    pub declaration_current: bool,
     pub scale: u8,
     #[serde(default)]
     pub accounts: Vec<IncomePlanPositionAccountBody>,
@@ -1058,6 +1188,14 @@ pub struct IncomePlanTable2Row {
     pub symbol: String,
     pub cadence: String,
     pub last_update: Option<String>,
+    #[serde(default)]
+    pub declaration_per_share_minor: Option<i64>,
+    #[serde(default)]
+    pub declaration_per_share_scale: u8,
+    #[serde(default)]
+    pub declaration_entered_on: Option<String>,
+    #[serde(default)]
+    pub declaration_current: bool,
     pub cells: Vec<IncomePlanMoneyCell>,
 }
 
@@ -1252,6 +1390,9 @@ pub struct DataSummaryBody {
     /// Local calendar day of the standing DeclarationRefresh.
     #[serde(default)]
     pub declaration_as_of: String,
+    /// Open work_ticket rows. Owner work queue — not today's miss count.
+    #[serde(default)]
+    pub open_ticket_count: u64,
     pub market_value_minor: Option<i64>,
     pub market_value_complete: bool,
     /// Lifetime paid dividends (all yield actuals).
@@ -1518,6 +1659,102 @@ pub struct CalculatorRowBody {
 pub struct CalculatorGetBody {
     pub rows: Vec<CalculatorRowBody>,
     pub plan_count: u64,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashManagementWeekRow {
+    pub activity_id: Uuid,
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub activity_type: String,
+    pub occurred_on: String,
+    pub gross_minor: i64,
+    pub federal_withholding_minor: i64,
+    pub state_withholding_minor: i64,
+    pub net_minor: i64,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashManagementWeekBody {
+    pub period_start: String,
+    pub period_end: String,
+    pub rows: Vec<CashManagementWeekRow>,
+    pub week_gross_minor: i64,
+    pub week_withholding_minor: i64,
+    pub week_net_minor: i64,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashManagementSaturdayDraft {
+    pub open: bool,
+    pub activity_type: String,
+    pub suggested_account_id: Option<Uuid>,
+    pub suggested_account_name: String,
+    pub occurred_on: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashManagementSsaRecent {
+    pub occurred_on: String,
+    pub amount_minor: i64,
+    pub account_name: String,
+    pub extra_audit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashManagementTomSsa {
+    pub year_month: String,
+    pub expected_minor: i64,
+    pub label: String,
+    pub status: String,
+    pub posted_minor: Option<i64>,
+    pub extra_audit: bool,
+    pub suggested_account_id: Option<Uuid>,
+    pub suggested_account_name: String,
+    pub recent: Vec<CashManagementSsaRecent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashManagementRemindersBody {
+    pub as_of_date: String,
+    pub saturday_draft: CashManagementSaturdayDraft,
+    pub tom_ssa: CashManagementTomSsa,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashManagementMonthRow {
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub activity_type: String,
+    pub count: u32,
+    pub gross_minor: i64,
+    pub federal_withholding_minor: i64,
+    pub state_withholding_minor: i64,
+    pub net_minor: i64,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashManagementMonthBody {
+    pub year_month: String,
+    pub period_start: String,
+    pub period_end: String,
+    pub rows: Vec<CashManagementMonthRow>,
+    pub month_gross_minor: i64,
+    pub month_withholding_minor: i64,
+    pub month_net_minor: i64,
     pub scale: u8,
 }
 
@@ -2194,12 +2431,22 @@ pub struct CollectorStatsBody {
     pub assigned: u64,
     pub enabled: u64,
     pub ran_today: u64,
+    /// Enabled fleet whose last retrieve today is not OK (failed or not yet).
+    #[serde(default)]
+    pub still_miss: u64,
+    /// Distinct fleet securities with any ok=0 declaration run today.
+    #[serde(default)]
+    pub had_miss_today: u64,
+    /// Same as still_miss. Kept so older clients do not read today's ledger as "failed now."
     pub miss_today: u64,
     pub unchanged_today: u64,
     pub cash_par: u64,
     pub price_current: u64,
     pub price_stale: u64,
     pub open_exceptions: u64,
+    /// Declaration retrieves today that are not income-fleet payers (e.g. MSTU, SOXL, TSLL).
+    #[serde(default)]
+    pub ran_outside_fleet: Vec<String>,
     pub as_of_date: String,
 }
 
@@ -2399,5 +2646,31 @@ pub struct Div1ComplianceSummaryBody {
 #[serde(rename_all = "camelCase")]
 pub struct RetrieveRunListBody {
     pub runs: Vec<RetrieveRunRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreFunctionSentinel {
+    pub path: String,
+    pub must_contain: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreFunctionItem {
+    pub id: String,
+    pub menu_area: String,
+    pub function: String,
+    pub last_changed: String,
+    pub last_verified: String,
+    #[serde(default)]
+    pub also_verify: Vec<String>,
+    pub sentinels: Vec<CoreFunctionSentinel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreFunctionsGetBody {
+    pub items: Vec<CoreFunctionItem>,
 }
 

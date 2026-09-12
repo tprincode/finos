@@ -28,6 +28,7 @@ fn cmd(name: &str, body: serde_json::Value) -> CommandRequest {
 /// Every FinanceClient query the desktop nav actually issues.
 const MENU_QUERIES: &[&str] = &[
     "HealthGet",
+    "CoreFunctionsGet",
     "ConfigGet",
     "HandoffStatusGet",
     "IncomePlanWeekGet",
@@ -39,6 +40,9 @@ const MENU_QUERIES: &[&str] = &[
     "ExceptionList",
     "DataSummaryGet",
     "CalculatorGet",
+    "CashManagementWeekGet",
+    "CashManagementRemindersGet",
+    "CashManagementMonthGet",
     "DeclarationHistoryGet",
     "AccountList",
     "SecurityList",
@@ -154,15 +158,17 @@ fn native_and_in_app_menus_list_screens() {
     let week =
         std::fs::read_to_string(root.join("packages/ui-components/src/week.ts")).unwrap();
     for needle in [
+        "SubmenuBuilder::new(app, \"Income Plan\")",
         "SubmenuBuilder::new(app, \"Plan\")",
         "SubmenuBuilder::new(app, \"Positions\")",
         "SubmenuBuilder::new(app, \"Data\")",
         "SubmenuBuilder::new(app, \"Tools\")",
         ".text(\"home\", \"Home\")",
         ".text(\"income-plan\", \"Income Plan\")",
-        ".text(\"income-print\", \"Print current view\")",
-        ".text(\"income-export\", \"Export current view\")",
+        ".text(\"data-snapshot\", \"Save data snapshot\")",
+        ".text(\"app-restart\", \"Restart Application\")",
         ".text(\"tickets\", \"Tickets\")",
+        ".text(\"cash-management\", \"Cash Management\")",
         ".text(\"collector-establish\", \"Reevaluate collector\")",
         "finos-navigate",
     ] {
@@ -173,16 +179,60 @@ fn native_and_in_app_menus_list_screens() {
         "in-app menubar must include Home"
     );
     assert!(
-        app.contains("Print current view"),
-        "in-app File menu must include Print current view"
+        app.contains("aria-label=\"Income Plan\""),
+        "in-app menubar must include Income Plan"
     );
     assert!(
-        app.contains("Export current view"),
-        "in-app File menu must include Export current view"
+        !app.contains("navButton(\"income-plan\", \"Income Plan\")"),
+        "Income Plan is a top-level menubar item, not under Plan"
+    );
+    assert!(
+        !app.contains("Print current view"),
+        "Print current view is not a File menu item"
+    );
+    assert!(
+        !app.contains("Export current view"),
+        "Export current view is not a File menu item"
+    );
+    assert!(
+        !lib.contains("income-print") && !lib.contains("income-export"),
+        "native File menu must not include print/export current view"
+    );
+    assert!(
+        app.contains("Save data snapshot"),
+        "in-app File menu must include Save data snapshot"
+    );
+    assert!(
+        app.contains("aria-label=\"Confirm save data snapshot\""),
+        "Save data snapshot must ask before writing"
+    );
+    assert!(
+        app.contains("Restart Application"),
+        "in-app File menu must include Restart Application"
+    );
+    assert!(
+        app.contains("Waiting for in-flight work, then closing the data file"),
+        "Restart must wait for in-flight work before closing SQLite"
+    );
+    assert!(
+        app.contains("aria-label=\"Restart in progress\""),
+        "Restart must show an on-screen in-progress banner"
+    );
+    assert!(
+        lib.contains("close_for_shutdown"),
+        "native Restart must close the live SQLite pool"
+    );
+    assert!(
+        lib.contains("data file still open"),
+        "Restart must fail if the data file did not close"
     );
     assert!(
         app.contains("navButton(\"collector-establish\", \"Reevaluate collector\")"),
         "in-app Tools must include Reevaluate collector"
+    );
+    assert!(
+        app.contains("navButton(\"cash-management\", \"Cash Management\")"),
+        "in-app Plan must include Cash Management"
     );
     assert!(
         app.contains("formatMenuWeek"),
@@ -195,6 +245,50 @@ fn native_and_in_app_menus_list_screens() {
     assert!(
         week.contains("${formatWeekNumber(id)} ${id.start} – ${id.end}"),
         "menu week must be dates only"
+    );
+    let bat = std::fs::read_to_string(root.join("apps/desktop/start-finos-dev.bat")).unwrap();
+    assert!(
+        bat.contains("wait_port_free") && bat.contains("1420"),
+        "dev start must wait until Vite port 1420 is free"
+    );
+    let supervisor =
+        std::fs::read_to_string(root.join("apps/desktop/start-finos-supervisor.bat")).unwrap();
+    assert!(
+        supervisor.contains("finos supervisor")
+            && supervisor.contains("restart.token")
+            && supervisor.contains("Start-Process -FilePath")
+            && supervisor.contains("start-finos-dev.bat"),
+        "supervisor must Start-Process start-finos-dev.bat on restart.token"
+    );
+    assert!(
+        !supervisor.contains("call start-finos-dev"),
+        "supervisor must not call start-finos-dev.bat as a child"
+    );
+    assert!(
+        lib.contains("restart.token")
+            && lib.contains("close_for_shutdown")
+            && lib.contains("app.restart()"),
+        "coding Restart writes restart.token then exits; household uses app.restart()"
+    );
+    for banned in [
+        "schtasks",
+        "FinosDevRestart",
+        "wmic",
+        "Invoke-CimMethod",
+        "spawn_dev_stack",
+    ] {
+        assert!(
+            !lib.contains(banned),
+            "lib.rs must not contain {banned}"
+        );
+    }
+    assert!(
+        app.contains("supervisor is running"),
+        "Restart copy must name the supervisor"
+    );
+    assert!(
+        !root.join("apps/desktop/spawn-finos-dev.cmd").exists(),
+        "spawn-finos-dev.cmd must be deleted"
     );
 }
 

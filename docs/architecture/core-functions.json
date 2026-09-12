@@ -1,0 +1,603 @@
+{
+  "items": [
+    {
+      "id": "income-week-decl-per-share",
+      "menuArea": "Income Plan",
+      "function": "Decl $/sh on Weekly report by position",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "By position for the week"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "<th className=\"ip-decl-sh\">Decl $/sh</th>"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "aria-label=\"Income plan by position\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "declaration_per_share_minor"
+        }
+      ]
+    },
+    {
+      "id": "income-decl-per-share-color",
+      "menuArea": "Income Plan",
+      "function": "Color-coded Decl $/sh (current / stale / none)",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "function declShareTone"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "Decl $ per share ${declShareTone"
+        },
+        {
+          "path": "apps/desktop/src/App.css",
+          "mustContain": "td.numeric.ip-decl-current"
+        },
+        {
+          "path": "apps/desktop/src/App.css",
+          "mustContain": "td.numeric.ip-decl-stale"
+        },
+        {
+          "path": "apps/desktop/src/App.css",
+          "mustContain": "td.numeric.ip-decl-none"
+        },
+        {
+          "path": "crates/financial-domain/src/income_plan.rs",
+          "mustContain": "pub fn declaration_is_current"
+        }
+      ]
+    },
+    {
+      "id": "income-grid-decl-per-share",
+      "menuArea": "Income Plan",
+      "function": "Decl $/sh on Weekly grid",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "aria-label=\"Income plan position grid\""
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "Decl $/sh current (\u22645 trading days)"
+        }
+      ]
+    },
+    {
+      "id": "home-declarations-coverage",
+      "menuArea": "Home",
+      "function": "Declarations N of M — last retrieve today OK",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "summary.declarationCollectorCount"
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "Last retrieve today OK"
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "declaration_daily_retrieve_current"
+        },
+        {
+          "path": "crates/financial-domain/src/collector.rs",
+          "mustContain": "last_run_ok == Some(true)"
+        }
+      ]
+    },
+    {
+      "id": "home-open-tickets",
+      "menuArea": "Home",
+      "function": "Open tickets count and Work Tickets link",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "alsoVerify": ["collectors", "accessibility"],
+      "sentinels": [
+        {
+          "path": "packages/app-contracts/src/index.ts",
+          "mustContain": "openTicketCount"
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "open_ticket_count"
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Work Tickets\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "Stay until filed"
+        }
+      ]
+    },
+    {
+      "id": "home-refresh-declarations",
+      "menuArea": "Home",
+      "function": "Refresh declarations",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "alsoVerify": ["collectors", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Refresh declarations\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "executeCommand(\"DeclarationRefresh\""
+        }
+      ]
+    },
+    {
+      "id": "home-live-by-risk",
+      "menuArea": "Home",
+      "function": "Live by risk stacked chart with in-graph legend. Each session day is current risk assignment times that day's stored last price. Today is live. Weekend/holiday days with only a crypto last price are omitted. No carry-forward.",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "alsoVerify": ["account_value", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/HomeAccountCharts.tsx",
+          "mustContain": "aria-label=\"Live value by risk\""
+        },
+        {
+          "path": "apps/desktop/src/HomeAccountCharts.tsx",
+          "mustContain": "legend:"
+        },
+        {
+          "path": "apps/desktop/src/HomeAccountCharts.tsx",
+          "mustContain": "right: 8"
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "fn risk_points_from_captures"
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "persist_risk_snapshot"
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "fn backfill_risk_captures_from_quotes"
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "fn has_session_quote_coverage"
+        }
+      ]
+    },
+    {
+      "id": "home-risk-symbol-popup",
+      "menuArea": "Home",
+      "function": "Double-click Live by risk for the symbol text list; Exit closes",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "alsoVerify": ["account_value", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/HomeAccountCharts.tsx",
+          "mustContain": "aria-label=\"Symbol totals\""
+        },
+        {
+          "path": "apps/desktop/src/HomeAccountCharts.tsx",
+          "mustContain": "aria-label=\"Exit symbol totals\""
+        },
+        {
+          "path": "apps/desktop/src/HomeAccountCharts.tsx",
+          "mustContain": "role=\"dialog\""
+        },
+        {
+          "path": "apps/desktop/src/HomeAccountCharts.tsx",
+          "mustContain": "dblclick"
+        },
+        {
+          "path": "apps/desktop/src/HomeAccountCharts.tsx",
+          "mustContain": "home-av-risk-groups"
+        }
+      ]
+    },
+    {
+      "id": "home-graphing-period",
+      "menuArea": "Home",
+      "function": "Shared graphing period on all Home charts",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "alsoVerify": ["account_value", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/HomeAccountCharts.tsx",
+          "mustContain": "aria-label=\"Home graphing period\""
+        },
+        {
+          "path": "apps/desktop/src/graphPeriod.ts",
+          "mustContain": "export const GRAPH_PERIOD_OPTIONS"
+        },
+        {
+          "path": "apps/desktop/src/TrendsCharts.tsx",
+          "mustContain": "GRAPH_PERIOD_OPTIONS"
+        }
+      ]
+    },
+    {
+      "id": "collectors-fleet",
+      "menuArea": "Collectors",
+      "function": "Collector fleet grid",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Collector fleet\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "executeQuery(\"CollectorSetGet\""
+        }
+      ]
+    },
+    {
+      "id": "collectors-run-enabled",
+      "menuArea": "Collectors",
+      "function": "Run enabled collectors",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Run enabled collectors\""
+        }
+      ]
+    },
+    {
+      "id": "tickets-queue",
+      "menuArea": "Tickets",
+      "function": "Work ticket queue",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "navButton(\"tickets\", \"Tickets\")"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "aria-label=\"Work tickets\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Work Tickets\""
+        }
+      ]
+    },
+    {
+      "id": "collectors-stats-truth",
+      "menuArea": "Collectors",
+      "function": "Fleet-scoped Ran / Still miss / Had a miss today",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "alsoVerify": ["collectors"],
+      "sentinels": [
+        {
+          "path": "crates/storage-sqlite/src/wizard.rs",
+          "mustContain": "not every retrieve_run"
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "Still miss"
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "Had a miss today"
+        },
+        {
+          "path": "crates/application-core/src/contracts.rs",
+          "mustContain": "had_miss_today"
+        }
+      ]
+    },
+    {
+      "id": "tickets-enter-declared",
+      "menuArea": "Tickets",
+      "function": "Enter declared amount",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "Save declared amount"
+        },
+        {
+          "path": "packages/ui-components/src/index.tsx",
+          "mustContain": "enter_declared_amount"
+        }
+      ]
+    },
+    {
+      "id": "settings-retrieval-templates",
+      "menuArea": "Settings",
+      "function": "Retrieval templates",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Retrieval templates\""
+        }
+      ]
+    },
+    {
+      "id": "cash-management-post",
+      "menuArea": "Plan",
+      "function": "Cash Management: post gross, federal/state withholding, prove net",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "alsoVerify": ["cash_management", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "navButton(\"cash-management\", \"Cash Management\")"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "mustContain": ".text(\"cash-management\", \"Cash Management\")"
+        },
+        {
+          "path": "apps/desktop/src/CashManagement.tsx",
+          "mustContain": "aria-label=\"Save cash distribution\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CashDistributionPost\""
+        }
+      ]
+    },
+    {
+      "id": "cash-management-ssa",
+      "menuArea": "Plan",
+      "function": "Cash Management: confirm Tom Social Security retirement $2,865",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "alsoVerify": ["cash_management", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/CashManagement.tsx",
+          "mustContain": "aria-label=\"Confirm Tom Social Security retirement\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"SsaConfirm\""
+        },
+        {
+          "path": "crates/financial-domain/src/cash_management.rs",
+          "mustContain": "TOM_SSA_EXPECTED_MINOR"
+        }
+      ]
+    },
+    {
+      "id": "cash-management-magi",
+      "menuArea": "Plan",
+      "function": "Cash Management: MAGI add is taxable gross; withholding is tax-payment only",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "alsoVerify": ["cash_management", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/CashManagement.tsx",
+          "mustContain": "aria-label=\"Cash MAGI preview\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "executeQuery(\"MagiProjectionGet\")"
+        },
+        {
+          "path": "crates/financial-domain/src/cash_management.rs",
+          "mustContain": "pub fn magi_add_minor"
+        }
+      ]
+    },
+    {
+      "id": "cash-management-month",
+      "menuArea": "Plan",
+      "function": "Cash Management: calendar-month board by event date",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "alsoVerify": ["cash_management", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/CashManagement.tsx",
+          "mustContain": "aria-label=\"Cash management month\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CashManagementMonthGet\""
+        }
+      ]
+    },
+    {
+      "id": "file-restart-graceful",
+      "menuArea": "File",
+      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, and exits. The supervisor Start-Process-es start-finos-dev.bat. Household release uses app.restart().",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "alsoVerify": ["desktop_menu", "accessibility", "account_value"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "Restarting coding launch. Waiting for in-flight work, then closing the data file. A new finos (dev) console opens if the supervisor is running."
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Restart in progress\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Restart Application\""
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "mustContain": ".text(\"app-restart\", \"Restart Application\")"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "mustContain": "restart.token"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "mustContain": "close_for_shutdown"
+        },
+        {
+          "path": "apps/desktop/start-finos-supervisor.bat",
+          "mustContain": "start-finos-supervisor"
+        },
+        {
+          "path": "apps/desktop/start-finos-supervisor.bat",
+          "mustContain": "Start-Process -FilePath"
+        },
+        {
+          "path": "apps/desktop/start-finos-dev.bat",
+          "mustContain": "wait_port_free"
+        },
+        {
+          "path": "crates/storage-sqlite/src/platform.rs",
+          "mustContain": "pub async fn close_for_shutdown"
+        }
+      ]
+    },
+    {
+      "id": "settings-core-functions",
+      "menuArea": "Settings",
+      "function": "Core functions catalog",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "alsoVerify": ["core_functions"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Core functions\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "executeQuery(\"CoreFunctionsGet\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "Also verify"
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CoreFunctionsGet\""
+        }
+      ]
+    },
+    {
+      "id": "position-hub-declarations",
+      "menuArea": "Position hub",
+      "function": "Declarations panel",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "id=\"hub-declarations\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Declarations\""
+        }
+      ]
+    },
+    {
+      "id": "position-hub-last-price",
+      "menuArea": "Position hub",
+      "function": "Refresh last price for this symbol",
+      "lastChanged": "2026-09-09",
+      "lastVerified": "2026-09-09",
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Refresh last price for this symbol\""
+        }
+      ]
+    },
+    {
+      "id": "position-details-owner-facts",
+      "menuArea": "Position Details",
+      "function": "Position information table lists owner facts. Risk is mandatory at add and edit: Foundation, Core, or Risk On. Undecided is not permitted. Frequency is required. Save or Cancel.",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "alsoVerify": ["position_details", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "id=\"hub-identity\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Position information\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Position risk\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Position frequency\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "aria-label=\"Save stored facts\""
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "Choose Foundation, Core, or Risk On before saving."
+        },
+        {
+          "path": "crates/financial-domain/src/plan_review.rs",
+          "mustContain": "pub fn owner_risk_accepted"
+        }
+      ]
+    },
+    {
+      "id": "save-unsaved-orange",
+      "menuArea": "All",
+      "function": "Owner-edit Save turns orange while unsaved (class is-unsaved). Global for Position Details, Add Position, Add Lot, Cash, Trends.",
+      "lastChanged": "2026-09-10",
+      "lastVerified": "2026-09-10",
+      "alsoVerify": ["accessibility", "desktop_menu"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/App.css",
+          "mustContain": "button.is-unsaved"
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "className={pdDirty ? \"is-unsaved\" : undefined}"
+        },
+        {
+          "path": "apps/desktop/src/CashManagement.tsx",
+          "mustContain": "is-unsaved"
+        },
+        {
+          "path": "apps/desktop/src/TrendsCapture.tsx",
+          "mustContain": "is-unsaved"
+        }
+      ]
+    }
+  ]
+}

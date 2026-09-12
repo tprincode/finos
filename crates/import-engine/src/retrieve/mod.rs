@@ -2980,7 +2980,43 @@ fn apply_mlp_sec_8k_empty(
     }
 }
 
+fn outcome_has_security(rows: &[Value], security_id: &str) -> bool {
+    rows.iter()
+        .any(|row| row.get("securityId").and_then(|v| v.as_str()) == Some(security_id))
+}
+
+/// Incremental retrieve with nothing new to store still counts as today's run.
+fn stamp_declaration_run_if_quiet(out: &mut DeclarationCollectOutcome, target: &DeclarationTarget) {
+    let id = target.security_id.as_str();
+    if outcome_has_security(&out.misses, id) || outcome_has_security(&out.unchanged, id) {
+        return;
+    }
+    let hash = out
+        .candidates
+        .iter()
+        .chain(out.pay_dates.iter())
+        .find_map(|row| row.get("contentHash").and_then(|h| h.as_str()))
+        .unwrap_or(target.last_content_hash.as_str());
+    out.unchanged.push(json!({
+        "securityId": target.security_id,
+        "symbol": target.symbol,
+        "contentHash": hash,
+    }));
+}
+
 fn apply_fetched_page(
+    out: &mut DeclarationCollectOutcome,
+    target: &DeclarationTarget,
+    source: &str,
+    html: Option<&str>,
+    fetched_url: &str,
+    payment_calendar_url: Option<&str>,
+) {
+    apply_fetched_page_inner(out, target, source, html, fetched_url, payment_calendar_url);
+    stamp_declaration_run_if_quiet(out, target);
+}
+
+fn apply_fetched_page_inner(
     out: &mut DeclarationCollectOutcome,
     target: &DeclarationTarget,
     source: &str,
@@ -4603,6 +4639,12 @@ Amplify HACK Cybersecurity Covered Call ETF HAKY
         );
         assert_eq!(out.page_paid.len(), 3);
         assert!(out.misses.is_empty(), "increment of stored pays is not empty: {:?}", out.misses);
+        assert_eq!(
+            out.unchanged.len(),
+            1,
+            "known pays still count as today's retrieve: {:?}",
+            out.unchanged
+        );
     }
 
     #[test]
@@ -4884,7 +4926,15 @@ Amplify HACK Cybersecurity Covered Call ETF HAKY
             force_refresh: true,
             ..Default::default()
         }]);
-        assert!(out.unchanged.is_empty());
+        let early_skip = out.unchanged.len() == 1
+            && out.candidates.is_empty()
+            && out.misses.is_empty()
+            && out.unchanged[0]["contentHash"] == "deadbeef";
+        assert!(
+            !early_skip,
+            "force_refresh must not skip the issuer fetch: {:?}",
+            out.unchanged
+        );
     }
 
     #[test]

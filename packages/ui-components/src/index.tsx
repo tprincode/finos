@@ -1160,14 +1160,14 @@ export function ExceptionList({
   const open = exceptions.filter((e) => !e.acknowledged);
   const summary = issuerRetrieveMissSummary(exceptions);
   if (open.length === 0 && exceptions.length === 0) {
-    return <p aria-label="Exception summary">No open exceptions.</p>;
+    return <p aria-label="Exceptions">No open exceptions.</p>;
   }
   const countLine =
     open.length === 0
       ? `${exceptions.length} acknowledged exception${exceptions.length === 1 ? "" : "s"}`
       : `${open.length} open exception${open.length === 1 ? "" : "s"}`;
   return (
-    <div aria-label="Exception summary">
+    <div aria-label="Exceptions">
       {summary ? <p aria-label="Issuer retrieve miss summary">{summary}</p> : null}
       <p>
         {countLine}
@@ -1705,6 +1705,10 @@ export type IncomePlanGridView = {
       symbol: string;
       cadence: string;
       lastUpdate: string | null;
+      declarationPerShareMinor?: number | null;
+      declarationPerShareScale?: number;
+      declarationEnteredOn?: string | null;
+      declarationCurrent?: boolean;
       cells: Array<{ weekEnd: string; amountMinor: number | null; tone?: string }>;
     }>;
   }>;
@@ -1730,6 +1734,30 @@ function formatUsdWhole(minor: number, scale: number): string {
   const dollars = Math.round(minor / 10 ** places);
   const sign = dollars < 0 ? "-" : "";
   return `${sign}$${formatCount(Math.abs(dollars))}`;
+}
+
+function formatPerShare(
+  minor: number | null | undefined,
+  scale: number | undefined,
+): string {
+  if (minor == null) return "";
+  const places = Number.isFinite(scale) ? Math.max(0, Math.trunc(scale ?? 2)) : 2;
+  return `$${formatScaled(minor, places)}`;
+}
+
+function declShareTone(
+  known: boolean | undefined,
+  current: boolean | undefined,
+): "current" | "stale" | "none" {
+  if (!known) return "none";
+  return current ? "current" : "stale";
+}
+
+function declShareClass(
+  known: boolean | undefined,
+  current: boolean | undefined,
+): string {
+  return `ip-decl-${declShareTone(known, current)}`;
 }
 
 function fmtGridCell(
@@ -1926,6 +1954,7 @@ export function IncomePlanGridPanel({
           <thead>
             <tr>
               <th className="ip-sticky">Symbol</th>
+              <th className="ip-decl-sh">Decl $/sh</th>
               <th>Last Update</th>
               {grid.weeks.map((week) => weekHead(week.end))}
             </tr>
@@ -1942,6 +1971,7 @@ export function IncomePlanGridPanel({
                 <Fragment key={group.cadence}>
                   <tr className="ip-grp">
                     <td className="ip-sticky">{group.cadence}</td>
+                    <td className="ip-decl-sh" />
                     <td />
                     {grid.weeks.map((week, i) => (
                       <td key={week.end} className="numeric">
@@ -1952,6 +1982,30 @@ export function IncomePlanGridPanel({
                   {group.rows.map((row) => (
                     <tr key={row.symbol}>
                       <td className="ip-sticky">{row.symbol}</td>
+                      <td
+                        className={`numeric ip-decl-sh ${declShareClass(
+                          row.declarationPerShareMinor != null,
+                          row.declarationCurrent,
+                        )}`}
+                        data-decl-tone={declShareTone(
+                          row.declarationPerShareMinor != null,
+                          row.declarationCurrent,
+                        )}
+                        aria-label={`Decl $ per share ${declShareTone(
+                          row.declarationPerShareMinor != null,
+                          row.declarationCurrent,
+                        )}`}
+                        title={
+                          row.declarationEnteredOn
+                            ? `Entered ${row.declarationEnteredOn}`
+                            : undefined
+                        }
+                      >
+                        {formatPerShare(
+                          row.declarationPerShareMinor,
+                          row.declarationPerShareScale,
+                        )}
+                      </td>
                       <td>{row.lastUpdate ?? ""}</td>
                       {row.cells.map((cell) => (
                         <td
@@ -1975,6 +2029,7 @@ export function IncomePlanGridPanel({
             })}
             <tr className="ip-grand">
               <td className="ip-sticky">Grand Total</td>
+              <td className="ip-decl-sh" />
               <td />
               {grid.weeks.map((week, i) => (
                 <td key={week.end} className="numeric">
@@ -1991,6 +2046,8 @@ export function IncomePlanGridPanel({
         <span><i className="ip-sw miss" />Past · miss</span>
         <span><i className="ip-sw future" />Future plan</span>
         <span><i className="ip-sw empty" />Not a pay week</span>
+        <span><i className="ip-sw ok" />Decl $/sh current (≤5 trading days)</span>
+        <span><i className="ip-sw" />Decl $/sh stale</span>
       </p>
     </div>
   );
@@ -2020,6 +2077,10 @@ export type IncomePlanWeekView = {
     planKnown: boolean;
     declarationMinor?: number;
     declarationKnown?: boolean;
+    declarationPerShareMinor?: number | null;
+    declarationPerShareScale?: number;
+    declarationEnteredOn?: string | null;
+    declarationCurrent?: boolean;
     scale: number;
     accounts?: Array<{
       accountName: string;
@@ -2152,6 +2213,8 @@ export function IncomePlanWeekPanel({
           return row.planKnown ? (row.plannedMinor ?? 0) : null;
         case "declaration":
           return row.declarationKnown ? (row.declarationMinor ?? 0) : null;
+        case "declarationPerShare":
+          return row.declarationPerShareMinor ?? null;
         case "actual":
           return row.actualKnown === false ? null : row.actualMinor;
         case "variance":
@@ -2394,15 +2457,15 @@ export function IncomePlanWeekPanel({
       <h3>{onBack ? "Positions in this week" : "By position for the week"}</h3>
       {positionRows.length === 0 ? (
         <p>No positions scheduled or paid in this week.</p>
-      ) : onBack ? (
+      ) : (
         <table className="ip-grid" aria-label="Income plan by position">
           <thead>
             <tr>
               <th className="ip-sticky">Symbol</th>
-              <th>Freq</th>
+              <th className="ip-decl-sh">Decl $/sh</th>
               <th>Last Update</th>
               <th>Plan $</th>
-              <th>Declaration $</th>
+              <th>Decl $</th>
               <th>Actual $</th>
               <th>Variance</th>
             </tr>
@@ -2424,8 +2487,10 @@ export function IncomePlanWeekPanel({
               return (
                 <Fragment key={group.name}>
                   <tr className="ip-grp">
-                    <td className="ip-sticky">{group.name}</td>
-                    <td>{group.rows.length}</td>
+                    <td className="ip-sticky">
+                      {group.name} · {group.rows.length}
+                    </td>
+                    <td className="ip-decl-sh" />
                     <td />
                     <td className="numeric">{formatUsdWhole(gPlan, week.scale ?? 2)}</td>
                     <td className="numeric">{gDecl ? formatUsdWhole(gDecl, week.scale ?? 2) : ""}</td>
@@ -2456,7 +2521,30 @@ export function IncomePlanWeekPanel({
                             row.symbol
                           )}
                         </td>
-                        <td>{row.cadence?.trim() || "—"}</td>
+                        <td
+                          className={`numeric ip-decl-sh ${declShareClass(
+                            row.declarationPerShareMinor != null,
+                            row.declarationCurrent,
+                          )}`}
+                          data-decl-tone={declShareTone(
+                            row.declarationPerShareMinor != null,
+                            row.declarationCurrent,
+                          )}
+                          aria-label={`Decl $ per share ${declShareTone(
+                            row.declarationPerShareMinor != null,
+                            row.declarationCurrent,
+                          )}`}
+                          title={
+                            row.declarationEnteredOn
+                              ? `Entered ${row.declarationEnteredOn}`
+                              : undefined
+                          }
+                        >
+                          {formatPerShare(
+                            row.declarationPerShareMinor,
+                            row.declarationPerShareScale,
+                          )}
+                        </td>
                         <td>{row.lastUpdate?.trim() || ""}</td>
                         <td className="numeric">
                           {row.planKnown ? formatUsd(planned, row.scale) : ""}
@@ -2481,8 +2569,8 @@ export function IncomePlanWeekPanel({
               );
             })}
             <tr className="ip-grand">
-              <td className="ip-sticky">Grand Total</td>
-              <td>{positionRows.length}</td>
+              <td className="ip-sticky">Grand Total · {positionRows.length}</td>
+              <td className="ip-decl-sh" />
               <td />
               <td className="numeric">{formatUsdWhole(weekPlan, week.scale ?? 2)}</td>
               <td className="numeric" />
@@ -2495,118 +2583,11 @@ export function IncomePlanWeekPanel({
             </tr>
           </tbody>
         </table>
-      ) : (
-        <div className="table-wrap">
-          <table aria-label="Income plan by position">
-            <thead>
-              <tr>
-                {sortHead(positionSort, "Symbol", "symbol")}
-                {sortHead(positionSort, "Cadence", "cadence")}
-                {sortHead(positionSort, "Last Update", "lastUpdate")}
-                {sortHead(positionSort, "Plan", "plan", true)}
-                {sortHead(positionSort, "Declaration", "declaration", true)}
-                {sortHead(positionSort, "Actual", "actual", true)}
-                {sortHead(positionSort, "Variance", "variance", true)}
-              </tr>
-            </thead>
-            <tbody>
-              {positionRows.map((row) => {
-                const actualKnown = row.actualKnown ?? !(weekOpen && row.actualMinor === 0);
-                const actualOpen = !actualKnown;
-                return (
-                <tr key={row.symbol}>
-                  <td>
-                    {onOpenSymbol ? (
-                      <button
-                        type="button"
-                        aria-label={`Open ${row.symbol} position`}
-                        onClick={() => onOpenSymbol(row.symbol)}
-                      >
-                        {row.symbol}
-                      </button>
-                    ) : (
-                      row.symbol
-                    )}
-                  </td>
-                  <td>{row.cadence?.trim() || "—"}</td>
-                  <td>{row.lastUpdate?.trim() || ""}</td>
-                  <td className="numeric">
-                    {row.planKnown
-                      ? formatUsd(row.plannedMinor ?? 0, row.scale)
-                      : "N/A"}
-                  </td>
-                  <td className="numeric">
-                    {row.declarationKnown
-                      ? formatUsd(row.declarationMinor ?? 0, row.scale)
-                      : "N/A"}
-                  </td>
-                  <td className="numeric">
-                    {actualKnown ? formatUsd(row.actualMinor, row.scale) : "N/A"}
-                  </td>
-                  <td className="numeric">
-                    {row.planKnown && actualKnown
-                      ? formatUsd(row.actualMinor - (row.plannedMinor ?? 0), row.scale)
-                      : "N/A"}
-                  </td>
-                </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td>Total</td>
-                <td>{formatCount(positionRows.length)}</td>
-                <td></td>
-                <td className="numeric">
-                  {moneyTotal(
-                    positionRows.map((row) =>
-                      row.planKnown ? (row.plannedMinor ?? 0) : null,
-                    ),
-                    week.scale,
-                  )}
-                </td>
-                <td className="numeric">
-                  {moneyTotal(
-                    positionRows.map((row) =>
-                      row.declarationKnown ? (row.declarationMinor ?? 0) : null,
-                    ),
-                    week.scale,
-                  )}
-                </td>
-                <td className="numeric">
-                  {positionRows.every((row) => row.actualKnown === false)
-                    ? "N/A"
-                    : weekOpen &&
-                        positionRows.every((row) => row.actualMinor === 0)
-                      ? "N/A"
-                      : formatUsd(
-                          positionRows
-                            .filter((row) => row.actualKnown !== false)
-                            .reduce((sum, row) => sum + row.actualMinor, 0),
-                          week.scale,
-                        )}
-                </td>
-                <td className="numeric">
-                  {weekOpen
-                    ? "N/A"
-                    : moneyTotal(
-                        positionRows.map((row) =>
-                          row.planKnown
-                            ? row.actualMinor - (row.plannedMinor ?? 0)
-                            : null,
-                        ),
-                        week.scale,
-                      )}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
       )}
-      {onBack && !weekOpen && missSymbols.length > 0 ? (
+      {!weekOpen && missSymbols.length > 0 ? (
         <p className="ip-exceptions">Planned not paid: {missSymbols.join(", ")}.</p>
       ) : null}
-      {onBack && !weekOpen && exceptionSymbols.length > 0 ? (
+      {!weekOpen && exceptionSymbols.length > 0 ? (
         <p className="ip-exceptions">
           Amount exceptions (paid ≠ plan by more than $1): {exceptionSymbols.join(", ")}.
         </p>

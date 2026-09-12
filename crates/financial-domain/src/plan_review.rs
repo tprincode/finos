@@ -85,6 +85,14 @@ pub fn normalize_risk_tier(raw: &str) -> String {
     }
 }
 
+/// Owner-set risk. Blank and Undecided are not permitted.
+pub fn owner_risk_accepted(raw: &str) -> bool {
+    matches!(
+        normalize_risk_tier(raw).as_str(),
+        "Foundation" | "Core" | "Risk On"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +127,8 @@ mod tests {
     fn high_risk_maps_to_risk_on() {
         assert_eq!(normalize_risk_tier("HighRisk"), "Risk On");
         assert_eq!(normalize_risk_tier("foundation"), "Foundation");
+        assert!(owner_risk_accepted("Risk On"));
+        assert!(!owner_risk_accepted("Undecided"));
+        assert!(!owner_risk_accepted(""));
     }
 }

@@ -120,6 +120,8 @@ pub fn period_has_occurred(period: &str, as_of: &str) -> bool {
 
 /// Unoccurred copied last-pay / orphan calendar rows. Not an issuer notice.
 /// Future planning $ is Plan $/share, not this row.
+/// A row entered on or after `as_of` is a live issuer notice — keep it even when
+/// the dollar matches a prior paid amount (XPAY and other same-$ monthlies).
 pub fn unoccurred_declaration_is_placeholder(
     period: &str,
     amount: i64,
@@ -127,9 +129,15 @@ pub fn unoccurred_declaration_is_placeholder(
     as_of: &str,
     occurred_amounts: &[(i64, u8)],
     pay_ons: &[&str],
+    entered_at: &str,
 ) -> bool {
     if period_has_occurred(period, as_of) {
         return false;
+    }
+    if let (Some(entered), Some(as_of_d)) = (parse_iso_day(entered_at), parse_iso_day(as_of)) {
+        if entered >= as_of_d {
+            return false;
+        }
     }
     let key = period.trim();
     let key10 = if key.len() >= 10 { &key[..10] } else { key };
@@ -285,21 +293,74 @@ fn year_month(raw: &str) -> Option<String> {
     Some(format!("{:04}-{:02}", d.year(), d.month()))
 }
 
-/// Runtime collect: add new unpaid payables and move unoccurred same-month dates.
-/// Already-paid months are conflicts — do not silent-supersede. Keep other dates.
+/// Same payable slot: weekly uses Sat–Fri week or a 3-day window; other cadences use calendar month.
+pub fn vendor_payables_same_period(frequency: &str, left: &str, right: &str) -> bool {
+    if PaymentCadence::parse(frequency) == Some(PaymentCadence::Weekly) {
+        return same_pay_week(left, right) || within_calendar_days(left, right, 3);
+    }
+    year_month(left) == year_month(right)
+}
+
+fn same_pay_week(left: &str, right: &str) -> bool {
+    match (parse_iso_day(left), parse_iso_day(right)) {
+        (Some(a), Some(b)) => week_containing(a).start == week_containing(b).start,
+        _ => false,
+    }
+}
+
+/// Ticket reason dates: vendor first, paid/occurred second.
+pub fn parse_paid_payable_supersede_dates(reason: &str) -> Option<(String, String)> {
+    let dates = iso_dates_in(reason);
+    (dates.len() >= 2).then(|| (dates[0].clone(), dates[1].clone()))
+}
+
+fn iso_dates_in(reason: &str) -> Vec<String> {
+    let bytes = reason.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 10 <= bytes.len() {
+        let slice = &bytes[i..i + 10];
+        if slice[4] == b'-'
+            && slice[7] == b'-'
+            && slice.iter().enumerate().all(|(j, b)| {
+                matches!(j, 4 | 7) || b.is_ascii_digit()
+            })
+        {
+            if let Ok(s) = std::str::from_utf8(slice) {
+                if parse_iso_day(s).is_some() {
+                    out.push(s.to_string());
+                    i += 10;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn within_calendar_days(left: &str, right: &str, days: i64) -> bool {
+    match (parse_iso_day(left), parse_iso_day(right)) {
+        (Some(a), Some(b)) => (a - b).num_days().abs() <= days,
+        _ => false,
+    }
+}
+
+/// Runtime collect: add new unpaid payables and move unoccurred dates in the same period.
+/// Weekly period = Sat–Fri week or 3 calendar days. Monthly/other = calendar month.
+/// Already-paid periods are conflicts — do not silent-supersede. Keep other dates.
 pub fn merge_runtime_vendor_payables(
     as_of: &str,
     existing: &[String],
     paid_periods: &[String],
     vendor: &[String],
+    payment_frequency: &str,
 ) -> RuntimePayablePlan {
     let as_of_d = parse_iso_day(as_of);
-    let paid_months: Vec<String> = paid_periods
+    let paid_occurred: Vec<String> = paid_periods
         .iter()
-        .filter_map(|p| {
-            let ym = year_month(p)?;
-            period_has_occurred(p, as_of).then_some(ym)
-        })
+        .filter(|p| period_has_occurred(p, as_of))
+        .cloned()
         .collect();
     let mut keep: Vec<String> = existing
         .iter()
@@ -317,35 +378,27 @@ pub fn merge_runtime_vendor_payables(
         if vendor_on.is_empty() || parse_iso_day(vendor_on).is_none() {
             continue;
         }
-        let Some(month) = year_month(vendor_on) else {
-            continue;
-        };
-        if paid_months.iter().any(|m| m == &month) {
-            if let Some(existing_on) = keep.iter().find(|d| year_month(d).as_deref() == Some(month.as_str()))
-            {
-                if existing_on != vendor_on {
-                    plan.conflicts.push(VendorPayableConflict {
-                        vendor_pay_on: vendor_on.to_string(),
-                        existing_pay_on: existing_on.clone(),
-                    });
-                }
-            } else {
-                plan.conflicts.push(VendorPayableConflict {
-                    vendor_pay_on: vendor_on.to_string(),
-                    existing_pay_on: String::new(),
-                });
-            }
-            continue;
-        }
         if keep.iter().any(|d| d == vendor_on) {
             continue;
         }
-        if let Some(existing_on) = keep.iter().find(|d| year_month(d).as_deref() == Some(month.as_str())).cloned()
-        {
+        let same = keep
+            .iter()
+            .find(|d| vendor_payables_same_period(payment_frequency, d, vendor_on))
+            .cloned();
+        if let Some(existing_on) = same {
+            let paid = paid_occurred.iter().any(|p| {
+                p == &existing_on
+                    || vendor_payables_same_period(payment_frequency, p, &existing_on)
+            }) && period_has_occurred(&existing_on, as_of);
             let unoccurred = as_of_d
                 .and_then(|as_of| parse_iso_day(&existing_on).map(|d| d >= as_of))
                 .unwrap_or(false);
-            if unoccurred {
+            if paid {
+                plan.conflicts.push(VendorPayableConflict {
+                    vendor_pay_on: vendor_on.to_string(),
+                    existing_pay_on: existing_on,
+                });
+            } else if unoccurred {
                 keep.retain(|d| d != &existing_on);
                 keep.push(vendor_on.to_string());
                 plan.moves.push((existing_on, vendor_on.to_string()));
@@ -1229,6 +1282,7 @@ mod tests {
             &["2026-09-30".into(), "2026-10-31".into(), "2026-11-30".into()],
             &["2026-08-31".into()],
             &["2026-09-28".into(), "2026-12-31".into()],
+            "Monthly",
         );
         assert_eq!(plan.add, ["2026-12-31"]);
         assert_eq!(plan.moves, [("2026-09-30".into(), "2026-09-28".into())]);
@@ -1248,6 +1302,7 @@ mod tests {
             "2026-09-07",
             &[(68255, 5), (70497, 5)],
             &["2026-10-03"],
+            "2026-08-15",
         ));
         assert!(unoccurred_declaration_is_placeholder(
             "2026-09-30",
@@ -1256,6 +1311,7 @@ mod tests {
             "2026-09-07",
             &[(1215, 4)],
             &["2026-09-15"],
+            "2026-08-15",
         ));
         assert!(unoccurred_declaration_is_placeholder(
             "2026-11-06",
@@ -1264,6 +1320,7 @@ mod tests {
             "2026-09-07",
             &[(3400, 4)],
             &["2026-11-06"],
+            "2026-08-15",
         ));
         assert!(!unoccurred_declaration_is_placeholder(
             "2026-09-09",
@@ -1272,6 +1329,7 @@ mod tests {
             "2026-09-07",
             &[(572959, 6)],
             &["2026-09-09"],
+            "2026-08-15",
         ));
         assert!(!unoccurred_declaration_is_placeholder(
             "2026-09-03",
@@ -1280,6 +1338,16 @@ mod tests {
             "2026-09-07",
             &[(68255, 5)],
             &["2026-09-03"],
+            "2026-09-03",
+        ));
+        assert!(!unoccurred_declaration_is_placeholder(
+            "2026-09-10",
+            899537,
+            6,
+            "2026-09-09",
+            &[(899537, 6)],
+            &["2026-09-10", "2026-10-15"],
+            "2026-09-09",
         ));
     }
 
@@ -1290,6 +1358,7 @@ mod tests {
             &["2026-10-01".into(), "2026-11-03".into()],
             &["2026-09-03".into(), "2026-10-01".into()],
             &["2026-10-03".into()],
+            "Monthly",
         );
         assert_eq!(plan.moves, [("2026-10-01".into(), "2026-10-03".into())]);
         assert!(plan.conflicts.is_empty());
@@ -1304,12 +1373,66 @@ mod tests {
             &["2026-08-31".into(), "2026-09-30".into()],
             &["2026-08-31".into()],
             &["2026-08-28".into()],
+            "Monthly",
         );
         assert!(plan.add.is_empty());
         assert!(plan.moves.is_empty());
         assert_eq!(plan.conflicts.len(), 1);
         assert_eq!(plan.conflicts[0].existing_pay_on, "2026-08-31");
         assert!(plan.keep.contains(&"2026-08-31".to_string()));
+    }
+
+    #[test]
+    fn weekly_next_friday_adds_without_supersede() {
+        let plan = merge_runtime_vendor_payables(
+            "2026-09-10",
+            &["2026-09-04".into(), "2026-09-18".into()],
+            &["2026-09-04".into()],
+            &["2026-09-11".into()],
+            "Weekly",
+        );
+        assert_eq!(plan.add, ["2026-09-11"]);
+        assert!(plan.moves.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert!(plan.keep.contains(&"2026-09-04".to_string()));
+        assert!(plan.keep.contains(&"2026-09-11".to_string()));
+    }
+
+    #[test]
+    fn weekly_vendor_date_already_stored_is_not_a_conflict() {
+        let plan = merge_runtime_vendor_payables(
+            "2026-09-10",
+            &["2026-09-04".into(), "2026-09-11".into()],
+            &["2026-09-04".into()],
+            &["2026-09-11".into()],
+            "Weekly",
+        );
+        assert!(plan.add.is_empty());
+        assert!(plan.moves.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert!(plan.keep.contains(&"2026-09-04".to_string()));
+        assert!(plan.keep.contains(&"2026-09-11".to_string()));
+    }
+
+    #[test]
+    fn parse_paid_payable_supersede_reason_dates() {
+        let parsed = parse_paid_payable_supersede_dates(
+            "Vendor payable 2026-09-11 would silent-supersede paid/occurred 2026-09-04.",
+        );
+        assert_eq!(
+            parsed,
+            Some(("2026-09-11".into(), "2026-09-04".into()))
+        );
+        assert!(!vendor_payables_same_period(
+            "Weekly",
+            "2026-09-11",
+            "2026-09-04"
+        ));
+        assert!(vendor_payables_same_period(
+            "Monthly",
+            "2026-09-11",
+            "2026-09-04"
+        ));
     }
 
     #[test]
