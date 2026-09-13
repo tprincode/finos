@@ -459,6 +459,138 @@ async fn july_third_ssa_is_july_month_and_crossing_week() {
     assert_eq!(july["rows"][0]["count"], 1);
 }
 
+#[tokio::test]
+async fn imported_disbursement_matches_manual_post_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    must_ok(
+        &platform,
+        "ProductionSeedLoad",
+        serde_json::json!({
+            "accounts": [{"name": "Income", "kind": "ira"}],
+            "securities": [],
+            "lots": [],
+            "yieldBatches": [],
+            "disbursements": [{
+                "accountName": "Income",
+                "activityType": "IRA_Distribution",
+                "amountMinor": 100000,
+                "scale": 2,
+                "occurredOn": "2026-09-12",
+                "idempotencyKey": "production-disb-cm4-import",
+                "federalWithholdingMinor": 18000,
+                "stateWithholdingMinor": 4500
+            }]
+        }),
+    )
+    .await;
+    let accounts = query_json(&platform, "AccountList", serde_json::json!({})).await;
+    let account_id = accounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "Income")
+        .expect("Income")["accountId"]
+        .clone();
+    let twin = must_ok(
+        &platform,
+        "CashDistributionPost",
+        serde_json::json!({
+            "accountId": account_id,
+            "activityType": "IRA_Distribution",
+            "occurredOn": "2026-10-03",
+            "grossMinor": 100000,
+            "federalWithholdingMinor": 18000,
+            "stateWithholdingMinor": 4500,
+            "scale": 2,
+            "idempotencyKey": "cm-4-manual-twin"
+        }),
+    )
+    .await;
+    assert_eq!(twin["amountMinor"].as_i64(), Some(100000));
+    assert_eq!(twin["federalWithholdingMinor"].as_i64(), Some(18000));
+    assert_eq!(twin["stateWithholdingMinor"].as_i64(), Some(4500));
+
+    let imported_week = query_json(
+        &platform,
+        "CashManagementWeekGet",
+        serde_json::json!({"asOfDate": "2026-09-12"}),
+    )
+    .await;
+    let imported = imported_week["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["activityType"] == "IRA_Distribution")
+        .expect("imported week row");
+    let manual_week = query_json(
+        &platform,
+        "CashManagementWeekGet",
+        serde_json::json!({"asOfDate": "2026-10-03"}),
+    )
+    .await;
+    let manual = manual_week["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["activityType"] == "IRA_Distribution")
+        .expect("manual week row");
+    for key in [
+        "accountName",
+        "activityType",
+        "grossMinor",
+        "federalWithholdingMinor",
+        "stateWithholdingMinor",
+        "netMinor",
+    ] {
+        assert_eq!(imported[key], manual[key], "{key}");
+    }
+    assert_eq!(imported["occurredOn"], "2026-09-12");
+    assert_eq!(manual["occurredOn"], "2026-10-03");
+    assert_eq!(imported_week["weekNetMinor"].as_i64(), Some(77500));
+    assert_eq!(manual_week["weekNetMinor"].as_i64(), Some(77500));
+
+    let imported_month = query_json(
+        &platform,
+        "CashManagementMonthGet",
+        serde_json::json!({"asOfDate": "2026-09-12"}),
+    )
+    .await;
+    let manual_month = query_json(
+        &platform,
+        "CashManagementMonthGet",
+        serde_json::json!({"asOfDate": "2026-10-03"}),
+    )
+    .await;
+    assert_eq!(imported_month["monthGrossMinor"], manual_month["monthGrossMinor"]);
+    assert_eq!(imported_month["monthWithholdingMinor"], manual_month["monthWithholdingMinor"]);
+    assert_eq!(imported_month["monthNetMinor"], manual_month["monthNetMinor"]);
+    assert_eq!(imported_month["monthNetMinor"].as_i64(), Some(77500));
+
+    let trends = query_json(
+        &platform,
+        "TrendsGet",
+        serde_json::json!({"asOfDate": "2026-10-03"}),
+    )
+    .await;
+    let lines = trends["distributions"]["lines"].as_array().unwrap();
+    assert!(
+        lines.iter().any(|l| {
+            l["activityType"] == "IRA_Distribution"
+                && l["occurredOn"] == "2026-09-12"
+                && l["amountMinor"] == 100000
+                && l["federalWithholdingMinor"] == 18000
+                && l["stateWithholdingMinor"] == 4500
+                && l["netMinor"] == 77500
+        }),
+        "{trends}"
+    );
+    assert_eq!(trends["taxMonitor"]["federalWithholdingMinor"].as_i64(), Some(36000));
+    assert_eq!(trends["distributions"]["netMinor"].as_i64(), Some(155000));
+}
+
 #[test]
 fn cash_management_ui_never_says_ssi() {
     let ui = std::fs::read_to_string(
@@ -470,4 +602,31 @@ fn cash_management_ui_never_says_ssi() {
     assert!(!ui.contains("ssi"));
     assert!(ui.contains("changes tax-payment, not Marketplace MAGI"));
     assert!(!ui.contains("MagiFactRecord"));
+}
+
+#[test]
+fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
+    let cm = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/CashManagement.tsx"),
+    )
+    .unwrap();
+    let trends = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/graphing/TrendsCharts.tsx"),
+    )
+    .unwrap();
+    assert!(cm.contains("Distributions (YTD)"));
+    assert!(cm.contains("Tax / ACA monitor"));
+    assert!(cm.contains("Read-only Cash Management summary"));
+    assert!(cm.contains("Fed WH"));
+    assert!(cm.contains("State WH"));
+    assert!(cm.contains("Federal withholding"));
+    assert!(cm.contains("aria-label=\"Cash Management distributions YTD\""));
+    assert!(cm.contains("aria-label=\"Cash Management tax and ACA monitor\""));
+    assert!(!trends.contains("Distributions (YTD)"));
+    assert!(!trends.contains("Tax / ACA monitor"));
+    assert!(!trends.contains("Read-only Cash Management summary"));
+    assert!(!trends.contains("Saved Trends weeks"));
+    assert!(!trends.contains("FID+SCH"));
+    assert!(cm.contains("CashWeekDesk") || cm.contains("weekDesk"));
+    assert!(cm.contains("Cash week follow-up") || cm.contains("cash-follow-up"));
 }

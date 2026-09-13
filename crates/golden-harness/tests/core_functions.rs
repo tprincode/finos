@@ -25,6 +25,8 @@ struct Item {
 
 #[derive(Debug, Deserialize)]
 struct Catalog {
+    #[serde(default)]
+    notes: Vec<String>,
     items: Vec<Item>,
 }
 
@@ -49,9 +51,36 @@ fn core_functions_catalog_sentinels_still_exist() {
         .expect("core-functions.json");
     let catalog: Catalog = serde_json::from_str(&raw).expect("parse catalog");
     assert!(
-        !catalog.items.is_empty(),
-        "core-functions.json must list at least one function"
+        catalog.items.len() >= 28,
+        "catalog row count must not fall below the 11 Sep 2026 count of 28, got {}",
+        catalog.items.len()
     );
+    assert!(
+        catalog
+            .notes
+            .iter()
+            .any(|n| n.contains("Export") && n.contains("Cash Management")),
+        "catalog must name the Export vs Cash Management drift"
+    );
+    for item in &catalog.items {
+        if matches!(
+            item.id.as_str(),
+            "home-open-tickets"
+                | "home-refresh-declarations"
+                | "home-dividend-plan-panel"
+                | "home-live-by-risk"
+                | "file-restart-graceful"
+                | "settings-core-functions"
+                | "shopping-cart-swap"
+                | "save-unsaved-orange"
+        ) {
+            assert!(
+                !item.also_verify.is_empty(),
+                "{}: alsoVerify must stay non-empty",
+                item.id
+            );
+        }
+    }
     for item in &catalog.items {
         assert!(!item.id.trim().is_empty(), "id required");
         assert!(!item.menu_area.trim().is_empty(), "{}: menuArea", item.id);
@@ -119,14 +148,20 @@ fn core_functions_catalog_sentinels_still_exist() {
         "cash-management-ssa",
         "cash-management-magi",
         "cash-management-month",
+        "cash-management-import",
         "settings-core-functions",
         "home-live-by-risk",
         "home-risk-symbol-popup",
         "home-graphing-period",
+        "home-weekly-actuals",
+        "shopping-cart-swap",
         "home-open-tickets",
+        "home-dividend-plan-panel",
         "collectors-stats-truth",
         "position-details-owner-facts",
         "save-unsaved-orange",
+        "last-price-auto-window",
+        "tools-component-registry",
     ] {
         assert!(
             catalog.items.iter().any(|i| i.id == id),

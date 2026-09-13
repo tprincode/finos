@@ -4,20 +4,19 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::contracts::{
-    AccountRecord, ActivityRecord, AuditRecord, BasisGetBody, BrokerLotReconcileBody,
-    CanonicalWeekBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
-    ExceptionRecord, ImportBatchRecord, ImportCandidate, IncomePlanBody, LotAssignmentRecord,
-    LotRecommendBody, LotRecord, MagiProjection, MagiTaxPaymentBody, ReconcileCounts, RoiBody,
-    SecurityRecord, AllocationGetBody, AiRunListBody, AiRunRecord, BacktestGetBody, BurndownBody,
-    CalculatorPlanBody, CartGetBody, ClassificationReviewGetBody, PositionDetailsBody,
-    TaxProjectionBody, DistributionGetBody, PlanHistoryRecord, PositionCharacteristicRecord,
-    IssuerDeclarationRecord, IssuerPayDateRecord, PriceQuoteBody, CurrentPriceBody,
-    RetrievalTemplateRecord, PriceRetrievalSetBody, BacktestPeriodRecord,
-    PositionBacktestResultBody,
-    RocResearchObservation, RemainingPaymentDateOverride, ExpectedPaymentPattern,
-    PositionTaxProfile, RetrieveRunRecord, CollectorSetBody, CollectorStatsBody,
-    AccountBalanceSnapshotRecord, TrendsWeekSourceRecord, WorkTicketRecord,
-    CollectorFieldDecisionRecord,
+    AccountBalanceSnapshotRecord, AccountRecord, ActivityRecord, AiRunListBody, AiRunRecord,
+    AllocationGetBody, AuditRecord, BacktestGetBody, BacktestPeriodRecord, BasisGetBody,
+    BrokerLotReconcileBody, BurndownBody, CalculatorPlanBody, CanonicalWeekBody, CartGetBody,
+    CartScenarioBody, CartScenarioListBody, ClassificationReviewGetBody,
+    CollectorFieldDecisionRecord, CollectorSetBody, CollectorStatsBody, CurrentPriceBody,
+    DistributionGetBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
+    ExceptionRecord, ExpectedPaymentPattern, ImportBatchRecord, ImportCandidate, IncomePlanBody,
+    IssuerDeclarationRecord, IssuerPayDateRecord, LotAssignmentRecord, LotRecommendBody, LotRecord,
+    MagiProjection, MagiTaxPaymentBody, PlanHistoryRecord, PositionBacktestResultBody,
+    PositionCharacteristicRecord, PositionDetailsBody, PositionTaxProfile, PriceQuoteBody,
+    PriceRetrievalSetBody, ReconcileCounts, RemainingPaymentDateOverride, RetrievalTemplateRecord,
+    RetrieveRunRecord, RocResearchObservation, RoiBody, SecurityRecord, TaxProjectionBody,
+    TrendsWeekSourceRecord, WorkTicketRecord,
 };
 use crate::ports::platform::PlatformError;
 
@@ -35,42 +34,64 @@ pub trait Canonical: Send + Sync {
         &self,
         name: String,
         kind: String,
-    ) -> Result<AccountRecord, PlatformError> { ni() }
+    ) -> Result<AccountRecord, PlatformError> {
+        ni()
+    }
     async fn account_update(
         &self,
         account_id: Uuid,
         name: Option<String>,
         kind: Option<String>,
         expected_version: Option<i64>,
-    ) -> Result<AccountRecord, PlatformError> { ni() }
+    ) -> Result<AccountRecord, PlatformError> {
+        ni()
+    }
     async fn snapshot_import_sqlite(
         &self,
         sqlite_path: String,
-    ) -> Result<ReconcileCounts, PlatformError> { ni() }
-    async fn account_get(&self, account_id: Uuid) -> Result<AccountRecord, PlatformError> { ni() }
-    async fn account_list(&self) -> Result<Vec<AccountRecord>, PlatformError> { ni() }
+    ) -> Result<ReconcileCounts, PlatformError> {
+        ni()
+    }
+    async fn account_get(&self, account_id: Uuid) -> Result<AccountRecord, PlatformError> {
+        ni()
+    }
+    async fn account_list(&self) -> Result<Vec<AccountRecord>, PlatformError> {
+        ni()
+    }
 
     async fn security_register(
         &self,
         symbol: String,
         name: String,
         crf: bool,
-    ) -> Result<SecurityRecord, PlatformError> { ni() }
+    ) -> Result<SecurityRecord, PlatformError> {
+        ni()
+    }
     async fn security_update(
         &self,
         security_id: Uuid,
         name: Option<String>,
         symbol: Option<String>,
-    ) -> Result<SecurityRecord, PlatformError> { ni() }
-    async fn security_get(&self, security_id: Uuid) -> Result<SecurityRecord, PlatformError> { ni() }
-    async fn security_list(&self) -> Result<Vec<SecurityRecord>, PlatformError> { ni() }
+    ) -> Result<SecurityRecord, PlatformError> {
+        ni()
+    }
+    async fn security_get(&self, security_id: Uuid) -> Result<SecurityRecord, PlatformError> {
+        ni()
+    }
+    async fn security_list(&self) -> Result<Vec<SecurityRecord>, PlatformError> {
+        ni()
+    }
 
     async fn evidence_store(
         &self,
         filename: String,
         content: Vec<u8>,
-    ) -> Result<EvidenceRecord, PlatformError> { ni() }
-    async fn evidence_get(&self, evidence_id: Uuid) -> Result<EvidenceRecord, PlatformError> { ni() }
+    ) -> Result<EvidenceRecord, PlatformError> {
+        ni()
+    }
+    async fn evidence_get(&self, evidence_id: Uuid) -> Result<EvidenceRecord, PlatformError> {
+        ni()
+    }
 
     async fn import_stage(
         &self,
@@ -79,12 +100,24 @@ pub trait Canonical: Send + Sync {
         content: Vec<u8>,
         candidates: Vec<ImportCandidate>,
         default_account: Option<String>,
-    ) -> Result<ImportBatchRecord, PlatformError> { ni() }
-    async fn import_validate(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
-    async fn import_approve(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
-    async fn import_post(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
-    async fn import_batch_get(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> { ni() }
-    async fn import_pending_get(&self) -> Result<Option<ImportBatchRecord>, PlatformError> { ni() }
+    ) -> Result<ImportBatchRecord, PlatformError> {
+        ni()
+    }
+    async fn import_validate(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> {
+        ni()
+    }
+    async fn import_approve(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> {
+        ni()
+    }
+    async fn import_post(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> {
+        ni()
+    }
+    async fn import_batch_get(&self, batch_id: Uuid) -> Result<ImportBatchRecord, PlatformError> {
+        ni()
+    }
+    async fn import_pending_get(&self) -> Result<Option<ImportBatchRecord>, PlatformError> {
+        ni()
+    }
 
     async fn activity_post(
         &self,
@@ -97,34 +130,52 @@ pub trait Canonical: Send + Sync {
         corrects_activity_id: Option<Uuid>,
         import_batch_id: Option<Uuid>,
         idempotency_key: Option<String>,
-    ) -> Result<ActivityRecord, PlatformError> { ni() }
+    ) -> Result<ActivityRecord, PlatformError> {
+        ni()
+    }
     async fn activity_correct(
         &self,
         activity_id: Uuid,
         amount_minor: Option<i64>,
         scale: u8,
         occurred_on: String,
-    ) -> Result<ActivityRecord, PlatformError> { ni() }
-    async fn activity_get(&self, activity_id: Uuid) -> Result<ActivityRecord, PlatformError> { ni() }
-    async fn activity_list(&self) -> Result<Vec<ActivityRecord>, PlatformError> { ni() }
+    ) -> Result<ActivityRecord, PlatformError> {
+        ni()
+    }
+    async fn activity_get(&self, activity_id: Uuid) -> Result<ActivityRecord, PlatformError> {
+        ni()
+    }
+    async fn activity_list(&self) -> Result<Vec<ActivityRecord>, PlatformError> {
+        ni()
+    }
     async fn activity_reassign_security(
         &self,
         activity_id: Uuid,
         security_id: Uuid,
-    ) -> Result<ActivityRecord, PlatformError> { ni() }
+    ) -> Result<ActivityRecord, PlatformError> {
+        ni()
+    }
     async fn activity_withholding_set(
         &self,
         activity_id: Uuid,
         federal_withholding_minor: i64,
         state_withholding_minor: i64,
-    ) -> Result<ActivityRecord, PlatformError> { ni() }
+    ) -> Result<ActivityRecord, PlatformError> {
+        ni()
+    }
 
-    async fn audit_list(&self) -> Result<Vec<AuditRecord>, PlatformError> { ni() }
+    async fn audit_list(&self) -> Result<Vec<AuditRecord>, PlatformError> {
+        ni()
+    }
     async fn exception_acknowledge(
         &self,
         exception_id: Uuid,
-    ) -> Result<ExceptionRecord, PlatformError> { ni() }
-    async fn exception_list(&self) -> Result<Vec<ExceptionRecord>, PlatformError> { ni() }
+    ) -> Result<ExceptionRecord, PlatformError> {
+        ni()
+    }
+    async fn exception_list(&self) -> Result<Vec<ExceptionRecord>, PlatformError> {
+        ni()
+    }
     async fn exception_raise(
         &self,
         _code: String,
@@ -145,10 +196,7 @@ pub trait Canonical: Send + Sync {
     ) -> Result<Vec<WorkTicketRecord>, PlatformError> {
         ni()
     }
-    async fn work_ticket_get(
-        &self,
-        _ticket_id: Uuid,
-    ) -> Result<WorkTicketRecord, PlatformError> {
+    async fn work_ticket_get(&self, _ticket_id: Uuid) -> Result<WorkTicketRecord, PlatformError> {
         ni()
     }
     async fn work_ticket_update(
@@ -169,8 +217,15 @@ pub trait Canonical: Send + Sync {
     ) -> Result<Vec<CollectorFieldDecisionRecord>, PlatformError> {
         ni()
     }
-    async fn canonical_week_get(&self, as_of_date: String) -> Result<CanonicalWeekBody, PlatformError> { ni() }
-    async fn reconcile_counts(&self) -> Result<ReconcileCounts, PlatformError> { ni() }
+    async fn canonical_week_get(
+        &self,
+        as_of_date: String,
+    ) -> Result<CanonicalWeekBody, PlatformError> {
+        ni()
+    }
+    async fn reconcile_counts(&self) -> Result<ReconcileCounts, PlatformError> {
+        ni()
+    }
 
     async fn dividend_declare(
         &self,
@@ -178,7 +233,9 @@ pub trait Canonical: Send + Sync {
         declared_on: String,
         amount_minor: i64,
         scale: u8,
-    ) -> Result<DividendDeclaration, PlatformError> { ni() }
+    ) -> Result<DividendDeclaration, PlatformError> {
+        ni()
+    }
     async fn dividend_actual_record(
         &self,
         account_id: Uuid,
@@ -187,14 +244,22 @@ pub trait Canonical: Send + Sync {
         amount_minor: Option<i64>,
         scale: u8,
         idempotency_key: Option<String>,
-    ) -> Result<DividendActual, PlatformError> { ni() }
-    async fn dividend_get(&self) -> Result<DividendGetBody, PlatformError> { ni() }
+    ) -> Result<DividendActual, PlatformError> {
+        ni()
+    }
+    async fn dividend_get(&self) -> Result<DividendGetBody, PlatformError> {
+        ni()
+    }
     async fn income_plan_update(
         &self,
         planned_minor: i64,
         scale: u8,
-    ) -> Result<IncomePlanBody, PlatformError> { ni() }
-    async fn income_plan_get(&self) -> Result<IncomePlanBody, PlatformError> { ni() }
+    ) -> Result<IncomePlanBody, PlatformError> {
+        ni()
+    }
+    async fn income_plan_get(&self) -> Result<IncomePlanBody, PlatformError> {
+        ni()
+    }
 
     async fn lot_open(
         &self,
@@ -209,33 +274,59 @@ pub trait Canonical: Send + Sync {
         scale: u8,
         opening_activity_id: Option<Uuid>,
         is_open: bool,
-    ) -> Result<LotRecord, PlatformError> { ni() }
+    ) -> Result<LotRecord, PlatformError> {
+        ni()
+    }
     async fn lot_reassign_security(
         &self,
         lot_id: Uuid,
         security_id: Uuid,
-    ) -> Result<LotRecord, PlatformError> { ni() }
+    ) -> Result<LotRecord, PlatformError> {
+        ni()
+    }
     async fn lot_assign(
         &self,
         lot_id: Uuid,
         activity_id: Uuid,
         quantity_minor: i64,
         quantity_scale: u8,
-    ) -> Result<LotAssignmentRecord, PlatformError> { ni() }
-    async fn lot_get(&self, lot_id: Uuid) -> Result<LotRecord, PlatformError> { ni() }
-    async fn basis_get(&self) -> Result<BasisGetBody, PlatformError> { ni() }
-    async fn roi_get(&self) -> Result<RoiBody, PlatformError> { ni() }
-    async fn lot_recommend(&self, account_id: Uuid, security_id: Uuid) -> Result<LotRecommendBody, PlatformError> { ni() }
-    async fn broker_lot_reconcile(&self) -> Result<BrokerLotReconcileBody, PlatformError> { ni() }
-    async fn position_details_get(&self) -> Result<PositionDetailsBody, PlatformError> { ni() }
-    async fn tax_projection_get(&self) -> Result<TaxProjectionBody, PlatformError> { ni() }
+    ) -> Result<LotAssignmentRecord, PlatformError> {
+        ni()
+    }
+    async fn lot_get(&self, lot_id: Uuid) -> Result<LotRecord, PlatformError> {
+        ni()
+    }
+    async fn basis_get(&self) -> Result<BasisGetBody, PlatformError> {
+        ni()
+    }
+    async fn roi_get(&self) -> Result<RoiBody, PlatformError> {
+        ni()
+    }
+    async fn lot_recommend(
+        &self,
+        account_id: Uuid,
+        security_id: Uuid,
+    ) -> Result<LotRecommendBody, PlatformError> {
+        ni()
+    }
+    async fn broker_lot_reconcile(&self) -> Result<BrokerLotReconcileBody, PlatformError> {
+        ni()
+    }
+    async fn position_details_get(&self) -> Result<PositionDetailsBody, PlatformError> {
+        ni()
+    }
+    async fn tax_projection_get(&self) -> Result<TaxProjectionBody, PlatformError> {
+        ni()
+    }
 
     async fn magi_rule_set(
         &self,
         threshold_minor: i64,
         safety_reserve_minor: i64,
         scale: u8,
-    ) -> Result<MagiProjection, PlatformError> { ni() }
+    ) -> Result<MagiProjection, PlatformError> {
+        ni()
+    }
     async fn magi_fact_record(
         &self,
         source_id: String,
@@ -243,7 +334,9 @@ pub trait Canonical: Send + Sync {
         amount_minor: i64,
         scale: u8,
         category: String,
-    ) -> Result<MagiProjection, PlatformError> { ni() }
+    ) -> Result<MagiProjection, PlatformError> {
+        ni()
+    }
     async fn magi_coverage_set(
         &self,
         completeness: String,
@@ -251,9 +344,15 @@ pub trait Canonical: Send + Sync {
         withholding_minor: i64,
         form_total_minor: i64,
         warnings: Vec<String>,
-    ) -> Result<MagiProjection, PlatformError> { ni() }
-    async fn magi_projection_get(&self) -> Result<MagiProjection, PlatformError> { ni() }
-    async fn magi_tax_payment_get(&self) -> Result<MagiTaxPaymentBody, PlatformError> { ni() }
+    ) -> Result<MagiProjection, PlatformError> {
+        ni()
+    }
+    async fn magi_projection_get(&self) -> Result<MagiProjection, PlatformError> {
+        ni()
+    }
+    async fn magi_tax_payment_get(&self) -> Result<MagiTaxPaymentBody, PlatformError> {
+        ni()
+    }
     async fn magi_adjustment_record(
         &self,
         adjustment_id: String,
@@ -261,16 +360,24 @@ pub trait Canonical: Send + Sync {
         scale: u8,
         status: String,
         reason: String,
-    ) -> Result<MagiProjection, PlatformError> { ni() }
+    ) -> Result<MagiProjection, PlatformError> {
+        ni()
+    }
 
     async fn plan_approve(
         &self,
         remaining_minor: i64,
         scale: u8,
         approved_on: String,
-    ) -> Result<CalculatorPlanBody, PlatformError> { ni() }
-    async fn plan_get(&self) -> Result<CalculatorPlanBody, PlatformError> { ni() }
-    async fn burndown_get(&self) -> Result<BurndownBody, PlatformError> { ni() }
+    ) -> Result<CalculatorPlanBody, PlatformError> {
+        ni()
+    }
+    async fn plan_get(&self) -> Result<CalculatorPlanBody, PlatformError> {
+        ni()
+    }
+    async fn burndown_get(&self) -> Result<BurndownBody, PlatformError> {
+        ni()
+    }
     async fn plan_history_record(
         &self,
         security_id: Uuid,
@@ -279,16 +386,26 @@ pub trait Canonical: Send + Sync {
         planning_periods_per_year: u8,
         effective_from: String,
         decision_reason: String,
-    ) -> Result<PlanHistoryRecord, PlatformError> { ni() }
-    async fn plan_history_list(&self) -> Result<Vec<PlanHistoryRecord>, PlatformError> { ni() }
+    ) -> Result<PlanHistoryRecord, PlatformError> {
+        ni()
+    }
+    async fn plan_history_list(&self) -> Result<Vec<PlanHistoryRecord>, PlatformError> {
+        ni()
+    }
     async fn plan_history_version_list(&self) -> Result<Vec<PlanHistoryRecord>, PlatformError> {
         self.plan_history_list().await
     }
     async fn position_characteristic_upsert(
         &self,
         record: PositionCharacteristicRecord,
-    ) -> Result<PositionCharacteristicRecord, PlatformError> { ni() }
-    async fn position_characteristic_list(&self) -> Result<Vec<PositionCharacteristicRecord>, PlatformError> { ni() }
+    ) -> Result<PositionCharacteristicRecord, PlatformError> {
+        ni()
+    }
+    async fn position_characteristic_list(
+        &self,
+    ) -> Result<Vec<PositionCharacteristicRecord>, PlatformError> {
+        ni()
+    }
 
     async fn plan_history_confirm(
         &self,
@@ -298,7 +415,9 @@ pub trait Canonical: Send + Sync {
         planning_periods_per_year: u8,
         effective_from: String,
         decision_reason: String,
-    ) -> Result<PlanHistoryRecord, PlatformError> { ni() }
+    ) -> Result<PlanHistoryRecord, PlatformError> {
+        ni()
+    }
     async fn issuer_declaration_record(
         &self,
         security_id: Uuid,
@@ -307,7 +426,9 @@ pub trait Canonical: Send + Sync {
         payment_period: String,
         source: String,
         entered_at: String,
-    ) -> Result<IssuerDeclarationRecord, PlatformError> { ni() }
+    ) -> Result<IssuerDeclarationRecord, PlatformError> {
+        ni()
+    }
     /// Kept for tests. Product retrieve never replaces stored paid rows.
     async fn issuer_declaration_replace_paid(
         &self,
@@ -331,7 +452,9 @@ pub trait Canonical: Send + Sync {
     async fn issuer_declaration_list(
         &self,
         security_id: Uuid,
-    ) -> Result<Vec<IssuerDeclarationRecord>, PlatformError> { ni() }
+    ) -> Result<Vec<IssuerDeclarationRecord>, PlatformError> {
+        ni()
+    }
     /// Retire an unoccurred placeholder so the pay date can move. Occurred rows stay.
     async fn issuer_declaration_supersede_period(
         &self,
@@ -345,7 +468,9 @@ pub trait Canonical: Send + Sync {
         security_id: Uuid,
         as_of: String,
         dates: Vec<IssuerPayDateRecord>,
-    ) -> Result<Vec<IssuerPayDateRecord>, PlatformError> { ni() }
+    ) -> Result<Vec<IssuerPayDateRecord>, PlatformError> {
+        ni()
+    }
     async fn issuer_pay_date_insert(
         &self,
         record: IssuerPayDateRecord,
@@ -362,11 +487,10 @@ pub trait Canonical: Send + Sync {
     async fn issuer_pay_date_list(
         &self,
         security_id: Uuid,
-    ) -> Result<Vec<IssuerPayDateRecord>, PlatformError> { ni() }
-    async fn issuer_pay_date_dedupe(
-        &self,
-        _security_id: Uuid,
-    ) -> Result<u64, PlatformError> {
+    ) -> Result<Vec<IssuerPayDateRecord>, PlatformError> {
+        ni()
+    }
+    async fn issuer_pay_date_dedupe(&self, _security_id: Uuid) -> Result<u64, PlatformError> {
         Ok(0)
     }
     async fn price_quote_record(
@@ -376,15 +500,21 @@ pub trait Canonical: Send + Sync {
         scale: u8,
         as_of_at: String,
         source: String,
-    ) -> Result<PriceQuoteBody, PlatformError> { ni() }
+    ) -> Result<PriceQuoteBody, PlatformError> {
+        ni()
+    }
     async fn price_quote_list(
         &self,
         security_id: Uuid,
-    ) -> Result<Vec<PriceQuoteBody>, PlatformError> { ni() }
+    ) -> Result<Vec<PriceQuoteBody>, PlatformError> {
+        ni()
+    }
     async fn price_quote_reject(
         &self,
         price_quote_id: Uuid,
-    ) -> Result<PriceQuoteBody, PlatformError> { ni() }
+    ) -> Result<PriceQuoteBody, PlatformError> {
+        ni()
+    }
     async fn manual_price_override(
         &self,
         security_id: Uuid,
@@ -392,20 +522,28 @@ pub trait Canonical: Send + Sync {
         scale: u8,
         reason: String,
         effective_from: String,
-    ) -> Result<CurrentPriceBody, PlatformError> { ni() }
+    ) -> Result<CurrentPriceBody, PlatformError> {
+        ni()
+    }
     async fn current_price_get(
         &self,
         security_id: Uuid,
         as_of_date: String,
-    ) -> Result<CurrentPriceBody, PlatformError> { ni() }
+    ) -> Result<CurrentPriceBody, PlatformError> {
+        ni()
+    }
     async fn retrieval_template_set(
         &self,
         record: RetrievalTemplateRecord,
-    ) -> Result<RetrievalTemplateRecord, PlatformError> { ni() }
+    ) -> Result<RetrievalTemplateRecord, PlatformError> {
+        ni()
+    }
     async fn retrieval_template_get(
         &self,
         security_id: Uuid,
-    ) -> Result<Option<RetrievalTemplateRecord>, PlatformError> { ni() }
+    ) -> Result<Option<RetrievalTemplateRecord>, PlatformError> {
+        ni()
+    }
     async fn retrieval_template_touch_run(
         &self,
         security_id: Uuid,
@@ -414,8 +552,12 @@ pub trait Canonical: Send + Sync {
         ran_at: String,
         content_hash: String,
         source_url: &str,
-    ) -> Result<(), PlatformError> { ni() }
-    async fn price_retrieval_set(&self) -> Result<PriceRetrievalSetBody, PlatformError> { ni() }
+    ) -> Result<(), PlatformError> {
+        ni()
+    }
+    async fn price_retrieval_set(&self) -> Result<PriceRetrievalSetBody, PlatformError> {
+        ni()
+    }
     async fn retrieve_run_record(
         &self,
         record: RetrieveRunRecord,
@@ -429,58 +571,87 @@ pub trait Canonical: Send + Sync {
     ) -> Result<Vec<RetrieveRunRecord>, PlatformError> {
         ni()
     }
-    async fn collector_set(&self) -> Result<CollectorSetBody, PlatformError> { ni() }
-    async fn collector_stats(&self, as_of_date: String) -> Result<CollectorStatsBody, PlatformError> {
+    async fn collector_set(&self) -> Result<CollectorSetBody, PlatformError> {
+        ni()
+    }
+    async fn collector_stats(
+        &self,
+        as_of_date: String,
+    ) -> Result<CollectorStatsBody, PlatformError> {
         ni()
     }
 
     async fn backtest_period_record(
         &self,
         record: BacktestPeriodRecord,
-    ) -> Result<BacktestPeriodRecord, PlatformError> { ni() }
-    async fn backtest_period_list(&self) -> Result<Vec<BacktestPeriodRecord>, PlatformError> { ni() }
+    ) -> Result<BacktestPeriodRecord, PlatformError> {
+        ni()
+    }
+    async fn backtest_period_list(&self) -> Result<Vec<BacktestPeriodRecord>, PlatformError> {
+        ni()
+    }
     async fn backtest_period_get(
         &self,
         period_id: Uuid,
-    ) -> Result<BacktestPeriodRecord, PlatformError> { ni() }
+    ) -> Result<BacktestPeriodRecord, PlatformError> {
+        ni()
+    }
     async fn position_backtest_result_record(
         &self,
         record: PositionBacktestResultBody,
-    ) -> Result<PositionBacktestResultBody, PlatformError> { ni() }
+    ) -> Result<PositionBacktestResultBody, PlatformError> {
+        ni()
+    }
     async fn position_backtest_result_list(
         &self,
         security_id: Uuid,
-    ) -> Result<Vec<PositionBacktestResultBody>, PlatformError> { ni() }
+    ) -> Result<Vec<PositionBacktestResultBody>, PlatformError> {
+        ni()
+    }
 
     async fn roc_observation_record(
         &self,
         record: RocResearchObservation,
-    ) -> Result<RocResearchObservation, PlatformError> { ni() }
+    ) -> Result<RocResearchObservation, PlatformError> {
+        ni()
+    }
     async fn roc_observation_list(
         &self,
         security_id: Uuid,
-    ) -> Result<Vec<RocResearchObservation>, PlatformError> { ni() }
+    ) -> Result<Vec<RocResearchObservation>, PlatformError> {
+        ni()
+    }
 
     async fn remaining_payment_date_override_record(
         &self,
         record: RemainingPaymentDateOverride,
-    ) -> Result<RemainingPaymentDateOverride, PlatformError> { ni() }
+    ) -> Result<RemainingPaymentDateOverride, PlatformError> {
+        ni()
+    }
     async fn remaining_payment_date_override_list(
         &self,
         security_id: Uuid,
-    ) -> Result<Vec<RemainingPaymentDateOverride>, PlatformError> { ni() }
+    ) -> Result<Vec<RemainingPaymentDateOverride>, PlatformError> {
+        ni()
+    }
 
     async fn expected_payment_pattern_upsert(
         &self,
         record: ExpectedPaymentPattern,
-    ) -> Result<ExpectedPaymentPattern, PlatformError> { ni() }
+    ) -> Result<ExpectedPaymentPattern, PlatformError> {
+        ni()
+    }
     async fn expected_payment_pattern_list(
         &self,
-    ) -> Result<Vec<ExpectedPaymentPattern>, PlatformError> { ni() }
+    ) -> Result<Vec<ExpectedPaymentPattern>, PlatformError> {
+        ni()
+    }
     async fn position_tax_profile_upsert(
         &self,
         record: PositionTaxProfile,
-    ) -> Result<PositionTaxProfile, PlatformError> { ni() }
+    ) -> Result<PositionTaxProfile, PlatformError> {
+        ni()
+    }
     async fn position_tax_profile_list(&self) -> Result<Vec<PositionTaxProfile>, PlatformError> {
         ni()
     }
@@ -490,17 +661,158 @@ pub trait Canonical: Send + Sync {
         name: String,
         target_minor: i64,
         scale: u8,
-    ) -> Result<AllocationGetBody, PlatformError> { ni() }
-    async fn allocation_get(&self) -> Result<AllocationGetBody, PlatformError> { ni() }
+    ) -> Result<AllocationGetBody, PlatformError> {
+        ni()
+    }
+    async fn allocation_get(&self) -> Result<AllocationGetBody, PlatformError> {
+        ni()
+    }
 
     async fn cart_item_add(
         &self,
         symbol: String,
         quantity_minor: i64,
         quantity_scale: u8,
-    ) -> Result<CartGetBody, PlatformError> { ni() }
-    async fn cart_item_remove(&self, item_id: Uuid) -> Result<CartGetBody, PlatformError> { ni() }
-    async fn cart_get(&self) -> Result<CartGetBody, PlatformError> { ni() }
+    ) -> Result<CartGetBody, PlatformError> {
+        ni()
+    }
+    async fn cart_item_remove(&self, item_id: Uuid) -> Result<CartGetBody, PlatformError> {
+        ni()
+    }
+    async fn cart_get(&self) -> Result<CartGetBody, PlatformError> {
+        ni()
+    }
+    async fn cart_scenario_create(
+        &self,
+        account_id: Uuid,
+        account_name: String,
+        as_of: String,
+        cash_yield_bps: i64,
+        name: String,
+        funding_source: String,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        ni()
+    }
+    async fn cart_scenario_get(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        ni()
+    }
+    async fn cart_scenario_list(
+        &self,
+        account_id: Uuid,
+    ) -> Result<CartScenarioListBody, PlatformError> {
+        ni()
+    }
+    async fn cart_scenario_rename(
+        &self,
+        scenario_id: Uuid,
+        name: String,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        ni()
+    }
+    async fn cart_scenario_duplicate(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        ni()
+    }
+    async fn cart_sell_line_add(
+        &self,
+        scenario_id: Uuid,
+        lot_id: Uuid,
+        security_id: Option<Uuid>,
+        symbol: String,
+        qty_minor: i64,
+        qty_scale: u8,
+        unit_minor: i64,
+        proceeds_minor: i64,
+        is_cash: bool,
+        original_cost_minor: Option<i64>,
+        performance_cost_minor: Option<i64>,
+        tax_cost_minor: Option<i64>,
+        performance_gain_minor: Option<i64>,
+        tax_gain_minor: Option<i64>,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        ni()
+    }
+    async fn cart_buy_line_price_set(
+        &self,
+        line_id: Uuid,
+        last_minor: i64,
+        spend_minor: i64,
+    ) -> Result<(), PlatformError> {
+        ni()
+    }
+    async fn cart_buy_line_set(
+        &self,
+        line_id: Uuid,
+        qty_whole: i64,
+        last_minor: i64,
+        spend_minor: i64,
+        plan_annual_minor: Option<i64>,
+    ) -> Result<(), PlatformError> {
+        ni()
+    }
+    async fn lot_qty_add(
+        &self,
+        lot_id: Uuid,
+        qty_delta_minor: i64,
+        basis_delta_minor: i64,
+    ) -> Result<crate::contracts::LotRecord, PlatformError> {
+        ni()
+    }
+    async fn cart_buy_line_add(
+        &self,
+        scenario_id: Uuid,
+        security_id: Uuid,
+        symbol: String,
+        qty_whole: i64,
+        last_minor: i64,
+        spend_minor: i64,
+        plan_annual_minor: Option<i64>,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        ni()
+    }
+    async fn cart_eval_save(
+        &self,
+        scenario_id: Uuid,
+        remaining_minor: i64,
+        spend_minor: i64,
+        leftover_minor: i64,
+        buy_annual_minor: Option<i64>,
+        surrendered_annual_minor: Option<i64>,
+        leftover_annual_minor: Option<i64>,
+        net_annual_minor: Option<i64>,
+        net_monthly_minor: Option<i64>,
+        net_weekly_minor: Option<i64>,
+        insufficient_lot_qty: bool,
+        cash_floor_warn: bool,
+        status: String,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        ni()
+    }
+    async fn cart_scenario_agree(
+        &self,
+        scenario_id: Uuid,
+        override_reason: Option<String>,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        ni()
+    }
+    async fn cart_execute_step_add(
+        &self,
+        scenario_id: Uuid,
+        kind: String,
+        activity_id: Option<Uuid>,
+        assignment_id: Option<Uuid>,
+        lot_id: Option<Uuid>,
+    ) -> Result<(), PlatformError> {
+        ni()
+    }
+    async fn cart_scenario_discard(&self, scenario_id: Uuid) -> Result<(), PlatformError> {
+        ni()
+    }
 
     async fn backtest_run(
         &self,
@@ -508,16 +820,26 @@ pub trait Canonical: Send + Sync {
         hypothetical_pnl_minor: i64,
         scale: u8,
         completed_at: String,
-    ) -> Result<BacktestGetBody, PlatformError> { ni() }
-    async fn backtest_get(&self) -> Result<BacktestGetBody, PlatformError> { ni() }
+    ) -> Result<BacktestGetBody, PlatformError> {
+        ni()
+    }
+    async fn backtest_get(&self) -> Result<BacktestGetBody, PlatformError> {
+        ni()
+    }
 
     async fn classification_review_record(
         &self,
         fact_key: String,
         classification: String,
         status: String,
-    ) -> Result<ClassificationReviewGetBody, PlatformError> { ni() }
-    async fn classification_review_get(&self) -> Result<ClassificationReviewGetBody, PlatformError> { ni() }
+    ) -> Result<ClassificationReviewGetBody, PlatformError> {
+        ni()
+    }
+    async fn classification_review_get(
+        &self,
+    ) -> Result<ClassificationReviewGetBody, PlatformError> {
+        ni()
+    }
 
     async fn distribution_characterize(
         &self,
@@ -525,34 +847,56 @@ pub trait Canonical: Send + Sync {
         category: String,
         amount_minor: i64,
         scale: u8,
-    ) -> Result<DistributionGetBody, PlatformError> { ni() }
-    async fn distribution_get(&self) -> Result<DistributionGetBody, PlatformError> { ni() }
+    ) -> Result<DistributionGetBody, PlatformError> {
+        ni()
+    }
+    async fn distribution_get(&self) -> Result<DistributionGetBody, PlatformError> {
+        ni()
+    }
 
-    async fn ai_analyze(&self, prompt: String) -> Result<AiRunRecord, PlatformError> { ni() }
-    async fn ai_run_get(&self, run_id: Uuid) -> Result<AiRunRecord, PlatformError> { ni() }
-    async fn analysis_run_list(&self) -> Result<AiRunListBody, PlatformError> { ni() }
+    async fn ai_analyze(&self, prompt: String) -> Result<AiRunRecord, PlatformError> {
+        ni()
+    }
+    async fn ai_run_get(&self, run_id: Uuid) -> Result<AiRunRecord, PlatformError> {
+        ni()
+    }
+    async fn analysis_run_list(&self) -> Result<AiRunListBody, PlatformError> {
+        ni()
+    }
 
     async fn trends_week_upsert(
         &self,
         record: TrendsWeekSourceRecord,
-    ) -> Result<TrendsWeekSourceRecord, PlatformError> { ni() }
-    async fn trends_week_list(&self) -> Result<Vec<TrendsWeekSourceRecord>, PlatformError> { ni() }
+    ) -> Result<TrendsWeekSourceRecord, PlatformError> {
+        ni()
+    }
+    async fn trends_week_list(&self) -> Result<Vec<TrendsWeekSourceRecord>, PlatformError> {
+        ni()
+    }
     async fn trends_week_get(
         &self,
         period_end: String,
-    ) -> Result<Option<TrendsWeekSourceRecord>, PlatformError> { ni() }
+    ) -> Result<Option<TrendsWeekSourceRecord>, PlatformError> {
+        ni()
+    }
     async fn trends_week_set_closed(
         &self,
         period_end: String,
         closed: bool,
-    ) -> Result<(), PlatformError> { ni() }
-    async fn trends_series_clear(&self) -> Result<(), PlatformError> { ni() }
+    ) -> Result<(), PlatformError> {
+        ni()
+    }
+    async fn trends_series_clear(&self) -> Result<(), PlatformError> {
+        ni()
+    }
     async fn aca_threshold_get(
         &self,
         coverage_year: i32,
         household_size: i32,
         location_code: String,
-    ) -> Result<Option<(i64, u8)>, PlatformError> { ni() }
+    ) -> Result<Option<(i64, u8)>, PlatformError> {
+        ni()
+    }
     async fn account_balance_snapshot_upsert(
         &self,
         account_id: Uuid,
@@ -560,17 +904,27 @@ pub trait Canonical: Send + Sync {
         balance_minor: i64,
         scale: u8,
         captured_at: String,
-    ) -> Result<AccountBalanceSnapshotRecord, PlatformError> { ni() }
+        cash_minor: Option<i64>,
+    ) -> Result<AccountBalanceSnapshotRecord, PlatformError> {
+        let _ = cash_minor;
+        ni()
+    }
     async fn account_balance_snapshot_list(
         &self,
-    ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> { ni() }
+    ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> {
+        ni()
+    }
     async fn account_market_value_daily_upsert(
         &self,
         record: crate::contracts::AccountMarketValueDailyRecord,
-    ) -> Result<crate::contracts::AccountMarketValueDailyRecord, PlatformError> { ni() }
+    ) -> Result<crate::contracts::AccountMarketValueDailyRecord, PlatformError> {
+        ni()
+    }
     async fn account_market_value_daily_list(
         &self,
-    ) -> Result<Vec<crate::contracts::AccountMarketValueDailyRecord>, PlatformError> { ni() }
+    ) -> Result<Vec<crate::contracts::AccountMarketValueDailyRecord>, PlatformError> {
+        ni()
+    }
 }
 
 /// Test double: every method returns not_implemented.
@@ -865,7 +1219,9 @@ impl Canonical for UnimplementedCanonical {
     ) -> Result<PositionCharacteristicRecord, PlatformError> {
         ni()
     }
-    async fn position_characteristic_list(&self) -> Result<Vec<PositionCharacteristicRecord>, PlatformError> {
+    async fn position_characteristic_list(
+        &self,
+    ) -> Result<Vec<PositionCharacteristicRecord>, PlatformError> {
         ni()
     }
     async fn allocation_target_set(
@@ -913,7 +1269,9 @@ impl Canonical for UnimplementedCanonical {
     ) -> Result<ClassificationReviewGetBody, PlatformError> {
         ni()
     }
-    async fn classification_review_get(&self) -> Result<ClassificationReviewGetBody, PlatformError> {
+    async fn classification_review_get(
+        &self,
+    ) -> Result<ClassificationReviewGetBody, PlatformError> {
         ni()
     }
     async fn ai_analyze(&self, _prompt: String) -> Result<AiRunRecord, PlatformError> {
@@ -966,6 +1324,7 @@ impl Canonical for UnimplementedCanonical {
         _balance_minor: i64,
         _scale: u8,
         _captured_at: String,
+        _cash_minor: Option<i64>,
     ) -> Result<AccountBalanceSnapshotRecord, PlatformError> {
         ni()
     }

@@ -47,6 +47,14 @@ pub fn performance_range_start(as_of: NaiveDate, range: &str) -> Result<Option<N
             .checked_sub_months(Months::new(3))
             .map(Some)
             .ok_or("range_overflow"),
+        "6m" => as_of
+            .checked_sub_months(Months::new(6))
+            .map(Some)
+            .ok_or("range_overflow"),
+        "12m" => as_of
+            .checked_sub_months(Months::new(12))
+            .map(Some)
+            .ok_or("range_overflow"),
         "ytd" => Ok(NaiveDate::from_ymd_opt(as_of.year(), 1, 1)),
         "all" => Ok(None),
         _ => Err("unknown_range"),
@@ -316,6 +324,19 @@ pub fn plan_amount_on_pay_date(
         .map(|w| (w.amount_per_share_minor, w.amount_scale))
 }
 
+/// Decl $ − Plan $. None until both are known. Missing declaration stays unknown, never $0.
+pub fn declaration_variance_minor(
+    plan_known: bool,
+    planned_minor: i64,
+    declaration_known: bool,
+    declaration_minor: i64,
+) -> Option<i64> {
+    if !plan_known || !declaration_known {
+        return None;
+    }
+    Some(declaration_minor - planned_minor)
+}
+
 /// (actual − plan) / plan as scale-2 percent. None when plan is unknown or 0.
 pub fn delta_to_plan_pct_minor(actual_minor: i64, plan_known: bool, planned_minor: i64) -> Option<i64> {
     if !plan_known || planned_minor == 0 {
@@ -433,6 +454,16 @@ mod tests {
         let windows = [v1, v2];
         assert_eq!(plan_amount_on_pay_date(&windows, "2026-08-14"), Some((15, 2)));
         assert_eq!(plan_amount_on_pay_date(&windows, "2026-08-21"), Some((17, 2)));
+    }
+
+    #[test]
+    fn declaration_variance_is_decl_minus_plan() {
+        assert_eq!(
+            declaration_variance_minor(true, 100, true, 90),
+            Some(-10)
+        );
+        assert_eq!(declaration_variance_minor(true, 100, false, 0), None);
+        assert_eq!(declaration_variance_minor(false, 0, true, 90), None);
     }
 
     #[test]
@@ -569,6 +600,14 @@ mod tests {
         assert_eq!(
             performance_range_start(as_of, "1m").unwrap(),
             Some(NaiveDate::from_ymd_opt(2026, 7, 31).unwrap())
+        );
+        assert_eq!(
+            performance_range_start(as_of, "6m").unwrap(),
+            Some(NaiveDate::from_ymd_opt(2026, 2, 28).unwrap())
+        );
+        assert_eq!(
+            performance_range_start(as_of, "12m").unwrap(),
+            Some(NaiveDate::from_ymd_opt(2025, 8, 31).unwrap())
         );
         assert_eq!(
             performance_range_start(as_of, "ytd").unwrap(),

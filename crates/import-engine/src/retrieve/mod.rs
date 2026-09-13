@@ -17,20 +17,22 @@ pub use adapters::{
     parse_roundhill_distribution_api, parse_roundhill_distributions, parse_yieldmax_distributions,
     roundhill_fund_page,
 };
-pub use edgar::{parse_edgar_offering_as_of, parse_edgar_offering_price};
+pub use edgar::{
+    offering_keep_stored, parse_edgar_offering_as_of, parse_edgar_offering_price, uses_offering_price,
+};
 #[allow(unused_imports)]
 pub(crate) use adapters::{
     parse_roundhill_csv, parse_roundhill_roc_html, parse_vendor_distributions_with_csv,
 };
 pub(crate) use edgar::{
-    live_edgar_offering_quote, live_energyx_investor_quote, live_offering_snapshot, uses_offering_price,
-    ENERGYX_CIK,
+    live_edgar_offering_quote_fast, live_offering_snapshot, ENERGYX_CIK,
 };
 pub(crate) use html::{
     candidate_amount, strip_html, upcoming_from_candidates,
 };
 use lookthrough::{empty_lookthrough, extract_lookthrough};
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{Datelike, TimeZone, Utc};
@@ -66,31 +68,34 @@ fn yahoo_symbol(symbol: &str) -> String {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct LastPriceTarget {
     pub security_id: String,
     pub symbol: String,
     pub price_source: String,
     pub source_symbol: String,
+    pub known_as_of: String,
+    pub known_price_minor: i64,
+    pub known_scale: u8,
 }
 
 
 fn live_offering_or_yahoo(target: &LastPriceTarget) -> Option<Value> {
     if uses_offering_price(&target.price_source, &target.symbol) {
+        if offering_keep_stored(target.known_price_minor, &target.known_as_of) {
+            return Some(json!({
+                "priceMinor": target.known_price_minor,
+                "scale": if target.known_scale == 0 { 2 } else { target.known_scale },
+                "asOfAt": target.known_as_of,
+                "source": "sec-edgar",
+            }));
+        }
         let cik = if target.source_symbol.chars().any(|c| c.is_ascii_digit()) {
             target.source_symbol.trim()
         } else {
             ENERGYX_CIK
         };
-        if let Some(q) = live_edgar_offering_quote(cik) {
-            return Some(q);
-        }
-        if target.symbol.trim().eq_ignore_ascii_case("ENERGYX") {
-            if let Some(q) = live_energyx_investor_quote() {
-                return Some(q);
-            }
-        }
-        return None;
+        return live_edgar_offering_quote_fast(cik);
     }
     let symbol = if target.source_symbol.trim().is_empty() {
         target.symbol.as_str()
@@ -143,6 +148,47 @@ fn http_agent() -> ureq::Agent {
         builder = builder.tls_connector(std::sync::Arc::new(tls));
     }
     builder.build()
+}
+
+/// Reused TLS session for last-price JSON. Issuer HTML keep using `http_agent`.
+fn quote_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        let mut builder = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(8))
+            .user_agent(HTTP_UA);
+        if let Ok(tls) = native_tls::TlsConnector::new() {
+            builder = builder.tls_connector(std::sync::Arc::new(tls));
+        }
+        builder.build()
+    })
+}
+
+/// Last-price Yahoo JSON only. No issuer HTML, no 25s curl, no quiet-header retry.
+fn http_get_quote(url: &str) -> Result<String, String> {
+    match quote_agent()
+        .get(url)
+        .set("Accept", "application/json,*/*")
+        .call()
+    {
+        Ok(resp) => {
+            let body = resp.into_string().map_err(|e| e.to_string())?;
+            if body.trim().is_empty() {
+                return Err("empty_body".into());
+            }
+            Ok(body)
+        }
+        Err(e) => {
+            let (status, msg) = http_status_from_err(&e);
+            if status == Some(403) {
+                #[cfg(windows)]
+                {
+                    return http_get_via_os_curl_timed(url, "8");
+                }
+            }
+            Err(classify_http_error(url, status, &msg))
+        }
+    }
 }
 
 fn apply_browser_headers(req: ureq::Request, _url: &str, referer: Option<&str>) -> ureq::Request {
@@ -331,6 +377,11 @@ fn https_url_safe_for_os_curl(url: &str) -> bool {
 
 #[cfg(windows)]
 fn http_get_via_os_curl(url: &str) -> Result<String, String> {
+    http_get_via_os_curl_timed(url, "25")
+}
+
+#[cfg(windows)]
+fn http_get_via_os_curl_timed(url: &str, max_secs: &str) -> Result<String, String> {
     if !https_url_safe_for_os_curl(url) {
         return Err("invalid_url".into());
     }
@@ -338,11 +389,11 @@ fn http_get_via_os_curl(url: &str) -> Result<String, String> {
         .args([
             "-sL",
             "-m",
-            "25",
+            max_secs,
             "-A",
             HTTP_UA,
             "-H",
-            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept: application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "-H",
             "Accept-Language: en-US,en;q=0.9",
             "-H",
@@ -1564,13 +1615,13 @@ fn live_price_snapshot(symbol: &str) -> Value {
         return empty_snapshot(symbol);
     }
     let yahoo = format!(
-        "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=5d"
+        "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
     );
     let yahoo2 = format!(
-        "https://query2.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=5d"
+        "https://query2.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
     );
     for url in [yahoo, yahoo2] {
-        if let Ok(body) = http_get(&url) {
+        if let Ok(body) = http_get_quote(&url) {
             if let Some(parsed) = parse_yahoo_chart(&sym, &body) {
                 if parsed.get("quote").map(|q| !q.is_null()).unwrap_or(false) {
                     return parsed;
@@ -1606,8 +1657,7 @@ pub fn collect_last_price_quotes(pairs: Vec<(String, String)>) -> Vec<Value> {
             .map(|(security_id, symbol)| LastPriceTarget {
                 security_id,
                 symbol,
-                price_source: String::new(),
-                source_symbol: String::new(),
+                ..Default::default()
             })
             .collect(),
     )
@@ -1615,27 +1665,195 @@ pub fn collect_last_price_quotes(pairs: Vec<(String, String)>) -> Vec<Value> {
 
 /// Same as collect_last_price_quotes, honoring retrieval template (EDGAR vs Yahoo).
 pub fn collect_last_price_quotes_for(targets: Vec<LastPriceTarget>) -> Vec<Value> {
+    collect_last_price_quotes_for_with_progress(targets, |_, _, _| {})
+}
+
+/// Reports each start and finish so a slow quote (ELVR/Yahoo) does not pin the
+/// activity label on the first symbol of an 8-wide batch.
+pub fn collect_last_price_quotes_for_with_progress(
+    targets: Vec<LastPriceTarget>,
+    mut on_progress: impl FnMut(u32, u32, &str),
+) -> Vec<Value> {
+    let total = targets.len() as u32;
     let mut out = Vec::new();
-    for batch in targets.chunks(8) {
+    let mut done = 0u32;
+    let mut yahoo = Vec::new();
+    let mut offering = Vec::new();
+    for target in targets {
+        if uses_offering_price(&target.price_source, &target.symbol) {
+            offering.push(target);
+        } else {
+            yahoo.push(target);
+        }
+    }
+    for batch in yahoo.chunks(40) {
+        for target in batch {
+            on_progress(done, total, &target.symbol);
+        }
+        let mut quotes = fetch_yahoo_spark_quotes(
+            &batch
+                .iter()
+                .map(yahoo_fetch_symbol)
+                .collect::<Vec<_>>(),
+        );
+        let missing: Vec<LastPriceTarget> = batch
+            .iter()
+            .filter(|t| !quotes.contains_key(&yahoo_fetch_symbol(t)))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            fill_yahoo_quotes_parallel(&missing, &mut quotes);
+        }
+        for target in batch {
+            let row = quotes
+                .get(&yahoo_fetch_symbol(target))
+                .cloned()
+                .and_then(|q| last_price_quote_json(&target.security_id, q));
+            done = done.saturating_add(1);
+            if let Some(row) = row {
+                out.push(row);
+            }
+            on_progress(done, total, &target.symbol);
+        }
+    }
+    for target in offering {
+        on_progress(done, total, &target.symbol);
+        if let Some(row) = live_offering_or_yahoo(&target)
+            .and_then(|q| last_price_quote_json(&target.security_id, q))
+        {
+            out.push(row);
+        }
+        done = done.saturating_add(1);
+        on_progress(done, total, &target.symbol);
+    }
+    out
+}
+
+fn yahoo_fetch_symbol(target: &LastPriceTarget) -> String {
+    let raw = if target.source_symbol.trim().is_empty()
+        || target.source_symbol.chars().any(|c| c.is_ascii_digit())
+    {
+        target.symbol.as_str()
+    } else {
+        target.source_symbol.as_str()
+    };
+    yahoo_symbol(raw)
+}
+
+/// Yahoo spark last prices. Missing or nonpositive stays unknown — never $0.
+pub fn parse_yahoo_spark(body: &str) -> HashMap<String, Value> {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return HashMap::new(),
+    };
+    let Some(obj) = v.as_object() else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for (key, row) in obj {
+        if matches!(key.as_str(), "error" | "spark" | "finance") {
+            continue;
+        }
+        let Some(row) = row.as_object() else {
+            continue;
+        };
+        let symbol = row
+            .get("symbol")
+            .and_then(|s| s.as_str())
+            .unwrap_or(key);
+        let price = row
+            .get("fulldayPrice")
+            .and_then(|p| p.as_f64())
+            .filter(|p| *p > 0.0)
+            .or_else(|| {
+                row.get("close")
+                    .and_then(|c| c.as_array())
+                    .and_then(|a| {
+                        a.iter()
+                            .rev()
+                            .find_map(|x| x.as_f64().filter(|p| *p > 0.0))
+                    })
+            });
+        let Some(price) = price else {
+            continue;
+        };
+        let as_of = row
+            .get("timestamp")
+            .and_then(|t| t.as_array())
+            .and_then(|a| a.last())
+            .and_then(|t| t.as_i64())
+            .map(iso_from_unix)
+            .unwrap_or_default();
+        out.insert(
+            yahoo_symbol(symbol),
+            json!({
+                "priceMinor": dollars_to_minor(price, 2),
+                "scale": 2,
+                "asOfAt": as_of,
+                "source": "yahoo",
+            }),
+        );
+    }
+    out
+}
+
+fn fetch_yahoo_spark_quotes(symbols: &[String]) -> HashMap<String, Value> {
+    let mut unique = Vec::new();
+    let mut seen = HashSet::new();
+    for symbol in symbols {
+        let symbol = yahoo_symbol(symbol);
+        if symbol.is_empty() || !seen.insert(symbol.clone()) {
+            continue;
+        }
+        unique.push(symbol);
+    }
+    if unique.is_empty() {
+        return HashMap::new();
+    }
+    let joined = unique.join(",");
+    let urls = [
+        format!(
+            "https://query1.finance.yahoo.com/v8/finance/spark?symbols={joined}&range=1d&interval=1d"
+        ),
+        format!(
+            "https://query2.finance.yahoo.com/v8/finance/spark?symbols={joined}&range=1d&interval=1d"
+        ),
+    ];
+    for url in urls {
+        if let Ok(body) = http_get_quote(&url) {
+            let parsed = parse_yahoo_spark(&body);
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+    }
+    HashMap::new()
+}
+
+fn fill_yahoo_quotes_parallel(
+    missing: &[LastPriceTarget],
+    quotes: &mut HashMap<String, Value>,
+) {
+    for batch in missing.chunks(8) {
         std::thread::scope(|scope| {
             let handles: Vec<_> = batch
                 .iter()
                 .map(|target| {
                     let target = target.clone();
                     scope.spawn(move || {
-                        live_offering_or_yahoo(&target)
-                            .and_then(|quote| last_price_quote_json(&target.security_id, quote))
+                        let key = yahoo_fetch_symbol(&target);
+                        let quote = live_price_quote(&key);
+                        (key, quote)
                     })
                 })
                 .collect();
             for handle in handles {
-                if let Ok(Some(quote)) = handle.join() {
-                    out.push(quote);
+                if let Ok((key, Some(quote))) = handle.join() {
+                    quotes.insert(key, quote);
                 }
             }
         });
     }
-    out
 }
 
 /// Dated daily closes from a Yahoo v8 chart. Network-free. Never a CurrentPrice post.
@@ -3837,6 +4055,26 @@ mod tests {
     }
 
     #[test]
+    fn yahoo_spark_fixture_fills_last_price() {
+        let body = r#"{"GOF":{"symbol":"GOF","fulldayPrice":14.85,"timestamp":[1755705600],"close":[14.80]}}"#;
+        let parsed = parse_yahoo_spark(body);
+        assert_eq!(parsed.len(), 1);
+        let quote = parsed.get("GOF").expect("GOF spark quote");
+        assert_eq!(quote["priceMinor"], 1485);
+        assert_eq!(quote["source"], "yahoo");
+        assert_eq!(quote["asOfAt"], "2025-08-20");
+    }
+
+    #[test]
+    fn yahoo_spark_zero_or_missing_stays_unknown() {
+        let body = r#"{"ZZZ":{"symbol":"ZZZ","fulldayPrice":0,"close":[null]}}"#;
+        assert!(
+            parse_yahoo_spark(body).is_empty(),
+            "nonpositive spark last price must stay unknown"
+        );
+    }
+
+    #[test]
     fn amplify_short_name_suggests_provider() {
         assert_eq!(
             super::suggested_provider_from_name("Amplify HACK Cybersecurity Cove"),
@@ -3904,6 +4142,10 @@ mod tests {
     fn collect_last_price_quotes_empty_is_unknown() {
         assert!(collect_last_price_quotes(Vec::new()).is_empty());
         assert!(collect_last_price_quotes_for(Vec::new()).is_empty());
+        let mut n = 0u32;
+        let out = collect_last_price_quotes_for_with_progress(Vec::new(), |_, _, _| n += 1);
+        assert!(out.is_empty());
+        assert_eq!(n, 0);
     }
 
     #[test]
@@ -3941,7 +4183,7 @@ mod tests {
     #[test]
     #[ignore = "live SEC; not required for CI"]
     fn live_energyx_edgar_thirteen() {
-        let quote = live_edgar_offering_quote(ENERGYX_CIK).expect("sec-edgar offering quote");
+        let quote = live_edgar_offering_quote_fast(ENERGYX_CIK).expect("sec-edgar offering quote");
         assert_eq!(quote["priceMinor"], 1300);
         assert_eq!(quote["scale"], 2);
         assert_eq!(quote["source"], "sec-edgar");
@@ -3952,6 +4194,42 @@ mod tests {
     fn energyx_increment_only_stays_unknown() {
         let html = "<p>Purchases must be in increments of at least $13.00</p>";
         assert!(parse_edgar_offering_price(html).is_none());
+    }
+
+    #[test]
+    fn energyx_stored_offering_skips_live_fetch() {
+        assert!(offering_keep_stored(1300, "2026-07-13"));
+        assert!(!offering_keep_stored(0, "2026-07-13"));
+        assert!(!offering_keep_stored(1300, ""));
+        let target = LastPriceTarget {
+            security_id: "sec-1".into(),
+            symbol: "ENERGYX".into(),
+            price_source: "edgar".into(),
+            source_symbol: "1830166".into(),
+            known_as_of: "2026-07-13".into(),
+            known_price_minor: 1300,
+            known_scale: 2,
+        };
+        let quote = live_offering_or_yahoo(&target).expect("keep stored offering");
+        assert_eq!(quote["priceMinor"], 1300);
+        assert_eq!(quote["asOfAt"], "2026-07-13");
+        assert_eq!(quote["source"], "sec-edgar");
+        let row = last_price_quote_json(&target.security_id, quote).expect("row");
+        assert_eq!(row["priceMinor"], 1300);
+        assert_eq!(row["asOfAt"], "2026-07-13");
+    }
+
+    #[test]
+    fn last_price_offering_path_does_not_hit_investor_page() {
+        let retrieve = include_str!("mod.rs");
+        let start = retrieve
+            .find("fn live_offering_or_yahoo")
+            .expect("live_offering_or_yahoo");
+        let body = &retrieve[start..start + 900];
+        assert!(body.contains("offering_keep_stored"));
+        assert!(body.contains("live_edgar_offering_quote_fast"));
+        assert!(!body.contains("live_energyx_investor_quote"));
+        assert!(!body.contains("invest.energyx.com"));
     }
 
     #[test]

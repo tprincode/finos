@@ -36,10 +36,7 @@ pub trait Platform: Send + Sync {
     async fn config_get(&self) -> Result<DeviceConfig, PlatformError> {
         ni()
     }
-    async fn config_set(
-        &self,
-        device_name: Option<String>,
-    ) -> Result<DeviceConfig, PlatformError> {
+    async fn config_set(&self, device_name: Option<String>) -> Result<DeviceConfig, PlatformError> {
         ni()
     }
     async fn snapshot_head_get(&self) -> Result<Option<SnapshotIdentity>, PlatformError> {

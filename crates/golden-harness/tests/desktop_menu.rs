@@ -147,6 +147,63 @@ fn last_prices_summary_replaces_refresh_banner() {
         !app.contains("Stale still displays. Missing stays unknown."),
         "stale/unknown copy must not sit under Last prices"
     );
+    assert!(
+        app.contains("<dt>Income through</dt>"),
+        "Home grid must show income current through date"
+    );
+    assert!(
+        !app.contains("<dt>Accounts</dt>"),
+        "Home grid must not show account count"
+    );
+    assert!(
+        !app.contains("<dt>Last yield</dt>"),
+        "Income through replaces Last yield"
+    );
+    assert!(
+        app.contains("aria-label=\"Income through transactions\""),
+        "Income through date must open the paid-dividend list"
+    );
+    assert!(
+        app.contains("<th>Date</th>")
+            && app.contains("<th>Acct</th>")
+            && app.contains("<th>Symbol</th>"),
+        "Income through dialog lists date, acct, symbol"
+    );
+    assert!(
+        app.contains("income-tx-scroll"),
+        "Income through list must scroll"
+    );
+    assert!(
+        app.contains("aria-label=\"Income transaction period\""),
+        "Income through list must offer a period dropdown"
+    );
+    assert!(app.contains("aria-label=\"Income transaction start\""));
+    assert!(app.contains("aria-label=\"Income transaction end\""));
+    assert!(
+        app.contains("aria-label=\"Income transaction account\""),
+        "Income through list must filter by account"
+    );
+    assert!(app.contains("All accounts"));
+    let period = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/incomeTxPeriod.ts"),
+    )
+    .unwrap();
+    assert!(period.contains(r#"label: "Today""#));
+    assert!(period.contains(r#"label: "Current month""#));
+    assert!(period.contains(r#"label: "Year to date""#));
+    assert!(period.contains(r#"label: "Custom date range""#));
+    assert!(
+        period.contains(r#"{ period: "today" as const, today: "2026-09-11", startOn: "2026-09-11", endOn: "2026-09-11" }"#),
+        "Today window must stay the local calendar day"
+    );
+    assert!(
+        period.contains(r#"{ period: "month" as const, today: "2026-09-11", startOn: "2026-09-01", endOn: "2026-09-11" }"#),
+        "Current month must stay calendar month"
+    );
+    assert!(
+        period.contains(r#"{ period: "ytd" as const, today: "2026-09-11", startOn: "2026-01-01", endOn: "2026-09-11" }"#),
+        "YTD must start 1 January"
+    );
 }
 
 #[test]
@@ -159,6 +216,7 @@ fn native_and_in_app_menus_list_screens() {
         std::fs::read_to_string(root.join("packages/ui-components/src/week.ts")).unwrap();
     for needle in [
         "SubmenuBuilder::new(app, \"Income Plan\")",
+        "SubmenuBuilder::new(app, \"Trends\")",
         "SubmenuBuilder::new(app, \"Plan\")",
         "SubmenuBuilder::new(app, \"Positions\")",
         "SubmenuBuilder::new(app, \"Data\")",
@@ -170,6 +228,7 @@ fn native_and_in_app_menus_list_screens() {
         ".text(\"tickets\", \"Tickets\")",
         ".text(\"cash-management\", \"Cash Management\")",
         ".text(\"collector-establish\", \"Reevaluate collector\")",
+        ".text(\"components\", \"Components\")",
         "finos-navigate",
     ] {
         assert!(lib.contains(needle), "native menu missing {needle}");
@@ -235,6 +294,19 @@ fn native_and_in_app_menus_list_screens() {
         "in-app Plan must include Cash Management"
     );
     assert!(
+        !app.contains("navButton(\"trends\", \"Trends\")"),
+        "Trends is a top-level menubar item, not under Plan"
+    );
+    let plan_native = lib
+        .split("SubmenuBuilder::new(app, \"Plan\")")
+        .nth(1)
+        .and_then(|rest| rest.split("SubmenuBuilder::new(app, \"Positions\")").next())
+        .unwrap_or("");
+    assert!(
+        !plan_native.contains(".text(\"trends\""),
+        "native Plan must not list Trends"
+    );
+    assert!(
         app.contains("formatMenuWeek"),
         "menubar must show the current week without weekday names"
     );
@@ -256,6 +328,7 @@ fn native_and_in_app_menus_list_screens() {
     assert!(
         supervisor.contains("finos supervisor")
             && supervisor.contains("restart.token")
+            && supervisor.contains("stale restart.token")
             && supervisor.contains("Start-Process -FilePath")
             && supervisor.contains("start-finos-dev.bat"),
         "supervisor must Start-Process start-finos-dev.bat on restart.token"
@@ -267,8 +340,9 @@ fn native_and_in_app_menus_list_screens() {
     assert!(
         lib.contains("restart.token")
             && lib.contains("close_for_shutdown")
+            && lib.contains("ensure_coding_supervisor")
             && lib.contains("app.restart()"),
-        "coding Restart writes restart.token then exits; household uses app.restart()"
+        "coding Restart writes restart.token, starts the supervisor if missing, then exits; household uses app.restart()"
     );
     for banned in [
         "schtasks",

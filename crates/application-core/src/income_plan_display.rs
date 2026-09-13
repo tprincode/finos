@@ -20,7 +20,10 @@ use financial_domain::income_plan::{
 const HTML_MOCK: &str = "Income_Plan_Pattern_A_B_Simulation.html";
 
 pub fn default_selected_accounts() -> Vec<String> {
-    DEFAULT_ACCOUNTS_ON.iter().map(|s| (*s).to_string()).collect()
+    DEFAULT_ACCOUNTS_ON
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
 }
 
 pub fn normalize_selected_accounts(raw: &[String]) -> Vec<String> {
@@ -173,15 +176,10 @@ pub fn assemble_grid(
         }
     }
 
-    let visible: Vec<(GridWeekKind, &IncomePlanWeekBody)> = weeks
-        .iter()
-        .map(|(k, b)| (*k, b))
-        .collect();
+    let visible: Vec<(GridWeekKind, &IncomePlanWeekBody)> =
+        weeks.iter().map(|(k, b)| (*k, b)).collect();
     let week_ends: Vec<String> = visible.iter().map(|(_, b)| b.end.clone()).collect();
-    let year_label = as_of_date
-        .get(..4)
-        .unwrap_or("2026")
-        .to_string();
+    let year_label = as_of_date.get(..4).unwrap_or("2026").to_string();
     let mut table1_columns = vec!["label".into(), year_label.clone()];
     table1_columns.extend(week_ends.iter().cloned());
 
@@ -191,12 +189,13 @@ pub fn assemble_grid(
             .map(|l| l.planned_minor)
             .unwrap_or(0)
     };
-    let actual_for = |week: &IncomePlanWeekBody, display: &str, kind: GridWeekKind| -> Option<i64> {
-        if !actuals_known(kind) {
-            return None;
-        }
-        line_for_display(week, display).map(|l| l.actual_minor)
-    };
+    let actual_for =
+        |week: &IncomePlanWeekBody, display: &str, kind: GridWeekKind| -> Option<i64> {
+            if !actuals_known(kind) {
+                return None;
+            }
+            line_for_display(week, display).map(|l| l.actual_minor)
+        };
 
     let mut table1 = Vec::new();
     let total_plan_cells: Vec<IncomePlanMoneyCell> = visible
@@ -219,7 +218,12 @@ pub fn assemble_grid(
         .map(|(kind, week)| IncomePlanMoneyCell {
             week_end: week.end.clone(),
             amount_minor: if actuals_known(*kind) {
-                Some(account_rows.iter().filter_map(|a| actual_for(week, a, *kind)).sum())
+                Some(
+                    account_rows
+                        .iter()
+                        .filter_map(|a| actual_for(week, a, *kind))
+                        .sum(),
+                )
             } else {
                 None
             },
@@ -275,7 +279,8 @@ pub fn assemble_grid(
         }
     };
     let year_diff = year_actual.map(|a| a - year_plan);
-    let year_delta = year_actual.and_then(|a| delta_to_plan_pct_minor(a, year_plan != 0, year_plan));
+    let year_delta =
+        year_actual.and_then(|a| delta_to_plan_pct_minor(a, year_plan != 0, year_plan));
 
     table1.push(IncomePlanTable1Row {
         id: "delta_to_plan_pct".into(),
@@ -368,11 +373,15 @@ pub fn assemble_grid(
                 continue;
             }
             let (planned, actual, _, plan_known) = position_amounts(pos, &keys);
-            if !plan_known && actual.is_none() && planned.unwrap_or(0) == 0 && pos.accounts.iter().all(|a| {
-                !account_key_from_display(&a.account_name)
-                    .map(|k| keys.contains(k))
-                    .unwrap_or(false)
-            }) {
+            if !plan_known
+                && actual.is_none()
+                && planned.unwrap_or(0) == 0
+                && pos.accounts.iter().all(|a| {
+                    !account_key_from_display(&a.account_name)
+                        .map(|k| keys.contains(k))
+                        .unwrap_or(false)
+                })
+            {
                 continue;
             }
             if pos.accounts.iter().any(|a| {
@@ -381,25 +390,26 @@ pub fn assemble_grid(
                     .unwrap_or(false)
             }) || pos.accounts.is_empty()
             {
-                let entry = by_symbol.entry(pos.symbol.clone()).or_insert_with(|| {
-                    IncomePlanTable2Row {
-                        symbol: pos.symbol.clone(),
-                        cadence: pos.cadence.clone(),
-                        last_update: pos.last_update.clone(),
-                        declaration_per_share_minor: None,
-                        declaration_per_share_scale: 0,
-                        declaration_entered_on: None,
-                        declaration_current: false,
-                        cells: week_ends
-                            .iter()
-                            .map(|end| IncomePlanMoneyCell {
-                                week_end: end.clone(),
-                                amount_minor: None,
-                                tone: "empty".into(),
-                            })
-                            .collect(),
-                    }
-                });
+                let entry =
+                    by_symbol
+                        .entry(pos.symbol.clone())
+                        .or_insert_with(|| IncomePlanTable2Row {
+                            symbol: pos.symbol.clone(),
+                            cadence: pos.cadence.clone(),
+                            last_update: pos.last_update.clone(),
+                            declaration_per_share_minor: None,
+                            declaration_per_share_scale: 0,
+                            declaration_entered_on: None,
+                            declaration_current: false,
+                            cells: week_ends
+                                .iter()
+                                .map(|end| IncomePlanMoneyCell {
+                                    week_end: end.clone(),
+                                    amount_minor: None,
+                                    tone: "empty".into(),
+                                })
+                                .collect(),
+                        });
                 if entry.last_update.is_none() {
                     entry.last_update = pos.last_update.clone();
                 }
@@ -522,19 +532,35 @@ pub fn build_export(req: ExportRequest<'_>) -> Result<IncomePlanExportBody, Stri
     let landscape = pattern == "A";
     let format = req.format.to_ascii_lowercase();
     let sheet_names = if pattern == "A" {
-        vec!["AccountRollup".into(), "PositionGrid".into(), "Cover".into()]
+        vec![
+            "AccountRollup".into(),
+            "PositionGrid".into(),
+            "Cover".into(),
+        ]
     } else {
         vec!["WeekDetail".into(), "Cover".into()]
     };
     let (bytes, default_file_name) = match format.as_str() {
         "xlsx" | "excel" => (xlsx_bytes(&cover, req.grid, req.week)?, {
-            format!("income-plan-{}-{}.xlsx", pattern.to_ascii_lowercase(), req.printed_at.replace(':', ""))
+            format!(
+                "income-plan-{}-{}.xlsx",
+                pattern.to_ascii_lowercase(),
+                req.printed_at.replace(':', "")
+            )
         }),
         "html" | "printdocument" => (print_html.as_bytes().to_vec(), {
-            format!("income-plan-{}-{}.html", pattern.to_ascii_lowercase(), req.printed_at.replace(':', ""))
+            format!(
+                "income-plan-{}-{}.html",
+                pattern.to_ascii_lowercase(),
+                req.printed_at.replace(':', "")
+            )
         }),
         _ => (pdf_bytes(&cover, req.grid, req.week, landscape), {
-            format!("income-plan-{}-{}.pdf", pattern.to_ascii_lowercase(), req.printed_at.replace(':', ""))
+            format!(
+                "income-plan-{}-{}.pdf",
+                pattern.to_ascii_lowercase(),
+                req.printed_at.replace(':', "")
+            )
         }),
     };
     Ok(IncomePlanExportBody {
@@ -604,32 +630,90 @@ fn fmt_cell(amt: Option<i64>) -> String {
     }
 }
 
+fn table1_print_class(id: &str) -> &'static str {
+    if id == "total_plan" {
+        "ip-plan-total"
+    } else if id == "total_actual" {
+        "ip-act-total"
+    } else if id == "total_difference" {
+        "ip-diff-total"
+    } else if id == "delta_to_plan_pct" {
+        "ip-delta"
+    } else if id.starts_with("plan_") {
+        "ip-planrow"
+    } else if id.starts_with("actual_") {
+        "ip-actrow"
+    } else {
+        ""
+    }
+}
+
+fn print_table_css() -> &'static str {
+    r#"<style>
+body{font-family:Segoe UI,Calibri,sans-serif;color:#1c2430;margin:16px}
+h1{font-size:1.25rem;color:#1b365d;margin:0 0 .7rem}
+h2{font-size:1rem;color:#1b365d;margin:1.1rem 0 .35rem}
+table.ip-print{width:100%;border-collapse:collapse;font-size:11px;line-height:1.25}
+table.ip-print th,table.ip-print td{border:1px solid #c5d0dc;padding:3px 6px}
+table.ip-print thead th{background:#1b365d;color:#fff;font-weight:600;text-align:left}
+table.ip-print td:not(:first-child){text-align:right}
+table.ip-print tr.ip-grp th{background:#e7eef6;color:#1b365d;text-align:left;font-weight:700}
+table.ip-print tr.ip-plan-total td{background:#22c55e;color:#111;font-weight:700}
+table.ip-print tr.ip-act-total td{background:#86efac;color:#111;font-weight:700}
+table.ip-print tr.ip-planrow td{background:#eef8f1}
+table.ip-print tr.ip-actrow td{background:#f7fafc}
+table.ip-print tr.ip-diff-total td,table.ip-print tr.ip-delta td{background:#eef2f7}
+table.ip-print tr.ip-stripe td{background:#f4f7fb}
+table.ip-print tr.ip-current td{background:#2d5a8a;color:#fff;font-weight:700}
+table.ip-print tr.ip-grand td{background:#1f6b4a;color:#fff;font-weight:700}
+.ip-cover{margin-top:1.6rem;padding-top:.75rem;border-top:1px solid #c5d0dc;color:#3d4a5c;font-size:12px}
+.ip-cover h2{margin-top:0}
+.ip-cover pre{margin:.3rem 0 0;white-space:pre-wrap}
+</style>"#
+}
+
+fn print_cover_html(cover: &IncomePlanCoverBody) -> String {
+    let mut html = String::from(
+        "<section class=\"ip-cover\" aria-label=\"Report details\"><h2>Report details</h2><pre>",
+    );
+    for line in cover_lines(cover) {
+        html.push_str(&escape(&line));
+        html.push('\n');
+    }
+    html.push_str("</pre></section>");
+    html
+}
+
 fn print_html(
     cover: &IncomePlanCoverBody,
     grid: Option<&IncomePlanGridBody>,
     week: Option<&IncomePlanWeekBody>,
 ) -> String {
     let mut html = String::from(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Income Plan</title></head><body>",
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Income Plan</title>",
     );
-    html.push_str("<h1>Income Plan Print</h1><pre>");
-    for line in cover_lines(cover) {
-        html.push_str(&escape(&line));
-        html.push('\n');
-    }
-    html.push_str("</pre>");
+    html.push_str(print_table_css());
+    html.push_str("</head><body><h1>Income Plan</h1>");
     if cover.pattern == "A" {
         if let Some(grid) = grid {
-            html.push_str("<h2>AccountRollup</h2><table>");
-            html.push_str("<tr>");
+            html.push_str("<h2>AccountRollup</h2><table class=\"ip-print\">");
+            html.push_str("<thead><tr>");
             for c in &grid.table1_columns {
                 html.push_str(&format!("<th>{}</th>", escape(c)));
             }
-            html.push_str("</tr>");
+            html.push_str("</tr></thead><tbody>");
             for row in &grid.table1 {
-                html.push_str("<tr>");
+                let cls = table1_print_class(&row.id);
+                if cls.is_empty() {
+                    html.push_str("<tr>");
+                } else {
+                    html.push_str(&format!("<tr class=\"{cls}\">"));
+                }
                 html.push_str(&format!("<td>{}</td>", escape(&row.label)));
-                html.push_str(&format!("<td>{}</td>", escape(&fmt_opt(row.year_minor, row.year_pct_minor))));
+                html.push_str(&format!(
+                    "<td>{}</td>",
+                    escape(&fmt_opt(row.year_minor, row.year_pct_minor))
+                ));
                 for cell in &row.cells {
                     let text = if row.id == "delta_to_plan_pct" {
                         cell.tone.clone()
@@ -645,8 +729,8 @@ fn print_html(
                 }
                 html.push_str("</tr>");
             }
-            html.push_str("</table><h2>PositionGrid</h2><table>");
-            html.push_str("<tr><th>symbol</th><th>last_update</th><th>decl_per_share</th>");
+            html.push_str("</tbody></table><h2>PositionGrid</h2><table class=\"ip-print\">");
+            html.push_str("<thead><tr><th>symbol</th><th>last_update</th><th>decl_per_share</th>");
             if let Some(g) = grid.table2.first() {
                 if let Some(r) = g.rows.first() {
                     for cell in &r.cells {
@@ -654,14 +738,18 @@ fn print_html(
                     }
                 }
             }
-            html.push_str("</tr>");
+            html.push_str("</tr></thead><tbody>");
             for group in &grid.table2 {
                 html.push_str(&format!(
-                    "<tr><th colspan=\"3\">{}</th></tr>",
+                    "<tr class=\"ip-grp\"><th colspan=\"3\">{}</th></tr>",
                     escape(&group.cadence)
                 ));
-                for row in &group.rows {
-                    html.push_str("<tr>");
+                for (i, row) in group.rows.iter().enumerate() {
+                    if i % 2 == 1 {
+                        html.push_str("<tr class=\"ip-stripe\">");
+                    } else {
+                        html.push_str("<tr>");
+                    }
                     html.push_str(&format!("<td>{}</td>", escape(&row.symbol)));
                     html.push_str(&format!(
                         "<td>{}</td>",
@@ -675,43 +763,82 @@ fn print_html(
                         ))
                     ));
                     for cell in &row.cells {
-                        html.push_str(&format!("<td>{}</td>", escape(&fmt_cell(cell.amount_minor))));
+                        html.push_str(&format!(
+                            "<td>{}</td>",
+                            escape(&fmt_cell(cell.amount_minor))
+                        ));
                     }
                     html.push_str("</tr>");
                 }
             }
-            html.push_str("</table>");
+            html.push_str("</tbody></table>");
         }
     } else if let Some(week) = week {
-        html.push_str("<h2>WeekDetail</h2><table>");
+        html.push_str("<h2>WeekDetail</h2><table class=\"ip-print\">");
         html.push_str(
-            "<tr><th>symbol</th><th>last_update</th><th>decl_per_share</th><th>Plan $</th><th>Declaration $</th><th>Actual $</th><th>Variance</th></tr>",
+            "<thead><tr><th>symbol</th><th>last_update</th><th>decl_per_share</th><th>Plan $</th><th>Declaration $</th><th>Variance</th></tr></thead><tbody>",
         );
         for (group_name, rows) in week_positions_by_cadence(week) {
             html.push_str(&format!(
-                "<tr><th colspan=\"7\">{}</th></tr>",
+                "<tr class=\"ip-grp\"><th colspan=\"6\">{}</th></tr>",
                 escape(group_name)
             ));
-            for pos in rows {
-                let var = if pos.plan_known && pos.actual_known {
-                    fmt_cell(Some(pos.actual_minor - pos.planned_minor))
-                } else {
-                    String::new()
-                };
+            for (i, pos) in rows.iter().enumerate() {
+                let var = financial_domain::income_plan::declaration_variance_minor(
+                    pos.plan_known,
+                    pos.planned_minor,
+                    pos.declaration_known,
+                    pos.declaration_minor,
+                );
+                let stripe = if i % 2 == 1 { " class=\"ip-stripe\"" } else { "" };
                 html.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    "<tr{stripe}><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                     escape(&pos.symbol),
                     escape(pos.last_update.as_deref().unwrap_or("")),
                     escape(&fmt_per_share(pos.declaration_per_share_minor, pos.declaration_per_share_scale)),
                     escape(&fmt_cell(pos.plan_known.then_some(pos.planned_minor))),
                     escape(&fmt_cell(pos.declaration_known.then_some(pos.declaration_minor))),
-                    escape(&fmt_cell(pos.actual_known.then_some(pos.actual_minor))),
-                    escape(&var),
+                    escape(&fmt_cell(var)),
                 ));
             }
         }
-        html.push_str("</table>");
+        let mut declared_n = 0u32;
+        let mut pos_n = 0u32;
+        let mut week_plan = 0i64;
+        let mut week_decl = 0i64;
+        let mut current_plan = 0i64;
+        let mut week_var: Option<i64> = None;
+        for pos in &week.positions {
+            pos_n = pos_n.saturating_add(1);
+            if pos.plan_known {
+                week_plan += pos.planned_minor;
+            }
+            if pos.declaration_known {
+                declared_n = declared_n.saturating_add(1);
+                week_decl += pos.declaration_minor;
+                if pos.plan_known {
+                    current_plan += pos.planned_minor;
+                }
+            }
+        }
+        if declared_n > 0 {
+            week_var = Some(week_decl - current_plan);
+        }
+        html.push_str(&format!(
+            "<tr class=\"ip-current\" style=\"background:#2d5a8a;color:#fff;font-weight:700\"><td>Current · {declared_n}</td><td></td><td></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            escape(&fmt_cell(Some(current_plan))),
+            escape(&if declared_n == 0 { String::new() } else { fmt_cell(Some(week_decl)) }),
+            escape(&fmt_cell(week_var)),
+        ));
+        html.push_str(&format!(
+            "<tr class=\"ip-grand\" style=\"background:#1f6b4a;color:#fff;font-weight:700\"><td>Grand Total · {pos_n}</td><td></td><td></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            escape(&fmt_cell(Some(week_plan))),
+            escape(&if declared_n == 0 { String::new() } else { fmt_cell(Some(week_decl)) }),
+            escape(&fmt_cell(week_var)),
+        ));
+        html.push_str("</tbody></table>");
     }
+    html.push_str(&print_cover_html(cover));
     html.push_str("</body></html>");
     html
 }
@@ -743,7 +870,11 @@ fn pdf_bytes(
         if let Some(grid) = grid {
             text.push_str(&format!("columns: {}\n", grid.table1_columns.join(" | ")));
             for row in &grid.table1 {
-                let mut line = format!("{} | {}", row.label, fmt_opt(row.year_minor, row.year_pct_minor));
+                let mut line = format!(
+                    "{} | {}",
+                    row.label,
+                    fmt_opt(row.year_minor, row.year_pct_minor)
+                );
                 for cell in &row.cells {
                     if row.id == "delta_to_plan_pct" {
                         line.push_str(" | ");
@@ -781,24 +912,28 @@ fn pdf_bytes(
         }
     } else {
         text.push_str("WeekDetail\n");
-        text.push_str("symbol | last_update | decl_per_share | Plan $ | Declaration $ | Actual $ | Variance\n");
+        text.push_str("symbol | last_update | decl_per_share | Plan $ | Declaration $ | Variance\n");
         if let Some(week) = week {
             for (group_name, rows) in week_positions_by_cadence(week) {
                 text.push_str(&format!("group {group_name}\n"));
                 for pos in rows {
+                    let var = financial_domain::income_plan::declaration_variance_minor(
+                        pos.plan_known,
+                        pos.planned_minor,
+                        pos.declaration_known,
+                        pos.declaration_minor,
+                    );
                     text.push_str(&format!(
-                        "{} | {} | {} | {} | {} | {} | {}\n",
+                        "{} | {} | {} | {} | {} | {}\n",
                         pos.symbol,
                         pos.last_update.clone().unwrap_or_default(),
-                        fmt_per_share(pos.declaration_per_share_minor, pos.declaration_per_share_scale),
+                        fmt_per_share(
+                            pos.declaration_per_share_minor,
+                            pos.declaration_per_share_scale
+                        ),
                         fmt_cell(pos.plan_known.then_some(pos.planned_minor)),
                         fmt_cell(pos.declaration_known.then_some(pos.declaration_minor)),
-                        fmt_cell(pos.actual_known.then_some(pos.actual_minor)),
-                        if pos.plan_known && pos.actual_known {
-                            fmt_cell(Some(pos.actual_minor - pos.planned_minor))
-                        } else {
-                            String::new()
-                        }
+                        fmt_cell(var),
                     ));
                 }
             }
@@ -927,7 +1062,9 @@ fn write_account_rollup(wb: &mut Workbook, grid: &IncomePlanGridBody) -> Result<
 fn write_position_grid(wb: &mut Workbook, grid: &IncomePlanGridBody) -> Result<(), String> {
     let sheet = wb.add_worksheet();
     sheet.set_name("PositionGrid").map_err(|e| e.to_string())?;
-    sheet.write_string(0, 0, "symbol").map_err(|e| e.to_string())?;
+    sheet
+        .write_string(0, 0, "symbol")
+        .map_err(|e| e.to_string())?;
     sheet
         .write_string(0, 1, "last_update")
         .map_err(|e| e.to_string())?;
@@ -983,7 +1120,6 @@ fn write_week_detail(wb: &mut Workbook, week: &IncomePlanWeekBody) -> Result<(),
         "decl_per_share",
         "Plan $",
         "Declaration $",
-        "Actual $",
         "Variance",
     ]
     .iter()
@@ -1026,15 +1162,15 @@ fn write_week_detail(wb: &mut Workbook, week: &IncomePlanWeekBody) -> Result<(),
                     &fmt_cell(pos.declaration_known.then_some(pos.declaration_minor)),
                 )
                 .map_err(|e| e.to_string())?;
+            let var = financial_domain::income_plan::declaration_variance_minor(
+                pos.plan_known,
+                pos.planned_minor,
+                pos.declaration_known,
+                pos.declaration_minor,
+            );
             sheet
-                .write_string(r, 5, &fmt_cell(pos.actual_known.then_some(pos.actual_minor)))
+                .write_string(r, 5, &fmt_cell(var))
                 .map_err(|e| e.to_string())?;
-            let var = if pos.plan_known && pos.actual_known {
-                fmt_cell(Some(pos.actual_minor - pos.planned_minor))
-            } else {
-                String::new()
-            };
-            sheet.write_string(r, 6, &var).map_err(|e| e.to_string())?;
             r += 1;
         }
     }

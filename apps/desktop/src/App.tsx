@@ -44,18 +44,35 @@ import {
   type CashManagementMonthGet,
   type MagiProjection,
   type AccountValueHomeGet,
+  type DividendPlanHomeGet,
   type DataSnapshotExport,
 } from "@finos/app-contracts";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import { LocalTauriFinanceClient } from "./financeClient";
-import { TrendsChartsPanel } from "./TrendsCharts";
-import { DividendWeeksPanel } from "./DividendWeeks";
-import { DeclarationPaymentsChart } from "./DeclarationPaymentsChart";
-import { TrendsCapturePanel, type TrendsWeekCapture } from "./TrendsCapture";
+import { TrendsChartsPanel } from "./features/graphing/TrendsCharts";
+import { type GraphPeriod } from "./features/graphing/graphPeriod";
+import { DividendWeeksPanel } from "./features/graphing/DividendWeeks";
+import { DeclarationPaymentsChart } from "./features/graphing/DeclarationPaymentsChart";
+import { TrendsCapturePanel, type TrendsWeekCapture } from "./features/graphing/TrendsCapture";
 import { CashManagementPanel } from "./CashManagement";
-import { HomeAccountCharts } from "./HomeAccountCharts";
-import { openImportWizardWindow } from "./ImportWizard";
+import { HomeAccountCharts } from "./features/graphing/HomeAccountCharts";
+import { HomeDividendPlan } from "./features/home/HomeDividendPlan";
+import {
+  INCOME_TX_PERIOD_OPTIONS,
+  incomeTxRange,
+  inIncomeTxRange,
+  localIsoDate,
+  type IncomeTxPeriod,
+} from "./incomeTxPeriod";
+import { ShoppingCartScreen } from "./features/shopping-cart";
+import {
+  AccountSelect,
+  LotCostTable,
+  ResearchedSymbolCombobox,
+  type LotSortMode,
+} from "./features/shared/pickers";
+import { openImportWizardWindow } from "./openImportWizard";
 import {
   CalculatorPanel,
   type CollectorCompletionProof,
@@ -84,6 +101,28 @@ import "./App.css";
 
 const RISK_TIERS = ["Foundation", "Core", "Risk On"];
 
+/** Preview/print tables get grid + color even if the host printHtml is stale. */
+function styleIncomePrintHtml(html: string): string {
+  const css = `<style data-finos-print-skin>
+table{width:100%;border-collapse:collapse;font-size:11px;line-height:1.25}
+table th,table td{border:1px solid #c5d0dc;padding:3px 6px}
+table th{background:#1b365d;color:#fff;font-weight:600;text-align:left}
+table td:not(:first-child){text-align:right}
+table tr:nth-child(even) td{background:#f4f7fb}
+table tr.ip-grp th{background:#e7eef6;color:#1b365d}
+table tr.ip-plan-total td{background:#22c55e;color:#111;font-weight:700}
+table tr.ip-act-total td{background:#86efac;color:#111;font-weight:700}
+table tr.ip-planrow td{background:#eef8f1}
+table tr.ip-actrow td{background:#f7fafc}
+table tr.ip-diff-total td,table tr.ip-delta td{background:#eef2f7}
+table tr.ip-current td{background:#2d5a8a !important;color:#fff;font-weight:700}
+table tr.ip-grand td{background:#1f6b4a !important;color:#fff;font-weight:700}
+</style>`;
+  if (html.includes("data-finos-print-skin")) return html;
+  if (html.includes("</head>")) return html.replace("</head>", `${css}</head>`);
+  return `${css}${html}`;
+}
+
 const emptyLookthrough = (): LookthroughResearch => ({
   themeStrategy: "",
   primaryRiskDriver: "",
@@ -98,6 +137,75 @@ const emptyLookthrough = (): LookthroughResearch => ({
   coveredCall: false,
   leveraged: false,
 });
+
+type RefreshProgress = {
+  current: number;
+  total: number;
+  symbol: string;
+};
+
+function lastPriceRefreshLabel(lastPriceProgress: RefreshProgress | null): string {
+  if (!lastPriceProgress || lastPriceProgress.total <= 0) {
+    return "Refreshing last prices…";
+  }
+  return `Refreshing last prices ${formatCount(lastPriceProgress.current)} of ${formatCount(lastPriceProgress.total)}${
+    lastPriceProgress.symbol ? `: ${lastPriceProgress.symbol}` : ""
+  }`;
+}
+
+function declarationRefreshLabel(
+  declarationProgress: RefreshProgress | null,
+): string {
+  if (!declarationProgress || declarationProgress.total <= 0) {
+    return "Refreshing declarations…";
+  }
+  return `Refreshing ${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}${
+    declarationProgress.symbol ? `: ${declarationProgress.symbol}` : ""
+  }`;
+}
+
+function RefreshActivityBar({
+  lastPriceBusy,
+  lastPriceProgress,
+  declarationBusy,
+  declarationProgress,
+}: {
+  lastPriceBusy: boolean;
+  lastPriceProgress: RefreshProgress | null;
+  declarationBusy: boolean;
+  declarationProgress: RefreshProgress | null;
+}) {
+  if (!lastPriceBusy && !declarationBusy) {
+    return null;
+  }
+  const progress = lastPriceBusy ? lastPriceProgress : declarationProgress;
+  const label = lastPriceBusy
+    ? lastPriceRefreshLabel(lastPriceProgress)
+    : declarationRefreshLabel(declarationProgress);
+  return (
+    <section
+      className="process-a-research-progress refresh-activity-bar"
+      aria-label={
+        lastPriceBusy
+          ? "Last price refresh progress"
+          : "Declaration refresh progress"
+      }
+      aria-busy="true"
+    >
+      <p role="status" aria-live="polite">
+        {label}
+      </p>
+      {progress && progress.total > 0 ? (
+        <progress
+          max={progress.total}
+          value={Math.min(progress.current, progress.total)}
+        />
+      ) : (
+        <div className="process-a-research-spinner" aria-hidden="true" />
+      )}
+    </section>
+  );
+}
 
 function isNewOrChangedDeclaration(
   period: string | undefined,
@@ -609,6 +717,7 @@ type Screen =
   | "dashboard"
   | "trends"
   | "cash-management"
+  | "shopping-cart"
   | "holdings"
   | "import"
   | "settings"
@@ -617,7 +726,8 @@ type Screen =
   | "position-details"
   | "collectors"
   | "tickets"
-  | "collector-establish";
+  | "collector-establish"
+  | "components";
 
 const SCREENS: readonly Screen[] = [
   "home",
@@ -626,6 +736,7 @@ const SCREENS: readonly Screen[] = [
   "dashboard",
   "trends",
   "cash-management",
+  "shopping-cart",
   "holdings",
   "import",
   "settings",
@@ -635,6 +746,7 @@ const SCREENS: readonly Screen[] = [
   "collectors",
   "tickets",
   "collector-establish",
+  "components",
 ];
 
 function isScreen(id: string): id is Screen {
@@ -970,25 +1082,38 @@ export default function App() {
     saturdayOfWeek(new Date().toISOString().slice(0, 10)),
   );
   const [incomeWeek, setIncomeWeek] = useState<IncomePlanWeekGet | null>(null);
+  const [incomeWeekLoading, setIncomeWeekLoading] = useState(false);
+  const [incomeWeekNav, setIncomeWeekNav] = useState<"prev" | "next" | null>(null);
+  const prevIncomeAsOfRef = useRef<string | null>(null);
+  const incomeLoadGen = useRef(0);
+  const skipFullRefreshOnAsOfRef = useRef(false);
   const [incomeGrid, setIncomeGrid] = useState<IncomePlanGridGet | null>(null);
-  const [incomePattern, setIncomePattern] = useState<"A" | "B">("A");
+  const [incomePattern, setIncomePattern] = useState<"A" | "B">("B");
   const [incomeHistWeeks, setIncomeHistWeeks] = useState(6);
   const [incomeFutWeeks, setIncomeFutWeeks] = useState(6);
   const [burndown, setBurndown] = useState<DashboardBurndownGet | null>(null);
   const [trends, setTrends] = useState<TrendsGet | null>(null);
   const [trendsError, setTrendsError] = useState<string | null>(null);
   const [trendsCapture, setTrendsCapture] = useState<TrendsWeekCapture | null>(null);
+  const trendsWeekAsOfRef = useRef("");
   const [cashWeek, setCashWeek] = useState<CashManagementWeekGet | null>(null);
   const [cashReminders, setCashReminders] =
     useState<CashManagementRemindersGet | null>(null);
   const [cashMonth, setCashMonth] = useState<CashManagementMonthGet | null>(null);
   const [cashDirty, setCashDirty] = useState(false);
+  const [cartDirty, setCartDirty] = useState(false);
+  const [holdingsLotSort, setHoldingsLotSort] = useState<LotSortMode>("lowest-cost");
+  const pendingCartBuyRef = useRef<{ scenarioId: string } | null>(null);
   const [cashMagi, setCashMagi] = useState<MagiProjection | null>(null);
   const [accountValues, setAccountValues] = useState<AccountValueHomeGet | null>(null);
+  const [dividendPlan, setDividendPlan] = useState<DividendPlanHomeGet | null>(null);
   const [perfRange, setPerfRange] = useState<DividendPerformanceRange>("ytd");
   const [dividendPerf, setDividendPerf] = useState<DividendPerformanceGet | null>(null);
+  const [trendsDividendPerf, setTrendsDividendPerf] =
+    useState<DividendPerformanceGet | null>(null);
   const perfRangeRef = useRef(perfRange);
   perfRangeRef.current = perfRange;
+  const trendsGraphPeriodRef = useRef<GraphPeriod>("12m");
   const [holdings, setHoldings] = useState<HoldingsGet | null>(null);
   const [calculator, setCalculator] = useState<CalculatorGet | null>(null);
   const [declHistory, setDeclHistory] = useState<DeclarationHistoryGet | null>(null);
@@ -1031,6 +1156,11 @@ export default function App() {
   ]);
   const [accounts, setAccounts] = useState<AccountListItem[]>([]);
   const [securities, setSecurities] = useState<SecurityListItem[]>([]);
+  const [incomeTxOpen, setIncomeTxOpen] = useState(false);
+  const [incomeTxPeriod, setIncomeTxPeriod] = useState<IncomeTxPeriod>("month");
+  const [incomeTxCustomStart, setIncomeTxCustomStart] = useState("");
+  const [incomeTxCustomEnd, setIncomeTxCustomEnd] = useState("");
+  const [incomeTxAccountId, setIncomeTxAccountId] = useState("");
   const [wizSymbol, setWizSymbol] = useState("");
   const [wizName, setWizName] = useState("");
   const [wizProvider, setWizProvider] = useState("");
@@ -1165,16 +1295,22 @@ export default function App() {
   const [pdPeriodBaseline, setPdPeriodBaseline] = useState(() => JSON.stringify(emptyPeriod()));
   const [savedPeriodId, setSavedPeriodId] = useState("");
   const [lastPriceBusy, setLastPriceBusy] = useState(false);
+  const [lastPriceProgress, setLastPriceProgress] = useState<RefreshProgress | null>(
+    null,
+  );
   const [declarationBusy, setDeclarationBusy] = useState(false);
-  const [declarationProgress, setDeclarationProgress] = useState<{
-    current: number;
-    total: number;
-    symbol: string;
-  } | null>(null);
+  const [declarationProgress, setDeclarationProgress] = useState<RefreshProgress | null>(
+    null,
+  );
   const [snapshotConfirm, setSnapshotConfirm] = useState(false);
+  const [incomeExportPreview, setIncomeExportPreview] =
+    useState<IncomePlanExportGet | null>(null);
+  const [incomeExportLoading, setIncomeExportLoading] = useState(false);
   const jobsBusyRef = useRef(false);
   const restartingRef = useRef(false);
   const lastPriceKickoff = useRef(false);
+  const [weekWizardActive, setWeekWizardActive] = useState(false);
+  const [cashWeekSavedAt, setCashWeekSavedAt] = useState(0);
   const [collectorItems, setCollectorItems] = useState<CollectorSetItem[]>([]);
   const [collectorStats, setCollectorStats] = useState<CollectorStats | null>(null);
   const [collectorSymbol, setCollectorSymbol] = useState("");
@@ -2186,7 +2322,7 @@ export default function App() {
 
   const refreshData = useCallback(async (asOf: string) => {
     await client.executeQuery("CashDividendCoverageGet", { asOfDate: asOf });
-    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, cashWeekResult, cashRemindersResult, cashMonthResult, cashMagiResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult, accountValueResult] =
+    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, cashWeekResult, cashRemindersResult, cashMonthResult, cashMagiResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult, trendsPerfResult, accountValueResult, dividendPlanResult] =
       await Promise.all([
         client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf }),
         client.executeQuery("IncomePlanGridGet", {
@@ -2198,7 +2334,9 @@ export default function App() {
         }),
         client.executeQuery("DashboardBurndownGet", { asOfDate: asOf }),
         client.executeQuery("TrendsGet", { asOfDate: asOf }),
-        client.executeQuery("TrendsWeekGet", { asOfDate: asOf }),
+        client.executeQuery("TrendsWeekGet", {
+          asOfDate: trendsWeekAsOfRef.current || "",
+        }),
         client.executeQuery("CashManagementWeekGet", { asOfDate: asOf }),
         client.executeQuery("CashManagementRemindersGet", { asOfDate: asOf }),
         client.executeQuery("CashManagementMonthGet", { asOfDate: asOf }),
@@ -2233,7 +2371,12 @@ export default function App() {
           asOfDate: asOf,
           range: perfRangeRef.current,
         }),
+        client.executeQuery("DividendPerformanceGet", {
+          asOfDate: asOf,
+          range: trendsGraphPeriodRef.current,
+        }),
         client.executeQuery("AccountValueHomeGet"),
+        client.executeQuery("DividendPlanHomeGet", { asOfDate: asOf }),
       ]);
     const failed = [
       weekResult,
@@ -2257,6 +2400,7 @@ export default function App() {
       coverageResult,
       perfResult,
       accountValueResult,
+      dividendPlanResult,
     ].filter((r) => !r.ok);
     if (failed.length > 0) {
       const stale = failed.some((r) => r.errorCode === "unknown_query");
@@ -2288,7 +2432,12 @@ export default function App() {
       setTrendsError(trendsResult.errorCode ?? "TrendsGet failed");
     }
     if (trendsWeekResult.ok) {
-      setTrendsCapture(parse<TrendsWeekCapture>(trendsWeekResult.bodyJson));
+      const parsed = parse<TrendsWeekCapture>(trendsWeekResult.bodyJson);
+      setTrendsCapture(parsed);
+      if (!trendsWeekAsOfRef.current) {
+        trendsWeekAsOfRef.current =
+          parsed?.firstUnpopulatedStart || parsed?.periodStart || "";
+      }
     }
     if (cashWeekResult.ok) {
       setCashWeek(parse<CashManagementWeekGet>(cashWeekResult.bodyJson));
@@ -2319,10 +2468,20 @@ export default function App() {
     } else {
       setDividendPerf(null);
     }
+    if (trendsPerfResult.ok) {
+      setTrendsDividendPerf(parse<DividendPerformanceGet>(trendsPerfResult.bodyJson));
+    } else {
+      setTrendsDividendPerf(null);
+    }
     if (accountValueResult.ok) {
       setAccountValues(parse<AccountValueHomeGet>(accountValueResult.bodyJson));
     } else {
       setAccountValues(null);
+    }
+    if (dividendPlanResult.ok) {
+      setDividendPlan(parse<DividendPlanHomeGet>(dividendPlanResult.bodyJson));
+    } else {
+      setDividendPlan(null);
     }
     if (accountResult.bodyJson) {
       try {
@@ -2413,24 +2572,77 @@ export default function App() {
     [],
   );
 
-  const runIncomeExport = useCallback(
-    async (format: "print" | "pdf" | "excel") => {
-      const result = await client.executeQuery("IncomePlanExportGet", {
+  const withIncomeLoading = useCallback(async (work: () => Promise<void>) => {
+    const gen = ++incomeLoadGen.current;
+    setIncomeWeekLoading(true);
+    try {
+      await work();
+    } finally {
+      if (gen === incomeLoadGen.current) {
+        setIncomeWeekLoading(false);
+        setIncomeWeekNav(null);
+      }
+    }
+  }, []);
+
+  const loadIncomeWeek = useCallback(
+    async (sat: string) => {
+      skipFullRefreshOnAsOfRef.current = true;
+      setAsOfDate(sat);
+      await withIncomeLoading(async () => {
+        const week = await client.executeQuery("IncomePlanWeekGet", {
+          asOfDate: sat,
+        });
+        if (week.ok && week.bodyJson) {
+          try {
+            setIncomeWeek(JSON.parse(week.bodyJson) as IncomePlanWeekGet);
+          } catch {
+            setIncomeWeek(null);
+          }
+        }
+      });
+    },
+    [withIncomeLoading],
+  );
+
+  const incomeExportQuery = useCallback(
+    (format: "html" | "pdf" | "xlsx") =>
+      client.executeQuery("IncomePlanExportGet", {
         pattern: incomePattern,
-        format: format === "excel" ? "xlsx" : format === "print" ? "html" : "pdf",
+        format,
         asOfDate: asOfDate,
         historicalWeeks: incomeHistWeeks,
         futureWeeks: incomeFutWeeks,
         accounts: drillAccounts,
         weekEnding: incomeWeek?.end || asOfDate,
         printedAt: new Date().toISOString().slice(0, 16) + "Z",
-      });
+      }),
+    [asOfDate, drillAccounts, incomeFutWeeks, incomeHistWeeks, incomePattern, incomeWeek?.end],
+  );
+
+  const requestIncomeExport = useCallback(async () => {
+    if (incomeExportLoading) return;
+    setIncomeExportLoading(true);
+    setBusy(true);
+    try {
+      const result = await incomeExportQuery("html");
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Print / Export failed: ${result.errorCode ?? "error"}`);
         return;
       }
-      const body = JSON.parse(result.bodyJson) as IncomePlanExportGet;
-      if (format === "print") {
+      setIncomeExportPreview(JSON.parse(result.bodyJson) as IncomePlanExportGet);
+    } finally {
+      setIncomeExportLoading(false);
+      setBusy(false);
+    }
+  }, [incomeExportLoading, incomeExportQuery]);
+
+  const commitIncomeExport = useCallback(
+    async (action: "print" | "pdf" | "excel") => {
+      const preview = incomeExportPreview;
+      if (!preview) return;
+      if (action === "print") {
+        setIncomeExportPreview(null);
         const frame = document.createElement("iframe");
         frame.setAttribute("aria-hidden", "true");
         frame.style.position = "fixed";
@@ -2443,7 +2655,7 @@ export default function App() {
         const doc = frame.contentDocument;
         if (doc) {
           doc.open();
-          doc.write(body.printHtml);
+          doc.write(styleIncomePrintHtml(preview.printHtml));
           doc.close();
           frame.contentWindow?.focus();
           frame.contentWindow?.print();
@@ -2451,21 +2663,34 @@ export default function App() {
         setTimeout(() => frame.remove(), 1000);
         return;
       }
+      setIncomeExportLoading(true);
+      setBusy(true);
       try {
+        const result = await incomeExportQuery(action === "excel" ? "xlsx" : "pdf");
+        if (!result.ok || !result.bodyJson) {
+          setActionMessage(`Print / Export failed: ${result.errorCode ?? "error"}`);
+          return;
+        }
+        const body = JSON.parse(result.bodyJson) as IncomePlanExportGet;
         const bytes = Uint8Array.from(atob(body.bytesBase64), (c) => c.charCodeAt(0));
         await invoke("save_local_bytes", {
           defaultFileName: body.defaultFileName,
           bytes: Array.from(bytes),
         });
+        setIncomeExportPreview(null);
         setActionMessage(`Saved ${body.defaultFileName} on this computer.`);
       } catch (err: unknown) {
         setActionMessage(`Save failed: ${String(err)}`);
+      } finally {
+        setIncomeExportLoading(false);
+        setBusy(false);
       }
     },
-    [asOfDate, drillAccounts, incomeFutWeeks, incomeHistWeeks, incomePattern, incomeWeek?.end],
+    [incomeExportPreview, incomeExportQuery],
   );
-  const runIncomeExportRef = useRef(runIncomeExport);
-  runIncomeExportRef.current = runIncomeExport;
+
+  const requestIncomeExportRef = useRef(requestIncomeExport);
+  requestIncomeExportRef.current = requestIncomeExport;
 
   const runDataSnapshot = useCallback(async () => {
     setBusy(true);
@@ -2492,16 +2717,47 @@ export default function App() {
   const runDataSnapshotRef = useRef(runDataSnapshot);
   runDataSnapshotRef.current = runDataSnapshot;
 
-  const refreshLastPrices = useCallback(async () => {
+  const refreshLastPrices = useCallback(async (force = false) => {
+    if (!force) {
+      let allowed = false;
+      try {
+        const window = await client.executeQuery("LastPriceAutoWindowGet", {});
+        if (window.ok && window.bodyJson) {
+          const body = JSON.parse(window.bodyJson) as {
+            allowed?: boolean;
+          };
+          allowed = body.allowed === true;
+        }
+      } catch {
+        allowed = false;
+      }
+      if (!allowed) {
+        return;
+      }
+    }
     setLastPriceBusy(true);
+    setLastPriceProgress({ current: 0, total: 0, symbol: "" });
     try {
       await client.executeCommand("ProviderDeclarationSourcesApply", {});
-      const result = await client.executeCommand("LastPriceRefresh", {});
+      const result = await client.executeCommand(
+        "LastPriceRefresh",
+        force ? { force: true } : {},
+      );
       if (!result.ok) {
         setActionMessage(
           `Last price refresh failed: ${result.errorCode ?? "error"}. Last stored price still shows, including stale.`,
         );
         return;
+      }
+      if (result.bodyJson) {
+        try {
+          const body = JSON.parse(result.bodyJson) as { skipReason?: string };
+          if (body.skipReason) {
+            return;
+          }
+        } catch {
+          /* keep going */
+        }
       }
       const snap = await client.executeCommand("AccountValueSnapshotRecord", {});
       if (!snap.ok && snap.errorCode !== "unknown_command") {
@@ -2514,6 +2770,7 @@ export default function App() {
       setActionMessage(String(err));
     } finally {
       setLastPriceBusy(false);
+      setLastPriceProgress(null);
     }
   }, [asOfDate, refreshData]);
 
@@ -2648,8 +2905,10 @@ export default function App() {
       try {
         const result = await client.executeCommand("MarketRetrieve", {
           symbol: body.symbol,
+          securityId: body.securityId,
           priceSource: draft.priceSource,
           sourceSymbol: draft.sourceSymbol,
+          autoPrice: true,
         });
         if (result.ok && result.bodyJson) {
           const retrieve = JSON.parse(result.bodyJson) as {
@@ -2858,9 +3117,31 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    refreshData(asOfDate).catch((err: unknown) => {
-      setActionMessage(String(err));
-    });
+    if (skipFullRefreshOnAsOfRef.current) {
+      skipFullRefreshOnAsOfRef.current = false;
+      prevIncomeAsOfRef.current = asOfDate;
+      return;
+    }
+    const prev = prevIncomeAsOfRef.current;
+    const weekChanged = prev !== null && prev !== asOfDate;
+    prevIncomeAsOfRef.current = asOfDate;
+    if (prev !== null && !weekChanged) {
+      return;
+    }
+    if (weekChanged) {
+      setIncomeWeekLoading(true);
+    }
+    const gen = ++incomeLoadGen.current;
+    refreshData(asOfDate)
+      .catch((err: unknown) => {
+        setActionMessage(String(err));
+      })
+      .finally(() => {
+        if (gen === incomeLoadGen.current) {
+          setIncomeWeekLoading(false);
+          setIncomeWeekNav(null);
+        }
+      });
   }, [asOfDate, refreshData]);
 
   useEffect(() => {
@@ -3391,6 +3672,7 @@ export default function App() {
       const result = await client.executeCommand("MarketRetrieve", {
         symbol,
         researchOnly: true,
+        force: true,
       });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Source research failed: ${result.errorCode ?? "error"}`);
@@ -3423,6 +3705,7 @@ export default function App() {
         declarationSource: wizDeclSource || undefined,
         priceSource: wizPriceSource || undefined,
         sourceUrl: wizSourceUrl || undefined,
+        force: true,
       });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Issuer retrieve failed: ${result.errorCode ?? "error"}`);
@@ -3493,6 +3776,7 @@ export default function App() {
         declarationSource: wizDeclSource || undefined,
         priceSource: wizPriceSource || undefined,
         sourceUrl: wizSourceUrl || undefined,
+        force: true,
       });
       if (marketResult.ok && marketResult.bodyJson) {
         market = applyMarketBody(marketResult.bodyJson).body;
@@ -4595,12 +4879,14 @@ export default function App() {
     ...(wizDirty ? (["new-investment"] as const) : []),
     ...(addLotDirty ? (["add-lot"] as const) : []),
     ...(cashDirty ? (["cash-management"] as const) : []),
+    ...(cartDirty ? (["shopping-cart"] as const) : []),
   ];
   const dirtyScreenNames = [
     pdDirty ? "Position Details" : null,
     wizDirty ? "Add Position" : null,
     addLotDirty ? "Add Lot" : null,
     cashDirty ? "Cash Management" : null,
+    cartDirty ? "Shopping Cart" : null,
   ]
     .filter((name): name is string => name != null)
     .join(" and ");
@@ -4772,6 +5058,12 @@ export default function App() {
   jobsBusyRef.current = busy || lastPriceBusy || declarationBusy;
 
   const leaveWithoutSaving = (next: () => void, target?: Screen) => {
+    if (weekWizardActive && (target == null || target !== "cash-management")) {
+      setActionMessage(
+        "Finish the week on Review → Accept before leaving.",
+      );
+      return;
+    }
     if (
       (pdDirty || wizDirty || addLotDirty || cashDirty) &&
       (target == null || !dirtyTargets.includes(target))
@@ -4791,9 +5083,11 @@ export default function App() {
     if (restartingRef.current) {
       return;
     }
-    if (pdDirty || wizDirty || addLotDirty || cashDirty) {
+    if (pdDirty || wizDirty || addLotDirty || cashDirty || weekWizardActive) {
       setActionMessage(
-        "Save or Cancel before restarting. Restart stays blocked while edits are unsaved.",
+        weekWizardActive
+          ? "Finish the week on Review → Accept before restarting."
+          : "Save or Cancel before restarting. Restart stays blocked while edits are unsaved.",
       );
       return;
     }
@@ -4821,7 +5115,7 @@ export default function App() {
       setRestarting(false);
       setActionMessage(`Restart failed: ${String(err)}`);
     }
-  }, [pdDirty, wizDirty, addLotDirty, cashDirty]);
+  }, [pdDirty, wizDirty, addLotDirty, cashDirty, weekWizardActive]);
   const runAppRestartRef = useRef(runAppRestart);
   runAppRestartRef.current = runAppRestart;
 
@@ -4858,11 +5152,24 @@ export default function App() {
             symbol: p.symbol ?? "",
           });
         });
+        const stopPriceProgress = await listen<{
+          current?: number;
+          total?: number;
+          symbol?: string;
+        }>("last-price-refresh-progress", (event) => {
+          const p = event.payload;
+          setLastPriceProgress({
+            current: p.current ?? 0,
+            total: p.total ?? 0,
+            symbol: p.symbol ?? "",
+          });
+        });
         if (cancelled) {
           stop();
           stopSnapshot();
           stopRestart();
           stopDeclProgress();
+          stopPriceProgress();
           return;
         }
         unlisten = () => {
@@ -4870,6 +5177,7 @@ export default function App() {
           stopSnapshot();
           stopRestart();
           stopDeclProgress();
+          stopPriceProgress();
         };
       } catch {
         /* browser preview without Tauri events */
@@ -4887,6 +5195,7 @@ export default function App() {
       if (event.key === "Escape") {
         close();
         setSnapshotConfirm(false);
+        setIncomeExportPreview(null);
       }
       if (
         (event.ctrlKey || event.metaKey) &&
@@ -4894,7 +5203,7 @@ export default function App() {
         screenRef.current === "income-plan"
       ) {
         event.preventDefault();
-        void runIncomeExportRef.current("print");
+        void requestIncomeExportRef.current();
       }
     };
     window.addEventListener("click", close);
@@ -5091,8 +5400,10 @@ export default function App() {
     try {
       const result = await client.executeCommand("MarketRetrieve", {
         symbol: investment.symbol,
+        securityId: investment.securityId,
         priceSource: pdDraft.priceSource,
         sourceSymbol: pdDraft.sourceSymbol,
+        force: true,
       });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Last price retrieve missed: ${result.errorCode ?? "error"}`);
@@ -5507,6 +5818,22 @@ export default function App() {
         await refreshHandoff();
         return;
       }
+      const opened = result.bodyJson
+        ? (JSON.parse(result.bodyJson) as { lotId?: string })
+        : {};
+      const pending = pendingCartBuyRef.current;
+      if (pending && opened.lotId) {
+        const step = await client.executeCommand("CartExecuteBuyStep", {
+          scenarioId: pending.scenarioId,
+          lotId: opened.lotId,
+        });
+        pendingCartBuyRef.current = null;
+        if (!step.ok) {
+          setActionMessage(
+            `Lot opened; cart buy step not recorded: ${step.errorCode ?? "error"}`,
+          );
+        }
+      }
       // Success: keep symbol (and account/origin); clear qty/cost/date so submit is not a duplicate.
       setAddLotOpenedOn("");
       setAddLotQty("");
@@ -5762,7 +6089,7 @@ export default function App() {
 
   useEffect(() => {
     const onLeave = (event: BeforeUnloadEvent) => {
-      if (!pdDirty && !wizDirty && !addLotDirty) return;
+      if (!pdDirty && !wizDirty && !addLotDirty && !weekWizardActive) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -5773,10 +6100,12 @@ export default function App() {
       .then(({ getCurrentWindow }) => {
         if (cancelled) return undefined;
         return getCurrentWindow().onCloseRequested((event) => {
-          if (!pdDirty && !wizDirty && !addLotDirty) return;
+          if (!pdDirty && !wizDirty && !addLotDirty && !weekWizardActive) return;
           event.preventDefault();
           setActionMessage(
-            "Save or Cancel before leaving. Navigation stays blocked while edits are unsaved.",
+            weekWizardActive
+              ? "Finish the week on Review → Accept before leaving."
+              : "Save or Cancel before leaving. Navigation stays blocked while edits are unsaved.",
           );
         });
       })
@@ -5791,7 +6120,7 @@ export default function App() {
       window.removeEventListener("beforeunload", onLeave);
       unlisten?.();
     };
-  }, [pdDirty, wizDirty, addLotDirty]);
+  }, [pdDirty, wizDirty, addLotDirty, weekWizardActive]);
 
   // Process A UI does not call the former 9-step handlers; keep bindings referenced for tsc.
   void [
@@ -5816,6 +6145,65 @@ export default function App() {
     if (!q) return positionSymbolOptions;
     return positionSymbolOptions.filter((sym) => sym.toUpperCase().startsWith(q));
   }, [positionSymbolOptions, positionSymbolQuery]);
+
+  const incomeThroughOn = summary?.latestYieldOn?.trim() ?? "";
+  const incomeTxToday = localIsoDate();
+  const incomeTxWindow = useMemo(
+    () =>
+      incomeTxRange(
+        incomeTxPeriod,
+        incomeTxToday,
+        incomeTxCustomStart,
+        incomeTxCustomEnd,
+      ),
+    [incomeTxPeriod, incomeTxToday, incomeTxCustomStart, incomeTxCustomEnd],
+  );
+  const incomeTxAccountOptions = useMemo(
+    () =>
+      accounts
+        .filter((a) => a.name.trim() && a.name.toLowerCase() !== "external")
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [accounts],
+  );
+  const incomeThroughRows = useMemo(() => {
+    const accountName = new Map(accounts.map((a) => [a.accountId, a.name]));
+    const symbolOf = new Map(securities.map((s) => [s.securityId, s.symbol]));
+    return (dividendLifetime?.actuals ?? [])
+      .filter((row) => inIncomeTxRange(row.occurredOn, incomeTxWindow))
+      .filter((row) => !incomeTxAccountId || row.accountId === incomeTxAccountId)
+      .slice()
+      .sort((a, b) => {
+        const day = b.occurredOn.localeCompare(a.occurredOn);
+        if (day !== 0) return day;
+        const acct = (accountName.get(a.accountId) ?? "").localeCompare(
+          accountName.get(b.accountId) ?? "",
+        );
+        if (acct !== 0) return acct;
+        const sa = a.securityId ? (symbolOf.get(a.securityId) ?? "") : "";
+        const sb = b.securityId ? (symbolOf.get(b.securityId) ?? "") : "";
+        return sa.localeCompare(sb);
+      })
+      .map((row) => ({
+        id: row.actualId,
+        date: row.occurredOn,
+        account: accountName.get(row.accountId) ?? "unknown",
+        symbol: row.securityId
+          ? (symbolOf.get(row.securityId) ?? "unknown")
+          : "unknown",
+        amountMinor: row.amountMinor,
+        scale: row.scale,
+      }));
+  }, [accounts, securities, dividendLifetime, incomeTxWindow, incomeTxAccountId]);
+
+  useEffect(() => {
+    if (!incomeTxOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIncomeTxOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [incomeTxOpen]);
 
   const addLotSecurityOptions = useMemo(() => {
     return securities
@@ -6147,7 +6535,6 @@ export default function App() {
   const goHome = () => {
     setOpenMenu(null);
     leaveWithoutSaving(() => {
-      setIncomePattern("A");
       setScreen("home");
     }, "home");
   };
@@ -6164,8 +6551,9 @@ export default function App() {
       disabled={
         busy ||
         (screen !== id &&
-          (pdDirty || wizDirty || addLotDirty || cashDirty) &&
-          !dirtyTargets.includes(id))
+          ((weekWizardActive && id !== "cash-management") ||
+            ((pdDirty || wizDirty || addLotDirty || cashDirty) &&
+              !dirtyTargets.includes(id))))
       }
       onClick={() => {
         setOpenMenu(null);
@@ -6284,8 +6672,8 @@ export default function App() {
             <>
               {navButton("calculator", "Calculator")}
               {navButton("dashboard", "Dashboard")}
-              {navButton("trends", "Trends")}
               {navButton("cash-management", "Cash Management")}
+              {navButton("shopping-cart", "Shopping Cart")}
             </>,
           )}
           {menuGroup(
@@ -6312,6 +6700,7 @@ export default function App() {
             "Tools",
             <>
               {navButton("collector-establish", "Reevaluate collector")}
+              {navButton("components", "Components")}
               {navButton("settings", "Settings")}
             </>,
           )}
@@ -6333,11 +6722,18 @@ export default function App() {
           </p>
         </div>
       ) : null}
+      <RefreshActivityBar
+        lastPriceBusy={lastPriceBusy}
+        lastPriceProgress={lastPriceProgress}
+        declarationBusy={declarationBusy}
+        declarationProgress={declarationProgress}
+      />
       <main className="container" aria-label="finos">
       {screen === "home" ? (
         <>
+        <div className="home-top-row">
         {summary ? (
-        <section aria-label="Portfolio summary">
+        <section className="home-portfolio-pane" aria-label="Portfolio summary">
           <dl className="portfolio-summary">
             <div className="ps-cell ps-mv">
               <dt>Market value</dt>
@@ -6389,16 +6785,46 @@ export default function App() {
               <p className="ps-note">Lifetime paid dividends (cash)</p>
             </div>
             <div className="ps-cell ps-count">
-              <dt>Accounts</dt>
-              <dd>{formatCount(summary.accountCount)}</dd>
-            </div>
-            <div className="ps-cell ps-count">
               <dt>Symbols</dt>
               <dd>{formatCount(summary.symbolCount ?? 0)}</dd>
             </div>
-            <div className="ps-cell ps-count">
-              <dt>Open lots</dt>
-              <dd>{formatCount(summary.openLotCount)}</dd>
+            <div className="ps-pair" aria-label="Average monthly income">
+              <div className="ps-cell ps-income">
+                <dt>
+                  Average <strong>previous</strong> 12 months
+                  <span className="ps-avg-income">Income</span>
+                </dt>
+                <dd>
+                  {summary.avgMonthlyActualIncomeMinor == null
+                    ? "unknown"
+                    : `${formatUsd(
+                        summary.avgMonthlyActualIncomeMinor,
+                        summary.scale ?? 2,
+                      )} (${formatUsd(
+                        summary.avgMonthlyActualIncomeMinor * 12,
+                        summary.scale ?? 2,
+                      )})`}
+                </dd>
+                <p className="ps-note">Actual paid dividends, same accounts</p>
+              </div>
+              <div className="ps-cell ps-income">
+                <dt>
+                  Average Monthly Plan
+                  <span className="ps-avg-income">Income</span>
+                </dt>
+                <dd>
+                  {summary.avgMonthlyPlanIncomeMinor == null
+                    ? "unknown"
+                    : `${formatUsd(
+                        summary.avgMonthlyPlanIncomeMinor,
+                        summary.scale ?? 2,
+                      )} (${formatUsd(
+                        summary.avgMonthlyPlanIncomeMinor * 12,
+                        summary.scale ?? 2,
+                      )})`}
+                </dd>
+                <p className="ps-note">9, Income, FI Roth, Car — annual ÷ 12</p>
+              </div>
             </div>
             <div className="ps-cell ps-coverage">
               <dt>Last prices</dt>
@@ -6415,12 +6841,15 @@ export default function App() {
               <button
                 type="button"
                 aria-label="Refresh last prices"
+                aria-busy={lastPriceBusy}
                 disabled={lastPriceBusy || busy}
                 onClick={() => {
-                  void refreshLastPrices();
+                  void refreshLastPrices(true);
                 }}
               >
-                {lastPriceBusy ? "Refreshing last prices…" : "Refresh last prices"}
+                {lastPriceBusy
+                  ? lastPriceRefreshLabel(lastPriceProgress)
+                  : "Refresh last prices"}
               </button>
             </div>
             <div className="ps-cell ps-coverage">
@@ -6443,13 +6872,7 @@ export default function App() {
                 }}
               >
                 {declarationBusy
-                  ? declarationProgress && declarationProgress.total > 0
-                    ? `Refreshing ${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}${
-                        declarationProgress.symbol
-                          ? `: ${declarationProgress.symbol}`
-                          : ""
-                      }`
-                    : "Refreshing declarations…"
+                  ? declarationRefreshLabel(declarationProgress)
                   : "Refresh declarations"}
               </button>
             </div>
@@ -6471,31 +6894,229 @@ export default function App() {
               </button>
             </div>
             <div className="ps-cell ps-count">
-              <dt>Yield events</dt>
-              <dd>{formatCount(summary.yieldCount)}</dd>
-              <p className="ps-note">Count of paid dividend posts</p>
-            </div>
-            <div className="ps-cell ps-count">
-              <dt>Disbursements</dt>
-              <dd>{formatCount(summary.disbursementCount)}</dd>
-              <p className="ps-note">Count of Non-ROI posts</p>
-            </div>
-            <div className="ps-cell ps-count">
               <dt>Calculator plans</dt>
               <dd>{formatCount(summary.planCount)}</dd>
               <p className="ps-note">DIV-1 and CASH collector plans</p>
             </div>
             <div className="ps-cell ps-date">
-              <dt>Last yield</dt>
-              <dd>{summary.latestYieldOn?.trim() || "none"}</dd>
+              <dt>Income through</dt>
+              <dd>
+                {incomeThroughOn ? (
+                  <button
+                    type="button"
+                    className="ps-date-link"
+                    aria-label="Income through transactions"
+                    onClick={() => setIncomeTxOpen(true)}
+                  >
+                    {incomeThroughOn}
+                  </button>
+                ) : (
+                  "none"
+                )}
+              </dd>
+              <p className="ps-note">Last imported paid dividend date</p>
             </div>
           </dl>
         </section>
         ) : (
           <p role="status">Loading portfolio summary…</p>
         )}
+        <HomeDividendPlan plan={dividendPlan} />
+        </div>
+        {incomeTxOpen ? (
+          <div
+            className="home-av-dialog-backdrop"
+            onClick={() => setIncomeTxOpen(false)}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Income through transactions"
+              className="home-av-dialog income-tx-dialog"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header>
+                <h3>
+                  Income through {incomeThroughOn || "none"}
+                </h3>
+                <button
+                  type="button"
+                  aria-label="Exit income through transactions"
+                  onClick={() => setIncomeTxOpen(false)}
+                >
+                  Exit
+                </button>
+              </header>
+              <div className="income-tx-period-bar">
+                <label>
+                  Period
+                  <select
+                    aria-label="Income transaction period"
+                    value={incomeTxPeriod}
+                    onChange={(e) => {
+                      const next = e.target.value as IncomeTxPeriod;
+                      setIncomeTxPeriod(next);
+                      if (next === "custom" && (!incomeTxCustomStart || !incomeTxCustomEnd)) {
+                        const month = incomeTxRange("month", incomeTxToday, "", "");
+                        setIncomeTxCustomStart(month?.startOn ?? incomeTxToday);
+                        setIncomeTxCustomEnd(month?.endOn ?? incomeTxToday);
+                      }
+                    }}
+                  >
+                    {INCOME_TX_PERIOD_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Account
+                  <select
+                    aria-label="Income transaction account"
+                    value={incomeTxAccountId}
+                    onChange={(e) => setIncomeTxAccountId(e.target.value)}
+                  >
+                    <option value="">All accounts</option>
+                    {incomeTxAccountOptions.map((acct) => (
+                      <option key={acct.accountId} value={acct.accountId}>
+                        {acct.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {incomeTxPeriod === "custom" ? (
+                  <>
+                    <label>
+                      From
+                      <input
+                        type="date"
+                        aria-label="Income transaction start"
+                        value={incomeTxCustomStart}
+                        onChange={(e) => setIncomeTxCustomStart(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      To
+                      <input
+                        type="date"
+                        aria-label="Income transaction end"
+                        value={incomeTxCustomEnd}
+                        onChange={(e) => setIncomeTxCustomEnd(e.target.value)}
+                      />
+                    </label>
+                  </>
+                ) : null}
+                <p className="income-tx-range-note">
+                  {incomeTxWindow
+                    ? `${incomeTxWindow.startOn} to ${incomeTxWindow.endOn}`
+                    : "Choose a start and end date"}
+                </p>
+              </div>
+              {incomeThroughRows.length === 0 ? (
+                <p className="home-av-empty">No paid dividends in this range.</p>
+              ) : (
+                <div className="income-tx-scroll">
+                  <table className="income-tx-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Acct</th>
+                        <th>Symbol</th>
+                        <th className="numeric">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {incomeThroughRows.map((row) => (
+                        <tr key={row.id}>
+                          <td>{row.date}</td>
+                          <td>{row.account}</td>
+                          <td>{row.symbol}</td>
+                          <td className="numeric">
+                            {formatUsd(row.amountMinor, row.scale)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
         <HomeAccountCharts values={accountValues} />
         </>
+      ) : null}
+      {incomeExportPreview ? (
+        <div
+          className="home-av-dialog-backdrop"
+          onClick={() => setIncomeExportPreview(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Income Plan export preview"
+            className="home-av-dialog income-export-preview-dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <h3>Print / Export preview</h3>
+              <button
+                type="button"
+                aria-label="Cancel Income Plan export"
+                onClick={() => setIncomeExportPreview(null)}
+              >
+                Cancel
+              </button>
+            </header>
+            <iframe
+              className="income-export-preview-frame"
+              title="Income Plan export preview"
+              srcDoc={styleIncomePrintHtml(incomeExportPreview.printHtml)}
+            />
+            <p>
+              Review the {incomeExportPreview.cover.pattern === "B" ? "weekly report" : "weekly grid"}{" "}
+              then choose print, PDF, or Excel.
+            </p>
+            <div
+              className="income-export-preview-actions"
+              aria-label="Confirm Income Plan export"
+            >
+              <button
+                type="button"
+                aria-label="Print to page"
+                disabled={busy}
+                onClick={() => void commitIncomeExport("print")}
+              >
+                Print
+              </button>
+              <button
+                type="button"
+                aria-label="Save PDF"
+                disabled={busy}
+                onClick={() => void commitIncomeExport("pdf")}
+              >
+                Save PDF
+              </button>
+              <button
+                type="button"
+                aria-label="Export Excel"
+                disabled={busy}
+                onClick={() => void commitIncomeExport("excel")}
+              >
+                Export Excel
+              </button>
+              <button
+                type="button"
+                aria-label="Cancel Income Plan export"
+                disabled={busy}
+                onClick={() => setIncomeExportPreview(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
       {snapshotConfirm ? (
         <div
@@ -6579,7 +7200,22 @@ export default function App() {
       ) : null}
 
       {screen === "income-plan" ? (
-        <section className="income-plan-page" aria-label="Income Plan">
+        <section
+          className="income-plan-page"
+          aria-label="Income Plan"
+          aria-busy={incomeWeekLoading}
+        >
+          {incomeWeekLoading ? (
+            <div
+              className="income-plan-loading"
+              role="status"
+              aria-live="polite"
+              aria-label="Loading Data"
+            >
+              <div className="process-a-research-spinner" aria-hidden="true" />
+              <p>Loading Data</p>
+            </div>
+          ) : null}
           <header className="income-plan-appbar">
             <div>
               <h2>Income Plan</h2>
@@ -6591,7 +7227,18 @@ export default function App() {
                 role="tab"
                 aria-selected={incomePattern === "A"}
                 className={incomePattern === "A" ? "is-active" : undefined}
-                onClick={() => setIncomePattern("A")}
+                onClick={() => {
+                  setIncomePattern("A");
+                  void withIncomeLoading(() =>
+                    loadIncomeGrid(
+                      asOfDate,
+                      incomeHistWeeks,
+                      incomeFutWeeks,
+                      drillAccounts,
+                      incomeGrid?.selectedWeekEnd || incomeWeek?.end,
+                    ),
+                  );
+                }}
               >
                 Weekly grid
               </button>
@@ -6604,7 +7251,7 @@ export default function App() {
                   setIncomePattern("B");
                   const weekEnd = incomeGrid?.selectedWeekEnd ?? incomeWeek?.end;
                   if (weekEnd) {
-                    setAsOfDate(saturdayOfWeek(weekEnd));
+                    void loadIncomeWeek(saturdayOfWeek(weekEnd));
                   }
                 }}
               >
@@ -6635,17 +7282,34 @@ export default function App() {
               futureWeeks={incomeFutWeeks}
               onHistoricalWeeks={(n) => {
                 setIncomeHistWeeks(n);
-                void loadIncomeGrid(asOfDate, n, incomeFutWeeks, drillAccounts, incomeGrid?.selectedWeekEnd);
+                void withIncomeLoading(() =>
+                  loadIncomeGrid(
+                    asOfDate,
+                    n,
+                    incomeFutWeeks,
+                    drillAccounts,
+                    incomeGrid?.selectedWeekEnd,
+                  ),
+                );
               }}
               onFutureWeeks={(n) => {
                 setIncomeFutWeeks(n);
-                void loadIncomeGrid(asOfDate, incomeHistWeeks, n, drillAccounts, incomeGrid?.selectedWeekEnd);
+                void withIncomeLoading(() =>
+                  loadIncomeGrid(
+                    asOfDate,
+                    incomeHistWeeks,
+                    n,
+                    drillAccounts,
+                    incomeGrid?.selectedWeekEnd,
+                  ),
+                );
               }}
               onOpenWeek={(weekEnd) => {
                 setIncomePattern("B");
-                setAsOfDate(saturdayOfWeek(weekEnd));
+                void loadIncomeWeek(saturdayOfWeek(weekEnd));
               }}
-              onPrintExport={(action) => void runIncomeExport(action)}
+              onPrintExport={() => void requestIncomeExport()}
+              exportLoading={incomeExportLoading}
             />
           ) : (
             <>
@@ -6671,7 +7335,8 @@ export default function App() {
                         <select
                           aria-label="Select week"
                           value={selectedSat}
-                          onChange={(e) => setAsOfDate(e.target.value)}
+                          disabled={incomeWeekLoading}
+                          onChange={(e) => void loadIncomeWeek(e.target.value)}
                         >
                           {weekChoices.map((sat) => (
                             <option key={sat} value={sat}>
@@ -6683,16 +7348,34 @@ export default function App() {
                       <button
                         type="button"
                         aria-label="Previous week"
-                        disabled={!selectedSat}
-                        onClick={() => setAsOfDate(shiftIso(selectedSat, -7))}
+                        aria-busy={incomeWeekNav === "prev" && incomeWeekLoading}
+                        className={
+                          incomeWeekNav === "prev" && incomeWeekLoading
+                            ? "is-loading"
+                            : undefined
+                        }
+                        disabled={!selectedSat || incomeWeekLoading}
+                        onClick={() => {
+                          setIncomeWeekNav("prev");
+                          void loadIncomeWeek(shiftIso(selectedSat, -7));
+                        }}
                       >
                         Previous week
                       </button>
                       <button
                         type="button"
                         aria-label="Next week"
-                        disabled={!selectedSat}
-                        onClick={() => setAsOfDate(shiftIso(selectedSat, 7))}
+                        aria-busy={incomeWeekNav === "next" && incomeWeekLoading}
+                        className={
+                          incomeWeekNav === "next" && incomeWeekLoading
+                            ? "is-loading"
+                            : undefined
+                        }
+                        disabled={!selectedSat || incomeWeekLoading}
+                        onClick={() => {
+                          setIncomeWeekNav("next");
+                          void loadIncomeWeek(shiftIso(selectedSat, 7));
+                        }}
                       >
                         Next week
                       </button>
@@ -6701,27 +7384,29 @@ export default function App() {
                         aria-label="Back to Weekly grid"
                         onClick={() => {
                           setIncomePattern("A");
-                          void loadIncomeGrid(
-                            asOfDate,
-                            incomeHistWeeks,
-                            incomeFutWeeks,
-                            drillAccounts,
-                            incomeWeek?.end,
+                          void withIncomeLoading(() =>
+                            loadIncomeGrid(
+                              asOfDate,
+                              incomeHistWeeks,
+                              incomeFutWeeks,
+                              drillAccounts,
+                              incomeWeek?.end,
+                            ),
                           );
                         }}
                       >
                         Back to Weekly grid
                       </button>
                       <div className="income-print-export">
-                        <span className="income-week-label">Print / Export</span>
-                        <button type="button" aria-label="Print to page" onClick={() => void runIncomeExport("print")}>
-                          Print to page
-                        </button>
-                        <button type="button" aria-label="Save PDF" onClick={() => void runIncomeExport("pdf")}>
-                          Save PDF
-                        </button>
-                        <button type="button" aria-label="Export Excel" onClick={() => void runIncomeExport("excel")}>
-                          Export Excel
+                        <button
+                          type="button"
+                          aria-label="Print Export"
+                          aria-busy={incomeExportLoading}
+                          className={incomeExportLoading ? "is-loading" : undefined}
+                          disabled={incomeWeekLoading || incomeExportLoading}
+                          onClick={() => void requestIncomeExport()}
+                        >
+                          Print Export
                         </button>
                       </div>
                     </div>
@@ -6766,6 +7451,26 @@ export default function App() {
               />
             </>
           )}
+          <DividendWeeksPanel
+            perf={dividendPerf}
+            range={perfRange}
+            onRangeChange={(next) => {
+              setPerfRange(next);
+              void (async () => {
+                const r = await client.executeQuery("DividendPerformanceGet", {
+                  asOfDate,
+                  range: next,
+                });
+                if (r.ok && r.bodyJson) {
+                  try {
+                    setDividendPerf(JSON.parse(r.bodyJson) as DividendPerformanceGet);
+                  } catch {
+                    setDividendPerf(null);
+                  }
+                }
+              })();
+            }}
+          />
         </section>
       ) : null}
 
@@ -6844,10 +7549,13 @@ export default function App() {
             <button
               type="button"
               aria-label="Refresh last prices"
+              aria-busy={lastPriceBusy}
               disabled={lastPriceBusy || busy}
-              onClick={() => void refreshLastPrices()}
+              onClick={() => void refreshLastPrices(true)}
             >
-              {lastPriceBusy ? "Refreshing last prices…" : "Refresh last prices"}
+              {lastPriceBusy
+                ? lastPriceRefreshLabel(lastPriceProgress)
+                : "Refresh last prices"}
             </button>
             <button
               type="button"
@@ -9110,106 +9818,116 @@ export default function App() {
       {screen === "trends" ? (
         <section aria-label="Trends">
           <h2>Trends</h2>
-          <TrendsCapturePanel
-            capture={trendsCapture}
-            busy={busy}
-            onReload={(d) => {
-              void (async () => {
-                const r = await client.executeQuery("TrendsWeekGet", { asOfDate: d });
-                if (r.ok && r.bodyJson) {
-                  setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
+          <p>
+            Charts from saved weeks and declared income. Enter the week on Cash
+            Management.
+          </p>
+          {trendsCapture &&
+          (!trendsCapture.exists || trendsCapture.firstUnpopulatedStart) ? (
+            <p role="status">
+              <button
+                type="button"
+                aria-label="Finish this week on Cash Management"
+                onClick={() =>
+                  leaveWithoutSaving(
+                    () => setScreen("cash-management"),
+                    "cash-management",
+                  )
                 }
-              })();
-            }}
-            onCopyPrior={() => {
-              if (!trendsCapture?.prior) return;
-              setTrendsCapture({
-                ...trendsCapture,
-                current: {
-                  profitMinor: trendsCapture.prior.profitMinor,
-                  monthlyDivsMinor: trendsCapture.prior.monthlyDivsMinor,
-                  fidelityTotalMinor: trendsCapture.prior.fidelityTotalMinor,
-                  schwabTotalMinor: trendsCapture.prior.schwabTotalMinor,
-                  incomeCashMinor: trendsCapture.prior.incomeCashMinor,
-                  acct9CashMinor: trendsCapture.prior.acct9CashMinor,
-                  acct9EtfValueMinor: trendsCapture.prior.acct9EtfValueMinor,
-                },
-              });
-            }}
-            onSave={async (body, correct) => {
-              setBusy(true);
-              try {
-                const r = await client.executeCommand(
-                  correct ? "TrendsWeekCorrect" : "TrendsWeekSave",
-                  body,
-                );
-                if (!r.ok) {
-                  setActionMessage(`Trends save failed: ${r.errorCode ?? "error"}`);
-                  return;
-                }
-                if (r.bodyJson) {
-                  setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
-                }
-                await refreshData(asOfDate || body.periodEnd as string);
-              } finally {
-                setBusy(false);
-              }
-            }}
-            onClose={async (periodEnd) => {
-              setBusy(true);
-              try {
-                const r = await client.executeCommand("TrendsWeekClose", { periodEnd });
-                if (!r.ok) {
-                  setActionMessage(`Trends close failed: ${r.errorCode ?? "error"}`);
-                  return;
-                }
-                if (r.bodyJson) {
-                  setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
-                }
-                await refreshData(asOfDate || periodEnd);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          />
-          <DividendWeeksPanel
-            perf={dividendPerf}
-            range={perfRange}
-            onRangeChange={(next) => {
-              setPerfRange(next);
+              >
+                Finish this week on Cash Management
+              </button>
+            </p>
+          ) : null}
+          <TrendsChartsPanel
+            weeks={trends?.weeks}
+            dividendPerf={trendsDividendPerf}
+            onGraphPeriodChange={(period) => {
+              trendsGraphPeriodRef.current = period;
               void (async () => {
                 const r = await client.executeQuery("DividendPerformanceGet", {
                   asOfDate,
-                  range: next,
+                  range: period,
                 });
                 if (r.ok && r.bodyJson) {
                   try {
-                    setDividendPerf(JSON.parse(r.bodyJson) as DividendPerformanceGet);
+                    setTrendsDividendPerf(
+                      JSON.parse(r.bodyJson) as DividendPerformanceGet,
+                    );
+                    return;
                   } catch {
-                    setDividendPerf(null);
+                    /* fall through */
                   }
                 }
+                if (period === "6m" || period === "12m") {
+                  const fallback = await client.executeQuery(
+                    "DividendPerformanceGet",
+                    { asOfDate, range: "all" },
+                  );
+                  if (fallback.ok && fallback.bodyJson) {
+                    try {
+                      setTrendsDividendPerf(
+                        JSON.parse(fallback.bodyJson) as DividendPerformanceGet,
+                      );
+                      return;
+                    } catch {
+                      /* fall through */
+                    }
+                  }
+                }
+                setTrendsDividendPerf(null);
               })();
             }}
-          />
-          <TrendsChartsPanel
-            weeks={trends?.weeks}
             note={trends?.note}
             error={trendsError}
-            overview={trends?.overview as never}
-            distributions={trends?.distributions as never}
-            taxMonitor={trends?.taxMonitor as never}
             missingRequired={trends?.missingRequired}
+            accountValues={accountValues}
+            risk={accountValues?.risk ?? null}
+            asOf={accountValues?.asOf ?? asOfDate}
           />
         </section>
+      ) : null}
+
+      {screen === "shopping-cart" ? (
+        <ShoppingCartScreen
+          client={client}
+          accounts={accounts}
+          holdings={holdings}
+          calculator={calculator}
+          researched={addLotSecurityOptions}
+          positionMaster={positionMaster}
+          asOfDate={asOfDate}
+          busy={busy}
+          writesBlocked={writesBlocked}
+          onMessage={setActionMessage}
+          onBusy={setBusy}
+          onDirtyChange={setCartDirty}
+          onOpenBuyLot={(prefill) => {
+            leaveWithoutSaving(() => {
+              pendingCartBuyRef.current = { scenarioId: prefill.scenarioId };
+              setAddLotAccountId(prefill.accountId);
+              setAddLotSecurityId(prefill.securityId);
+              const row = securities.find((s) => s.securityId === prefill.securityId);
+              setAddLotQuery(
+                row
+                  ? `${row.symbol}${row.name ? ` — ${row.name}` : ""}`
+                  : prefill.symbol,
+              );
+              setAddLotQty(String(prefill.qtyWhole));
+              setAddLotCost((prefill.lastMinor / 100).toFixed(2));
+              setAddLotOpenedOn(prefill.openedOn);
+              setScreen("add-lot");
+            }, "add-lot");
+          }}
+        />
       ) : null}
 
       {screen === "cash-management" ? (
         <section aria-label="Cash Management">
           <h2>Cash Management</h2>
           <p>
-            Post a distribution once: account, gross, federal and state
-            withholding. Net is calculated. Trends charts stay on Trends.
+            Enter this Sat–Fri week, then declare SSA, distributions, or
+            withdrawals. Trends only graphs saved weeks.
           </p>
           <CashManagementPanel
             week={cashWeek}
@@ -9218,6 +9936,15 @@ export default function App() {
             magi={cashMagi}
             accounts={accounts}
             busy={busy}
+            distributions={trends?.distributions as never}
+            taxMonitor={trends?.taxMonitor as never}
+            weekJustSavedAt={cashWeekSavedAt}
+            weekDesk={{
+              weeks: trends?.weeks,
+              points: trends?.points,
+              dividendPerf: dividendPerf ?? trendsDividendPerf,
+              overview: trends?.overview as never,
+            }}
             onDirtyChange={setCashDirty}
             onReload={(d) => {
               void (async () => {
@@ -9317,7 +10044,78 @@ export default function App() {
               setActionMessage("Tom Social Security retirement confirmed.");
               return true;
             }}
-          />
+          >
+            <TrendsCapturePanel
+              capture={trendsCapture}
+              busy={busy}
+              onReload={(d) => {
+                trendsWeekAsOfRef.current = d;
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    const r = await client.executeQuery("TrendsWeekGet", { asOfDate: d });
+                    if (r.ok && r.bodyJson) {
+                      setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
+                    }
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
+              }}
+              onSave={async (body, correct) => {
+                setBusy(true);
+                try {
+                  const r = await client.executeCommand(
+                    correct ? "TrendsWeekCorrect" : "TrendsWeekSave",
+                    body,
+                  );
+                  if (!r.ok) {
+                    setActionMessage(`Trends save failed: ${r.errorCode ?? "error"}`);
+                    return;
+                  }
+                  const saved = r.bodyJson
+                    ? (JSON.parse(r.bodyJson) as TrendsWeekCapture)
+                    : null;
+                  if (saved) {
+                    setTrendsCapture(saved);
+                  }
+                  await refreshData(asOfDate || (body.periodEnd as string));
+                  if (!correct) {
+                    setCashWeekSavedAt(Date.now());
+                  }
+                  const next = saved?.firstUnpopulatedStart;
+                  if (next && next !== saved?.periodStart) {
+                    trendsWeekAsOfRef.current = next;
+                    const q = await client.executeQuery("TrendsWeekGet", {
+                      asOfDate: next,
+                    });
+                    if (q.ok && q.bodyJson) {
+                      setTrendsCapture(JSON.parse(q.bodyJson) as TrendsWeekCapture);
+                    }
+                  }
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              onClose={async (periodEnd) => {
+                setBusy(true);
+                try {
+                  const r = await client.executeCommand("TrendsWeekClose", { periodEnd });
+                  if (!r.ok) {
+                    setActionMessage(`Trends close failed: ${r.errorCode ?? "error"}`);
+                    return;
+                  }
+                  if (r.bodyJson) {
+                    setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
+                  }
+                  await refreshData(asOfDate || periodEnd);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              onWizardActive={setWeekWizardActive}
+            />
+          </CashManagementPanel>
         </section>
       ) : null}
 
@@ -9339,14 +10137,27 @@ export default function App() {
             onOpenSymbol={(symbol) => openPositionHub(symbol, "lots")}
           />
           <p>Open lots. Owner assigns sales; no FIFO. Type a sell activity id to assign.</p>
-          <label>
-            Lot id
-            <input
-              value={lotId}
-              onChange={(e) => setLotId(e.target.value)}
-              disabled={busy || writesBlocked}
-            />
-          </label>
+          <LotCostTable
+            lots={(holdings?.lots ?? []).map((l) => ({
+              lotId: l.lotId,
+              symbol: l.symbol,
+              accountName: l.accountName,
+              remainingQuantityMinor: l.remainingQuantityMinor,
+              quantityScale: l.quantityScale,
+              openedOn: l.openedOn,
+              remainingPerformanceMinor: l.remainingPerformanceMinor,
+              remainingTaxMinor: l.remainingTaxMinor,
+            }))}
+            value={lotId}
+            onChange={setLotId}
+            lastBySymbol={Object.fromEntries(
+              (calculator?.rows ?? []).map((r) => [r.symbol, r.lastPriceMinor]),
+            )}
+            sortMode={holdingsLotSort}
+            onSortModeChange={setHoldingsLotSort}
+            disabled={busy || writesBlocked}
+            ariaLabel="Lot id"
+          />
           <label>
             Sell activity id
             <input
@@ -10125,78 +10936,29 @@ export default function App() {
             </button>
           </div>
           <div className="form-grid">
-            <label className="symbol-combobox">
-              Researched symbol
-              <input
-                aria-label="Add lot symbol"
-                aria-expanded={addLotSymbolOpen}
-                aria-controls="add-lot-symbol-list"
-                aria-autocomplete="list"
-                role="combobox"
-                value={addLotQuery}
-                placeholder="Type to filter (e.g. NV)"
-                autoComplete="off"
-                onChange={(e) => {
-                  setAddLotQuery(e.target.value.toUpperCase());
-                  setAddLotSecurityId("");
-                  setAddLotSymbolOpen(true);
-                }}
-                onFocus={() => setAddLotSymbolOpen(true)}
-                onBlur={() => {
-                  window.setTimeout(() => setAddLotSymbolOpen(false), 150);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && filteredAddLotSecurities[0]) {
-                    e.preventDefault();
-                    selectAddLotSecurity(filteredAddLotSecurities[0]);
-                  }
-                  if (e.key === "Escape") {
-                    setAddLotSymbolOpen(false);
-                  }
-                }}
-                disabled={busy || writesBlocked}
-              />
-              {addLotSymbolOpen && filteredAddLotSecurities.length > 0 ? (
-                <ul
-                  id="add-lot-symbol-list"
-                  className="symbol-combobox-list"
-                  role="listbox"
-                  aria-label="Add lot symbol matches"
-                >
-                  {filteredAddLotSecurities.map((row) => (
-                    <li
-                      key={row.securityId}
-                      role="option"
-                      aria-selected={row.securityId === addLotSecurityId}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        selectAddLotSecurity(row);
-                      }}
-                    >
-                      {row.symbol}
-                      {row.name ? ` — ${row.name}` : ""}
-                      {row.openLotCount === 0 ? " (no lots yet)" : ""}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </label>
-            <label>
-              Account
-              <select
-                aria-label="Add lot account"
-                value={addLotAccountId}
-                onChange={(e) => setAddLotAccountId(e.target.value)}
-                disabled={busy || writesBlocked}
-              >
-                <option value="">Choose account</option>
-                {accounts.map((a) => (
-                  <option key={a.accountId} value={a.accountId}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <ResearchedSymbolCombobox
+              options={filteredAddLotSecurities}
+              query={addLotQuery}
+              onQueryChange={(q) => {
+                setAddLotQuery(q);
+                setAddLotSecurityId("");
+              }}
+              open={addLotSymbolOpen}
+              onOpenChange={setAddLotSymbolOpen}
+              selectedId={addLotSecurityId}
+              onSelect={selectAddLotSecurity}
+              disabled={busy || writesBlocked}
+              inputAriaLabel="Add lot symbol"
+              listId="add-lot-symbol-list"
+              listAriaLabel="Add lot symbol matches"
+            />
+            <AccountSelect
+              accounts={accounts}
+              value={addLotAccountId}
+              onChange={setAddLotAccountId}
+              ariaLabel="Add lot account"
+              disabled={busy || writesBlocked}
+            />
             <label>
               Opened on
               <input
@@ -11261,6 +12023,52 @@ export default function App() {
                       </tr>
                     );
                   })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {screen === "components" ? (
+        <section className="actions" aria-label="Component registry">
+          <h2>Components</h2>
+          <p>
+            UI modules and whether they have left App.tsx. This is a catalog, not
+            a plugin host. Core functions stay in Settings.
+          </p>
+          <div className="table-wrap">
+            <table aria-label="Component registry">
+              <thead>
+                <tr>
+                  <th scope="col">Module</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Folder</th>
+                  <th scope="col">Menu areas</th>
+                  <th scope="col">Core functions</th>
+                  <th scope="col">Host</th>
+                </tr>
+              </thead>
+              <tbody>
+                {coreFunctions?.modules?.length ? (
+                  coreFunctions.modules.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.title}</td>
+                      <td>{row.status}</td>
+                      <td>{row.folder}</td>
+                      <td>{row.menuAreas.join(", ")}</td>
+                      <td>
+                        {row.coreFunctionIds?.length
+                          ? row.coreFunctionIds.join(", ")
+                          : "—"}
+                      </td>
+                      <td>{row.host || "—"}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6}>Loading components…</td>
+                  </tr>
                 )}
               </tbody>
             </table>

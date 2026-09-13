@@ -169,4 +169,116 @@ async fn trends_suggested_profit_from_dividend_activity() {
     assert_eq!(capture["periodStart"], "2026-08-22");
     assert_eq!(capture["periodEnd"], "2026-08-28");
     assert_eq!(capture["suggestedProfitMinor"], 25000);
+    assert_eq!(
+        capture["suggestedMonthlyDivsMinor"], 25000,
+        "week-aligned income is the paid dividend in that Sat–Fri week"
+    );
+}
+
+#[tokio::test]
+async fn trends_week_get_defaults_to_first_unpopulated() {
+    let root = repo_root();
+    let production = root.join("database/seed/production");
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    load_production_seed_via_commands(&platform, &production)
+        .await
+        .expect("seed");
+
+    let capture = query_json(&platform, "TrendsWeekGet", None).await;
+    assert_eq!(capture["firstUnpopulatedStart"], "2026-08-22");
+    assert_eq!(capture["periodStart"], "2026-08-22");
+    let chooser = capture["chooserSaturdays"].as_array().expect("chooser");
+    assert_eq!(chooser[0], "2026-08-22");
+    assert!(chooser.iter().any(|s| s == "2026-09-12"));
+}
+
+#[tokio::test]
+async fn trends_week_save_cash_and_derived_totals_hit_charts() {
+    let root = repo_root();
+    let production = root.join("database/seed/production");
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    load_production_seed_via_commands(&platform, &production)
+        .await
+        .expect("seed");
+
+    let body = serde_json::json!({
+        "periodStart": "2026-08-22",
+        "periodEnd": "2026-08-28",
+        "capturedAt": "2026-08-29T12:00:00Z",
+        "incomeBalanceMinor": 20000000,
+        "rothBalanceMinor": 1000000,
+        "speculationBalanceMinor": 2000000,
+        "healthBalanceMinor": 1500000,
+        "carBalanceMinor": 4000000,
+        "acct9BalanceMinor": 3500000,
+        "incomeCashMinor": 500000,
+        "rothCashMinor": 100000,
+        "speculationCashMinor": 50000,
+        "healthCashMinor": 25000,
+        "carCashMinor": 75000,
+        "acct9CashMinor": 200000,
+        "acct9EtfValueMinor": 0,
+        "scale": 2
+    });
+    let saved = must_cmd(&platform, "TrendsWeekSave", body).await;
+    assert_eq!(saved["current"]["fidelityTotalMinor"], 28_500_000);
+    assert_eq!(saved["current"]["schwabTotalMinor"], 3_500_000);
+
+    let trends = query_json(&platform, "TrendsGet", Some(r#"{"asOfDate":"2026-08-28"}"#)).await;
+    let week = trends["weeks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["periodEnd"] == "2026-08-28")
+        .expect("saved week");
+    assert_eq!(week["fidelityTotalMinor"], 28_500_000);
+    assert_eq!(week["schwabTotalMinor"], 3_500_000);
+    assert!(week["totalCashMinor"].as_i64().unwrap() >= 950_000);
+    assert_eq!(week["healthBalanceMinor"], 1_500_000);
+}
+
+#[tokio::test]
+async fn trends_acct9_etf_uses_last_price_not_tax_basis() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    must_cmd(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "9", "kind": "ira"}),
+    )
+    .await;
+    let empty = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    assert_eq!(empty["suggestedAcct9EtfProxyMinor"], 0);
+
+    let root = repo_root();
+    let production = root.join("database/seed/production");
+    let seeded = tempfile::tempdir().unwrap();
+    let seeded_platform = LocalPlatform::open(seeded.path().join("app-data"))
+        .await
+        .unwrap();
+    load_production_seed_via_commands(&seeded_platform, &production)
+        .await
+        .expect("seed");
+    let capture = query_json(
+        &seeded_platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    let proxy = capture["suggestedAcct9EtfProxyMinor"].as_i64();
+    assert!(
+        proxy.is_some_and(|v| v > 0) || capture["suggestedAcct9EtfProxyMinor"].is_null(),
+        "last-price 70% is a positive value or unknown, never invented $0: {}",
+        capture["suggestedAcct9EtfProxyMinor"]
+    );
+    if let Some(v) = proxy {
+        assert_ne!(v, 0, "Account 9 open lots have last prices");
+    }
 }

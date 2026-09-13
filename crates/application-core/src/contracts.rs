@@ -208,6 +208,124 @@ pub struct CartGetBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct CartSellLineBody {
+    pub line_id: Uuid,
+    pub lot_id: Uuid,
+    pub security_id: Option<Uuid>,
+    pub symbol: String,
+    pub qty_minor: i64,
+    pub qty_scale: u8,
+    pub unit_minor: i64,
+    pub proceeds_minor: i64,
+    pub is_cash: bool,
+    pub original_cost_minor: Option<i64>,
+    #[serde(default)]
+    pub performance_cost_minor: Option<i64>,
+    #[serde(default)]
+    pub tax_cost_minor: Option<i64>,
+    #[serde(default)]
+    pub performance_gain_minor: Option<i64>,
+    #[serde(default)]
+    pub tax_gain_minor: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CartBuyLineBody {
+    pub line_id: Uuid,
+    pub security_id: Uuid,
+    pub symbol: String,
+    pub qty_whole: i64,
+    pub last_minor: i64,
+    pub spend_minor: i64,
+    pub plan_annual_minor: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CartEvalBody {
+    pub remaining_minor: i64,
+    pub spend_minor: i64,
+    pub leftover_minor: i64,
+    pub buy_annual_minor: Option<i64>,
+    pub surrendered_annual_minor: Option<i64>,
+    pub leftover_annual_minor: Option<i64>,
+    pub net_annual_minor: Option<i64>,
+    pub net_monthly_minor: Option<i64>,
+    pub net_weekly_minor: Option<i64>,
+    pub insufficient_lot_qty: bool,
+    pub cash_floor_warn: bool,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CartScenarioBody {
+    pub scenario_id: Uuid,
+    pub account_id: Uuid,
+    pub account_name: String,
+    #[serde(default)]
+    pub name: String,
+    pub kind: String,
+    pub status: String,
+    pub as_of: String,
+    pub cash_yield_bps: i64,
+    #[serde(default = "default_cart_funding_source")]
+    pub funding_source: String,
+    pub override_reason: Option<String>,
+    pub sell_lines: Vec<CartSellLineBody>,
+    pub buy_lines: Vec<CartBuyLineBody>,
+    pub eval: Option<CartEvalBody>,
+}
+
+fn default_cart_funding_source() -> String {
+    "sellLots".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashPileBody {
+    pub found: bool,
+    pub account_id: Uuid,
+    pub account_name: String,
+    #[serde(default)]
+    pub lot_id: Option<Uuid>,
+    #[serde(default)]
+    pub security_id: Option<Uuid>,
+    #[serde(default)]
+    pub symbol: String,
+    pub remaining_qty_minor: i64,
+    pub quantity_scale: u8,
+    pub dollars_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashLedgerEntryBody {
+    pub activity_id: Uuid,
+    pub activity_type: String,
+    pub amount_minor: i64,
+    pub scale: u8,
+    pub occurred_on: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashLedgerBody {
+    pub account_id: Uuid,
+    pub symbol: String,
+    pub dollars_minor: i64,
+    pub entries: Vec<CashLedgerEntryBody>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CartScenarioListBody {
+    pub items: Vec<CartScenarioBody>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BacktestRunRecord {
     pub run_id: Uuid,
     pub scenario: String,
@@ -553,12 +671,28 @@ pub struct TrendsWeekCaptureBody {
     pub health_balance_minor: Option<i64>,
     pub roth_balance_minor: Option<i64>,
     pub speculation_balance_minor: Option<i64>,
+    #[serde(default)]
+    pub acct9_balance_minor: Option<i64>,
+    #[serde(default)]
+    pub car_cash_minor: Option<i64>,
+    #[serde(default)]
+    pub health_cash_minor: Option<i64>,
+    #[serde(default)]
+    pub roth_cash_minor: Option<i64>,
+    #[serde(default)]
+    pub speculation_cash_minor: Option<i64>,
     /// Suggested Profit from Investment Activity Ledger (dividends + known realized types).
     pub suggested_profit_minor: i64,
-    /// Suggested Monthly DIVS from Income Plan planned_minor.
+    /// Week-aligned Income Plan paid actuals, else that week's Decl $.
     pub suggested_monthly_divs_minor: i64,
-    /// Suggested Acct9 70% from open lots (T7 interim classification).
+    /// Suggested Acct9 70% from last-price market value of non-cash lots.
     pub suggested_acct9_etf_proxy_minor: Option<i64>,
+    #[serde(default)]
+    pub first_unpopulated_start: String,
+    #[serde(default)]
+    pub chooser_saturdays: Vec<String>,
+    #[serde(default)]
+    pub populated_period_ends: Vec<String>,
     pub missing_required: Vec<String>,
     pub scale: u8,
 }
@@ -571,12 +705,24 @@ pub struct TrendsDistributionLine {
     pub amount_minor: i64,
     pub occurred_on: String,
     pub scale: u8,
+    #[serde(default)]
+    pub federal_withholding_minor: i64,
+    #[serde(default)]
+    pub state_withholding_minor: i64,
+    #[serde(default)]
+    pub net_minor: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TrendsDistributionBody {
     pub gross_minor: i64,
+    #[serde(default)]
+    pub federal_withholding_minor: i64,
+    #[serde(default)]
+    pub state_withholding_minor: i64,
+    #[serde(default)]
+    pub net_minor: i64,
     pub lines: Vec<TrendsDistributionLine>,
     pub scale: u8,
 }
@@ -655,6 +801,10 @@ pub struct TrendsWeekPoint {
     pub roth_balance_minor: Option<i64>,
     pub speculation_balance_minor: Option<i64>,
     #[serde(default)]
+    pub fidelity_wk_change_minor: i64,
+    #[serde(default)]
+    pub schwab_wk_change_minor: i64,
+    #[serde(default)]
     pub closed: bool,
     pub scale: u8,
 }
@@ -666,6 +816,8 @@ pub struct AccountBalanceSnapshotRecord {
     pub account_id: Uuid,
     pub period_end: String,
     pub balance_minor: i64,
+    #[serde(default)]
+    pub cash_minor: Option<i64>,
     pub scale: u8,
     pub captured_at: String,
 }
@@ -792,6 +944,13 @@ pub struct AccountValuePointBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AccountIncomePointBody {
+    pub as_of: String,
+    pub income_minor: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AccountValueSeriesBody {
     pub account_id: String,
     pub account_name: String,
@@ -801,6 +960,8 @@ pub struct AccountValueSeriesBody {
     pub points: Vec<AccountValuePointBody>,
     #[serde(default)]
     pub trends_points: Vec<AccountValuePointBody>,
+    #[serde(default)]
+    pub income_points: Vec<AccountIncomePointBody>,
     pub scale: u8,
 }
 
@@ -814,6 +975,7 @@ impl Default for AccountValueSeriesBody {
             current_complete: false,
             points: Vec::new(),
             trends_points: Vec::new(),
+            income_points: Vec::new(),
             scale: 2,
         }
     }
@@ -870,6 +1032,28 @@ pub struct AccountValueHomeBody {
     #[serde(default)]
     pub risk: RiskValueHomeBody,
     pub note: String,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DividendPlanRowBody {
+    pub account_name: String,
+    pub annual_dividend_minor: Option<i64>,
+    pub market_value_minor: Option<i64>,
+    pub monthly_income_minor: Option<i64>,
+    pub monthly_reinvest_minor: Option<i64>,
+    pub monthly_medical_minor: Option<i64>,
+    pub weekly_minor: Option<i64>,
+    #[serde(default)]
+    pub effective_annual_bps: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DividendPlanHomeBody {
+    pub rows: Vec<DividendPlanRowBody>,
+    pub total: DividendPlanRowBody,
     pub scale: u8,
 }
 
@@ -1009,6 +1193,10 @@ pub struct ProductionSeedDisbursement {
     pub scale: u8,
     pub occurred_on: String,
     pub idempotency_key: String,
+    #[serde(default)]
+    pub federal_withholding_minor: i64,
+    #[serde(default)]
+    pub state_withholding_minor: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1397,6 +1585,12 @@ pub struct DataSummaryBody {
     pub market_value_complete: bool,
     /// Lifetime paid dividends (all yield actuals).
     pub income_earned_minor: i64,
+    /// Plan annual ÷ 12 for Account 9, Income, FI Roth, and Car. Unknown when no plan.
+    #[serde(default)]
+    pub avg_monthly_plan_income_minor: Option<i64>,
+    /// Actual paid dividends in those accounts over the previous 12 complete months ÷ 12.
+    #[serde(default)]
+    pub avg_monthly_actual_income_minor: Option<i64>,
     pub scale: u8,
 }
 
@@ -2278,6 +2472,16 @@ pub struct LastPriceRefreshBody {
     pub attempted: u64,
     pub recorded: u64,
     pub skipped: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LastPriceAutoWindowBody {
+    pub allowed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2670,7 +2874,24 @@ pub struct CoreFunctionItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct CoreFunctionsGetBody {
-    pub items: Vec<CoreFunctionItem>,
+pub struct UiModuleItem {
+    pub id: String,
+    pub title: String,
+    pub folder: String,
+    pub status: String,
+    pub menu_areas: Vec<String>,
+    #[serde(default)]
+    pub core_function_ids: Vec<String>,
+    #[serde(default)]
+    pub host: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreFunctionsGetBody {
+    #[serde(default)]
+    pub notes: Vec<String>,
+    pub items: Vec<CoreFunctionItem>,
+    #[serde(default)]
+    pub modules: Vec<UiModuleItem>,
+}

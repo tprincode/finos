@@ -1,9 +1,9 @@
 //! Cash Management week board, Saturday draft, and Tom SSA confirm.
 
 use crate::contracts::{
-    ActivityRecord, CashManagementMonthBody, CashManagementMonthRow,
-    CashManagementRemindersBody, CashManagementSaturdayDraft, CashManagementSsaRecent,
-    CashManagementTomSsa, CashManagementWeekBody, CashManagementWeekRow,
+    ActivityRecord, CashManagementMonthBody, CashManagementMonthRow, CashManagementRemindersBody,
+    CashManagementSaturdayDraft, CashManagementSsaRecent, CashManagementTomSsa,
+    CashManagementWeekBody, CashManagementWeekRow,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
@@ -67,9 +67,8 @@ pub async fn cash_management_week(
     canonical: &dyn Canonical,
     as_of: &str,
 ) -> Result<CashManagementWeekBody, PlatformError> {
-    let as_of = financial_domain::trends::parse_iso_date(as_of).ok_or_else(|| {
-        PlatformError::new("bad_date", format!("invalid asOfDate {as_of}"))
-    })?;
+    let as_of = financial_domain::trends::parse_iso_date(as_of)
+        .ok_or_else(|| PlatformError::new("bad_date", format!("invalid asOfDate {as_of}")))?;
     let week = financial_domain::trends::trends_period_for_capture(as_of);
     let period_start = week.start.format("%Y-%m-%d").to_string();
     let period_end = week.end.format("%Y-%m-%d").to_string();
@@ -117,7 +116,11 @@ pub async fn cash_management_week(
             scale: a.scale,
         });
     }
-    rows.sort_by(|a, b| a.occurred_on.cmp(&b.occurred_on).then(a.account_name.cmp(&b.account_name)));
+    rows.sort_by(|a, b| {
+        a.occurred_on
+            .cmp(&b.occurred_on)
+            .then(a.account_name.cmp(&b.account_name))
+    });
     let week_gross_minor: i64 = rows.iter().map(|r| r.gross_minor).sum();
     let week_withholding_minor: i64 = rows
         .iter()
@@ -183,9 +186,8 @@ pub async fn cash_management_reminders(
     canonical: &dyn Canonical,
     as_of: &str,
 ) -> Result<CashManagementRemindersBody, PlatformError> {
-    let as_of_date = financial_domain::trends::parse_iso_date(as_of).ok_or_else(|| {
-        PlatformError::new("bad_date", format!("invalid asOfDate {as_of}"))
-    })?;
+    let as_of_date = financial_domain::trends::parse_iso_date(as_of)
+        .ok_or_else(|| PlatformError::new("bad_date", format!("invalid asOfDate {as_of}")))?;
     let week = financial_domain::trends::trends_period_for_capture(as_of_date);
     let period_start = week.start.format("%Y-%m-%d").to_string();
     let period_end = week.end.format("%Y-%m-%d").to_string();
@@ -276,9 +278,7 @@ pub async fn cash_management_reminders(
             open: financial_domain::cash_management::saturday_draft_open(income_ira_posted),
             activity_type: "IRA_Distribution".into(),
             suggested_account_id: income.map(|a| a.account_id),
-            suggested_account_name: income
-                .map(|a| a.name.clone())
-                .unwrap_or_default(),
+            suggested_account_name: income.map(|a| a.name.clone()).unwrap_or_default(),
             occurred_on: period_start,
         },
         tom_ssa: CashManagementTomSsa {
@@ -289,9 +289,7 @@ pub async fn cash_management_reminders(
             posted_minor,
             extra_audit,
             suggested_account_id: external.map(|a| a.account_id),
-            suggested_account_name: external
-                .map(|a| a.name.clone())
-                .unwrap_or_default(),
+            suggested_account_name: external.map(|a| a.name.clone()).unwrap_or_default(),
             recent,
         },
         scale: 2,
@@ -302,9 +300,8 @@ pub async fn cash_management_month(
     canonical: &dyn Canonical,
     as_of: &str,
 ) -> Result<CashManagementMonthBody, PlatformError> {
-    let as_of_date = financial_domain::trends::parse_iso_date(as_of).ok_or_else(|| {
-        PlatformError::new("bad_date", format!("invalid asOfDate {as_of}"))
-    })?;
+    let as_of_date = financial_domain::trends::parse_iso_date(as_of)
+        .ok_or_else(|| PlatformError::new("bad_date", format!("invalid asOfDate {as_of}")))?;
     let year = as_of_date.year();
     let month = as_of_date.month();
     let year_month = format!("{year:04}-{month:02}");

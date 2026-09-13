@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 
 use crate::contracts::{
-    ActivityRecord, LookthroughResearch, PositionCharacteristicRecord, ProductionSeedCharacteristic,
-    ProductionSeedDocument, ProductionSeedLoadBody, ProductionSeedTrendsWeek,
-    RetrievalTemplateRecord, RocResearchObservation, TrendsWeekSourceRecord,
+    ActivityRecord, LookthroughResearch, PositionCharacteristicRecord,
+    ProductionSeedCharacteristic, ProductionSeedDocument, ProductionSeedLoadBody,
+    ProductionSeedTrendsWeek, RetrievalTemplateRecord, RocResearchObservation,
+    TrendsWeekSourceRecord,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
@@ -65,6 +66,7 @@ pub async fn apply_production_seed(
     let disb_n = disbursement_count(&activities);
 
     if lots.lots.len() >= expected_lots && yield_n >= expected_yield && disb_n >= expected_disb {
+        apply_disbursement_withholding_backfill(canonical, &doc).await?;
         apply_calculator_seed(canonical, &doc).await?;
         apply_trends_seed(canonical, &doc).await?;
         return Ok(ProductionSeedLoadBody {
@@ -191,19 +193,7 @@ pub async fn apply_production_seed(
                 format!("disbursement unknown account {}", row.account_name),
             )
         })?;
-        canonical
-            .activity_post(
-                account_id,
-                None,
-                row.activity_type.clone(),
-                Some(row.amount_minor),
-                row.scale,
-                row.occurred_on.clone(),
-                None,
-                None,
-                Some(row.idempotency_key.clone()),
-            )
-            .await?;
+        apply_seed_disbursement(canonical, account_id, row).await?;
     }
 
     let accounts = canonical.account_list().await?;
@@ -228,6 +218,99 @@ pub async fn apply_production_seed(
         security_count: securities.len() as u64,
         lot_count: lots.lots.len() as u64,
     })
+}
+
+async fn apply_seed_disbursement(
+    canonical: &dyn Canonical,
+    account_id: uuid::Uuid,
+    row: &crate::contracts::ProductionSeedDisbursement,
+) -> Result<(), PlatformError> {
+    if financial_domain::cash_management::is_cash_distribution_type(&row.activity_type) {
+        match crate::cash_management::cash_distribution_post(
+            canonical,
+            account_id,
+            row.activity_type.clone(),
+            row.occurred_on.clone(),
+            Some(row.amount_minor),
+            row.federal_withholding_minor,
+            row.state_withholding_minor,
+            row.scale,
+            Some(row.idempotency_key.clone()),
+        )
+        .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err)
+                if matches!(
+                    err.code.as_str(),
+                    "roth_withholding_not_allowed" | "cash_distribution_identity"
+                ) =>
+            {
+                // Keep the parent; do not invent $0. WH stays 0.
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    let posted = canonical
+        .activity_post(
+            account_id,
+            None,
+            row.activity_type.clone(),
+            Some(row.amount_minor),
+            row.scale,
+            row.occurred_on.clone(),
+            None,
+            None,
+            Some(row.idempotency_key.clone()),
+        )
+        .await?;
+    if row.federal_withholding_minor != 0 || row.state_withholding_minor != 0 {
+        canonical
+            .activity_withholding_set(
+                posted.activity_id,
+                row.federal_withholding_minor,
+                row.state_withholding_minor,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// Keep the 129 production-disb-* parents. Fill WH when the ledger still has 0
+/// and the template has withheld amounts. Never change gross. Never invent $0 SSA.
+async fn apply_disbursement_withholding_backfill(
+    canonical: &dyn Canonical,
+    doc: &ProductionSeedDocument,
+) -> Result<(), PlatformError> {
+    let activities = canonical.activity_list().await?;
+    let mut by_key: HashMap<String, ActivityRecord> = HashMap::new();
+    for activity in activities {
+        if activity.idempotency_key.starts_with("production-disb-") {
+            by_key.insert(activity.idempotency_key.clone(), activity);
+        }
+    }
+    for row in &doc.disbursements {
+        let Some(existing) = by_key.get(&row.idempotency_key) else {
+            continue;
+        };
+        if existing.federal_withholding_minor != 0 || existing.state_withholding_minor != 0 {
+            continue;
+        }
+        if row.federal_withholding_minor == 0 && row.state_withholding_minor == 0 {
+            continue;
+        }
+        if existing.amount_minor != row.amount_minor {
+            continue;
+        }
+        canonical
+            .activity_withholding_set(
+                existing.activity_id,
+                row.federal_withholding_minor,
+                row.state_withholding_minor,
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 async fn apply_trends_seed(
@@ -304,6 +387,7 @@ async fn upsert_trends_week(
                 balance_minor,
                 week.scale,
                 captured_at.to_string(),
+                None,
             )
             .await?;
     }
@@ -450,8 +534,7 @@ fn fill_retrieval_template(
     calendar_policy: String,
     fallback_symbol: &str,
 ) -> RetrievalTemplateRecord {
-    let registered =
-        financial_domain::div1::is_registered_declaration_source(&declaration_source);
+    let registered = financial_domain::div1::is_registered_declaration_source(&declaration_source);
     RetrievalTemplateRecord {
         security_id,
         price_source: existing
@@ -477,7 +560,9 @@ fn fill_retrieval_template(
         // Mapped vendor adapters start enabled so daily DeclarationRefresh probes them.
         collector_enabled: registered,
         inception_on: existing.map(|e| e.inception_on.clone()).unwrap_or_default(),
-        roc_source_url: existing.map(|e| e.roc_source_url.clone()).unwrap_or_default(),
+        roc_source_url: existing
+            .map(|e| e.roc_source_url.clone())
+            .unwrap_or_default(),
         history_url_attempts: existing.map(|e| e.history_url_attempts).unwrap_or(0),
     }
 }
@@ -541,8 +626,8 @@ pub async fn apply_provider_declaration_sources(
         if financial_domain::calculator::is_non_paying(&ch.payment_frequency) {
             continue;
         }
-        let existing = skip_ni(canonical.retrieval_template_get(security.security_id).await)?
-            .flatten();
+        let existing =
+            skip_ni(canonical.retrieval_template_get(security.security_id).await)?.flatten();
         if let Some(row) = existing.as_ref() {
             if financial_domain::div1::is_registered_declaration_source(&row.declaration_source)
                 && !row.collector_enabled
@@ -650,9 +735,7 @@ pub async fn ensure_btc_usd_split(canonical: &dyn Canonical) -> Result<(), Platf
     }
     if let Some(usd_id) = btc_usd_id {
         for lot in &rh_btc_lots {
-            canonical
-                .lot_reassign_security(lot.lot_id, usd_id)
-                .await?;
+            canonical.lot_reassign_security(lot.lot_id, usd_id).await?;
         }
         if let Some(rh) = &robinhood {
             for activity in canonical.activity_list().await? {
@@ -683,9 +766,9 @@ pub async fn ensure_btc_usd_split(canonical: &dyn Canonical) -> Result<(), Platf
             continue;
         }
         if let Some(usd_id) = btc_usd_id {
-            let already = usd_quotes.iter().any(|u| {
-                u.as_of_at == quote.as_of_at && u.price_minor == quote.price_minor
-            });
+            let already = usd_quotes
+                .iter()
+                .any(|u| u.as_of_at == quote.as_of_at && u.price_minor == quote.price_minor);
             if !already {
                 let _ = skip_ni(
                     canonical
@@ -728,7 +811,13 @@ async fn set_public_quote_template(
                     row.calendar_policy
                 },
             ),
-            None => (String::new(), 12, String::new(), String::new(), "none".into()),
+            None => (
+                String::new(),
+                12,
+                String::new(),
+                String::new(),
+                "none".into(),
+            ),
         };
     skip_ni(
         canonical

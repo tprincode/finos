@@ -1,0 +1,135 @@
+{
+  "modules": [
+    {
+      "id": "graphing",
+      "title": "Graphing",
+      "folder": "apps/desktop/src/features/graphing/",
+      "status": "extracted",
+      "menuAreas": ["Home", "Trends"],
+      "coreFunctionIds": [
+        "home-live-by-risk",
+        "home-risk-symbol-popup",
+        "home-weekly-actuals",
+        "home-graphing-period"
+      ],
+      "host": "queries.rs"
+    },
+    {
+      "id": "shopping-cart",
+      "title": "Shopping Cart",
+      "folder": "apps/desktop/src/features/shopping-cart/",
+      "status": "extracted",
+      "menuAreas": ["Shopping Cart"],
+      "coreFunctionIds": ["shopping-cart-swap"],
+      "host": "cart.rs"
+    },
+    {
+      "id": "cash-management",
+      "title": "Cash Management",
+      "folder": "apps/desktop/src/CashManagement.tsx",
+      "status": "in-app",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": [
+        "cash-management-post",
+        "cash-management-ssa",
+        "cash-management-magi",
+        "cash-management-month",
+        "cash-management-import"
+      ],
+      "host": "cash_management.rs"
+    },
+    {
+      "id": "home",
+      "title": "Home",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Home"],
+      "coreFunctionIds": [
+        "home-declarations-coverage",
+        "home-open-tickets",
+        "home-refresh-declarations",
+        "home-dividend-plan-panel"
+      ],
+      "host": "queries.rs"
+    },
+    {
+      "id": "income-plan",
+      "title": "Income Plan",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Income Plan"],
+      "coreFunctionIds": [
+        "income-week-decl-per-share",
+        "income-decl-per-share-color",
+        "income-grid-decl-per-share"
+      ],
+      "host": "income_plan_display.rs"
+    },
+    {
+      "id": "position-details",
+      "title": "Position Details",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Positions"],
+      "coreFunctionIds": [
+        "position-hub-declarations",
+        "position-hub-last-price",
+        "position-details-owner-facts"
+      ],
+      "host": "queries.rs"
+    },
+    {
+      "id": "collectors",
+      "title": "Collectors",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Data"],
+      "coreFunctionIds": [
+        "collectors-fleet",
+        "collectors-run-enabled",
+        "collectors-stats-truth",
+        "tickets-queue"
+      ],
+      "host": "queries.rs"
+    },
+    {
+      "id": "import",
+      "title": "Import",
+      "folder": "apps/desktop/src/ImportWizard.tsx",
+      "status": "in-app",
+      "menuAreas": ["Data"],
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
+      "id": "lots",
+      "title": "Lots",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Positions"],
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
+      "id": "settings",
+      "title": "Settings",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Tools"],
+      "coreFunctionIds": [
+        "settings-core-functions",
+        "settings-retrieval-templates"
+      ],
+      "host": "queries.rs"
+    },
+    {
+      "id": "shell",
+      "title": "Shell",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["File"],
+      "coreFunctionIds": ["file-restart-graceful", "save-unsaved-orange"],
+      "host": "queries.rs"
+    }
+  ]
+}

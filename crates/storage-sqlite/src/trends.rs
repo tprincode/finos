@@ -158,16 +158,18 @@ pub async fn account_balance_snapshot_upsert(
     balance_minor: i64,
     scale: u8,
     captured_at: String,
+    cash_minor: Option<i64>,
 ) -> Result<AccountBalanceSnapshotRecord, PlatformError> {
     let snapshot_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO account_balance_snapshot (
-            snapshot_id, account_id, period_end, balance_minor, scale, captured_at
-         ) VALUES (?, ?, ?, ?, ?, ?)
+            snapshot_id, account_id, period_end, balance_minor, scale, captured_at, cash_minor
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(account_id, period_end) DO UPDATE SET
             balance_minor = excluded.balance_minor,
             scale = excluded.scale,
-            captured_at = excluded.captured_at",
+            captured_at = excluded.captured_at,
+            cash_minor = COALESCE(excluded.cash_minor, account_balance_snapshot.cash_minor)",
     )
     .bind(snapshot_id.to_string())
     .bind(account_id.to_string())
@@ -175,11 +177,12 @@ pub async fn account_balance_snapshot_upsert(
     .bind(balance_minor)
     .bind(scale as i64)
     .bind(&captured_at)
+    .bind(cash_minor)
     .execute(pool)
     .await
     .map_err(|e| map_err(e.into()))?;
     let row = sqlx::query(
-        "SELECT snapshot_id, account_id, period_end, balance_minor, scale, captured_at
+        "SELECT snapshot_id, account_id, period_end, balance_minor, cash_minor, scale, captured_at
          FROM account_balance_snapshot
          WHERE account_id = ? AND period_end = ?",
     )
@@ -197,6 +200,7 @@ pub async fn account_balance_snapshot_upsert(
             .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
         period_end: row.try_get("period_end").map_err(|e| map_err(e.into()))?,
         balance_minor: row.try_get("balance_minor").map_err(|e| map_err(e.into()))?,
+        cash_minor: row.try_get("cash_minor").ok(),
         scale: row.try_get::<i64, _>("scale").map_err(|e| map_err(e.into()))? as u8,
         captured_at: row.try_get("captured_at").map_err(|e| map_err(e.into()))?,
     })
@@ -206,7 +210,7 @@ pub async fn account_balance_snapshot_list(
     pool: &SqlitePool,
 ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> {
     let rows = sqlx::query(
-        "SELECT snapshot_id, account_id, period_end, balance_minor, scale, captured_at
+        "SELECT snapshot_id, account_id, period_end, balance_minor, cash_minor, scale, captured_at
          FROM account_balance_snapshot
          ORDER BY period_end ASC, account_id ASC",
     )
@@ -224,6 +228,7 @@ pub async fn account_balance_snapshot_list(
                 .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
             period_end: row.try_get("period_end").map_err(|e| map_err(e.into()))?,
             balance_minor: row.try_get("balance_minor").map_err(|e| map_err(e.into()))?,
+            cash_minor: row.try_get("cash_minor").ok(),
             scale: row.try_get::<i64, _>("scale").map_err(|e| map_err(e.into()))? as u8,
             captured_at: row.try_get("captured_at").map_err(|e| map_err(e.into()))?,
         });

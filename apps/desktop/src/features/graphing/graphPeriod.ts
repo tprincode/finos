@@ -1,12 +1,20 @@
-export type GraphPeriod = "3m" | "6m" | "12m" | "ytd" | "all";
+export type GraphPeriod = "1m" | "2m" | "3m" | "6m" | "12m" | "ytd" | "all";
 
 export const GRAPH_PERIOD_OPTIONS: Array<{ value: GraphPeriod; label: string }> = [
+  { value: "1m", label: "1 month" },
+  { value: "2m", label: "2 months" },
   { value: "3m", label: "3 months" },
   { value: "6m", label: "6 months" },
   { value: "12m", label: "12 months" },
   { value: "ytd", label: "YTD" },
   { value: "all", label: "All data" },
 ];
+
+/** Calendar-month windows. 2026-09-11 1m starts 2026-08-11; 2m starts 2026-07-11. */
+export const GRAPH_PERIOD_START_EXAMPLES = [
+  { asOf: "2026-09-11", period: "1m" as const, startOn: "2026-08-11" },
+  { asOf: "2026-09-11", period: "2m" as const, startOn: "2026-07-11" },
+] as const;
 
 function parseIsoDate(iso: string): Date | null {
   if (!iso || iso.length < 10) return null;
@@ -29,13 +37,20 @@ function toIsoDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+const MONTHS_BACK: Record<Exclude<GraphPeriod, "ytd" | "all">, number> = {
+  "1m": 1,
+  "2m": 2,
+  "3m": 3,
+  "6m": 6,
+  "12m": 12,
+};
+
 export function graphPeriodStartIso(asOfIso: string, period: GraphPeriod): string | null {
   if (period === "all") return null;
   const asOf = parseIsoDate(asOfIso);
   if (!asOf) return null;
   if (period === "ytd") return `${asOf.getFullYear()}-01-01`;
-  const months = period === "3m" ? 3 : period === "6m" ? 6 : 12;
-  return toIsoDate(addMonths(asOf, -months));
+  return toIsoDate(addMonths(asOf, -MONTHS_BACK[period]));
 }
 
 export function inGraphPeriod(iso: string, asOfIso: string, period: GraphPeriod): boolean {
@@ -45,4 +60,12 @@ export function inGraphPeriod(iso: string, asOfIso: string, period: GraphPeriod)
   const start = graphPeriodStartIso(asOf, period);
   if (!start) return true;
   return day >= start;
+}
+
+if (
+  GRAPH_PERIOD_START_EXAMPLES.some(
+    (row) => graphPeriodStartIso(row.asOf, row.period) !== row.startOn,
+  )
+) {
+  throw new Error("graphPeriodStartIso examples drifted");
 }

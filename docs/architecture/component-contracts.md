@@ -80,8 +80,9 @@ Does not touch tables of: Ledger (reads via queries), Capture.
 | ROI | — | `RoiGet` | — |
 | Trends | — | `TrendsGet` | — |
 | Dashboard | — | `DashboardGet` | — |
+| Account values (Home) | — | `AccountValueHomeGet` (`points`, `trendsPoints`, `incomePoints`) | — |
 
-Read models are not authoritative (ADR-0008). Does not write Ledger or Capture tables.
+Read models are not authoritative (ADR-0008). Does not write Ledger or Capture tables. `incomePoints` are closed Sat–Fri week actuals plotted on Friday; in-progress and future weeks stay unknown. The query reads Dividend / interest actuals and does not post them.
 
 ## Decision support
 
@@ -89,6 +90,9 @@ Read models are not authoritative (ADR-0008). Does not write Ledger or Capture t
 |-----------|----------|---------|--------|
 | Allocation | `AllocationTargetSet` | `AllocationGet` | `AllocationTargetChanged` |
 | Shopping Cart | `CartItemAdd`, `CartItemRemove` | `CartGet` | `CartChanged` |
+| Shopping Cart (SC-1/SC-2/SC-3) | `CartScenarioCreate`, `CartSellLineAdd`, `CartBuyLineAdd`, `CartBuyLineQtySet`, `CartScenarioSave`, `CartScenarioAgree`, `CartExecuteSell`, `CartExecuteBuyStep`, `CartScenarioDiscard`, `CartScenarioRename`, `CartScenarioDuplicate` | `CartScenarioEvaluate`, `CartScenarioGet`, `CartScenarioList` | — |
+
+`CartItemAdd` / `CartGet` are the M6 symbol+qty slice. Scenario commands are **parked** until the owner names SC-1. Evaluate and cart SQL live in `application-core` `cart.rs` plus `financial-domain` / `storage-sqlite` cart modules — not in `queries.rs` or `App.tsx`. `incomePoints` on `AccountValueHomeGet` is Reporting, not this component.
 | Backtesting | `BacktestRun` | `BacktestGet` | `BacktestCompleted` |
 | Classification Review | `ClassificationReviewRecord` | `ClassificationReviewGet` | `ClassificationReviewChanged` |
 | Tax Projection | — | `TaxProjectionGet` | — |

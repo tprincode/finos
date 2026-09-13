@@ -21,7 +21,10 @@ pub async fn export_data_snapshot(
 ) -> Result<DataSnapshotExportBody, PlatformError> {
     let folder = raw_data_dir(&platform.app_data_dir(), as_of);
     std::fs::create_dir_all(&folder).map_err(|e| {
-        PlatformError::new("snapshot_write_failed", format!("create {}: {e}", folder.display()))
+        PlatformError::new(
+            "snapshot_write_failed",
+            format!("create {}: {e}", folder.display()),
+        )
     })?;
 
     let accounts = canonical.account_list().await?;
@@ -75,12 +78,13 @@ pub async fn export_data_snapshot(
     for sec in &securities {
         let ch = chars.iter().find(|c| c.security_id == sec.security_id);
         let roc = ch.and_then(|c| c.roc_scale).unwrap_or(2);
-        let plan = plans.iter().find(|p| {
-            p.security_id == sec.security_id && p.effective_to.is_empty()
-        });
+        let plan = plans
+            .iter()
+            .find(|p| p.security_id == sec.security_id && p.effective_to.is_empty());
         position_rows.push(vec![
             sec.symbol.clone(),
-            ch.map(|c| c.underlying.clone()).unwrap_or_else(|| sec.name.clone()),
+            ch.map(|c| c.underlying.clone())
+                .unwrap_or_else(|| sec.name.clone()),
             ch.map(|c| c.payment_frequency.clone()).unwrap_or_default(),
             ch.map(|c| c.risk_tier.clone()).unwrap_or_default(),
             ch.map(|c| c.provider.clone()).unwrap_or_default(),
@@ -102,8 +106,14 @@ pub async fn export_data_snapshot(
             })
             .unwrap_or_else(|| "NO".into()),
             ch.map(|c| c.notes.clone()).unwrap_or_default(),
-            ch.map(|c| if c.is_active { "YES".into() } else { "NO".into() })
-                .unwrap_or_else(|| "YES".into()),
+            ch.map(|c| {
+                if c.is_active {
+                    "YES".into()
+                } else {
+                    "NO".into()
+                }
+            })
+            .unwrap_or_else(|| "YES".into()),
             plan.map(|p| money_str(p.amount_per_share_minor, p.amount_scale))
                 .unwrap_or_default(),
         ]);
@@ -197,12 +207,7 @@ pub async fn export_data_snapshot(
         let symbol = act.security_id.map(sym).unwrap_or_default();
         let amount = money_str(act.amount_minor, act.scale);
         if is_yield(&act.activity_type) {
-            yield_rows.push(vec![
-                account,
-                symbol,
-                amount,
-                act.occurred_on.clone(),
-            ]);
+            yield_rows.push(vec![account, symbol, amount, act.occurred_on.clone()]);
         } else {
             disb_rows.push(vec![
                 account,
@@ -339,7 +344,11 @@ pub async fn export_data_snapshot(
                 t.calendar_policy,
                 t.inception_on,
                 t.lookback_count.to_string(),
-                if t.collector_enabled { "1".into() } else { "0".into() },
+                if t.collector_enabled {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
             ]);
         }
     }
@@ -347,7 +356,13 @@ pub async fn export_data_snapshot(
     write_named(
         &folder,
         "Template_Declarations.xlsx",
-        &["symbol", "amount_per_share", "payment_period", "source", "entered_at"],
+        &[
+            "symbol",
+            "amount_per_share",
+            "payment_period",
+            "source",
+            "entered_at",
+        ],
         &decl_rows,
         &mut files,
     )?;
@@ -387,9 +402,8 @@ pub async fn export_data_snapshot(
 
     let yaml = write_plan_yaml(&securities, &plans);
     let yaml_name = "calculator-plan-seed.yaml";
-    std::fs::write(folder.join(yaml_name), yaml).map_err(|e| {
-        PlatformError::new("snapshot_write_failed", format!("{yaml_name}: {e}"))
-    })?;
+    std::fs::write(folder.join(yaml_name), yaml)
+        .map_err(|e| PlatformError::new("snapshot_write_failed", format!("{yaml_name}: {e}")))?;
     files.push(yaml_name.into());
 
     let mut manifest = format!(
@@ -399,18 +413,29 @@ pub async fn export_data_snapshot(
     for (name, n) in &counts {
         manifest.push_str(&format!("{name}: {n}\n"));
     }
-    std::fs::write(folder.join("MANIFEST.md"), manifest).map_err(|e| {
-        PlatformError::new("snapshot_write_failed", format!("MANIFEST.md: {e}"))
-    })?;
+    std::fs::write(folder.join("MANIFEST.md"), manifest)
+        .map_err(|e| PlatformError::new("snapshot_write_failed", format!("MANIFEST.md: {e}")))?;
     files.push("MANIFEST.md".into());
 
     Ok(DataSnapshotExportBody {
         as_of: as_of.to_string(),
         folder: folder.to_string_lossy().into_owned(),
         files,
-        account_count: counts.iter().find(|(n, _)| n == "accounts").map(|(_, n)| *n).unwrap_or(0),
-        lot_count: counts.iter().find(|(n, _)| n == "lots").map(|(_, n)| *n).unwrap_or(0),
-        yield_count: counts.iter().find(|(n, _)| n == "yields").map(|(_, n)| *n).unwrap_or(0),
+        account_count: counts
+            .iter()
+            .find(|(n, _)| n == "accounts")
+            .map(|(_, n)| *n)
+            .unwrap_or(0),
+        lot_count: counts
+            .iter()
+            .find(|(n, _)| n == "lots")
+            .map(|(_, n)| *n)
+            .unwrap_or(0),
+        yield_count: counts
+            .iter()
+            .find(|(n, _)| n == "yields")
+            .map(|(_, n)| *n)
+            .unwrap_or(0),
         note: "Individual workbooks under raw-data/<date>. Data sheets match seed import headers."
             .into(),
     })
@@ -498,7 +523,10 @@ fn write_plan_yaml(
         if !plan.effective_to.is_empty() {
             continue;
         }
-        let Some(sec) = securities.iter().find(|s| s.security_id == plan.security_id) else {
+        let Some(sec) = securities
+            .iter()
+            .find(|s| s.security_id == plan.security_id)
+        else {
             continue;
         };
         rows.push_str(&format!(
@@ -540,8 +568,11 @@ mod tests {
 
     #[test]
     fn data_workbook_has_data_sheet_headers() {
-        let bytes = write_data_workbook(&["name", "account_type"], &[vec!["Income".into(), "taxable".into()]])
-            .expect("xlsx");
+        let bytes = write_data_workbook(
+            &["name", "account_type"],
+            &[vec!["Income".into(), "taxable".into()]],
+        )
+        .expect("xlsx");
         assert!(bytes.len() > 32);
     }
 }

@@ -57,14 +57,33 @@ pub(crate) fn parse_leading_dollars(after: &str) -> Option<(i64, u8)> {
     let minor = combined.parse::<i64>().ok().filter(|n| *n > 0)?;
     Some((minor, scale))
 }
+fn two_digit_year(year: i32) -> i32 {
+    if year > 29 {
+        year + 1900
+    } else {
+        year + 2000
+    }
+}
+
+fn accept_issuer_date(d: NaiveDate, from_iso: bool) -> Option<String> {
+    let year = if !from_iso && d.year() < 100 {
+        two_digit_year(d.year())
+    } else {
+        d.year()
+    };
+    let d = NaiveDate::from_ymd_opt(year, d.month(), d.day())?;
+    let iso = d.format("%Y-%m-%d").to_string();
+    financial_domain::schedule::is_plausible_payment_period(&iso).then_some(iso)
+}
+
 pub(crate) fn parse_issuer_date(raw: &str) -> Option<String> {
     let s = raw.trim();
     // Never byte-slice UTF-8 (™ and similar appear in issuer page cells).
     let iso_prefix: String = s.chars().take(10).collect();
-    if iso_prefix.chars().count() == 10
-        && NaiveDate::parse_from_str(&iso_prefix, "%Y-%m-%d").is_ok()
-    {
-        return Some(iso_prefix);
+    if iso_prefix.chars().count() == 10 {
+        if let Ok(d) = NaiveDate::parse_from_str(&iso_prefix, "%Y-%m-%d") {
+            return accept_issuer_date(d, true);
+        }
     }
     for fmt in [
         "%m/%d/%Y",
@@ -77,12 +96,7 @@ pub(crate) fn parse_issuer_date(raw: &str) -> Option<String> {
         "%b-%d-%Y",
     ] {
         if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
-            // `%Y` accepts `08/14/26` as year 26; issuer two-digit years are 20xx.
-            if d.year() < 100 {
-                return NaiveDate::from_ymd_opt(d.year() + 2000, d.month(), d.day())
-                    .map(|dt| dt.format("%Y-%m-%d").to_string());
-            }
-            return Some(d.format("%Y-%m-%d").to_string());
+            return accept_issuer_date(d, false);
         }
     }
     let parts: Vec<&str> = s.split('/').collect();
@@ -91,9 +105,9 @@ pub(crate) fn parse_issuer_date(raw: &str) -> Option<String> {
         let d: u32 = parts[1].parse().ok()?;
         let mut y: i32 = parts[2].parse().ok()?;
         if y < 100 {
-            y += 2000;
+            y = two_digit_year(y);
         }
-        return NaiveDate::from_ymd_opt(y, m, d).map(|dt| dt.format("%Y-%m-%d").to_string());
+        return NaiveDate::from_ymd_opt(y, m, d).and_then(|dt| accept_issuer_date(dt, true));
     }
     None
 }
@@ -650,6 +664,10 @@ mod tests {
             Some("2026-08-14")
         );
         assert_eq!(parse_issuer_date("8/14/26").as_deref(), Some("2026-08-14"));
+        assert_eq!(parse_issuer_date("05/10/96").as_deref(), Some("1996-05-10"));
+        assert_eq!(parse_issuer_date("0000-02-10"), None);
+        assert_eq!(parse_issuer_date("0004-11-05"), None);
+        assert_eq!(parse_issuer_date("2096-05-10"), None);
     }
 
     #[test]

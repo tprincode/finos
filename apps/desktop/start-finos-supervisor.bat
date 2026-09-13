@@ -1,13 +1,28 @@
 @echo off
 rem start-finos-supervisor: watch restart.token and Start-Process the coding launch.
 setlocal EnableExtensions
-title finos supervisor
 cd /d "%~dp0..\.."
 if not exist "package.json" (
   echo Could not open the finos repo from %CD%
   pause
   exit /b 1
 )
+
+set "LOCK=%LOCALAPPDATA%\com.finos.desktop\supervisor.lock"
+if exist "%LOCK%" (
+  tasklist /FI "WINDOWTITLE eq finos supervisor*" 2>nul | find /I "cmd.exe" >nul
+  if not errorlevel 1 (
+    echo Supervisor already running.
+    exit /b 0
+  )
+  rd /S /Q "%LOCK%" >nul 2>&1
+)
+mkdir "%LOCK%" >nul 2>&1
+if errorlevel 1 (
+  echo Supervisor already running.
+  exit /b 0
+)
+title finos supervisor
 
 set "TOKEN=%LOCALAPPDATA%\com.finos.desktop\restart.token"
 set "DEVBAT=%~dp0start-finos-dev.bat"
@@ -33,7 +48,8 @@ goto sleep
 :consume
 call :wait_exe_gone
 if errorlevel 1 (
-  echo restart.token present but finos-desktop.exe still running after 60s. Keeping token.
+  echo stale restart.token: desktop is already running. Removing token.
+  del /F /Q "%TOKEN%" >nul 2>&1
   goto sleep
 )
 del /F /Q "%TOKEN%" >nul 2>&1

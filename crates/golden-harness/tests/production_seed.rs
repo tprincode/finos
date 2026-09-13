@@ -116,6 +116,10 @@ async fn production_seed_counts_reconcile() {
         "posted disbursement gross must match owner-approved total"
     );
     assert_eq!(
+        actual_totals.disbursement_net_minor, expected.totals.disbursement_net_minor,
+        "posted disbursement net must match template gross minus withheld"
+    );
+    assert_eq!(
         actual_totals.open_performance_minor, expected.totals.open_performance_minor,
         "open original cost must match the locked lots template (cents)"
     );

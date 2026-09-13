@@ -1830,6 +1830,41 @@ impl Canonical for LocalPlatform {
         Ok(record)
     }
 
+    async fn lot_qty_add(
+        &self,
+        lot_id: Uuid,
+        qty_delta_minor: i64,
+        basis_delta_minor: i64,
+    ) -> Result<LotRecord, PlatformError> {
+        if qty_delta_minor <= 0 || basis_delta_minor <= 0 {
+            return Err(PlatformError::new("invalid_qty", "cash qty add must be positive"));
+        }
+        let lot = self.lot_get(lot_id).await?;
+        let pool = self.pool.read().await;
+        sqlx::query(
+            "UPDATE lot SET remaining_quantity_minor = remaining_quantity_minor + ?,
+                quantity_minor = quantity_minor + ?,
+                remaining_performance_minor = remaining_performance_minor + ?,
+                remaining_tax_minor = remaining_tax_minor + ?,
+                performance_basis_minor = performance_basis_minor + ?,
+                tax_basis_minor = tax_basis_minor + ?
+             WHERE lot_id = ?",
+        )
+        .bind(qty_delta_minor)
+        .bind(qty_delta_minor)
+        .bind(basis_delta_minor)
+        .bind(basis_delta_minor)
+        .bind(basis_delta_minor)
+        .bind(basis_delta_minor)
+        .bind(lot_id.to_string())
+        .execute(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        audit(&pool, "LotQtyAdd", "lot", &lot.lot_id.to_string()).await?;
+        drop(pool);
+        self.lot_get(lot_id).await
+    }
+
     async fn lot_get(&self, lot_id: Uuid) -> Result<LotRecord, PlatformError> {
         let pool = self.pool.read().await;
         let row = sqlx::query(
@@ -2395,6 +2430,215 @@ impl Canonical for LocalPlatform {
         crate::cart::cart_get(&*pool).await
     }
 
+    async fn cart_scenario_create(
+        &self,
+        account_id: Uuid,
+        account_name: String,
+        as_of: String,
+        cash_yield_bps: i64,
+        name: String,
+        funding_source: String,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::scenario_create(
+            &*pool,
+            account_id,
+            account_name,
+            as_of,
+            cash_yield_bps,
+            name,
+            funding_source,
+        )
+        .await
+    }
+
+    async fn cart_scenario_get(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::scenario_get(&*pool, scenario_id).await
+    }
+
+    async fn cart_scenario_list(
+        &self,
+        account_id: Uuid,
+    ) -> Result<application_core::contracts::CartScenarioListBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::scenario_list(&*pool, account_id).await
+    }
+
+    async fn cart_scenario_rename(
+        &self,
+        scenario_id: Uuid,
+        name: String,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::scenario_rename(&*pool, scenario_id, name).await
+    }
+
+    async fn cart_scenario_duplicate(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::scenario_duplicate(&*pool, scenario_id).await
+    }
+
+    async fn cart_sell_line_add(
+        &self,
+        scenario_id: Uuid,
+        lot_id: Uuid,
+        security_id: Option<Uuid>,
+        symbol: String,
+        qty_minor: i64,
+        qty_scale: u8,
+        unit_minor: i64,
+        proceeds_minor: i64,
+        is_cash: bool,
+        original_cost_minor: Option<i64>,
+        performance_cost_minor: Option<i64>,
+        tax_cost_minor: Option<i64>,
+        performance_gain_minor: Option<i64>,
+        tax_gain_minor: Option<i64>,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::sell_line_add(
+            &*pool,
+            scenario_id,
+            lot_id,
+            security_id,
+            symbol,
+            qty_minor,
+            qty_scale,
+            unit_minor,
+            proceeds_minor,
+            is_cash,
+            original_cost_minor,
+            performance_cost_minor,
+            tax_cost_minor,
+            performance_gain_minor,
+            tax_gain_minor,
+        )
+        .await
+    }
+
+    async fn cart_buy_line_price_set(
+        &self,
+        line_id: Uuid,
+        last_minor: i64,
+        spend_minor: i64,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::buy_line_price_set(&*pool, line_id, last_minor, spend_minor).await
+    }
+
+    async fn cart_buy_line_set(
+        &self,
+        line_id: Uuid,
+        qty_whole: i64,
+        last_minor: i64,
+        spend_minor: i64,
+        plan_annual_minor: Option<i64>,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::buy_line_set(
+            &*pool,
+            line_id,
+            qty_whole,
+            last_minor,
+            spend_minor,
+            plan_annual_minor,
+        )
+        .await
+    }
+
+    async fn cart_buy_line_add(
+        &self,
+        scenario_id: Uuid,
+        security_id: Uuid,
+        symbol: String,
+        qty_whole: i64,
+        last_minor: i64,
+        spend_minor: i64,
+        plan_annual_minor: Option<i64>,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::buy_line_add(
+            &*pool,
+            scenario_id,
+            security_id,
+            symbol,
+            qty_whole,
+            last_minor,
+            spend_minor,
+            plan_annual_minor,
+        )
+        .await
+    }
+
+    async fn cart_eval_save(
+        &self,
+        scenario_id: Uuid,
+        remaining_minor: i64,
+        spend_minor: i64,
+        leftover_minor: i64,
+        buy_annual_minor: Option<i64>,
+        surrendered_annual_minor: Option<i64>,
+        leftover_annual_minor: Option<i64>,
+        net_annual_minor: Option<i64>,
+        net_monthly_minor: Option<i64>,
+        net_weekly_minor: Option<i64>,
+        insufficient_lot_qty: bool,
+        cash_floor_warn: bool,
+        _status: String,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::eval_save(
+            &*pool,
+            scenario_id,
+            remaining_minor,
+            spend_minor,
+            leftover_minor,
+            buy_annual_minor,
+            surrendered_annual_minor,
+            leftover_annual_minor,
+            net_annual_minor,
+            net_monthly_minor,
+            net_weekly_minor,
+            insufficient_lot_qty,
+            cash_floor_warn,
+        )
+        .await
+    }
+
+    async fn cart_scenario_agree(
+        &self,
+        scenario_id: Uuid,
+        override_reason: Option<String>,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::scenario_agree(&*pool, scenario_id, override_reason).await
+    }
+
+    async fn cart_execute_step_add(
+        &self,
+        scenario_id: Uuid,
+        kind: String,
+        activity_id: Option<Uuid>,
+        assignment_id: Option<Uuid>,
+        lot_id: Option<Uuid>,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::execute_step_add(&*pool, scenario_id, kind, activity_id, assignment_id, lot_id)
+            .await
+    }
+
+    async fn cart_scenario_discard(&self, scenario_id: Uuid) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::scenario_discard(&*pool, scenario_id).await
+    }
+
     async fn backtest_run(
         &self,
         scenario: String,
@@ -2630,6 +2874,7 @@ impl Canonical for LocalPlatform {
         balance_minor: i64,
         scale: u8,
         captured_at: String,
+        cash_minor: Option<i64>,
     ) -> Result<AccountBalanceSnapshotRecord, PlatformError> {
         let pool = self.pool.read().await;
         crate::trends::account_balance_snapshot_upsert(
@@ -2639,6 +2884,7 @@ impl Canonical for LocalPlatform {
             balance_minor,
             scale,
             captured_at,
+            cash_minor,
         )
         .await
     }

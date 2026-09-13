@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 const POSITION_RESEARCH_PROGRESS_EVENT: &str = "position-research-progress";
 const DECLARATION_REFRESH_PROGRESS_EVENT: &str = "declaration-refresh-progress";
+const LAST_PRICE_REFRESH_PROGRESS_EVENT: &str = "last-price-refresh-progress";
 const POSITION_RESEARCH_TOTAL_STEPS: u32 = 4;
 
 #[derive(Clone, serde::Serialize)]
@@ -36,6 +37,17 @@ struct DeclarationRefreshProgressPayload {
 fn emit_declaration_refresh_progress(app: &AppHandle, current: u32, total: u32, symbol: &str) {
     let _ = app.emit(
         DECLARATION_REFRESH_PROGRESS_EVENT,
+        DeclarationRefreshProgressPayload {
+            current,
+            total,
+            symbol: symbol.to_string(),
+        },
+    );
+}
+
+fn emit_last_price_refresh_progress(app: &AppHandle, current: u32, total: u32, symbol: &str) {
+    let _ = app.emit(
+        LAST_PRICE_REFRESH_PROGRESS_EVENT,
         DeclarationRefreshProgressPayload {
             current,
             total,
@@ -101,6 +113,29 @@ async fn finance_command(
         if name == "CollectorRetrieve" {
             fill_collector_retrieve(platform.inner().as_ref(), &mut body).await;
             request.body_json = Some(body.to_string());
+        } else if name == "MarketRetrieve"
+            && body
+                .get("autoPrice")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            && !body.get("force").and_then(|v| v.as_bool()).unwrap_or(false)
+        {
+            let security_id = body.get("securityId").and_then(|v| v.as_str());
+            let last =
+                latest_ok_price_requested_at(platform.inner().as_ref(), security_id).await;
+            if let Some(skip) = last_price_auto_skip(last.as_deref()) {
+                body["quote"] = serde_json::Value::Null;
+                body["skipReason"] = serde_json::Value::String(skip.reason().to_string());
+                request.body_json = Some(body.to_string());
+            } else {
+                let filled = tauri::async_runtime::spawn_blocking(move || {
+                    import_engine::enrich_retrieve_body(&name, &mut body);
+                    body
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                request.body_json = Some(filled.to_string());
+            }
         } else {
             let filled = tauri::async_runtime::spawn_blocking(move || {
                 import_engine::enrich_retrieve_body(&name, &mut body);
@@ -112,7 +147,7 @@ async fn finance_command(
         }
     }
     if request.command_name == "LastPriceRefresh" {
-        fill_last_price_refresh(platform.inner().as_ref(), &mut request).await;
+        fill_last_price_refresh(&app, platform.inner().as_ref(), &mut request).await;
     }
     if request.command_name == "DeclarationRefresh" {
         fill_declaration_refresh(&app, platform.inner().as_ref(), &mut request).await;
@@ -463,6 +498,7 @@ async fn run_position_research_refresh(
             symbol: symbol.clone(),
             price_source: "public".into(),
             source_symbol: symbol.clone(),
+            ..Default::default()
         }];
         let quotes = tauri::async_runtime::spawn_blocking(move || {
             import_engine::collect_last_price_quotes_for(targets)
@@ -585,7 +621,14 @@ async fn fill_research_refresh_from_template(
     }
 }
 
-async fn last_price_is_current(platform: &LocalPlatform, security_id: &str, today: &str) -> bool {
+struct StoredLastPrice {
+    current_today: bool,
+    as_of: String,
+    price_minor: i64,
+    scale: u8,
+}
+
+async fn stored_last_price(platform: &LocalPlatform, security_id: &str, today: &str) -> StoredLastPrice {
     let current = execute_query_on(
         platform,
         platform,
@@ -595,23 +638,81 @@ async fn last_price_is_current(platform: &LocalPlatform, security_id: &str, toda
         ),
     )
     .await;
+    let empty = StoredLastPrice {
+        current_today: false,
+        as_of: String::new(),
+        price_minor: 0,
+        scale: 2,
+    };
     if !current.ok {
-        return false;
+        return empty;
     }
-    serde_json::from_str::<serde_json::Value>(current.body_json.as_deref().unwrap_or("{}"))
-        .ok()
-        .and_then(|price| {
-            price
-                .get("freshness")
-                .and_then(|f| f.as_str())
-                .map(|f| f == "current")
-        })
-        .unwrap_or(false)
+    let price = serde_json::from_str::<serde_json::Value>(current.body_json.as_deref().unwrap_or("{}"))
+        .unwrap_or_default();
+    let price_minor = price.get("priceMinor").and_then(|p| p.as_i64()).unwrap_or(0);
+    let as_of = price
+        .get("asOfAt")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let scale = price.get("scale").and_then(|s| s.as_u64()).unwrap_or(2) as u8;
+    let current_today = price
+        .get("freshness")
+        .and_then(|f| f.as_str())
+        .map(|f| f == "current")
+        .unwrap_or(false);
+    StoredLastPrice {
+        current_today,
+        as_of,
+        price_minor,
+        scale,
+    }
+}
+
+async fn latest_ok_price_requested_at(
+    platform: &LocalPlatform,
+    security_id: Option<&str>,
+) -> Option<String> {
+    let mut body = serde_json::json!({ "limit": 200 });
+    if let Some(id) = security_id {
+        body["securityId"] = serde_json::Value::String(id.to_string());
+    }
+    let result = execute_query_on(platform, platform, qry("RetrieveRunList", body)).await;
+    if !result.ok {
+        return None;
+    }
+    let val: serde_json::Value =
+        serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).ok()?;
+    for run in val.get("runs")?.as_array()? {
+        let kind = run.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let ok = run.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if kind == "price" && ok {
+            return run
+                .get("requestedAt")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+fn last_price_auto_skip(
+    last_ok_stamp: Option<&str>,
+) -> Option<application_core::last_price_window::LastPriceAutoSkip> {
+    use application_core::last_price_window::{
+        auto_last_price_allowed, now_eastern, parse_run_stamp_et,
+    };
+    auto_last_price_allowed(now_eastern(), last_ok_stamp.and_then(parse_run_stamp_et)).err()
 }
 
 /// Fill LastPriceRefresh quotes from the open-lot set. Injected quotes win (tests).
 /// Misses stay unknown — never write $0. Today's current quote is not fetched again.
-async fn fill_last_price_refresh(platform: &LocalPlatform, request: &mut CommandRequest) {
+/// Auto last-price runs weekday 9-4 Eastern only; last refresh under 4 hours is skipped unless force.
+async fn fill_last_price_refresh(
+    app: &AppHandle,
+    platform: &LocalPlatform,
+    request: &mut CommandRequest,
+) {
     let mut body: serde_json::Value = request
         .body_json
         .as_deref()
@@ -623,6 +724,17 @@ async fn fill_last_price_refresh(platform: &LocalPlatform, request: &mut Command
         .is_some()
     {
         return;
+    }
+    let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !force {
+        let last = latest_ok_price_requested_at(platform, None).await;
+        if let Some(skip) = last_price_auto_skip(last.as_deref()) {
+            body["quotes"] = serde_json::json!([]);
+            body["misses"] = serde_json::json!([]);
+            body["skipReason"] = serde_json::Value::String(skip.reason().to_string());
+            request.body_json = Some(body.to_string());
+            return;
+        }
     }
     let _ = application_core::production_seed::ensure_btc_usd_split(platform).await;
     let set = execute_query_on(platform, platform, qry("PriceRetrievalSetGet", serde_json::json!({}))).await;
@@ -659,7 +771,8 @@ async fn fill_last_price_refresh(platform: &LocalPlatform, request: &mut Command
             let Some(id) = item.get("securityId").and_then(|v| v.as_str()) else {
                 continue;
             };
-            if last_price_is_current(platform, id, &today).await {
+            let stored = stored_last_price(platform, id, &today).await;
+            if stored.current_today {
                 continue;
             }
             let symbol = item
@@ -681,19 +794,30 @@ async fn fill_last_price_refresh(platform: &LocalPlatform, request: &mut Command
             {
                 continue;
             }
+            let price_source = item
+                .get("priceSource")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // ENERGYX / Form 1-A: price changes 1–2×/year. Keep the stored
+            // offering quote; do not stall last-price on EDGAR or invest.energyx.com.
+            if import_engine::uses_offering_price(&price_source, &symbol)
+                && import_engine::offering_keep_stored(stored.price_minor, &stored.as_of)
+            {
+                continue;
+            }
             targets.push(import_engine::LastPriceTarget {
                 security_id: id.to_string(),
                 symbol,
-                price_source: item
-                    .get("priceSource")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                price_source,
                 source_symbol: item
                     .get("sourceSymbol")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
+                known_as_of: stored.as_of,
+                known_price_minor: stored.price_minor,
+                known_scale: stored.scale,
             });
         }
     } else {
@@ -706,7 +830,8 @@ async fn fill_last_price_refresh(platform: &LocalPlatform, request: &mut Command
             let Some(id) = id_val.as_str() else {
                 continue;
             };
-            if last_price_is_current(platform, id, &today).await {
+            let stored = stored_last_price(platform, id, &today).await;
+            if stored.current_today {
                 continue;
             }
             if let Some(symbol) = symbol_by_id.get(id) {
@@ -716,18 +841,34 @@ async fn fill_last_price_refresh(platform: &LocalPlatform, request: &mut Command
                 ) {
                     continue;
                 }
+                if import_engine::uses_offering_price("", symbol)
+                    && import_engine::offering_keep_stored(stored.price_minor, &stored.as_of)
+                {
+                    continue;
+                }
                 targets.push(import_engine::LastPriceTarget {
                     security_id: id.to_string(),
                     symbol: symbol.clone(),
                     price_source: String::new(),
                     source_symbol: String::new(),
+                    known_as_of: stored.as_of,
+                    known_price_minor: stored.price_minor,
+                    known_scale: stored.scale,
                 });
             }
         }
     }
-    let quotes = tauri::async_runtime::spawn_blocking({
-        let targets = targets.clone();
-        move || import_engine::collect_last_price_quotes_for(targets)
+    let total = targets.len() as u32;
+    emit_last_price_refresh_progress(app, 0, total, "");
+    let fetch_targets = targets.clone();
+    let app_progress = app.clone();
+    let quotes = tauri::async_runtime::spawn_blocking(move || {
+        import_engine::collect_last_price_quotes_for_with_progress(
+            fetch_targets,
+            |current, tot, symbol| {
+                emit_last_price_refresh_progress(&app_progress, current, tot, symbol);
+            },
+        )
     })
     .await
     .unwrap_or_default();
@@ -1423,10 +1564,54 @@ async fn app_restart(
     }
     if cfg!(debug_assertions) {
         write_restart_token()?;
+        ensure_coding_supervisor()?;
         app.exit(0);
         return Ok(());
     }
     app.restart();
+}
+
+fn supervisor_lock_dir() -> PathBuf {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    local.join("com.finos.desktop").join("supervisor.lock")
+}
+
+fn coding_supervisor_running() -> bool {
+    let Ok(out) = std::process::Command::new("tasklist")
+        .args(["/FI", "WINDOWTITLE eq finos supervisor*", "/NH"])
+        .output()
+    else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+    text.contains("cmd.exe") || text.contains("powershell")
+}
+
+/// Coding File → Restart must not depend on a leftover supervisor window.
+fn ensure_coding_supervisor() -> Result<(), String> {
+    if coding_supervisor_running() {
+        return Ok(());
+    }
+    let lock = supervisor_lock_dir();
+    if lock.is_dir() && !coding_supervisor_running() {
+        let _ = std::fs::remove_dir_all(&lock);
+    }
+    let bat = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("start-finos-supervisor.bat");
+    if !bat.is_file() {
+        return Err(format!("start-finos-supervisor.bat missing: {}", bat.display()));
+    }
+    let path = bat.display().to_string().replace('\'', "''");
+    std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("Start-Process -FilePath '{path}' -WindowStyle Normal"),
+        ])
+        .spawn()
+        .map_err(|e| format!("start supervisor: {e}"))?;
+    Ok(())
 }
 
 fn looks_like_sync_folder(path: &std::path::Path) -> bool {
@@ -1471,11 +1656,14 @@ pub fn run() {
             let income_menu = SubmenuBuilder::new(app, "Income Plan")
                 .text("income-plan", "Income Plan")
                 .build()?;
+            let trends_menu = SubmenuBuilder::new(app, "Trends")
+                .text("trends", "Trends")
+                .build()?;
             let plan_menu = SubmenuBuilder::new(app, "Plan")
                 .text("calculator", "Calculator")
                 .text("dashboard", "Dashboard")
-                .text("trends", "Trends")
                 .text("cash-management", "Cash Management")
+                .text("shopping-cart", "Shopping Cart")
                 .build()?;
             let positions_menu = SubmenuBuilder::new(app, "Positions")
                 .text("position-details", "Position Details")
@@ -1490,11 +1678,13 @@ pub fn run() {
                 .build()?;
             let tools_menu = SubmenuBuilder::new(app, "Tools")
                 .text("collector-establish", "Reevaluate collector")
+                .text("components", "Components")
                 .text("settings", "Settings")
                 .build()?;
             let menu = MenuBuilder::new(app)
                 .item(&file_menu)
                 .item(&income_menu)
+                .item(&trends_menu)
                 .item(&plan_menu)
                 .item(&positions_menu)
                 .item(&data_menu)
@@ -1525,6 +1715,7 @@ pub fn run() {
                     | "dashboard"
                     | "trends"
                     | "cash-management"
+                    | "shopping-cart"
                     | "position-details"
                     | "holdings"
                     | "new-investment"
@@ -1533,6 +1724,7 @@ pub fn run() {
                     | "collectors"
                     | "tickets"
                     | "collector-establish"
+                    | "components"
                     | "settings"
             ) {
                 let _ = app.emit("finos-navigate", id);

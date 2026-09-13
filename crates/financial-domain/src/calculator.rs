@@ -145,6 +145,23 @@ pub fn plan_payment_cents(
     rounded as i64
 }
 
+/// Annual plan cents for whole shares. HAKY 3800 at scale 4 is $0.38/sh/mo → $4.56/sh/yr.
+pub fn plan_annual_cents(
+    plan_per_share_minor: i64,
+    plan_scale: u8,
+    periods: i64,
+    qty_whole: i64,
+) -> Option<i64> {
+    if plan_per_share_minor <= 0 || periods <= 0 || qty_whole <= 0 {
+        return None;
+    }
+    let per_period = plan_payment_cents(qty_whole, 0, plan_per_share_minor, plan_scale);
+    if per_period <= 0 {
+        return None;
+    }
+    Some(per_period * periods)
+}
+
 fn parse_day(raw: &str) -> Option<NaiveDate> {
     let day = if raw.len() >= 10 { &raw[..10] } else { raw };
     NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()
@@ -219,6 +236,8 @@ mod tests {
     fn crf_plan_payment_matches_qty_times_plan() {
         // 1045.2 * 0.1168 = 122.07936 → $122.08
         assert_eq!(plan_payment_cents(10_452, 1, 1_168, 4), 12_208);
+        // 2 HAKY × $0.38/mo × 12 = $9.12 — not 3800 × 12 × 2 cents
+        assert_eq!(plan_annual_cents(3_800, 4, 12, 2), Some(912));
     }
 
     #[test]

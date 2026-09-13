@@ -49,11 +49,35 @@ fn paid_sorted<'a>(rows: &[PaidDeclarationView<'a>]) -> Vec<(String, i64, u8)> {
         .iter()
         .filter_map(|r| {
             let amt = r.amount_per_share_minor.filter(|a| *a > 0)?;
-            Some((period_key(r.payment_period), amt, r.amount_scale))
+            let period = period_key(r.payment_period);
+            if !crate::schedule::is_plausible_payment_period(&period) {
+                return None;
+            }
+            Some((period, amt, r.amount_scale))
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+fn format_per_share(minor: i64, scale: u8) -> String {
+    let scale = scale.min(6);
+    let factor = 10i64.pow(u32::from(scale));
+    let whole = minor / factor;
+    let frac = (minor % factor).unsigned_abs();
+    if scale == 0 {
+        format!("${whole}")
+    } else {
+        format!("${whole}.{frac:0width$}", width = scale as usize)
+    }
+}
+
+fn amount_confirm_message(period: &str, new_minor: i64, new_scale: u8, prior_period: &str, prior_minor: i64, prior_scale: u8, pct: i64) -> String {
+    format!(
+        "Paid {}/unit on {period} is more than {pct}% away from the prior paid {}/unit on {prior_period}. Except keeps the new issuer amount. Reject leaves the stored amount.",
+        format_per_share(new_minor, new_scale),
+        format_per_share(prior_minor, prior_scale),
+    )
 }
 
 /// Short increment pages keep stored pays. Dates in SQLite and absent from this
@@ -77,7 +101,7 @@ pub fn overlap_amount_change_issues(
             continue;
         };
         let period = period_key(row.payment_period);
-        if period.is_empty() {
+        if period.is_empty() || !crate::schedule::is_plausible_payment_period(&period) {
             continue;
         }
         let Some(stored_row) = stored.iter().find(|s| {
@@ -98,8 +122,9 @@ pub fn overlap_amount_change_issues(
             issues.push(PostCheckIssue {
                 code: "declaration_amount_variation",
                 message: format!(
-                    "amount mismatch for {period}: stored {stored_amt} scale {}, page {page_amt} scale {}",
-                    stored_row.amount_scale, row.amount_scale
+                    "Issuer page {}/unit on {period} does not match stored {}/unit. Except keeps the new issuer amount. Reject leaves the stored amount.",
+                    format_per_share(page_amt, row.amount_scale),
+                    format_per_share(stored_amt, stored_row.amount_scale),
                 ),
             });
         }
@@ -152,7 +177,7 @@ pub fn new_amount_variation_issues(
             continue;
         };
         let period = period_key(row.payment_period);
-        if period.is_empty() {
+        if period.is_empty() || !crate::schedule::is_plausible_payment_period(&period) {
             continue;
         }
         let Some(prev) = series.iter().rev().find(|(p, _, _)| p.as_str() < period.as_str()) else {
@@ -167,9 +192,14 @@ pub fn new_amount_variation_issues(
         {
             issues.push(PostCheckIssue {
                 code: "declaration_amount_variation",
-                message: format!(
-                    "paid {period} {new_amt} varies more than {pct}% from prior {} {}",
-                    prev.0, prev.1
+                message: amount_confirm_message(
+                    &period,
+                    new_amt,
+                    row.amount_scale,
+                    &prev.0,
+                    prev.1,
+                    prev.2,
+                    pct,
                 ),
             });
         }
@@ -310,5 +340,26 @@ mod tests {
             },
         ];
         assert!(new_amount_variation_issues(&ok_new, &stored_ok, AMOUNT_VARIATION_PCT).is_empty());
+    }
+
+    #[test]
+    fn implausible_pay_dates_are_not_amount_tickets() {
+        let stored = [
+            PaidDeclarationView {
+                payment_period: "0000-02-04",
+                amount_per_share_minor: Some(475),
+                amount_scale: 2,
+            },
+            PaidDeclarationView {
+                payment_period: "0000-02-10",
+                amount_per_share_minor: Some(50),
+                amount_scale: 2,
+            },
+        ];
+        let newly = [stored[1]];
+        assert!(
+            new_amount_variation_issues(&newly, &stored, AMOUNT_VARIATION_PCT).is_empty(),
+            "year 0000 is a parse miss, not Except/Reject"
+        );
     }
 }

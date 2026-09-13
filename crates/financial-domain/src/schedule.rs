@@ -109,6 +109,42 @@ fn parse_iso_day(raw: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()
 }
 
+/// Listed-pay history is 1990 through next calendar year. Year 0000 / 0004 / 2096
+/// is a parse miss, not an owner Except/Reject.
+pub fn is_plausible_payment_period(period: &str) -> bool {
+    is_plausible_payment_period_as_of(period, "")
+}
+
+pub fn is_plausible_payment_period_as_of(period: &str, as_of: &str) -> bool {
+    let Some(d) = parse_iso_day(period) else {
+        return false;
+    };
+    if d.year() < 1990 {
+        return false;
+    }
+    let max_year = parse_iso_day(as_of)
+        .map(|a| a.year() + 1)
+        .unwrap_or(2035);
+    d.year() <= max_year
+}
+
+/// Ticket reason cites a YYYY-MM-DD that is not a real pay date.
+pub fn reason_cites_implausible_payment_period(reason: &str) -> bool {
+    let bytes = reason.as_bytes();
+    let mut i = 0;
+    while i + 10 <= bytes.len() {
+        if bytes[i + 4] == b'-' && bytes[i + 7] == b'-' {
+            if let Ok(slice) = std::str::from_utf8(&bytes[i..i + 10]) {
+                if parse_iso_day(slice).is_some() && !is_plausible_payment_period(slice) {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// A pay/declaration date has occurred only when it is strictly before `as_of`.
 /// Future placeholders with a copied amount are not paid history.
 pub fn period_has_occurred(period: &str, as_of: &str) -> bool {
@@ -1412,6 +1448,20 @@ mod tests {
         assert!(plan.conflicts.is_empty());
         assert!(plan.keep.contains(&"2026-09-04".to_string()));
         assert!(plan.keep.contains(&"2026-09-11".to_string()));
+    }
+
+    #[test]
+    fn implausible_years_are_not_pay_dates() {
+        assert!(!is_plausible_payment_period("0000-02-10"));
+        assert!(!is_plausible_payment_period("0004-11-05"));
+        assert!(!is_plausible_payment_period("2096-05-10"));
+        assert!(is_plausible_payment_period("2026-02-13"));
+        assert!(reason_cites_implausible_payment_period(
+            "paid 0000-02-10 50 varies more than 30% from prior 0000-02-04 475"
+        ));
+        assert!(!reason_cites_implausible_payment_period(
+            "paid 2026-08-31 $14.00 vs prior 2026-07-31 $10.00"
+        ));
     }
 
     #[test]

@@ -103,6 +103,7 @@ export type HandoffStatus = {
 };
 
 export type CoreFunctionsGet = {
+  notes?: string[];
   items: Array<{
     id: string;
     menuArea: string;
@@ -111,6 +112,15 @@ export type CoreFunctionsGet = {
     lastVerified: string;
     alsoVerify?: string[];
     sentinels: Array<{ path: string; mustContain: string }>;
+  }>;
+  modules?: Array<{
+    id: string;
+    title: string;
+    folder: string;
+    status: string;
+    menuAreas: string[];
+    coreFunctionIds?: string[];
+    host?: string;
   }>;
 };
 
@@ -344,6 +354,8 @@ export type DividendPerformanceRange =
   | "1m"
   | "2m"
   | "3m"
+  | "6m"
+  | "12m"
   | "ytd"
   | "all";
 
@@ -420,6 +432,10 @@ export type DataSummaryGet = {
   marketValueComplete: boolean;
   /** Lifetime paid dividends (all yield actuals). */
   incomeEarnedMinor: number;
+  /** Plan annual ÷ 12 for Account 9, Income, FI Roth, and Car. */
+  avgMonthlyPlanIncomeMinor?: number | null;
+  /** Actual paid dividends in those accounts over the previous 12 complete months ÷ 12. */
+  avgMonthlyActualIncomeMinor?: number | null;
   scale: number;
 };
 
@@ -530,6 +546,8 @@ export type TrendsWeekPoint = {
   healthBalanceMinor: number | null;
   rothBalanceMinor: number | null;
   speculationBalanceMinor: number | null;
+  fidelityWkChangeMinor?: number;
+  schwabWkChangeMinor?: number;
   closed?: boolean;
   scale: number;
 };
@@ -630,12 +648,18 @@ export type TrendsGet = {
   };
   distributions?: {
     grossMinor: number;
+    federalWithholdingMinor?: number;
+    stateWithholdingMinor?: number;
+    netMinor?: number;
     lines: Array<{
       activityType: string;
       accountName: string;
       amountMinor: number;
       occurredOn: string;
       scale: number;
+      federalWithholdingMinor?: number;
+      stateWithholdingMinor?: number;
+      netMinor?: number;
     }>;
     scale: number;
   };
@@ -692,6 +716,11 @@ export type AccountValuePoint = {
   marketValueComplete: boolean;
 };
 
+export type AccountIncomePoint = {
+  asOf: string;
+  incomeMinor: number | null;
+};
+
 export type AccountValueSeries = {
   accountId: string;
   accountName: string;
@@ -700,6 +729,7 @@ export type AccountValueSeries = {
   currentComplete: boolean;
   points: AccountValuePoint[];
   trendsPoints?: AccountValuePoint[];
+  incomePoints?: AccountIncomePoint[];
   scale: number;
 };
 
@@ -742,6 +772,23 @@ export type AccountValueHomeGet = {
   schwab?: AccountValueSeries;
   risk?: RiskValueHome;
   note: string;
+  scale: number;
+};
+
+export type DividendPlanRow = {
+  accountName: string;
+  annualDividendMinor: number | null;
+  marketValueMinor: number | null;
+  monthlyIncomeMinor: number | null;
+  monthlyReinvestMinor: number | null;
+  monthlyMedicalMinor: number | null;
+  weeklyMinor: number | null;
+  effectiveAnnualBps: number | null;
+};
+
+export type DividendPlanHomeGet = {
+  rows: DividendPlanRow[];
+  total: DividendPlanRow;
   scale: number;
 };
 
@@ -938,6 +985,93 @@ export type CartGet = {
     symbol: string;
     quantityMinor: number;
     quantityScale: number;
+  }>;
+};
+
+export type CartSellLine = {
+  lineId: string;
+  lotId: string;
+  securityId: string | null;
+  symbol: string;
+  qtyMinor: number;
+  qtyScale: number;
+  unitMinor: number;
+  proceedsMinor: number;
+  isCash: boolean;
+  originalCostMinor: number | null;
+  performanceCostMinor?: number | null;
+  taxCostMinor?: number | null;
+  performanceGainMinor?: number | null;
+  taxGainMinor?: number | null;
+};
+
+export type CartBuyLine = {
+  lineId: string;
+  securityId: string;
+  symbol: string;
+  qtyWhole: number;
+  lastMinor: number;
+  spendMinor: number;
+  planAnnualMinor: number | null;
+};
+
+export type CartEval = {
+  remainingMinor: number;
+  spendMinor: number;
+  leftoverMinor: number;
+  buyAnnualMinor: number | null;
+  surrenderedAnnualMinor: number | null;
+  leftoverAnnualMinor: number | null;
+  netAnnualMinor: number | null;
+  netMonthlyMinor: number | null;
+  netWeeklyMinor: number | null;
+  insufficientLotQty: boolean;
+  cashFloorWarn: boolean;
+  status: string;
+};
+
+export type CartScenario = {
+  scenarioId: string;
+  accountId: string;
+  accountName: string;
+  name?: string;
+  kind: string;
+  status: string;
+  asOf: string;
+  cashYieldBps: number;
+  fundingSource?: string;
+  overrideReason: string | null;
+  sellLines: CartSellLine[];
+  buyLines: CartBuyLine[];
+  eval: CartEval | null;
+};
+
+export type CartScenarioList = {
+  items: CartScenario[];
+};
+
+export type CashPileGet = {
+  found: boolean;
+  accountId: string;
+  accountName: string;
+  lotId?: string | null;
+  securityId?: string | null;
+  symbol: string;
+  remainingQtyMinor: number;
+  quantityScale: number;
+  dollarsMinor: number;
+};
+
+export type CashLedgerGet = {
+  accountId: string;
+  symbol: string;
+  dollarsMinor: number;
+  entries: Array<{
+    activityId: string;
+    activityType: string;
+    amountMinor: number;
+    scale: number;
+    occurredOn: string;
   }>;
 };
 
@@ -1357,4 +1491,9 @@ export type UpdaterCheckGet = {
   applied: boolean;
   posted: boolean;
   status: string;
+};
+
+export type LastPriceAutoWindowGet = {
+  allowed: boolean;
+  skipReason?: string;
 };

@@ -3994,6 +3994,49 @@ async fn pay1_stale_expected_4_remaining_year_closes_without_december() {
     assert!(pays.iter().any(|p| p.pay_on == "2026-11-13"), "{pays:?}");
 }
 
+#[tokio::test]
+async fn implausible_amount_variation_ticket_auto_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "EPD", "enterprise").await;
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    platform
+        .work_ticket_raise(WorkTicketRecord {
+            ticket_id: Uuid::new_v4(),
+            security_id: sid,
+            symbol: "EPD".into(),
+            field: "last_run".into(),
+            code: "declaration_amount_variation".into(),
+            tool: "amount_confirm".into(),
+            reason: "paid 0000-02-10 50 varies more than 30% from prior 0000-02-04 475".into(),
+            urls_tried: r#"["https://ir.enterpriseproducts.com/distribution-drip"]"#.into(),
+            opened_on: "2026-09-08".into(),
+            last_seen_on: "2026-09-08".into(),
+            status: "open".into(),
+            filed_on: String::new(),
+            completed_how: String::new(),
+            owner_note: String::new(),
+            retrieve_run_id: String::new(),
+        })
+        .await
+        .expect("raise junk EPD variation");
+    must_ok(&platform, "WorkTicketSyncMisses", serde_json::json!({})).await;
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id }),
+    )
+    .await;
+    let row = tickets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["code"] == "declaration_amount_variation")
+        .expect("variation ticket");
+    assert_eq!(row["status"], "done", "{tickets}");
+    assert_eq!(row["completedHow"], "auto_resolved", "{tickets}");
+}
+
 const MLP1_AUG_8K: &str =
     include_str!("../../import-engine/tests/fixtures/energytransfer_et_8k.html");
 const MLP1_NOV_8K: &str = include_str!("../../import-engine/tests/fixtures/mlp1_8k_nov21.html");

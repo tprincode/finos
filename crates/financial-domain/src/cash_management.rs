@@ -13,7 +13,7 @@ pub const SSA_VARIANCE_CODE: &str = "ssa_amount_variance";
 pub fn is_cash_distribution_type(activity_type: &str) -> bool {
     matches!(
         activity_type,
-        "IRA_Distribution" | "Roth_Distribution" | "SSA"
+        "IRA_Distribution" | "Roth_Distribution" | "SSA" | "Withdrawal"
     )
 }
 
@@ -170,6 +170,14 @@ mod tests {
         assert_eq!(
             validate_cash_distribution("Roth_Distribution", Some(10_000), 0, 0).unwrap(),
             10_000
+        );
+    }
+
+    #[test]
+    fn withdrawal_posts_like_ira() {
+        assert_eq!(
+            validate_cash_distribution("Withdrawal", Some(10_000), 1_000, 500).unwrap(),
+            8_500
         );
     }
 

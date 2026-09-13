@@ -1,6 +1,10 @@
 //! Home account-value series: holdings market value and custodian rollups.
 //! Market value is open quantity × last price. Missing price stays unknown — never $0.
 
+use chrono::NaiveDate;
+
+use crate::week::{parse_iso_day, week_containing};
+
 pub const FIDELITY_TOTAL_ID: &str = "fidelity-total";
 pub const FIDELITY_TOTAL_NAME: &str = "Fidelity Total";
 pub const SCHWAB_TOTAL_ID: &str = "schwab-total";
@@ -107,6 +111,11 @@ pub fn is_schwab_holdings_account(name: &str) -> bool {
     account_custodian(name) == "Schwab"
 }
 
+/// Speculation has no weekly-actuals line on Home account charts.
+pub fn shows_weekly_actuals(name: &str) -> bool {
+    crate::income_plan::map_income_plan_account(name) != Some("Speculation")
+}
+
 /// Sum holdings MV for one custodian. Unknown stays unknown.
 pub fn custodian_total_from_accounts(
     rows: &[(String, Option<i64>)],
@@ -142,6 +151,14 @@ pub fn fidelity_total_from_accounts(rows: &[(String, Option<i64>)]) -> (Option<i
 
 pub fn schwab_total_from_accounts(rows: &[(String, Option<i64>)]) -> (Option<i64>, bool) {
     custodian_total_from_accounts(rows, "Schwab")
+}
+
+/// Friday ending the Sat–Fri week that owns `occurred_on`, only when that week is closed.
+/// In-progress and future weeks stay unknown — never invented $0.
+pub fn closed_week_friday(occurred_on: &str, as_of: NaiveDate) -> Option<NaiveDate> {
+    let day = parse_iso_day(occurred_on)?;
+    let week = week_containing(day);
+    (week.end < as_of).then_some(week.end)
 }
 
 /// Stored Trends week $ for a Home chart. Missing account/week stays unknown.
@@ -184,6 +201,10 @@ mod tests {
         assert_eq!(account_custodian("9"), "Schwab");
         assert_eq!(account_custodian("Account 9"), "Schwab");
         assert_eq!(account_custodian("Speculation"), "Fidelity");
+        assert!(!shows_weekly_actuals("Speculation"));
+        assert!(shows_weekly_actuals("9"));
+        assert!(shows_weekly_actuals("Account 9"));
+        assert!(shows_weekly_actuals("Income"));
         assert_eq!(account_custodian("ENERGYX"), "Direct");
         assert_eq!(account_custodian("EnergyX"), "Direct");
         assert_eq!(account_custodian("Energy"), "Direct");
@@ -250,5 +271,24 @@ mod tests {
         assert_eq!(risk_bucket_total(&[Some(100), None]), (Some(100), false));
         assert_eq!(risk_bucket_total(&[None]), (None, false));
         assert_eq!(risk_bucket_total(&[]), (Some(0), true));
+    }
+
+    #[test]
+    fn closed_week_friday_uses_sat_fri_and_skips_in_progress() {
+        let as_of = NaiveDate::from_ymd_opt(2026, 9, 10).unwrap();
+        // Monday 17 Aug is Sat 15 Aug – Fri 21 Aug; that Friday is closed by 10 Sep.
+        assert_eq!(
+            closed_week_friday("2026-08-17", as_of),
+            NaiveDate::from_ymd_opt(2026, 8, 21)
+        );
+        // Week containing 10 Sep is Sat 5 Sep – Fri 11 Sep — still in progress.
+        assert_eq!(closed_week_friday("2026-09-08", as_of), None);
+        assert_eq!(closed_week_friday("2026-09-11", as_of), None);
+        // After Friday 11 Sep the week is closed.
+        let saturday = NaiveDate::from_ymd_opt(2026, 9, 12).unwrap();
+        assert_eq!(
+            closed_week_friday("2026-09-08", saturday),
+            NaiveDate::from_ymd_opt(2026, 9, 11)
+        );
     }
 }

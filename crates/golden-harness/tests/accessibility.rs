@@ -9,28 +9,34 @@ fn accessibility_primary_actions_have_accessible_names() {
     let list = std::fs::read_to_string(repo_root().join("packages/ui-components/src/listTable.tsx"))
         .expect("listTable");
     let trends_capture =
-        std::fs::read_to_string(repo_root().join("apps/desktop/src/TrendsCapture.tsx"))
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/graphing/TrendsCapture.tsx"))
             .expect("TrendsCapture.tsx");
-    let trends_charts =
-        std::fs::read_to_string(repo_root().join("apps/desktop/src/TrendsCharts.tsx"))
+        let trends_charts =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/graphing/TrendsCharts.tsx"))
             .expect("TrendsCharts.tsx");
-    let home_account_charts =
-        std::fs::read_to_string(repo_root().join("apps/desktop/src/HomeAccountCharts.tsx"))
+    let cash_week_desk =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/cash/CashWeekDesk.tsx"))
+            .expect("CashWeekDesk.tsx");
+        let home_account_charts =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/graphing/HomeAccountCharts.tsx"))
             .expect("HomeAccountCharts.tsx");
-    let decl_chart =
-        std::fs::read_to_string(repo_root().join("apps/desktop/src/DeclarationPaymentsChart.tsx"))
+        let decl_chart =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/graphing/DeclarationPaymentsChart.tsx"))
             .expect("DeclarationPaymentsChart.tsx");
     let import_wizard =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/ImportWizard.tsx"))
             .expect("ImportWizard.tsx");
     let dividend_weeks =
-        std::fs::read_to_string(repo_root().join("apps/desktop/src/DividendWeeks.tsx"))
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/graphing/DividendWeeks.tsx"))
             .expect("DividendWeeks.tsx");
     let cash_management =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/CashManagement.tsx"))
             .expect("CashManagement.tsx");
+    let home_dividend_plan =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/home/HomeDividendPlan.tsx"))
+            .expect("HomeDividendPlan.tsx");
     let sources = format!(
-        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}"
+        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{cash_week_desk}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}\n{home_dividend_plan}"
     );
     for name in [
         "aria-label=\"Import wizard\"",
@@ -41,10 +47,10 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Continue last import\"",
         "aria-label=\"Load\"",
         "aria-label=\"Cancel\"",
-        "aria-label=\"Dividend weeks\"",
+        "aria-label=\"Plan versus declaration\"",
         "aria-label=\"Dividend week table\"",
         "aria-label=\"Dividend performance period\"",
-        "aria-label=\"Actual versus plan\"",
+        "aria-label=\"Plan versus declaration for selected period\"",
     ] {
         assert!(sources.contains(name), "missing import wizard name {name}");
     }
@@ -187,9 +193,20 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Refresh last prices\"",
         "aria-label=\"Refresh declarations\"",
         "aria-label=\"Work Tickets\"",
+        "aria-label=\"Income through transactions\"",
+        "aria-label=\"Exit income through transactions\"",
+        "aria-label=\"Income transaction period\"",
+        "aria-label=\"Income transaction start\"",
+        "aria-label=\"Income transaction end\"",
+        "aria-label=\"Income transaction account\"",
         "aria-label=\"Core functions\"",
+        "aria-label=\"Component registry\"",
         "declaration-refresh-progress",
+        "last-price-refresh-progress",
         "Refreshing ${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}",
+        "Refreshing last prices ${formatCount(lastPriceProgress.current)} of ${formatCount(lastPriceProgress.total)}",
+        "aria-label=\"Last price refresh progress\"",
+        "aria-label=\"Declaration refresh progress\"",
         "aria-label=\"Refresh last price for this symbol\"",
         "aria-label=\"Retrieve declarations for this symbol\"",
         "aria-label=\"Complete research\"",
@@ -220,30 +237,48 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Clear filters\"",
         "aria-label=\"Retrieve declarations\"",
         "aria-label=\"Select week\"",
+        "aria-label=\"Loading Data\"",
         "aria-label=\"Current week\"",
         "aria-label=\"Previous week\"",
         "aria-label=\"Next week\"",
         "aria-label=\"Income plan by account\"",
         "aria-label=\"Income plan by position\"",
         "Decl $ per share ${declShareTone",
-        "aria-label=\"Dividend weeks\"",
+        "aria-label=\"Plan versus declaration\"",
         "aria-label=\"Dividend week table\"",
         "aria-label=\"Dividend performance period\"",
-        "aria-label=\"Actual versus plan\"",
+        "aria-label=\"Plan versus declaration for selected period\"",
         "aria-label=\"Filter holdings\"",
         "label=\"Filter calculator\"",
         "label=\"Filter position lots\"",
         "label=\"Filter dashboard\"",
         "aria-label=\"Account values\"",
+        "aria-label=\"Dividend Plan\"",
         "aria-label=\"Account value legend\"",
+        "Weekly actuals",
         "aria-label=\"Home graphing period\"",
-        "aria-label=\"Live value by risk\"",
+        "aria-label=\"Risk Profile\"",
+        "aria-label=\"Live by risk allocation\"",
         "aria-label=\"Symbol totals\"",
         "aria-label=\"Exit symbol totals\"",
         "aria-label=\"Fidelity total\"",
         "aria-label=\"Schwab total\"",
+        "aria-label=\"Finish this week on Cash Management\"",
+        "aria-label=\"Cash week follow-up\"",
+        "aria-label=\"Add cash activity\"",
+        "aria-label=\"Saved cash weeks\"",
+        "aria-label=\"Cash week overview\"",
         "aria-label=\"Trends weekly capture\"",
+        "aria-label=\"Trends capture steps\"",
+        "aria-label=\"Income Total Balance\"",
+        "aria-label=\"FI Roth Total Balance\"",
+        "aria-label=\"Speculation Total Balance\"",
+        "aria-label=\"Health Total Balance\"",
+        "aria-label=\"Car Total Balance\"",
+        "aria-label=\"Account 9 Total Balance\"",
+        "aria-label=\"Account 9 70% ETF\"",
         "aria-label=\"Save Trends week\"",
+        "aria-label=\"Edit Trends week\"",
         "aria-label=\"Correct Trends week\"",
         "aria-label=\"Close Trends week\"",
         "aria-label=\"Trends graphing period\"",
@@ -261,6 +296,8 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Cancel Tom SSA confirm\"",
         "aria-label=\"Cash MAGI preview\"",
         "aria-label=\"Cash management month\"",
+        "aria-label=\"Cash Management distributions YTD\"",
+        "aria-label=\"Cash Management tax and ACA monitor\"",
         "aria-label=\"Portfolio summary\"",
         "aria-label={`Sort by ${label}`}",
     ] {
@@ -289,5 +326,149 @@ fn accessibility_primary_actions_have_accessible_names() {
     assert!(
         app.contains("saturdayOfWeek(new Date().toISOString().slice(0, 10))"),
         "Income Plan as-of must default to calendar this week, not last yield"
+    );
+}
+
+#[test]
+fn dividend_weeks_lives_on_income_plan_not_trends_middle() {
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let trends = app
+        .split("{screen === \"trends\" ? (")
+        .nth(1)
+        .and_then(|rest| rest.split("{screen === \"shopping-cart\" ? (").next())
+        .unwrap_or("");
+    assert!(
+        !trends.contains("DividendWeeksPanel"),
+        "Plan vs Decl must not sit on the Trends capture page"
+    );
+    let income = app
+        .split("{screen === \"income-plan\" ? (")
+        .nth(1)
+        .and_then(|rest| rest.split("{screen === \"calculator\" ? (").next())
+        .unwrap_or("");
+    assert!(
+        income.contains("DividendWeeksPanel"),
+        "Plan vs Decl belongs at the bottom of Income Plan"
+    );
+    let charts = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/TrendsCharts.tsx"),
+    )
+    .unwrap();
+    let cash_desk = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/CashWeekDesk.tsx"),
+    )
+    .unwrap();
+    let cash = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/CashManagement.tsx"),
+    )
+    .unwrap();
+    assert!(
+        !trends.contains("TrendsCapturePanel"),
+        "week capture must not sit on Trends"
+    );
+    assert!(
+        !charts.contains("Saved Trends weeks") && !charts.contains("FID+SCH"),
+        "Trends must not show the week desk table or FID+SCH cards"
+    );
+    let cash_screen = app
+        .split("{screen === \"cash-management\" ? (")
+        .nth(1)
+        .and_then(|rest| rest.split("{screen === \"holdings\" ? (").next())
+        .unwrap_or("");
+    assert!(
+        cash_screen.contains("TrendsCapturePanel") && cash.contains("CashWeekDesk"),
+        "Cash Management hosts week capture and the saved-weeks desk"
+    );
+    assert!(
+        cash_desk.contains("Saved cash weeks"),
+        "Cash Management must list week rows including gaps"
+    );
+    assert!(
+        cash_desk.contains("trendsTableSaturdays"),
+        "cash week table must enumerate Sat–Fri gaps through today"
+    );
+    assert!(
+        cash_desk.contains("weekIncomeMinor"),
+        "Week income must be paid/declared that week, not stored monthly DIVS"
+    );
+    assert!(
+        charts.contains("Weekly Decl vs Plan"),
+        "Trends must keep the weekly Plan vs Declaration chart"
+    );
+    assert!(
+        charts.contains("filterPerfByPeriod") && charts.contains("onGraphPeriodChange"),
+        "Decl vs Plan and Trends charts must follow Trends graphing period only"
+    );
+    let decl_chart = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/DividendWeeks.tsx"),
+    )
+    .unwrap();
+    assert!(
+        decl_chart.contains("Decl — solid")
+            && decl_chart.contains("Plan — dashed")
+            && decl_chart.contains("type: \"dashed\"")
+            && decl_chart.contains("symbol: \"none\""),
+        "Decl vs Plan: solid Decl, dashed Plan, no circles"
+    );
+    assert!(
+        charts.contains("week_not_saved"),
+        "charts must ignore week_not_saved quality noise"
+    );
+    let capture = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/TrendsCapture.tsx"),
+    )
+    .unwrap();
+    assert!(
+        capture.contains("onWizardActive"),
+        "Trends wizard must tell App when it is in progress"
+    );
+    assert!(
+        app.contains("Finish the week on Review"),
+        "leaving mid-wizard must stay blocked until Accept"
+    );
+}
+
+#[test]
+fn dividend_weeks_newest_first_empty_not_na() {
+    let src = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/DividendWeeks.tsx"),
+    )
+    .expect("DividendWeeks.tsx");
+    assert!(
+        src.contains("useListSort(\"end\", \"desc\")"),
+        "dividend weeks must list newest first"
+    );
+    assert!(
+        !src.contains("missing stays N/A"),
+        "dividend weeks must not lecture about N/A"
+    );
+    assert!(
+        !src.contains("Past Saturday"),
+        "dividend weeks must not lead with Sat–Fri explainer"
+    );
+    assert!(
+        !src.contains("Week start") && !src.contains("Week ending"),
+        "one Week column, not start and ending"
+    );
+    assert!(
+        src.contains("moneyOrEmpty") && src.contains("pctOrEmpty"),
+        "missing plan/decl/% must render empty, not N/A"
+    );
+    assert!(
+        src.contains("Plan vs Decl") && src.contains("dividend-weeks-head"),
+        "Plan vs Decl must open as its own headed section"
+    );
+    assert!(
+        src.contains("pctOfPlanHeat") && src.contains("pct-heat"),
+        "% of Plan must use miss/exceed heat color"
+    );
+    assert!(
+        src.contains("dividend-weeks-summary-table")
+            && src.contains("Selected weeks"),
+        "period summary must be a table tied to the selected weeks"
+    );
+    assert!(
+        !src.contains("ReactECharts") && !src.contains("dividend-weeks-chart"),
+        "Plan vs Decl chart stays on Trends, not under the Income Plan table"
     );
 }
