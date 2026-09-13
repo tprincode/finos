@@ -38,4 +38,6 @@ pub enum DomainError {
     CashDistributionIdentity,
     #[error("Roth distributions cannot have withholding")]
     RothWithholdingNotAllowed,
+    #[error("this cash type is not allowed on that account")]
+    CashAccountKind,
 }

@@ -909,6 +909,14 @@ pub trait Canonical: Send + Sync {
         let _ = cash_minor;
         ni()
     }
+    async fn trends_week_save_with_balances(
+        &self,
+        record: TrendsWeekSourceRecord,
+        balances: Vec<(Uuid, i64, Option<i64>)>,
+    ) -> Result<(), PlatformError> {
+        let _ = (record, balances);
+        ni()
+    }
     async fn account_balance_snapshot_list(
         &self,
     ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> {

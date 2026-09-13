@@ -12034,8 +12034,9 @@ export default function App() {
         <section className="actions" aria-label="Component registry">
           <h2>Components</h2>
           <p>
-            UI modules and whether they have left App.tsx. This is a catalog, not
-            a plugin host. Core functions stay in Settings.
+            UI extraction catalog: whether a screen has left App.tsx. Not a
+            domain-completeness index and not a plugin host. Core functions
+            stay in Settings.
           </p>
           <div className="table-wrap">
             <table aria-label="Component registry">

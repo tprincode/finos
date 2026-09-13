@@ -602,10 +602,18 @@ export type CashManagementTomSsa = {
   recent: CashManagementSsaRecent[];
 };
 
+export type CashManagementSsaPayee = {
+  payee: "barbara" | "tom";
+  expectedMinor: number;
+  status: string;
+  postedMinor: number | null;
+};
+
 export type CashManagementRemindersGet = {
   asOfDate: string;
   saturdayDraft: CashManagementSaturdayDraft;
   tomSsa: CashManagementTomSsa;
+  ssaPayees?: CashManagementSsaPayee[];
   scale: number;
 };
 
@@ -660,6 +668,22 @@ export type TrendsGet = {
       federalWithholdingMinor?: number;
       stateWithholdingMinor?: number;
       netMinor?: number;
+      accountKind?: string;
+      taxSection?: string;
+    }>;
+    accountTotals?: Array<{
+      accountName: string;
+      accountKind: string;
+      taxSection: string;
+      grossMinor: number;
+      netMinor: number;
+    }>;
+    sections?: Array<{
+      id: string;
+      label: string;
+      taxNote: string;
+      grossMinor: number;
+      netMinor: number;
     }>;
     scale: number;
   };

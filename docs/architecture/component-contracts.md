@@ -1,9 +1,9 @@
 # Component contracts
 
 Versioned command/query names for the modular monolith (V1.1 §4.3, ADR-0005, ADR-0006).
-Wire types live in `packages/app-contracts` and `crates/application-core`. Implementations land in later milestones.
+Wire types live in `packages/app-contracts` and `crates/application-core`. Live names are registered in `crates/application-core/src/queries.rs`.
 
-Isolation rule: a component may reference another only through these contracts or published domain events. No component reads or writes another component's tables.
+Isolation: one SQLite file and one `Canonical` port. A component must not reach another component’s tables except through these contracts or published events. Isolation is a review rule, not a schema-per-component guarantee.
 
 Contract version: `1.0.0-draft` (`FINANCE_CLIENT_CONTRACT_VERSION`).
 
@@ -17,19 +17,18 @@ Contract version: `1.0.0-draft` (`FINANCE_CLIENT_CONTRACT_VERSION`).
 | Exceptions | `ExceptionAcknowledge` | `ExceptionList` | `ExceptionRaised` |
 | Health | — | `HealthGet` | — |
 | Core functions | — | `CoreFunctionsGet` | — |
+| Work tickets | `WorkTicketResolve`, `WorkTicketFile`, `WorkTicketSyncMisses` | `WorkTicketList` | — |
 | Snapshot and restore | `SnapshotCreate`, `SnapshotRestore`, `HandoffResolve`, `SnapshotImport` | `SnapshotHeadGet`, `HandoffStatusGet` | `SnapshotPublished`, `HandoffBlocked` |
 
-Does not touch tables of: Registries, Capture, Ledger, Market/dividend, Planning, Reporting.
+Does not touch tables of: Registries, Capture, Ledger, Market/dividend, Planning, Reporting — except through the canonical port.
 
 ## Registries
 
 | Component | Commands | Queries | Events |
 |-----------|----------|---------|--------|
 | Account Registry | `AccountRegister`, `AccountUpdate` | `AccountGet`, `AccountList` | `AccountRegistered` |
-| Security Master | `SecurityRegister`, `SecurityUpdate` | `SecurityGet` | `SecurityRegistered` |
+| Security Master | `SecurityRegister`, `SecurityUpdate` | `SecurityGet`, `SecurityList` | `SecurityRegistered` |
 | Symbol History | `SymbolAliasRecord` | `SymbolResolve` | `SymbolAliasEffective` |
-
-Does not touch tables of: Capture, Ledger, Market/dividend, Planning.
 
 ## Capture
 
@@ -37,40 +36,45 @@ Does not touch tables of: Capture, Ledger, Market/dividend, Planning.
 |-----------|----------|---------|--------|
 | Source Evidence | `EvidenceStore` | `EvidenceGet` | `EvidenceStored` |
 | Import Staging | `ImportStage`, `ImportValidate`, `ImportApprove`, `ImportPost` | `ImportBatchGet` | `ImportStaged`, `ImportPosted` |
+| Collector runtime | `CollectorRetrieve`, `CollectorAlignFutureToPlan`, `CollectorFieldDecisionSet`, `ProviderDeclarationSourcesApply`, `DeclarationRefresh` | `CollectorSetGet` / fleet queries, `ResearchGapsGet` | — |
 | Connector Runtime | `ConnectorJobSubmit` | `ConnectorJobGet` | `ConnectorCandidatesReady` |
-
-Does not touch tables of: Ledger (posts only via application transaction after approval), Planning, Reporting.
 
 ## Financial ledger
 
 | Component | Commands | Queries | Events |
 |-----------|----------|---------|--------|
 | Investment Activity Ledger | `ActivityPost`, `ActivityCorrect` | `ActivityGet`, `ActivityList` | `ActivityPosted`, `ActivityCorrected` |
-| Lot/Basis | `LotAssign` | `LotGet`, `BasisGet` | `LotAssigned` |
+| Lot/Basis | `LotOpen`, `LotAssign` | `LotGet`, `BasisGet` | `LotAssigned` |
 | Distribution Characterization | `DistributionCharacterize` | `DistributionGet` | `DistributionCharacterized` |
 
-Does not touch tables of: Capture source blobs, Registries (references IDs only), Reporting read models.
+## Cash Management (own area)
+
+Week entry, SSA (Barbara $1,331 and Tom $2,865), IRA/Roth distributions, and Withdrawal. Not a Planning or Ledger sub-component. Week **entry** is this UI; `TrendsWeek*` remain Reporting writes used by the desk.
+
+| Commands | Queries |
+|----------|---------|
+| `CashDistributionPost`, `SsaConfirm` | `CashManagementWeekGet`, `CashManagementRemindersGet`, `CashManagementMonthGet` |
+
+Withdrawal is cash leaving a taxable / non-IRA brokerage (Car, Robinhood, ENERGYX). `CashDistributionPost` / `SsaConfirm` refuse a type that does not match the account: IRA_Distribution only on `ira`; Roth_Distribution on `roth` / `fi_roth`; Withdrawal on taxable and not External; SSA only on External (by name — live seed stores External as `taxable`). SSA is two household payees, separate confirms.
 
 ## Market / dividend
 
 | Component | Commands | Queries | Events |
 |-----------|----------|---------|--------|
-| Price Service | `PriceRecord` | `PriceGet` | `PriceRecorded` |
-| Dividend Intelligence | `DividendDeclare`, `DividendActualRecord` | `DividendGet` | `DividendDeclared`, `DividendActualPosted` |
+| Price Service | `PriceQuoteRecord`, `ManualPriceOverride`, `LastPriceRefresh` | `CurrentPriceGet`, `LastPriceAutoWindowGet` | `PriceRecorded` |
+| Dividend Intelligence | `DividendDeclare`, `DividendActualRecord` | `DividendGet`, `DividendPerformanceGet` | `DividendDeclared`, `DividendActualPosted` |
 | Calendar | — | `CanonicalWeekGet` | — |
-
-Does not touch tables of: Ledger, Planning.
 
 ## Planning
 
 | Component | Commands | Queries | Events |
 |-----------|----------|---------|--------|
-| Calculator Plan | `PlanApprove` | `PlanGet` | `PlanApproved` |
-| Income Plan | `IncomePlanUpdate` | `IncomePlanGet` | `IncomePlanChanged` |
+| Calculator Plan | `PlanApprove` | `CalculatorGet`, `PlanGet` | `PlanApproved` |
+| Income Plan | `IncomePlanUpdate` | `IncomePlanGet`, `IncomePlanWeekGet`, `IncomePlanGridGet`, `IncomePlanExportGet` | `IncomePlanChanged` |
 | Cash Burndown | — | `BurndownGet` | — |
 | Marketplace MAGI | `MagiRuleSet`, `MagiFactRecord`, `MagiCoverageSet`, `MagiAdjustmentRecord` | `MagiProjectionGet`, `MagiTaxPaymentGet` | — |
 
-Does not touch tables of: Ledger (reads via queries), Capture.
+Does not write Ledger facts (reads via queries). MAGI oracles are locked (ADR-0013).
 
 ## Reporting
 
@@ -78,11 +82,13 @@ Does not touch tables of: Ledger (reads via queries), Capture.
 |-----------|----------|---------|--------|
 | Position Details | — | `PositionDetailsGet` | — |
 | ROI | — | `RoiGet` | — |
-| Trends | — | `TrendsGet` | — |
-| Dashboard | — | `DashboardGet` | — |
+| Trends (charts) | `TrendsWeekSave`, `TrendsWeekCorrect`, `TrendsWeekClose` | `TrendsGet`, `TrendsWeekGet` | — |
+| Dashboard | — | `DashboardBurndownGet`, `DashboardGet` | — |
 | Account values (Home) | — | `AccountValueHomeGet` (`points`, `trendsPoints`, `incomePoints`) | — |
+| Dividend plan (Home) | — | `DividendPlanHomeGet` | — |
+| Cash pile | — | `CashPileGet` | — |
 
-Read models are not authoritative (ADR-0008). Does not write Ledger or Capture tables. `incomePoints` are closed Sat–Fri week actuals plotted on Friday; in-progress and future weeks stay unknown. The query reads Dividend / interest actuals and does not post them.
+Read models are not authoritative (ADR-0008). Week snapshot writes are Reporting; the owner enters them on Cash Management. `incomePoints` are closed Sat–Fri week actuals plotted on Friday.
 
 ## Decision support
 
@@ -90,14 +96,12 @@ Read models are not authoritative (ADR-0008). Does not write Ledger or Capture t
 |-----------|----------|---------|--------|
 | Allocation | `AllocationTargetSet` | `AllocationGet` | `AllocationTargetChanged` |
 | Shopping Cart | `CartItemAdd`, `CartItemRemove` | `CartGet` | `CartChanged` |
-| Shopping Cart (SC-1/SC-2/SC-3) | `CartScenarioCreate`, `CartSellLineAdd`, `CartBuyLineAdd`, `CartBuyLineQtySet`, `CartScenarioSave`, `CartScenarioAgree`, `CartExecuteSell`, `CartExecuteBuyStep`, `CartScenarioDiscard`, `CartScenarioRename`, `CartScenarioDuplicate` | `CartScenarioEvaluate`, `CartScenarioGet`, `CartScenarioList` | — |
-
-`CartItemAdd` / `CartGet` are the M6 symbol+qty slice. Scenario commands are **parked** until the owner names SC-1. Evaluate and cart SQL live in `application-core` `cart.rs` plus `financial-domain` / `storage-sqlite` cart modules — not in `queries.rs` or `App.tsx`. `incomePoints` on `AccountValueHomeGet` is Reporting, not this component.
+| Shopping Cart scenarios | `CartScenarioCreate`, `CartSellLineAdd`, `CartBuyLineAdd`, `CartBuyLineQtySet`, `CartScenarioSave`, `CartScenarioAgree`, `CartExecuteSell`, `CartExecuteFill`, `CartExecuteBuyStep`, `CartScenarioDiscard`, `CartScenarioRename`, `CartScenarioDuplicate`, `CashDeposit`, `CashWithdraw` | `CartScenarioEvaluate`, `CartScenarioGet`, `CartScenarioList` | — |
 | Backtesting | `BacktestRun` | `BacktestGet` | `BacktestCompleted` |
 | Classification Review | `ClassificationReviewRecord` | `ClassificationReviewGet` | `ClassificationReviewChanged` |
 | Tax Projection | — | `TaxProjectionGet` | — |
 
-Does not post Ledger facts.
+`CartItemAdd` / `CartGet` are the M6 symbol+qty slice. Scenario commands are **shipped** (SC-1+). Evaluate and cart SQL live in `application-core` `cart.rs` plus `financial-domain` / `storage-sqlite` cart modules. Allocation, Backtest, and AI have tables; owner menus stay parked.
 
 ## AI advisory (V1, advisory only)
 
@@ -106,4 +110,4 @@ Does not post Ledger facts.
 | AI Gateway | `AiAnalyze` | `AiRunGet` | `AiRecommendationReady` |
 | Analysis Run Registry | — | `AnalysisRunList` | — |
 
-Must not mutate authoritative financial facts (ADR-0012). The Grok key is read from `XAI_API_KEY` or `GROK_API_KEY`; it is never stored in SQLite.
+Must not mutate authoritative financial facts (ADR-0012). Parked UX.

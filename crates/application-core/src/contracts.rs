@@ -711,6 +711,30 @@ pub struct TrendsDistributionLine {
     pub state_withholding_minor: i64,
     #[serde(default)]
     pub net_minor: i64,
+    #[serde(default)]
+    pub account_kind: String,
+    #[serde(default)]
+    pub tax_section: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendsDistributionAccountTotal {
+    pub account_name: String,
+    pub account_kind: String,
+    pub tax_section: String,
+    pub gross_minor: i64,
+    pub net_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendsDistributionSection {
+    pub id: String,
+    pub label: String,
+    pub tax_note: String,
+    pub gross_minor: i64,
+    pub net_minor: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -724,6 +748,10 @@ pub struct TrendsDistributionBody {
     #[serde(default)]
     pub net_minor: i64,
     pub lines: Vec<TrendsDistributionLine>,
+    #[serde(default)]
+    pub account_totals: Vec<TrendsDistributionAccountTotal>,
+    #[serde(default)]
+    pub sections: Vec<TrendsDistributionSection>,
     pub scale: u8,
 }
 
@@ -1918,10 +1946,21 @@ pub struct CashManagementTomSsa {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct CashManagementSsaPayee {
+    pub payee: String,
+    pub expected_minor: i64,
+    pub status: String,
+    pub posted_minor: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CashManagementRemindersBody {
     pub as_of_date: String,
     pub saturday_draft: CashManagementSaturdayDraft,
     pub tom_ssa: CashManagementTomSsa,
+    #[serde(default)]
+    pub ssa_payees: Vec<CashManagementSsaPayee>,
     pub scale: u8,
 }
 

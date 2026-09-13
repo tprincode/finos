@@ -61,6 +61,7 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::CashDistributionType => "cash_distribution_type",
         DomainError::CashDistributionIdentity => "cash_distribution_identity",
         DomainError::RothWithholdingNotAllowed => "roth_withholding_not_allowed",
+        DomainError::CashAccountKind => "cash_account_kind",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -2887,6 +2888,15 @@ impl Canonical for LocalPlatform {
             cash_minor,
         )
         .await
+    }
+
+    async fn trends_week_save_with_balances(
+        &self,
+        record: TrendsWeekSourceRecord,
+        balances: Vec<(Uuid, i64, Option<i64>)>,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::trends_week_save_atomic(&*pool, record, &balances).await
     }
 
     async fn account_balance_snapshot_list(

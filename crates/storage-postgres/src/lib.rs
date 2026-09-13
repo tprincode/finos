@@ -64,6 +64,7 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::CashDistributionType => "cash_distribution_type",
         DomainError::CashDistributionIdentity => "cash_distribution_identity",
         DomainError::RothWithholdingNotAllowed => "roth_withholding_not_allowed",
+        DomainError::CashAccountKind => "cash_account_kind",
     };
     PlatformError::new(code, err.to_string())
 }

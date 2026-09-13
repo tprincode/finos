@@ -509,9 +509,9 @@
     {
       "id": "cash-management-ssa",
       "menuArea": "Plan",
-      "function": "Cash Management: confirm Tom Social Security retirement $2,865",
-      "lastChanged": "2026-09-09",
-      "lastVerified": "2026-09-09",
+      "function": "Cash Management: confirm Barbara $1,331 and Tom $2,865 Social Security retirement",
+      "lastChanged": "2026-09-13",
+      "lastVerified": "2026-09-13",
       "alsoVerify": ["cash_management", "accessibility"],
       "sentinels": [
         {
@@ -524,7 +524,7 @@
         },
         {
           "path": "crates/financial-domain/src/cash_management.rs",
-          "mustContain": "TOM_SSA_EXPECTED_MINOR"
+          "mustContain": "BARBARA_SSA_EXPECTED_MINOR"
         }
       ]
     },
@@ -896,9 +896,9 @@
       "id": "tools-component-registry",
       "menuArea": "Tools",
       "function": "Tools → Components is a read-only UI module registry (extracted vs in-app). Not a plugin host. Core functions stay in Settings.",
-      "lastChanged": "2026-09-11",
-      "lastVerified": "2026-09-11",
-      "alsoVerify": ["desktop_menu", "accessibility", "core_functions"],
+      "lastChanged": "2026-09-13",
+      "lastVerified": "2026-09-13",
+      "alsoVerify": ["desktop_menu", "accessibility", "core_functions", "ui_modules"],
       "sentinels": [
         {
           "path": "apps/desktop/src/App.tsx",

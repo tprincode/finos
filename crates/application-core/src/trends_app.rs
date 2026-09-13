@@ -1,8 +1,9 @@
 //! Trends weekly capture, profit suggestion, distributions, tax monitor.
 
 use crate::contracts::{
-    TrendsDistributionBody, TrendsDistributionLine, TrendsOverviewBody, TrendsTaxMonitorBody,
-    TrendsWeekCaptureBody, TrendsWeekPoint, TrendsWeekSourceRecord,
+    TrendsDistributionAccountTotal, TrendsDistributionBody, TrendsDistributionLine,
+    TrendsDistributionSection, TrendsOverviewBody, TrendsTaxMonitorBody, TrendsWeekCaptureBody,
+    TrendsWeekPoint, TrendsWeekSourceRecord,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
@@ -260,28 +261,22 @@ pub async fn save_trends_week(
             to_save.acct9_etf_value_minor = proxy;
         }
     }
-    canonical.trends_week_upsert(to_save.clone()).await?;
     let accounts = canonical.account_list().await?;
     let mut ids = std::collections::HashMap::new();
     for a in &accounts {
         ids.insert(a.name.clone(), a.account_id);
     }
+    let mut pairs = Vec::new();
     for (name, bal, cash) in balances {
-        let Some(balance_minor) = bal else { continue };
+        let Some(balance_minor) = *bal else { continue };
         let Some(account_id) = ids.get(*name).copied() else {
             continue;
         };
-        canonical
-            .account_balance_snapshot_upsert(
-                account_id,
-                to_save.period_end.clone(),
-                *balance_minor,
-                to_save.scale,
-                to_save.captured_at.clone(),
-                *cash,
-            )
-            .await?;
+        pairs.push((account_id, balance_minor, *cash));
     }
+    canonical
+        .trends_week_save_with_balances(to_save.clone(), pairs)
+        .await?;
     trends_week_capture_view(canonical, &to_save.period_end, week_income_minor).await
 }
 
@@ -317,11 +312,14 @@ pub async fn distributions_ytd(
         if !a.occurred_on.starts_with(year) {
             continue;
         }
-        let name = accounts
-            .iter()
-            .find(|x| x.account_id == a.account_id)
+        let account = accounts.iter().find(|x| x.account_id == a.account_id);
+        let name = account
             .map(|x| x.name.clone())
             .unwrap_or_else(|| "unknown".into());
+        let kind = account
+            .map(|x| x.kind.clone())
+            .unwrap_or_default();
+        let section = financial_domain::cash_management::cash_tax_section(&a.activity_type, &kind);
         let line_net = financial_domain::cash_management::net_minor(
             a.amount_minor,
             a.federal_withholding_minor,
@@ -340,15 +338,58 @@ pub async fn distributions_ytd(
             federal_withholding_minor: a.federal_withholding_minor,
             state_withholding_minor: a.state_withholding_minor,
             net_minor: line_net,
+            account_kind: kind,
+            tax_section: section.id().into(),
         });
     }
     lines.sort_by(|a, b| a.occurred_on.cmp(&b.occurred_on));
+    let mut account_map: std::collections::BTreeMap<
+        String,
+        TrendsDistributionAccountTotal,
+    > = std::collections::BTreeMap::new();
+    let mut section_map: std::collections::BTreeMap<
+        financial_domain::cash_management::CashTaxSection,
+        (i64, i64),
+    > = std::collections::BTreeMap::new();
+    for line in &lines {
+        let section = financial_domain::cash_management::cash_tax_section(
+            &line.activity_type,
+            &line.account_kind,
+        );
+        let entry = account_map
+            .entry(line.account_name.clone())
+            .or_insert(TrendsDistributionAccountTotal {
+                account_name: line.account_name.clone(),
+                account_kind: line.account_kind.clone(),
+                tax_section: section.id().into(),
+                gross_minor: 0,
+                net_minor: 0,
+            });
+        entry.gross_minor += line.amount_minor;
+        entry.net_minor += line.net_minor;
+        let slot = section_map.entry(section).or_insert((0, 0));
+        slot.0 += line.amount_minor;
+        slot.1 += line.net_minor;
+    }
+    let account_totals = account_map.into_values().collect();
+    let sections = section_map
+        .into_iter()
+        .map(|(section, (gross_minor, net_minor))| TrendsDistributionSection {
+            id: section.id().into(),
+            label: section.label().into(),
+            tax_note: section.tax_note().into(),
+            gross_minor,
+            net_minor,
+        })
+        .collect();
     Ok(TrendsDistributionBody {
         gross_minor: gross,
         federal_withholding_minor: federal,
         state_withholding_minor: state,
         net_minor: net,
         lines,
+        account_totals,
+        sections,
         scale: 2,
     })
 }

@@ -89,6 +89,20 @@ async fn cash_distribution_proves_net_and_week_total() {
     .await;
     let lines = trends["distributions"]["lines"].as_array().unwrap();
     assert!(lines.iter().any(|l| l["activityType"] == "IRA_Distribution" && l["amountMinor"] == 100000));
+    let ira_section = trends["distributions"]["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "ira")
+        .expect("ira tax section");
+    assert!(ira_section["taxNote"].as_str().unwrap_or("").contains("Speculation"));
+    assert!(
+        trends["distributions"]["accountTotals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["accountName"] == "Income" && a["grossMinor"] == 100000)
+    );
     assert_eq!(trends["overview"]["profitMinor"].as_i64().unwrap_or(0), 0);
 
     must_ok(
@@ -193,7 +207,145 @@ async fn roth_refuses_withholding_and_unknown_gross() {
     )
     .await;
     assert!(!unknown.ok);
-    assert_eq!(unknown.error_code.as_deref(), Some("unknown_amount"));
+    assert_eq!(unknown.error_code.as_deref(), Some("cash_account_kind"));
+}
+
+#[tokio::test]
+async fn cash_post_refuses_a_type_the_account_cannot_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "ira"}),
+    )
+    .await;
+    let car = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Car", "kind": "taxable"}),
+    )
+    .await;
+    let external = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "External", "kind": "taxable"}),
+    )
+    .await;
+    let fi_roth = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "FI Roth", "kind": "fi_roth"}),
+    )
+    .await;
+
+    let withdraw_ira = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "CashDistributionPost",
+            serde_json::json!({
+                "accountId": income["accountId"],
+                "activityType": "Withdrawal",
+                "occurredOn": "2026-09-12",
+                "grossMinor": 10000,
+                "federalWithholdingMinor": 0,
+                "stateWithholdingMinor": 0,
+                "scale": 2
+            }),
+        ),
+    )
+    .await;
+    assert!(!withdraw_ira.ok, "owner must not withdraw from an IRA");
+    assert_eq!(withdraw_ira.error_code.as_deref(), Some("cash_account_kind"));
+
+    let ira_from_car = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "CashDistributionPost",
+            serde_json::json!({
+                "accountId": car["accountId"],
+                "activityType": "IRA_Distribution",
+                "occurredOn": "2026-09-12",
+                "grossMinor": 10000,
+                "federalWithholdingMinor": 0,
+                "stateWithholdingMinor": 0,
+                "scale": 2
+            }),
+        ),
+    )
+    .await;
+    assert!(!ira_from_car.ok, "Car is taxable brokerage, not IRA");
+    assert_eq!(ira_from_car.error_code.as_deref(), Some("cash_account_kind"));
+
+    let ssa_on_car = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "SsaConfirm",
+            serde_json::json!({
+                "accountId": car["accountId"],
+                "occurredOn": "2026-09-12",
+                "receivedMinor": 286500,
+                "scale": 2,
+                "payee": "tom"
+            }),
+        ),
+    )
+    .await;
+    assert!(!ssa_on_car.ok, "SSA only posts to External");
+    assert_eq!(ssa_on_car.error_code.as_deref(), Some("cash_account_kind"));
+
+    let withdraw_car = must_ok(
+        &platform,
+        "CashDistributionPost",
+        serde_json::json!({
+            "accountId": car["accountId"],
+            "activityType": "Withdrawal",
+            "occurredOn": "2026-09-12",
+            "grossMinor": 10000,
+            "federalWithholdingMinor": 0,
+            "stateWithholdingMinor": 0,
+            "scale": 2,
+            "idempotencyKey": "cm-e-car-wd"
+        }),
+    )
+    .await;
+    assert_eq!(withdraw_car["amountMinor"].as_i64(), Some(10000));
+
+    let roth_ok = must_ok(
+        &platform,
+        "CashDistributionPost",
+        serde_json::json!({
+            "accountId": fi_roth["accountId"],
+            "activityType": "Roth_Distribution",
+            "occurredOn": "2026-09-12",
+            "grossMinor": 5000,
+            "federalWithholdingMinor": 0,
+            "stateWithholdingMinor": 0,
+            "scale": 2,
+            "idempotencyKey": "cm-e-roth"
+        }),
+    )
+    .await;
+    assert_eq!(roth_ok["amountMinor"].as_i64(), Some(5000));
+
+    let ssa_ok = must_ok(
+        &platform,
+        "SsaConfirm",
+        serde_json::json!({
+            "accountId": external["accountId"],
+            "occurredOn": "2026-09-12",
+            "receivedMinor": 133100,
+            "scale": 2,
+            "payee": "barbara"
+        }),
+    )
+    .await;
+    assert_eq!(ssa_ok["amountMinor"].as_i64(), Some(133100));
 }
 
 #[tokio::test]
@@ -401,6 +553,88 @@ async fn tom_ssa_confirm_miss_variance_and_june_extra() {
     .await;
     assert_eq!(july_ok["tomSsa"]["status"], "confirmed");
     assert_eq!(july_ok["tomSsa"]["postedMinor"].as_i64(), Some(286500));
+    let payees = july_ok["ssaPayees"].as_array().expect("ssaPayees");
+    assert!(
+        payees.iter().any(|p| p["payee"] == "barbara" && p["status"] == "unconfirmed"),
+        "Barbara stays unconfirmed when only Tom posted"
+    );
+}
+
+#[tokio::test]
+async fn barbara_and_tom_are_two_confirms_third_is_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let external = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "External", "kind": "external"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "SsaConfirm",
+        serde_json::json!({
+            "accountId": external["accountId"],
+            "occurredOn": "2026-09-03",
+            "receivedMinor": 133100,
+            "scale": 2,
+            "payee": "barbara"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "SsaConfirm",
+        serde_json::json!({
+            "accountId": external["accountId"],
+            "occurredOn": "2026-09-10",
+            "receivedMinor": 286500,
+            "scale": 2,
+            "payee": "tom"
+        }),
+    )
+    .await;
+    let sept = query_json(
+        &platform,
+        "CashManagementRemindersGet",
+        serde_json::json!({"asOfDate": "2026-09-13"}),
+    )
+    .await;
+    assert_eq!(sept["tomSsa"]["status"], "confirmed");
+    assert_eq!(sept["tomSsa"]["extraAudit"], false);
+    let payees = sept["ssaPayees"].as_array().unwrap();
+    assert!(payees.iter().any(|p| {
+        p["payee"] == "barbara"
+            && p["status"] == "confirmed"
+            && p["postedMinor"] == 133100
+    }));
+    assert!(payees.iter().any(|p| {
+        p["payee"] == "tom" && p["status"] == "confirmed" && p["postedMinor"] == 286500
+    }));
+    must_ok(
+        &platform,
+        "CashDistributionPost",
+        serde_json::json!({
+            "accountId": external["accountId"],
+            "activityType": "SSA",
+            "occurredOn": "2026-09-15",
+            "grossMinor": 10000,
+            "federalWithholdingMinor": 0,
+            "stateWithholdingMinor": 0,
+            "scale": 2,
+            "idempotencyKey": "extra-ssa-sept"
+        }),
+    )
+    .await;
+    let after = query_json(
+        &platform,
+        "CashManagementRemindersGet",
+        serde_json::json!({"asOfDate": "2026-09-15"}),
+    )
+    .await;
+    assert_eq!(after["tomSsa"]["extraAudit"], true);
 }
 
 #[tokio::test]
@@ -621,6 +855,9 @@ fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
     assert!(cm.contains("State WH"));
     assert!(cm.contains("Federal withholding"));
     assert!(cm.contains("aria-label=\"Cash Management distributions YTD\""));
+    assert!(cm.contains("aria-label=\"Distribution account totals\""));
+    assert!(cm.contains("aria-label=\"Distribution tax sections\""));
+    assert!(cm.contains("IRA ordinary groups Income and Speculation"));
     assert!(cm.contains("aria-label=\"Cash Management tax and ACA monitor\""));
     assert!(!trends.contains("Distributions (YTD)"));
     assert!(!trends.contains("Tax / ACA monitor"));

@@ -5,7 +5,7 @@
       "title": "Graphing",
       "folder": "apps/desktop/src/features/graphing/",
       "status": "extracted",
-      "menuAreas": ["Home", "Trends"],
+      "menuAreas": ["Home", "Trends", "Cash Management"],
       "coreFunctionIds": [
         "home-live-by-risk",
         "home-risk-symbol-popup",
@@ -34,9 +34,19 @@
         "cash-management-ssa",
         "cash-management-magi",
         "cash-management-month",
-        "cash-management-import"
+        "cash-management-import",
+        "TrendsWeekSave"
       ],
       "host": "cash_management.rs"
+    },
+    {
+      "id": "cash-week-desk",
+      "title": "Cash week desk",
+      "folder": "apps/desktop/src/features/cash/CashWeekDesk.tsx",
+      "status": "extracted",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": ["TrendsWeekSave"],
+      "host": "trends_app.rs"
     },
     {
       "id": "home",
@@ -66,6 +76,36 @@
       "host": "income_plan_display.rs"
     },
     {
+      "id": "calculator",
+      "title": "Calculator",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Plan"],
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Plan"],
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
+      "id": "trends",
+      "title": "Trends",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Trends"],
+      "coreFunctionIds": [
+        "home-live-by-risk",
+        "home-graphing-period"
+      ],
+      "host": "queries.rs"
+    },
+    {
       "id": "position-details",
       "title": "Position Details",
       "folder": "apps/desktop/src/App.tsx",
@@ -76,6 +116,51 @@
         "position-hub-last-price",
         "position-details-owner-facts"
       ],
+      "host": "queries.rs"
+    },
+    {
+      "id": "holdings",
+      "title": "Holdings",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Positions"],
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
+      "id": "add-position",
+      "title": "Add Position",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Positions"],
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
+      "id": "add-lot",
+      "title": "Add Lot",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Positions"],
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
+      "id": "reevaluate-collector",
+      "title": "Reevaluate collector",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Tools"],
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
+      "id": "tickets",
+      "title": "Tickets",
+      "folder": "apps/desktop/src/App.tsx",
+      "status": "in-app",
+      "menuAreas": ["Data"],
+      "coreFunctionIds": ["tickets-queue"],
       "host": "queries.rs"
     },
     {

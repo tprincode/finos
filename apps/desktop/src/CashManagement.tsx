@@ -29,6 +29,22 @@ export type CashDistributionYtd = {
     federalWithholdingMinor?: number;
     stateWithholdingMinor?: number;
     netMinor?: number;
+    accountKind?: string;
+    taxSection?: string;
+  }>;
+  accountTotals?: Array<{
+    accountName: string;
+    accountKind: string;
+    taxSection: string;
+    grossMinor: number;
+    netMinor: number;
+  }>;
+  sections?: Array<{
+    id: string;
+    label: string;
+    taxNote: string;
+    grossMinor: number;
+    netMinor: number;
   }>;
   scale: number;
 };
@@ -52,7 +68,7 @@ const DIST_TYPES = [
 ];
 
 const DIST_STEPS = ["Type", "Account", "Amounts", "Review"] as const;
-const SSA_STEPS = ["Account", "Received", "Review"] as const;
+const SSA_STEPS = ["Payee", "Account", "Received", "Review"] as const;
 const WITHDRAW_STEPS = ["Account", "Amount", "Review"] as const;
 
 function dollarsToMinor(raw: string, scale: number): number | null {
@@ -80,6 +96,27 @@ function nextOf<T extends string>(steps: readonly T[], step: T): T {
 function prevOf<T extends string>(steps: readonly T[], step: T): T {
   const i = steps.indexOf(step);
   return steps[Math.max(i - 1, 0)] ?? step;
+}
+
+function isSsaAccountName(name: string): boolean {
+  return name.trim().toLowerCase() === "external";
+}
+
+/** Same rule the post uses: owner only sees accounts that can take this cash type. */
+function accountsForCashType(
+  accounts: AccountListItem[],
+  activityType: string,
+): AccountListItem[] {
+  return accounts.filter((a) => {
+    const kind = a.kind.trim().toLowerCase();
+    if (activityType === "SSA") return isSsaAccountName(a.name);
+    if (activityType === "IRA_Distribution") return kind === "ira";
+    if (activityType === "Roth_Distribution")
+      return kind === "roth" || kind === "fi_roth";
+    if (activityType === "Withdrawal")
+      return kind === "taxable" && !isSsaAccountName(a.name);
+    return false;
+  });
 }
 
 export function CashManagementPanel({
@@ -123,7 +160,7 @@ export function CashManagementPanel({
   const [asOf, setAsOf] = useState(week?.periodEnd ?? "");
   const [activity, setActivity] = useState<CashActivity>(null);
   const [distStep, setDistStep] = useState<(typeof DIST_STEPS)[number]>("Type");
-  const [ssaStep, setSsaStep] = useState<(typeof SSA_STEPS)[number]>("Account");
+  const [ssaStep, setSsaStep] = useState<(typeof SSA_STEPS)[number]>("Payee");
   const [withdrawStep, setWithdrawStep] =
     useState<(typeof WITHDRAW_STEPS)[number]>("Account");
   const [accountId, setAccountId] = useState("");
@@ -136,7 +173,9 @@ export function CashManagementPanel({
   const [ssaAccountId, setSsaAccountId] = useState("");
   const [ssaOccurredOn, setSsaOccurredOn] = useState("");
   const [ssaReceived, setSsaReceived] = useState("");
+  const [ssaPayee, setSsaPayee] = useState<"barbara" | "tom">("tom");
   const [ssaDirty, setSsaDirty] = useState(false);
+  const [distAccount, setDistAccount] = useState("all");
   const handledSaveAt = useRef(0);
 
   useEffect(() => {
@@ -182,6 +221,12 @@ export function CashManagementPanel({
     if (!ssaOccurredOn) {
       setSsaOccurredOn(reminders.asOfDate);
     }
+    if (!ssaDirty) {
+      const firstOpen = reminders.ssaPayees?.find((p) => p.status === "unconfirmed");
+      if (firstOpen?.payee === "barbara" || firstOpen?.payee === "tom") {
+        setSsaPayee(firstOpen.payee);
+      }
+    }
   }, [reminders, ssaDirty, ssaOccurredOn]);
 
   useEffect(() => {
@@ -201,9 +246,13 @@ export function CashManagementPanel({
   const rothBlocked =
     postingType === "Roth_Distribution" && (fedMinor !== 0 || stateMinor !== 0);
   const ssaReceivedMinor = dollarsToMinor(ssaReceived, scale);
-  const tomExpected = reminders?.tomSsa.expectedMinor ?? 286500;
+  const ssaExpected =
+    ssaPayee === "barbara"
+      ? (reminders?.ssaPayees?.find((p) => p.payee === "barbara")?.expectedMinor ??
+        133100)
+      : (reminders?.tomSsa.expectedMinor ?? 286500);
   const ssaVariance =
-    ssaReceivedMinor != null && ssaReceivedMinor !== tomExpected;
+    ssaReceivedMinor != null && ssaReceivedMinor !== ssaExpected;
   const magiAdd = magiAddMinor(postingType, grossMinor);
   const taxPaymentCredit = fedMinor + stateMinor;
 
@@ -242,7 +291,7 @@ export function CashManagementPanel({
       setSsaAccountId(reminders.tomSsa.suggestedAccountId);
     }
     setSsaDirty(false);
-    setSsaStep("Account");
+    setSsaStep("Payee");
   };
 
   const backToChooser = () => {
@@ -253,17 +302,31 @@ export function CashManagementPanel({
 
   const openActivity = (next: CashActivity) => {
     if (next === "distribution") {
-      setActivityType(
-        reminders?.saturdayDraft.activityType ?? "IRA_Distribution",
-      );
+      const nextType =
+        reminders?.saturdayDraft.activityType ?? "IRA_Distribution";
+      setActivityType(nextType);
       setDistStep("Type");
+      if (
+        !accountsForCashType(accounts, nextType).some(
+          (a) => a.accountId === accountId,
+        )
+      ) {
+        setAccountId("");
+      }
     }
     if (next === "withdrawal") {
       setActivityType("Withdrawal");
       setWithdrawStep("Account");
+      if (
+        !accountsForCashType(accounts, "Withdrawal").some(
+          (a) => a.accountId === accountId,
+        )
+      ) {
+        setAccountId("");
+      }
     }
     if (next === "ssa") {
-      setSsaStep("Account");
+      setSsaStep("Payee");
     }
     setActivity(next);
   };
@@ -292,11 +355,13 @@ export function CashManagementPanel({
         ? grossMinor != null && identityOk
         : true;
   const ssaCanAdvance =
-    ssaStep === "Account"
-      ? ssaAccountId !== "" && ssaOccurredOn !== ""
-      : ssaStep === "Received"
-        ? ssaReceivedMinor != null
-        : true;
+    ssaStep === "Payee"
+      ? ssaPayee === "barbara" || ssaPayee === "tom"
+      : ssaStep === "Account"
+        ? ssaAccountId !== "" && ssaOccurredOn !== ""
+        : ssaStep === "Received"
+          ? ssaReceivedMinor != null
+          : true;
 
   return (
     <div className="cash-management" aria-label="Cash Management">
@@ -378,7 +443,19 @@ export function CashManagementPanel({
                 <select
                   aria-label="Distribution type"
                   value={activityType}
-                  onChange={(e) => mark(() => setActivityType(e.target.value))}
+                  onChange={(e) =>
+                    mark(() => {
+                      const next = e.target.value;
+                      setActivityType(next);
+                      if (
+                        !accountsForCashType(accounts, next).some(
+                          (a) => a.accountId === accountId,
+                        )
+                      ) {
+                        setAccountId("");
+                      }
+                    })
+                  }
                 >
                   {DIST_TYPES.map((t) => (
                     <option key={t.value} value={t.value}>
@@ -399,7 +476,7 @@ export function CashManagementPanel({
                   onChange={(e) => mark(() => setAccountId(e.target.value))}
                 >
                   <option value="">Select account</option>
-                  {accounts.map((a) => (
+                  {accountsForCashType(accounts, activityType).map((a) => (
                     <option key={a.accountId} value={a.accountId}>
                       {a.name}
                     </option>
@@ -547,7 +624,7 @@ export function CashManagementPanel({
                   onChange={(e) => mark(() => setAccountId(e.target.value))}
                 >
                   <option value="">Select account</option>
-                  {accounts.map((a) => (
+                  {accountsForCashType(accounts, "Withdrawal").map((a) => (
                     <option key={a.accountId} value={a.accountId}>
                       {a.name}
                     </option>
@@ -675,24 +752,57 @@ export function CashManagementPanel({
               </li>
             ))}
           </ol>
-          <h3>Confirm Tom Social Security retirement</h3>
+          <h3>
+            {ssaPayee === "barbara"
+              ? "Confirm Barbara Social Security retirement"
+              : "Confirm Tom Social Security retirement"}
+          </h3>
           <p>
-            Expected {formatUsd(tomExpected, scale)} each month. Label is Social
-            Security retirement. A missed month stays unknown, never $0.
+            Barbara {formatUsd(133100, scale)} and Tom {formatUsd(286500, scale)}{" "}
+            each month, two confirms. A missed payee stays unknown, never $0.
             {reminders?.tomSsa.extraAudit
-              ? " Extra $2,865 in the same month is audit, not next month."
-              : ""}{" "}
-            Both checks this month are two confirms.
+              ? " A third or duplicate SSA row is audit, not next month."
+              : ""}
           </p>
           <p>
             {reminders
-              ? `${reminders.tomSsa.yearMonth} is ${reminders.tomSsa.status}${
-                  reminders.tomSsa.postedMinor == null
-                    ? ""
-                    : ` at ${formatUsd(reminders.tomSsa.postedMinor, scale)}`
-                }.`
+              ? reminders.ssaPayees?.length
+                ? reminders.ssaPayees
+                    .map(
+                      (p) =>
+                        `${p.payee} ${p.status}${
+                          p.postedMinor == null
+                            ? ""
+                            : ` at ${formatUsd(p.postedMinor, scale)}`
+                        }`,
+                    )
+                    .join("; ")
+                : `${reminders.tomSsa.yearMonth} is ${reminders.tomSsa.status}${
+                    reminders.tomSsa.postedMinor == null
+                      ? ""
+                      : ` at ${formatUsd(reminders.tomSsa.postedMinor, scale)}`
+                  }.`
               : "Loading Social Security retirement…"}
           </p>
+          {ssaStep === "Payee" ? (
+            <div className="trends-capture-grid">
+              <label>
+                Payee
+                <select
+                  aria-label="SSA payee"
+                  value={ssaPayee}
+                  onChange={(e) =>
+                    markSsa(() =>
+                      setSsaPayee(e.target.value === "barbara" ? "barbara" : "tom"),
+                    )
+                  }
+                >
+                  <option value="barbara">Barbara — {formatUsd(133100, scale)}</option>
+                  <option value="tom">Tom — {formatUsd(286500, scale)}</option>
+                </select>
+              </label>
+            </div>
+          ) : null}
           {ssaStep === "Account" ? (
             <div className="trends-capture-grid">
               <label>
@@ -703,7 +813,7 @@ export function CashManagementPanel({
                   onChange={(e) => markSsa(() => setSsaAccountId(e.target.value))}
                 >
                   <option value="">Select account</option>
-                  {accounts.map((a) => (
+                  {accountsForCashType(accounts, "SSA").map((a) => (
                     <option key={a.accountId} value={a.accountId}>
                       {a.name}
                     </option>
@@ -739,11 +849,11 @@ export function CashManagementPanel({
             {ssaReceivedMinor == null
               ? "Received stays blank until entered."
               : ssaVariance
-                ? `Variance ${formatUsd(ssaReceivedMinor - tomExpected, scale)} — exception stays open.`
+                ? `Variance ${formatUsd(ssaReceivedMinor - ssaExpected, scale)} — exception stays open.`
                 : "Matches expected."}
           </p>
           <div className="buttons">
-            {ssaStep !== "Account" ? (
+            {ssaStep !== "Payee" ? (
               <button
                 type="button"
                 aria-label="Previous Tom SSA step"
@@ -774,6 +884,7 @@ export function CashManagementPanel({
                     occurredOn: ssaOccurredOn,
                     receivedMinor: ssaReceivedMinor,
                     scale,
+                    payee: ssaPayee,
                   }).then((ok) => {
                     if (ok) {
                       resetSsa();
@@ -947,8 +1058,54 @@ export function CashManagementPanel({
             {distributions.netMinor != null
               ? `; net ${formatUsd(distributions.netMinor, distributions.scale)}`
               : ""}
-            . Non-ROI ledger only.
+            . Non-ROI ledger only. IRA ordinary groups Income and Speculation;
+            Roth and taxable brokerage stay in their own sections.
           </p>
+          <div
+            className="cm-dist-bar"
+            aria-label="Distribution account totals"
+          >
+            <button
+              type="button"
+              aria-label="All distribution accounts"
+              aria-pressed={distAccount === "all"}
+              className={distAccount === "all" ? "is-selected" : undefined}
+              onClick={() => setDistAccount("all")}
+            >
+              <strong>All</strong>
+              <span>{formatUsd(distributions.grossMinor, distributions.scale)}</span>
+            </button>
+            {(distributions.accountTotals ?? []).map((acct) => (
+              <button
+                type="button"
+                key={acct.accountName}
+                aria-label={`${acct.accountName} distribution total`}
+                aria-pressed={distAccount === acct.accountName}
+                className={distAccount === acct.accountName ? "is-selected" : undefined}
+                onClick={() =>
+                  setDistAccount((prev) =>
+                    prev === acct.accountName ? "all" : acct.accountName,
+                  )
+                }
+              >
+                <strong>{acct.accountName}</strong>
+                <span>{formatUsd(acct.grossMinor, distributions.scale)}</span>
+              </button>
+            ))}
+          </div>
+          {(distributions.sections ?? []).length > 0 ? (
+            <div className="cm-dist-sections" aria-label="Distribution tax sections">
+              {(distributions.sections ?? []).map((section) => (
+                <div key={section.id} className="cm-dist-section">
+                  <p>
+                    <strong>{section.label}</strong>{" "}
+                    {formatUsd(section.grossMinor, distributions.scale)}
+                  </p>
+                  <p>{section.taxNote}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="table-wrap">
             <table>
               <thead>
@@ -963,7 +1120,13 @@ export function CashManagementPanel({
                 </tr>
               </thead>
               <tbody>
-                {distributions.lines.slice(-40).map((line, i) => (
+                {distributions.lines
+                  .filter(
+                    (line) =>
+                      distAccount === "all" || line.accountName === distAccount,
+                  )
+                  .slice(-40)
+                  .map((line, i) => (
                   <tr key={`${line.occurredOn}-${line.activityType}-${i}`}>
                     <td>{line.occurredOn}</td>
                     <td>{line.activityType}</td>

@@ -2,8 +2,8 @@
 
 use crate::contracts::{
     ActivityRecord, CashManagementMonthBody, CashManagementMonthRow, CashManagementRemindersBody,
-    CashManagementSaturdayDraft, CashManagementSsaRecent, CashManagementTomSsa,
-    CashManagementWeekBody, CashManagementWeekRow,
+    CashManagementSaturdayDraft, CashManagementSsaPayee, CashManagementSsaRecent,
+    CashManagementTomSsa, CashManagementWeekBody, CashManagementWeekRow,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
@@ -20,6 +20,20 @@ pub async fn cash_distribution_post(
     scale: u8,
     idempotency_key: Option<String>,
 ) -> Result<ActivityRecord, PlatformError> {
+    let account = canonical.account_get(account_id).await?;
+    financial_domain::cash_management::cash_activity_allowed_for_account(
+        &activity_type,
+        &account.name,
+        &account.kind,
+    )
+    .map_err(|err| {
+        let code = match err {
+            financial_domain::error::DomainError::CashAccountKind => "cash_account_kind",
+            financial_domain::error::DomainError::CashDistributionType => "cash_distribution_type",
+            _ => "domain_error",
+        };
+        PlatformError::new(code, err.to_string())
+    })?;
     let net = financial_domain::cash_management::validate_cash_distribution(
         &activity_type,
         gross_minor,
@@ -144,17 +158,29 @@ pub async fn ssa_confirm(
     occurred_on: String,
     received_minor: Option<i64>,
     scale: u8,
+    payee_raw: Option<String>,
 ) -> Result<ActivityRecord, PlatformError> {
+    let payee = payee_raw
+        .as_deref()
+        .and_then(financial_domain::cash_management::SsaPayee::parse)
+        .unwrap_or(financial_domain::cash_management::SsaPayee::Tom);
     let Some(received) = received_minor else {
         return Err(PlatformError::new(
             "unknown_amount",
-            "Tom Social Security retirement received amount is unknown",
+            format!(
+                "{} Social Security retirement received amount is unknown",
+                payee.display_name()
+            ),
         ));
     };
     let date = financial_domain::trends::parse_iso_date(&occurred_on).ok_or_else(|| {
         PlatformError::new("bad_date", format!("invalid occurredOn {occurred_on}"))
     })?;
-    let key = financial_domain::cash_management::tom_ssa_idempotency_key(date.year(), date.month());
+    let key = financial_domain::cash_management::ssa_idempotency_key(
+        payee,
+        date.year(),
+        date.month(),
+    );
     let posted = cash_distribution_post(
         canonical,
         account_id,
@@ -167,14 +193,15 @@ pub async fn ssa_confirm(
         Some(key),
     )
     .await?;
-    if !financial_domain::cash_management::is_tom_ssa_amount(received) {
+    if received != payee.expected_minor() {
         let _ = canonical
             .exception_raise(
                 financial_domain::cash_management::SSA_VARIANCE_CODE.into(),
                 format!(
-                    "Tom Social Security retirement received {} cents; expected {} cents",
+                    "{} Social Security retirement received {} cents; expected {} cents",
+                    payee.display_name(),
                     received,
-                    financial_domain::cash_management::TOM_SSA_EXPECTED_MINOR
+                    payee.expected_minor()
                 ),
             )
             .await;
@@ -192,7 +219,13 @@ pub async fn cash_management_reminders(
     let period_start = week.start.format("%Y-%m-%d").to_string();
     let period_end = week.end.format("%Y-%m-%d").to_string();
     let year_month = format!("{:04}-{:02}", as_of_date.year(), as_of_date.month());
-    let confirm_key = financial_domain::cash_management::tom_ssa_idempotency_key(
+    let tom_confirm_key = financial_domain::cash_management::ssa_idempotency_key(
+        financial_domain::cash_management::SsaPayee::Tom,
+        as_of_date.year(),
+        as_of_date.month(),
+    );
+    let barbara_confirm_key = financial_domain::cash_management::ssa_idempotency_key(
+        financial_domain::cash_management::SsaPayee::Barbara,
         as_of_date.year(),
         as_of_date.month(),
     );
@@ -225,9 +258,13 @@ pub async fn cash_management_reminders(
                 &period_end,
             )
     });
-    let mut month_expected = Vec::new();
-    let mut confirm_amount = None;
-    let mut tom_rows: Vec<(String, i64, String, String)> = Vec::new();
+    let mut month_rows: Vec<(financial_domain::cash_management::SsaPayee, i64, String)> =
+        Vec::new();
+    let mut unclassified_month = 0usize;
+    let mut tom_confirm = None;
+    let mut barbara_confirm = None;
+    let mut recent_rows: Vec<(String, i64, String, String, Option<financial_domain::cash_management::SsaPayee>)> =
+        Vec::new();
     for a in &activities {
         if superseded.contains(&a.activity_id) || a.activity_type != "SSA" {
             continue;
@@ -237,41 +274,89 @@ pub async fn cash_management_reminders(
             .find(|acct| acct.account_id == a.account_id)
             .map(|acct| acct.name.clone())
             .unwrap_or_else(|| "unknown".into());
-        if a.idempotency_key == confirm_key {
-            confirm_amount = Some(a.amount_minor);
+        let payee = financial_domain::cash_management::classify_ssa_row(
+            &a.idempotency_key,
+            a.amount_minor,
+        );
+        if a.idempotency_key == tom_confirm_key {
+            tom_confirm = Some(a.amount_minor);
         }
-        if financial_domain::cash_management::is_tom_ssa_amount(a.amount_minor) {
-            if a.occurred_on.len() >= 7 && &a.occurred_on[..7] == year_month {
-                month_expected.push(a.amount_minor);
+        if a.idempotency_key == barbara_confirm_key {
+            barbara_confirm = Some(a.amount_minor);
+        }
+        let in_month = a.occurred_on.len() >= 7 && &a.occurred_on[..7] == year_month;
+        if in_month {
+            match payee {
+                Some(p) => month_rows.push((p, a.amount_minor, a.idempotency_key.clone())),
+                None => unclassified_month += 1,
             }
-            tom_rows.push((
-                a.occurred_on.clone(),
-                a.amount_minor,
-                account_name,
-                a.occurred_on.get(..7).unwrap_or("").to_string(),
-            ));
         }
+        recent_rows.push((
+            a.occurred_on.clone(),
+            a.amount_minor,
+            account_name,
+            a.occurred_on.get(..7).unwrap_or("").to_string(),
+            payee,
+        ));
     }
-    tom_rows.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut month_counts: std::collections::HashMap<String, usize> =
+    recent_rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut month_payee_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    let recent = tom_rows
+    let recent = recent_rows
         .into_iter()
-        .map(|(occurred_on, amount_minor, account_name, ym)| {
-            let count = month_counts.entry(ym).and_modify(|c| *c += 1).or_insert(1);
+        .map(|(occurred_on, amount_minor, account_name, ym, payee)| {
+            let bucket = format!("{}:{}", ym, payee.map(|p| p.as_str()).unwrap_or("other"));
+            let count = month_payee_counts
+                .entry(bucket)
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
             CashManagementSsaRecent {
                 occurred_on,
                 amount_minor,
                 account_name,
-                extra_audit: *count >= 2,
+                extra_audit: payee.is_none() || *count >= 2,
             }
         })
         .collect();
-    let (status, extra_audit, posted_minor) =
-        financial_domain::cash_management::tom_ssa_month_status(
-            month_expected.len(),
-            confirm_amount,
+    let tom_count = month_rows
+        .iter()
+        .filter(|(p, _, _)| *p == financial_domain::cash_management::SsaPayee::Tom)
+        .count();
+    let barbara_count = month_rows
+        .iter()
+        .filter(|(p, _, _)| *p == financial_domain::cash_management::SsaPayee::Barbara)
+        .count();
+    let (tom_status, tom_dup, tom_posted) =
+        financial_domain::cash_management::ssa_payee_month_status(
+            financial_domain::cash_management::SsaPayee::Tom,
+            tom_count,
+            tom_confirm,
         );
+    let (barbara_status, barbara_dup, barbara_posted) =
+        financial_domain::cash_management::ssa_payee_month_status(
+            financial_domain::cash_management::SsaPayee::Barbara,
+            barbara_count,
+            barbara_confirm,
+        );
+    let extra_audit = financial_domain::cash_management::ssa_household_extra_audit(
+        month_rows.len() + unclassified_month,
+        tom_dup || barbara_dup,
+        unclassified_month > 0,
+    );
+    let ssa_payees = vec![
+        CashManagementSsaPayee {
+            payee: "barbara".into(),
+            expected_minor: financial_domain::cash_management::BARBARA_SSA_EXPECTED_MINOR,
+            status: barbara_status.as_str().into(),
+            posted_minor: barbara_posted,
+        },
+        CashManagementSsaPayee {
+            payee: "tom".into(),
+            expected_minor: financial_domain::cash_management::TOM_SSA_EXPECTED_MINOR,
+            status: tom_status.as_str().into(),
+            posted_minor: tom_posted,
+        },
+    ];
     Ok(CashManagementRemindersBody {
         as_of_date: as_of_date.format("%Y-%m-%d").to_string(),
         saturday_draft: CashManagementSaturdayDraft {
@@ -285,13 +370,14 @@ pub async fn cash_management_reminders(
             year_month,
             expected_minor: financial_domain::cash_management::TOM_SSA_EXPECTED_MINOR,
             label: financial_domain::cash_management::SSA_RETIREMENT_LABEL.into(),
-            status: status.as_str().into(),
-            posted_minor,
+            status: tom_status.as_str().into(),
+            posted_minor: tom_posted,
             extra_audit,
             suggested_account_id: external.map(|a| a.account_id),
             suggested_account_name: external.map(|a| a.name.clone()).unwrap_or_default(),
             recent,
         },
+        ssa_payees,
         scale: 2,
     })
 }

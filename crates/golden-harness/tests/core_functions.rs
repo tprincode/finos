@@ -142,6 +142,42 @@ fn core_functions_catalog_sentinels_still_exist() {
             .all(|s| !s.must_contain.contains("schtasks")),
         "file-restart-graceful sentinels must not lock schtasks"
     );
+    let contracts = std::fs::read_to_string(root.join("docs/architecture/component-contracts.md"))
+        .expect("component-contracts.md");
+    assert!(
+        !contracts.contains("implementations land in later milestones"),
+        "contracts must not say implementations are still future work"
+    );
+    assert!(
+        !contracts.contains("parked until the owner names SC-1"),
+        "Shopping Cart scenario commands are shipped"
+    );
+    for name in [
+        "CashDistributionPost",
+        "SsaConfirm",
+        "CashManagementWeekGet",
+        "CashManagementRemindersGet",
+        "CashManagementMonthGet",
+        "TrendsWeekSave",
+        "IncomePlanWeekGet",
+        "IncomePlanGridGet",
+        "IncomePlanExportGet",
+        "DashboardBurndownGet",
+        "LastPriceAutoWindowGet",
+        "CashPileGet",
+        "WorkTicketList",
+        "DividendPerformanceGet",
+    ] {
+        assert!(
+            contracts.contains(name),
+            "component-contracts.md must name {name}"
+        );
+    }
+    assert!(
+        contracts.contains("one `Canonical` port") || contracts.contains("one Canonical port"),
+        "contracts must restate isolation as a port/review rule"
+    );
+
     for id in [
         "file-restart-graceful",
         "cash-management-post",
