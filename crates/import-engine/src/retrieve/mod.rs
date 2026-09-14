@@ -435,14 +435,26 @@ fn http_get_bytes_probed(url: &str) -> (Result<Vec<u8>, String>, Value) {
             let mut buf = Vec::new();
             match std::io::Read::read_to_end(&mut reader, &mut buf) {
                 Ok(_) => (Ok(buf), http_probe(url, Some(status), None)),
-                Err(e) => (
-                    Err(e.to_string()),
-                    http_probe(url, Some(status), Some(&e.to_string())),
-                ),
+                Err(e) => {
+                    #[cfg(windows)]
+                    if let Ok(via_curl) = http_get_bytes_via_os_curl(url) {
+                        return (Ok(via_curl), http_probe(url, Some(200), None));
+                    }
+                    (
+                        Err(e.to_string()),
+                        http_probe(url, Some(status), Some(&e.to_string())),
+                    )
+                }
             }
         }
         Err(e) => {
             let (status, msg) = http_status_from_err(&e);
+            #[cfg(windows)]
+            if status.is_none() {
+                if let Ok(buf) = http_get_bytes_via_os_curl(url) {
+                    return (Ok(buf), http_probe(url, Some(200), None));
+                }
+            }
             let classified = classify_http_error(url, status, &msg);
             (
                 Err(classified.clone()),
@@ -450,6 +462,24 @@ fn http_get_bytes_probed(url: &str) -> (Result<Vec<u8>, String>, Value) {
             )
         }
     }
+}
+
+#[cfg(windows)]
+fn http_get_bytes_via_os_curl(url: &str) -> Result<Vec<u8>, String> {
+    if !https_url_safe_for_os_curl(url) {
+        return Err("invalid_url".into());
+    }
+    let out = std::process::Command::new("curl.exe")
+        .args(["-sL", "-m", "25", "-A", HTTP_UA, "--proto", "=https", url])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("curl_exit {}", out.status));
+    }
+    if out.stdout.is_empty() {
+        return Err("empty_body".into());
+    }
+    Ok(out.stdout)
 }
 
 fn http_get_probed(url: &str) -> (Result<String, String>, Value) {
@@ -460,7 +490,14 @@ fn http_get_probed(url: &str) -> (Result<String, String>, Value) {
     if first.0.is_ok() {
         return first;
     }
-    if first.1.get("status").and_then(|s| s.as_u64()) != Some(403) {
+    let status = first.1.get("status").and_then(|s| s.as_u64());
+    if status != Some(403) {
+        #[cfg(windows)]
+        if status.is_none() {
+            if let Ok(body) = http_get_via_os_curl(url) {
+                return (Ok(body), http_probe(url, Some(200), None));
+            }
+        }
         return first;
     }
     let quiet = ureq_get_string(apply_quiet_browser_headers(http_agent().get(url)), url);
@@ -605,10 +642,46 @@ fn notice_text_from_bytes(bytes: &[u8]) -> String {
     pdf_notice_text(bytes)
 }
 
+/// Parse a downloaded 19a-1 PDF/DOCX. Empty means unknown, not 0%.
+pub fn roc_from_notice_bytes(bytes: &[u8]) -> Option<(i64, String)> {
+    parse_19a1_notice(&notice_text_from_bytes(bytes))
+}
+
 fn docx_plain_text(bytes: &[u8]) -> Option<String> {
     if !bytes.starts_with(b"PK") {
         return None;
     }
+    if let Some(text) = docx_from_central_directory(bytes) {
+        return Some(text);
+    }
+    docx_from_local_headers(bytes)
+}
+
+/// Prefer the ZIP central directory so data-descriptor local headers (comp_size 0) still extract.
+fn docx_from_central_directory(bytes: &[u8]) -> Option<String> {
+    let mut i = 0usize;
+    while i + 46 < bytes.len() {
+        if &bytes[i..i + 4] != b"PK\x01\x02" {
+            i += 1;
+            continue;
+        }
+        let method = u16::from_le_bytes([bytes[i + 10], bytes[i + 11]]);
+        let comp_size = u32::from_le_bytes(bytes[i + 20..i + 24].try_into().ok()?) as usize;
+        let name_len = u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
+        let extra_len = u16::from_le_bytes([bytes[i + 30], bytes[i + 31]]) as usize;
+        let comment_len = u16::from_le_bytes([bytes[i + 32], bytes[i + 33]]) as usize;
+        let local_off = u32::from_le_bytes(bytes[i + 42..i + 46].try_into().ok()?) as usize;
+        let name_at = i + 46;
+        let name = std::str::from_utf8(bytes.get(name_at..name_at + name_len)?).ok()?;
+        if name == "word/document.xml" {
+            return inflate_docx_xml(bytes, local_off, method, comp_size);
+        }
+        i = name_at + name_len + extra_len + comment_len;
+    }
+    None
+}
+
+fn docx_from_local_headers(bytes: &[u8]) -> Option<String> {
     let mut i = 0usize;
     while i + 30 < bytes.len() {
         if &bytes[i..i + 4] != b"PK\x03\x04" {
@@ -616,31 +689,60 @@ fn docx_plain_text(bytes: &[u8]) -> Option<String> {
             continue;
         }
         let method = u16::from_le_bytes([bytes[i + 8], bytes[i + 9]]);
-        let comp_size = u32::from_le_bytes(bytes[i + 18..i + 22].try_into().ok()?) as usize;
+        let flags = u16::from_le_bytes([bytes[i + 6], bytes[i + 7]]);
+        let mut comp_size = u32::from_le_bytes(bytes[i + 18..i + 22].try_into().ok()?) as usize;
         let name_len = u16::from_le_bytes([bytes[i + 26], bytes[i + 27]]) as usize;
         let extra_len = u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
         let name_at = i + 30;
         let name = std::str::from_utf8(bytes.get(name_at..name_at + name_len)?).ok()?;
         let data_at = name_at + name_len + extra_len;
-        let data = bytes.get(data_at..data_at + comp_size)?;
         if name == "word/document.xml" {
-            let xml = if method == 0 {
-                String::from_utf8_lossy(data).into_owned()
-            } else if method == 8 {
-                use flate2::read::DeflateDecoder;
-                use std::io::Read;
-                let mut dec = DeflateDecoder::new(data);
-                let mut s = String::new();
-                dec.read_to_string(&mut s).ok()?;
-                s
-            } else {
-                return None;
-            };
-            return Some(strip_html(&xml.replace('<', " <")));
+            if comp_size == 0 || flags & 8 != 0 {
+                comp_size = bytes.len().saturating_sub(data_at);
+            }
+            return inflate_docx_payload(bytes.get(data_at..data_at + comp_size)?, method);
         }
-        i = data_at + comp_size;
+        i = data_at + comp_size.max(1);
     }
     None
+}
+
+fn inflate_docx_xml(bytes: &[u8], local_off: usize, method: u16, comp_size: usize) -> Option<String> {
+    if local_off + 30 > bytes.len() {
+        return None;
+    }
+    if &bytes[local_off..local_off + 4] != b"PK\x03\x04" {
+        return None;
+    }
+    let name_len = u16::from_le_bytes([bytes[local_off + 26], bytes[local_off + 27]]) as usize;
+    let extra_len = u16::from_le_bytes([bytes[local_off + 28], bytes[local_off + 29]]) as usize;
+    let data_at = local_off + 30 + name_len + extra_len;
+    let take = if comp_size == 0 {
+        bytes.len().saturating_sub(data_at)
+    } else {
+        comp_size
+    };
+    inflate_docx_payload(bytes.get(data_at..data_at + take)?, method)
+}
+
+fn inflate_docx_payload(data: &[u8], method: u16) -> Option<String> {
+    let xml = if method == 0 {
+        String::from_utf8_lossy(data).into_owned()
+    } else if method == 8 {
+        use flate2::read::DeflateDecoder;
+        use std::io::Read;
+        let mut dec = DeflateDecoder::new(data);
+        let mut s = String::new();
+        dec.read_to_string(&mut s).ok()?;
+        s
+    } else {
+        return None;
+    };
+    if xml.contains("w:t") || xml.contains("<w:") {
+        Some(strip_html(&xml.replace('<', " <")))
+    } else {
+        None
+    }
 }
 
 fn pdf_ascii(bytes: &[u8]) -> String {
@@ -681,7 +783,32 @@ pub fn parse_19a1_notice(text: &str) -> Option<(i64, String)> {
             }
         }
     }
+    if let Some(hit) = parse_19a1_return_of_capital_table(&adapters::collapse_spaced_financial(text))
+    {
+        return Some(hit);
+    }
     adapters::parse_return_of_capital_pct(text)
+}
+
+/// Global X table row: `Return of Capital $0.1824 99.72%` (not the prose mention).
+fn parse_19a1_return_of_capital_table(text: &str) -> Option<(i64, String)> {
+    let lower = text.to_ascii_lowercase();
+    let mut search = 0usize;
+    while let Some(rel) = lower.get(search..).and_then(|s| s.find("return of capital")) {
+        let idx = search + rel + 17;
+        let after = text.get(idx..idx.saturating_add(80).min(text.len())).unwrap_or("");
+        if let Some(dollar) = after.find('$') {
+            if dollar < 24 {
+                if let Some(pct) = first_percent(&after[dollar..]) {
+                    if (1..=10_000).contains(&pct) {
+                        return Some((pct, "19a-1 table current distribution".into()));
+                    }
+                }
+            }
+        }
+        search = idx;
+    }
+    None
 }
 
 fn trailing_percent(before: &str) -> Option<i64> {
@@ -1027,20 +1154,22 @@ fn live_vendor_search_roc(
     let mut seed_urls = Vec::new();
     if let Ok(html) = &search_got {
         if let Some((pct, how)) = financial_domain::collector::roc_from_payment_type(html) {
-            let as_of = Utc::now().date_naive().to_string();
-            return (
-                LiveRocFill {
-                    candidates: vec![roc_estimate(
-                        pct,
-                        source_url,
-                        &as_of,
-                        how.to_string(),
-                        "payment-type",
-                    )],
-                    probes,
-                },
-                true,
-            );
+            if pct > 0 {
+                let as_of = Utc::now().date_naive().to_string();
+                return (
+                    LiveRocFill {
+                        candidates: vec![roc_estimate(
+                            pct,
+                            source_url,
+                            &as_of,
+                            how.to_string(),
+                            "payment-type",
+                        )],
+                        probes,
+                    },
+                    true,
+                );
+            }
         }
         seed_urls = rank_roc_search_urls(&parse_search_result_urls(html), vendor_host, &sym);
     }
@@ -1087,7 +1216,7 @@ fn follow_vendor_19a1_seeds(
             continue;
         }
         let lower = url.to_ascii_lowercase();
-        if lower.contains(".pdf") {
+        if lower.contains(".pdf") || lower.contains(".docx") {
             if !pdf_queue.iter().any(|u| u == url) {
                 pdf_queue.push(url.clone());
             }
@@ -1106,35 +1235,45 @@ fn follow_vendor_19a1_seeds(
             continue;
         };
         if let Some((pct, how)) = financial_domain::collector::roc_from_payment_type(&html) {
-            let as_of = Utc::now().date_naive().to_string();
-            return LiveRocFill {
-                candidates: vec![roc_estimate(pct, &page, &as_of, how.to_string(), "payment-type")],
-                probes: probes.clone(),
-            };
+            if pct > 0 {
+                let as_of = Utc::now().date_naive().to_string();
+                return LiveRocFill {
+                    candidates: vec![roc_estimate(pct, &page, &as_of, how.to_string(), "payment-type")],
+                    probes: probes.clone(),
+                };
+            }
         }
         for needle in [
             "19a-1_Notice_",
             "19a-1",
             "form 19a-1",
             "form-19a",
+            "s19a",
+            "s19(a)",
+            "19(a)",
             "tax-center",
             "tax center",
             "tax-supplements",
+            "supplemental-tax",
         ] {
             for href in hrefs_matching(&html, needle, origin) {
                 if is_blocked_roc_crawl_url(&href) {
                     continue;
                 }
                 let lower = href.to_ascii_lowercase();
+                let ticker_in_url = href.to_ascii_uppercase().contains(&sym_u);
+                let simplify_s19a = lower.contains("s19a") || lower.contains("s19(a)");
                 if (lower.contains(".pdf") || lower.contains(".docx"))
-                    && href.to_ascii_uppercase().contains(&sym_u)
+                    && (ticker_in_url || simplify_s19a)
                 {
                     if !pdf_queue.iter().any(|u| u == &href) {
                         pdf_queue.push(href);
                     }
                 } else if (lower.contains("tax-center")
                     || lower.contains("19a-1")
-                    || lower.contains("19a1"))
+                    || lower.contains("19a1")
+                    || lower.contains("s19a")
+                    || lower.contains("supplemental-tax"))
                     && !lower.contains(".pdf")
                     && seen_hubs.insert(href.clone())
                     && seen_hubs.len() < 8
@@ -1145,6 +1284,13 @@ fn follow_vendor_19a1_seeds(
         }
     }
 
+    pdf_queue.sort_by(|a, b| {
+        adapters::globalx_19a_recency(b)
+            .cmp(&adapters::globalx_19a_recency(a))
+            .then_with(|| {
+                adapters::simplify_s19a_recency(b).cmp(&adapters::simplify_s19a_recency(a))
+            })
+    });
     for href in pdf_queue {
         let (got, probe) = http_get_bytes_probed(&href);
         probes.push(probe);
@@ -1152,7 +1298,8 @@ fn follow_vendor_19a1_seeds(
             continue;
         };
         let text = notice_text_from_bytes(&bytes);
-        if let Some((pct, how)) = parse_19a1_notice(&text)
+        if let Some((pct, how)) = adapters::parse_simplify_s19a_roc(&text, &sym_u)
+            .or_else(|| parse_19a1_notice(&text))
             .or_else(|| adapters::parse_return_of_capital_pct(&text))
         {
             if pct <= 0 {
@@ -1268,6 +1415,13 @@ fn live_globalx_roc(symbol: &str) -> LiveRocFill {
             }
         }
     }
+    notices.sort_by(|a, b| {
+        adapters::globalx_19a_recency(b).cmp(&adapters::globalx_19a_recency(a))
+    });
+    let year_now = Utc::now().year();
+    if notices.iter().any(|u| adapters::globalx_19a_recency(u).0 == year_now) {
+        notices.retain(|u| adapters::globalx_19a_recency(u).0 >= year_now);
+    }
     if notices.is_empty() {
         return LiveRocFill {
             candidates: Vec::new(),
@@ -1282,22 +1436,181 @@ fn live_globalx_roc(symbol: &str) -> LiveRocFill {
     )
 }
 
-fn live_roundhill_roc(symbol: &str) -> LiveRocFill {
-    let Some((url, html, _)) = fetch_adapter_page("roundhill", symbol, None) else {
-        return LiveRocFill::default();
-    };
-    let probes = vec![http_probe(&url, Some(200), None)];
-    if let Some(pct) = parse_roundhill_roc_html(&html) {
+fn drop_false_payment_type_zero(fill: LiveRocFill) -> LiveRocFill {
+    let candidates: Vec<Value> = fill
+        .candidates
+        .into_iter()
+        .filter(|c| {
+            let method = c.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            let pct = c.get("rocPctMinor").and_then(|p| p.as_i64());
+            !(method == "payment-type" && pct == Some(0))
+        })
+        .collect();
+    LiveRocFill {
+        candidates,
+        probes: fill.probes,
+    }
+}
+
+fn live_simplify_roc(symbol: &str) -> LiveRocFill {
+    let mut probes = Vec::new();
+    let mut seeds = Vec::new();
+    let fund = adapters::simplify_fund_url(symbol);
+    let (fund_got, fund_probe) = http_get_probed(&fund);
+    probes.push(fund_probe);
+    let mut hubs = vec![
+        "https://www.simplify.us/etfs/2221/supplemental-tax-information".into(),
+    ];
+    if let Ok(html) = &fund_got {
+        if let Some(tax) = adapters::simplify_supplemental_tax_url(html) {
+            if !hubs.iter().any(|u| u == &tax) {
+                hubs.insert(0, tax);
+            }
+        }
+        for url in adapters::simplify_s19a_notice_urls(html, "https://www.simplify.us") {
+            if !seeds.iter().any(|u| u == &url) {
+                seeds.push(url);
+            }
+        }
+    }
+    for hub in hubs {
+        let (got, probe) = http_get_probed(&hub);
+        probes.push(probe);
+        let Ok(html) = got else {
+            continue;
+        };
+        for url in adapters::simplify_s19a_notice_urls(&html, "https://www.simplify.us") {
+            if !seeds.iter().any(|u| u == &url) {
+                seeds.push(url);
+            }
+        }
+        for url in adapters::https_urls_matching(&html, "s19a") {
+            let lower = url.to_ascii_lowercase();
+            if lower.contains(".pdf") && !seeds.iter().any(|u| u == &url) {
+                seeds.push(url);
+            }
+        }
+    }
+    seeds.sort_by(|a, b| adapters::simplify_s19a_recency(b).cmp(&adapters::simplify_s19a_recency(a)));
+    if seeds.is_empty() {
         return LiveRocFill {
-            candidates: vec![roc_estimate(
-                pct,
-                &url,
-                &Utc::now().date_naive().to_string(),
-                "issuer page 19a-1 sentence".into(),
-                "19a-1-current-year",
-            )],
+            candidates: Vec::new(),
             probes,
         };
+    }
+    follow_vendor_19a1_seeds(
+        &yahoo_symbol(symbol),
+        &seeds,
+        "https://www.simplify.us",
+        &mut probes,
+    )
+}
+
+fn live_tappalpha_roc(symbol: &str) -> LiveRocFill {
+    let mut probes = Vec::new();
+    let page = adapters::tappalpha_fund_page_url(symbol);
+    let api = adapters::tappalpha_distributions_url(symbol);
+    let (got, probe) = http_get_probed(&api);
+    probes.push(probe);
+    if let Ok(body) = &got {
+        if let Some((pct, on)) = adapters::parse_tappalpha_table_roc(body) {
+            let as_of = if on.is_empty() {
+                Utc::now().date_naive().to_string()
+            } else {
+                on
+            };
+            return LiveRocFill {
+                candidates: vec![roc_estimate(
+                    pct,
+                    &page,
+                    &as_of,
+                    "distributions table ROC percent".into(),
+                    "table-roc-current",
+                )],
+                probes,
+            };
+        }
+        let notices = adapters::tappalpha_19a1_notice_urls(body);
+        if !notices.is_empty() {
+            return follow_vendor_19a1_seeds(
+                &yahoo_symbol(symbol),
+                &notices,
+                "https://tappalphafunds.com",
+                &mut probes,
+            );
+        }
+    }
+    let (page_got, page_probe) = http_get_probed(&page);
+    probes.push(page_probe);
+    if let Ok(html) = page_got {
+        if let Some((pct, on)) = adapters::parse_tappalpha_table_roc(&html) {
+            let as_of = if on.is_empty() {
+                Utc::now().date_naive().to_string()
+            } else {
+                on
+            };
+            return LiveRocFill {
+                candidates: vec![roc_estimate(
+                    pct,
+                    &page,
+                    &as_of,
+                    "distributions table ROC percent".into(),
+                    "table-roc-current",
+                )],
+                probes,
+            };
+        }
+        let notices = adapters::tappalpha_19a1_notice_urls(&html);
+        if !notices.is_empty() {
+            return follow_vendor_19a1_seeds(
+                &yahoo_symbol(symbol),
+                &notices,
+                "https://tappalphafunds.com",
+                &mut probes,
+            );
+        }
+    }
+    LiveRocFill {
+        candidates: Vec::new(),
+        probes,
+    }
+}
+
+fn live_roundhill_roc(symbol: &str) -> LiveRocFill {
+    let mut probes = Vec::new();
+    for url in adapter_probe_urls("roundhill", symbol) {
+        let (got, probe) = http_get_probed(&url);
+        probes.push(probe);
+        let Ok(html) = got else {
+            continue;
+        };
+        if let Some(pct) = parse_roundhill_roc_html(&html) {
+            return LiveRocFill {
+                candidates: vec![roc_estimate(
+                    pct,
+                    &url,
+                    &Utc::now().date_naive().to_string(),
+                    "issuer page 19a-1 sentence".into(),
+                    "19a-1-current-year",
+                )],
+                probes,
+            };
+        }
+    }
+    if let Some((url, html, _)) = fetch_adapter_page("roundhill", symbol, None) {
+        probes.push(http_probe(&url, Some(200), None));
+        if let Some(pct) = parse_roundhill_roc_html(&html) {
+            return LiveRocFill {
+                candidates: vec![roc_estimate(
+                    pct,
+                    &url,
+                    &Utc::now().date_naive().to_string(),
+                    "issuer page 19a-1 sentence".into(),
+                    "19a-1-current-year",
+                )],
+                probes,
+            };
+        }
     }
     LiveRocFill {
         candidates: Vec::new(),
@@ -1366,8 +1679,41 @@ pub fn live_roc_candidates_for(symbol: &str, declaration_source: &str, source_ur
         if !stored.candidates.is_empty() {
             return stored;
         }
+        let file = source_url.to_ascii_lowercase();
+        if file.contains(".pdf") || file.contains(".docx") {
+            return stored;
+        }
+    }
+    // Global X tax hub is the standing source. Search after the hub so a DDG/timeout
+    // cannot block Form 19a files already linked from the issuer index.
+    if src == "globalx" {
+        let page = live_globalx_roc(symbol);
+        if !page.candidates.is_empty() {
+            return page;
+        }
+    }
+    if src == "roundhill" {
+        let page = live_roundhill_roc(symbol);
+        if !page.candidates.is_empty() {
+            return page;
+        }
     }
     let (searched, search_hit) = live_vendor_search_roc(symbol, vendor_name, &host, source_url);
+    let searched = drop_false_payment_type_zero(searched);
+    // Simplify monthly S19(a) notices: walk the fund/tax hubs and take the newest month.
+    // A search hit on one dated PDF must not freeze an older estimate.
+    if src == "simplify" {
+        let page = live_simplify_roc(symbol);
+        if !page.candidates.is_empty() {
+            return page;
+        }
+    }
+    if src == "tappalpha" {
+        let page = live_tappalpha_roc(symbol);
+        if !page.candidates.is_empty() {
+            return page;
+        }
+    }
     if !searched.candidates.is_empty() {
         return searched;
     }
@@ -1377,6 +1723,8 @@ pub fn live_roc_candidates_for(symbol: &str, declaration_source: &str, source_ur
         "yieldmax" => live_yieldmax_roc(symbol, source_url),
         "roundhill" => live_roundhill_roc(symbol),
         "globalx" => live_globalx_roc(symbol),
+        "simplify" => live_simplify_roc(symbol),
+        "tappalpha" => live_tappalpha_roc(symbol),
         _ => LiveRocFill::default(),
     };
     if !page.candidates.is_empty() {
@@ -4249,12 +4597,26 @@ mod tests {
     }
 
     #[test]
+    fn globalx_current_distribution_table_is_99_72() {
+        let text = "Net Investment Income $0.0005 0.28% Return of Capital $0.1824 99.72% Total (per Capital Share) $0.1829 100.00%";
+        let (pct, how) = parse_19a1_notice(text).expect("QYLD table");
+        assert_eq!(pct, 9_972);
+        assert!(how.contains("table"));
+    }
+
+    #[test]
     fn stored_roc_url_blocks_invented_filenames() {
         let stored = "https://issuer.example/files/19a-1_Notice_05-29-26_PAY1.pdf";
         assert!(looks_like_roc_notice_url(stored));
         assert!(!should_invent_dated_19a1_filenames("amplify", stored));
         assert!(should_invent_dated_19a1_filenames("amplify", ""));
         assert!(!should_invent_dated_19a1_filenames("issuer", ""));
+        assert!(looks_like_roc_notice_url(
+            "https://www.simplify.us/sites/default/files/2026-08/S19a_Notice_2026_August_M.pdf"
+        ));
+        assert!(!looks_like_roc_notice_url(
+            "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf"
+        ));
     }
 
     #[test]

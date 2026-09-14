@@ -1,4 +1,6 @@
 //! Collector complete is not last_run_ok alone. A failed last run is still a gap.
+//! Establish locks two retrieve templates: Template Dividend (owner seed URL) and
+//! Template ROC (19.1 tax ROC search, then standing reusable URL). They stay separate.
 //! Required Skip is not complete (F1).
 //! Remaining-year prefers stored unoccurred dates vs the issuer list (D2).
 //! Calendar `remaining_periods_to_year_end` is derive-once only.
@@ -14,8 +16,34 @@ use crate::declaration_lookback::{validate_paid_lookback, LookbackValidation};
 use crate::div1::is_div1;
 use crate::schedule::remaining_periods_to_year_end;
 
+/// Holdings only. Not on Income Plan. Never collectors — not Collectors grid,
+/// not Run enabled, not recertify, not miss counts. Lots and history stay.
+pub const NOT_A_COLLECTOR_SYMBOLS: &[&str] = &["MSTU", "SOXL", "TSLL"];
+/// Same list. Prefer `NOT_A_COLLECTOR_SYMBOLS`.
+pub const PARKED_LONG_HOLD_SYMBOLS: &[&str] = NOT_A_COLLECTOR_SYMBOLS;
+
+/// Last-run-OK income fleet on the Profile A file (13 Sep 2026). Sorted.
+pub const INCOME_FLEET_SYMBOLS: &[&str] = &[
+    "AMDW", "AMDY", "AMZY", "BITO", "BTCI", "CEFS", "CLM", "CONY", "CRF", "EFC",
+    "EPD", "ET", "FDRXX", "GLAD", "HAKY", "IGLD", "JEPQ", "MPLX", "MSTY", "NFLY",
+    "NVDW", "ORC", "PLTW", "QDTE", "QDVO", "QQQI", "QYLD", "RDTE", "SPAXX", "SPYI",
+    "SVOL", "SWVXX", "TOPW", "TRIN", "TSLW", "TSPY", "XDTE", "XPAY", "YBTC", "YMAX",
+];
+
+pub fn is_not_a_collector(symbol: &str) -> bool {
+    let sym = symbol.trim().to_ascii_uppercase();
+    NOT_A_COLLECTOR_SYMBOLS.iter().any(|s| *s == sym)
+}
+
+pub fn is_parked_long_hold(symbol: &str) -> bool {
+    is_not_a_collector(symbol)
+}
+
 /// Required checklist fields. Skip on any of these is incomplete. Backtest is not in this list.
+/// `template_dividend` and `template_roc` are the two locked retrieve templates (owner seed vs 19a-1 search).
 pub const REQUIRED_FIELDS: &[&str] = &[
+    "template_dividend",
+    "template_roc",
     "div_type",
     "frequency",
     "underlying",
@@ -28,7 +56,10 @@ pub const REQUIRED_FIELDS: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectorCompleteSpec<'a> {
-    pub has_template: bool,
+    /// Template Dividend: standing declaration URL (owner seed). Empty = incomplete.
+    pub has_dividend_template: bool,
+    /// Template ROC: standing reusable 19a-1/tax URL. Required when ROC is in scope.
+    pub has_roc_template: bool,
     pub symbol: &'a str,
     pub div_type: &'a str,
     pub payment_frequency: &'a str,
@@ -103,7 +134,7 @@ pub fn roc_scope(symbol: &str, div_type: &str, provider: &str, structure_text: &
     }
     if matches!(
         sym.as_str(),
-        "EPD" | "MPLX" | "MLP1" | "TSLL" | "SOXL" | "MSTU" | "EFC" | "ORD1"
+        "EPD" | "ET" | "MPLX" | "MLP1" | "TSLL" | "SOXL" | "MSTU" | "EFC" | "ORD1"
     ) || blob.contains("limited partnership")
         || blob.contains("k-1")
         || blob.contains(" k1")
@@ -131,8 +162,8 @@ pub fn collector_is_complete(spec: &CollectorCompleteSpec<'_>) -> bool {
 
 pub fn collector_status(spec: &CollectorCompleteSpec<'_>) -> CollectorCompleteStatus {
     let mut gaps = Vec::new();
-    if !spec.has_template {
-        gaps.push("template".into());
+    if !spec.has_dividend_template {
+        gaps.push("template_dividend".into());
     }
     if spec.last_run_ok == Some(false) {
         gaps.push("last_run".into());
@@ -176,6 +207,9 @@ pub fn collector_status(spec: &CollectorCompleteSpec<'_>) -> CollectorCompleteSt
 
     let scope = roc_scope(spec.symbol, spec.div_type, spec.provider, "");
     if !scope.skips_roc_estimate() {
+        if !spec.has_roc_template {
+            gaps.push("template_roc".into());
+        }
         let roc_filled = spec.roc_pct_minor.is_some() && spec.roc_owner_accepted;
         if !roc_filled {
             gaps.push("roc_estimate".into());
@@ -327,8 +361,9 @@ pub fn roc_from_payment_type(text: &str) -> Option<(i64, &'static str)> {
     None
 }
 
-/// Fallback search when the standing `roc_source_url` fails.
-/// Template: `19.1 tax ROC (TICKER) (Provider) website data source`.
+/// Fallback search when the standing Template ROC URL fails.
+/// Template ROC: `19.1 tax ROC (TICKER) (Provider) website data source`.
+/// Template Dividend is the owner seed declaration URL — not this search.
 pub fn roc_fallback_search_query(ticker: &str, provider: &str) -> String {
     let ticker = ticker.trim().to_ascii_uppercase();
     let provider = provider.trim();
@@ -379,6 +414,8 @@ pub fn needs_owner_seed_url(
 pub fn fleet_gap_labels(gaps: &[String], complete: bool) -> Vec<String> {
     const ORDER: &[(&str, &str)] = &[
         ("seed_url", "seed URL"),
+        ("template_dividend", "Template Dividend"),
+        ("template_roc", "Template ROC"),
         ("roc_estimate", "ROC"),
         ("div_type", "DIV-1"),
         ("frequency", "frequency"),
@@ -421,20 +458,68 @@ pub fn declaration_daily_retrieve_current(
     last_run_at.trim().starts_with(day) && last_run_ok == Some(true)
 }
 
-/// Unoccurred stored pay dates through 31 Dec. Does not rebuild a year.
+/// Locked `ExpectedPaymentPattern.declaration_weekday` matches `today` (Monday / Mon).
+pub fn is_declaration_weekday_today(today: &str, weekday: &str) -> bool {
+    let raw = weekday.trim();
+    if raw.is_empty() {
+        return false;
+    }
+    let Ok(d) = chrono::NaiveDate::parse_from_str(today.trim(), "%Y-%m-%d") else {
+        return false;
+    };
+    let full = d.format("%A").to_string();
+    let short = d.format("%a").to_string();
+    raw.eq_ignore_ascii_case(&full) || raw.eq_ignore_ascii_case(&short)
+}
+
+/// R5 same-day skip. Blocked on the locked declaration weekday so a later
+/// issuer post is fetched. Blank weekday keeps the skip.
+pub fn same_day_retrieve_skip_allowed(
+    last_run_ok: Option<bool>,
+    last_run_at: &str,
+    today: &str,
+    declaration_weekday: &str,
+) -> bool {
+    declaration_daily_retrieve_current(last_run_ok, last_run_at, today)
+        && !is_declaration_weekday_today(today, declaration_weekday)
+}
+
+/// After the fleet run: failed names (not current today) must each have an
+/// open retrieve-failure ticket. Extra ROC / amount tickets do not count.
+pub fn declaration_fail_ticket_parity(
+    failed_symbols: impl IntoIterator<Item = impl AsRef<str>>,
+    open_miss_ticket_symbols: impl IntoIterator<Item = impl AsRef<str>>,
+) -> bool {
+    use std::collections::BTreeSet;
+    let fails: BTreeSet<String> = failed_symbols
+        .into_iter()
+        .map(|s| s.as_ref().trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let tickets: BTreeSet<String> = open_miss_ticket_symbols
+        .into_iter()
+        .map(|s| s.as_ref().trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    fails == tickets
+}
+
+/// Unoccurred stored pay dates through 31 Dec. Unique days only — duplicate
+/// rows (same payable stored twice) must not fail the remaining-year gate.
 pub fn stored_remaining_planned(pay_ons: &[&str], as_of: &str) -> i64 {
     let year = as_of.get(..4).unwrap_or("");
     if year.len() != 4 {
         return 0;
     }
     let year_end = format!("{year}-12-31");
-    pay_ons
-        .iter()
-        .filter(|on| {
-            let p = on.trim();
-            p >= as_of && p <= year_end.as_str()
-        })
-        .count() as i64
+    let mut seen = std::collections::BTreeSet::new();
+    for on in pay_ons {
+        let p = on.trim();
+        if p.len() >= 10 && p >= as_of && p <= year_end.as_str() {
+            seen.insert(&p[..10]);
+        }
+    }
+    seen.len() as i64
 }
 
 /// Fill-research-gaps holes for one open-lot payer. Not collector-complete.
@@ -485,7 +570,8 @@ mod tests {
 
     fn base<'a>(skipped: &'a [&'a str]) -> CollectorCompleteSpec<'a> {
         CollectorCompleteSpec {
-            has_template: true,
+            has_dividend_template: true,
+            has_roc_template: true,
             symbol: "PAY1",
             div_type: "DIV-1",
             payment_frequency: "Monthly",
@@ -520,6 +606,34 @@ mod tests {
     fn complete_when_required_fields_accepted() {
         assert!(collector_is_complete(&base(&[])));
         assert!(collector_status(&base(&[])).gaps.is_empty());
+    }
+
+    #[test]
+    fn establish_requires_both_retrieve_templates() {
+        let mut no_div = base(&[]);
+        no_div.has_dividend_template = false;
+        let d = collector_status(&no_div);
+        assert!(!d.complete);
+        assert!(d.gaps.iter().any(|g| g == "template_dividend"));
+
+        let mut no_roc = base(&[]);
+        no_roc.has_roc_template = false;
+        let r = collector_status(&no_roc);
+        assert!(!r.complete);
+        assert!(r.gaps.iter().any(|g| g == "template_roc"));
+
+        let mut cash = base(&[]);
+        cash.symbol = "SPAXX";
+        cash.div_type = "CASH";
+        cash.has_roc_template = false;
+        cash.payment_frequency = "";
+        cash.underlying = "";
+        cash.provider = "";
+        cash.risk_tier = "";
+        cash.roc_pct_minor = None;
+        cash.roc_owner_accepted = false;
+        cash.planned_remaining = None;
+        assert!(collector_is_complete(&cash));
     }
 
     #[test]
@@ -655,6 +769,9 @@ mod tests {
         );
         assert_eq!(roc_scope("MSTU", "DIV-1", "", ""), RocScope::NotInScope);
         assert_eq!(roc_scope("EFC", "DIV-1", "", ""), RocScope::NotInScope);
+        assert_eq!(roc_scope("ET", "DIV-1", "", ""), RocScope::NotInScope);
+        assert_eq!(roc_scope("EPD", "DIV-1", "", ""), RocScope::NotInScope);
+        assert_eq!(roc_scope("MPLX", "DIV-1", "", ""), RocScope::NotInScope);
         assert!(!runtime_research_gaps("GLAD", "Gladstone", "Monthly", "DIV-1", None, "UNDR")
             .roc_estimate_blank);
     }
@@ -692,7 +809,8 @@ mod tests {
     #[test]
     fn cash_skips_declaration_and_roc() {
         let spec = CollectorCompleteSpec {
-            has_template: true,
+            has_dividend_template: true,
+            has_roc_template: false,
             symbol: "SPAXX",
             div_type: "CASH",
             payment_frequency: "",
@@ -711,6 +829,20 @@ mod tests {
             last_run_ok: None,
         };
         assert!(collector_is_complete(&spec));
+    }
+
+    #[test]
+    fn income_fleet_is_forty_and_excludes_parked_long_hold() {
+        assert_eq!(INCOME_FLEET_SYMBOLS.len(), 40);
+        assert_eq!(PARKED_LONG_HOLD_SYMBOLS.len(), 3);
+        assert!(INCOME_FLEET_SYMBOLS.windows(2).all(|w| w[0] < w[1]));
+        assert!(is_not_a_collector("MSTU"));
+        assert!(is_not_a_collector("tsll"));
+        assert!(is_not_a_collector("SOXL"));
+        assert!(!is_not_a_collector("JEPQ"));
+        for symbol in PARKED_LONG_HOLD_SYMBOLS {
+            assert!(!INCOME_FLEET_SYMBOLS.contains(symbol), "{symbol}");
+        }
     }
 
     #[test]
@@ -789,11 +921,46 @@ mod tests {
     }
 
     #[test]
+    fn declaration_weekday_blocks_same_day_skip() {
+        assert!(is_declaration_weekday_today("2026-09-14", "Monday"));
+        assert!(is_declaration_weekday_today("2026-09-14", "Mon"));
+        assert!(!is_declaration_weekday_today("2026-09-14", "Wednesday"));
+        assert!(!is_declaration_weekday_today("2026-09-14", ""));
+        assert!(same_day_retrieve_skip_allowed(
+            Some(true),
+            "2026-09-14T07:07:01",
+            "2026-09-14",
+            "",
+        ));
+        assert!(!same_day_retrieve_skip_allowed(
+            Some(true),
+            "2026-09-14T07:07:01",
+            "2026-09-14",
+            "Monday",
+        ));
+    }
+
+    #[test]
+    fn fail_count_equals_miss_ticket_symbols() {
+        assert!(declaration_fail_ticket_parity(["EFC"], ["EFC"]));
+        assert!(declaration_fail_ticket_parity(
+            std::iter::empty::<&str>(),
+            std::iter::empty::<&str>(),
+        ));
+        assert!(!declaration_fail_ticket_parity(["EFC"], std::iter::empty::<&str>()));
+        assert!(!declaration_fail_ticket_parity(["EFC"], ["QYLD"]));
+        assert!(declaration_fail_ticket_parity(["EFC", "TOPW"], ["topw", "efc"]));
+    }
+
+    #[test]
     fn stored_remaining_planned_counts_unoccurred_through_year_end() {
         let dates = ["2026-08-31", "2026-09-30", "2026-12-31", "2027-01-31"];
         let refs: Vec<&str> = dates.iter().copied().collect();
         assert_eq!(stored_remaining_planned(&refs, "2026-09-05"), 2);
         assert_eq!(stored_remaining_planned(&refs, "2026-08-22"), 3);
+        let dupes = ["2026-11-19", "2026-11-19", "2026-11-18"];
+        let dupe_refs: Vec<&str> = dupes.iter().copied().collect();
+        assert_eq!(stored_remaining_planned(&dupe_refs, "2026-09-14"), 2);
     }
 
     #[test]

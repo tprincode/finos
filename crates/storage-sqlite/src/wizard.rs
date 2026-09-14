@@ -795,6 +795,7 @@ pub async fn collector_set(pool: &SqlitePool) -> Result<CollectorSetBody, Platfo
                 COALESCE(rt.last_content_hash, '') AS last_content_hash,
                 COALESCE(rt.roc_source_url, '') AS roc_source_url,
                 COALESCE(rt.inception_on, '') AS inception_on,
+                COALESCE(epp.declaration_weekday, '') AS declaration_weekday,
                 EXISTS(
                     SELECT 1 FROM lot l
                     WHERE l.security_id = s.security_id AND l.remaining_quantity_minor > 0
@@ -802,6 +803,7 @@ pub async fn collector_set(pool: &SqlitePool) -> Result<CollectorSetBody, Platfo
          FROM security s
          LEFT JOIN position_characteristic pc ON pc.security_id = s.security_id
          LEFT JOIN retrieval_template rt ON rt.security_id = s.security_id
+         LEFT JOIN expected_payment_pattern epp ON epp.security_id = s.security_id
          WHERE EXISTS(
                 SELECT 1 FROM lot l
                 WHERE l.security_id = s.security_id AND l.remaining_quantity_minor > 0
@@ -865,6 +867,7 @@ pub async fn collector_set(pool: &SqlitePool) -> Result<CollectorSetBody, Platfo
             roc_tax_year: String::new(),
             open_lot_count: 0,
             last_payable_on: String::new(),
+            declaration_weekday: row.try_get("declaration_weekday").unwrap_or_default(),
         });
     }
     Ok(CollectorSetBody { items })
@@ -872,6 +875,9 @@ pub async fn collector_set(pool: &SqlitePool) -> Result<CollectorSetBody, Platfo
 
 /// Collectors fleet is for income names only — exclude non-payers (cadence None / equity).
 fn collector_symbol_pays(div_type: &str, payment_frequency: &str, symbol: &str) -> bool {
+    if financial_domain::collector::is_not_a_collector(symbol) {
+        return false;
+    }
     if financial_domain::current_price::uses_cash_par(div_type, symbol) {
         return true;
     }
@@ -992,5 +998,8 @@ pub async fn collector_stats(
         open_exceptions: open_exceptions as u64,
         ran_outside_fleet: ran_outside_fleet.into_iter().collect(),
         as_of_date: as_of_date.to_string(),
+        fail_count: 0,
+        fail_ticket_count: 0,
+        fail_ticket_parity: true,
     })
 }

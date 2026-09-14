@@ -489,7 +489,9 @@ pub fn leftover_ex_to_payable_moves(
 }
 
 /// Remaining unpaid dates through 31 Dec from paid history + cadence.
-/// Monthly: walk one month from the latest paid day-of-month (not last calendar day).
+/// Monthly early-month names (paid day 1–10, e.g. BITO ex/pay in the first three
+/// days): the 3rd of each remaining month. Other monthly names: +1 month from
+/// the latest paid day-of-month.
 pub fn derive_remaining_pay_ons(
     as_of: &str,
     payment_frequency: &str,
@@ -511,6 +513,9 @@ pub fn derive_remaining_pay_ons(
     };
     match PaymentCadence::parse(payment_frequency).and_then(PaymentCadence::periods) {
         Some(12) => {
+            if paid.iter().rev().take(6).all(|d| d.day() <= 10) {
+                return monthly_fixed_day(as_of_d, year_end, 3);
+            }
             let mut out = Vec::new();
             let mut cursor = latest;
             for _ in 0..12 {
@@ -627,6 +632,37 @@ fn last_day_of_month(year: i32, month: u32) -> Option<NaiveDate> {
     } else {
         NaiveDate::from_ymd_opt(year, month + 1, 1).and_then(|d| d.pred_opt())
     }
+}
+
+/// Day `day` of each remaining month from `as_of` through 31 Dec (clamped to month length).
+fn monthly_fixed_day(as_of: NaiveDate, year_end: NaiveDate, day: u32) -> Vec<String> {
+    monthly_fixed_days(as_of, year_end, day)
+        .into_iter()
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .collect()
+}
+
+fn monthly_fixed_days(as_of: NaiveDate, year_end: NaiveDate, day: u32) -> Vec<NaiveDate> {
+    let mut dates = Vec::new();
+    let mut month = as_of.month();
+    let year = as_of.year();
+    for _ in 0..12 {
+        let Some(last) = last_day_of_month(year, month) else {
+            break;
+        };
+        let dom = day.min(last.day());
+        let Some(d) = NaiveDate::from_ymd_opt(year, month, dom) else {
+            break;
+        };
+        if d >= as_of && d <= year_end {
+            dates.push(d);
+        }
+        if month == 12 || last >= year_end {
+            break;
+        }
+        month += 1;
+    }
+    dates
 }
 
 /// Last calendar day of each remaining month from `as_of` through 31 Dec.
@@ -783,6 +819,30 @@ fn single_lot(quantity_minor: i64, quantity_scale: u8) -> OpenLotQty {
     }
 }
 
+fn schedule_from_derived_ons(
+    spec: RemainingYearSpec<'_>,
+    year_end: NaiveDate,
+    ons: &[String],
+    provenance: &str,
+) -> RemainingYearSchedule {
+    let raw: Vec<NaiveDate> = ons.iter().filter_map(|p| parse_iso_day(p)).collect();
+    if raw.is_empty() {
+        return unknown("unknown — derived remaining dates empty");
+    }
+    let orphaned = orphaned_from(&raw, spec.overrides);
+    let tagged = apply_overrides(&raw, spec.overrides);
+    assemble(
+        tagged,
+        year_end,
+        provenance.into(),
+        "derived_walk",
+        spec.lots,
+        spec.plan_minor,
+        spec.plan_scale,
+        orphaned,
+    )
+}
+
 /// Rest-of-year payment dates. Weekly = remaining Sat–Fri weeks. Monthly = last
 /// calendar day of each remaining month through 31 Dec. Quarterly walks ~91 days
 /// from the latest parseable declaration period (or an owner-named next date).
@@ -818,7 +878,22 @@ pub fn remaining_year_from_spec(spec: RemainingYearSpec<'_>) -> RemainingYearSch
     match spec.calendar_policy {
         CalendarPolicy::None => unknown("unknown — cadence is None"),
         CalendarPolicy::IssuerCalendar => {
-            if spec.issuer_pay_ons.is_empty() && spec.periods_per_year > 0 {
+            let has_remaining = spec.issuer_pay_ons.iter().any(|p| {
+                parse_iso_day(p).is_some_and(|d| d >= as_of_d && d <= year_end)
+            });
+            if !has_remaining && spec.periods_per_year > 0 {
+                if spec.periods_per_year == 12 {
+                    let paid: Vec<&str> = spec.issuer_pay_ons.iter().map(String::as_str).collect();
+                    let derived = derive_remaining_pay_ons(spec.as_of, "Monthly", &paid);
+                    if !derived.is_empty() {
+                        return schedule_from_derived_ons(
+                            spec,
+                            year_end,
+                            &derived,
+                            "from paid history: remaining months on the 3rd",
+                        );
+                    }
+                }
                 derived_walk_schedule(spec, as_of_d, year_end)
             } else {
                 issuer_calendar_schedule(spec, as_of_d, year_end)
@@ -1145,6 +1220,45 @@ mod tests {
             .payments
             .iter()
             .all(|p| p.date_provenance == "derived_walk"));
+    }
+
+    #[test]
+    fn issuer_calendar_past_only_early_month_derives_third() {
+        let lots = [single_lot(10, 0)];
+        let dates = [
+            "2026-06-05".into(),
+            "2026-07-08".into(),
+            "2026-08-07".into(),
+            "2026-09-08".into(),
+        ];
+        let schedule = remaining_year_from_spec(RemainingYearSpec {
+            as_of: "2026-09-14",
+            latest_payment_period: Some("2026-09-08"),
+            periods_per_year: 12,
+            lots: &lots,
+            plan_minor: 100,
+            plan_scale: 2,
+            overrides: &[],
+            issuer_pay_ons: &dates,
+            calendar_policy: CalendarPolicy::IssuerCalendar,
+        });
+        assert!(schedule.known);
+        let pay: Vec<_> = schedule.payments.iter().map(|p| p.pay_on.as_str()).collect();
+        assert_eq!(pay, ["2026-10-03", "2026-11-03", "2026-12-03"]);
+        assert!(schedule
+            .payments
+            .iter()
+            .all(|p| p.date_provenance == "derived_walk"));
+    }
+
+    #[test]
+    fn derive_remaining_early_month_uses_third() {
+        let ons = derive_remaining_pay_ons(
+            "2026-09-14",
+            "Monthly",
+            &["2026-06-05", "2026-07-08", "2026-08-07", "2026-09-08"],
+        );
+        assert_eq!(ons, ["2026-10-03", "2026-11-03", "2026-12-03"]);
     }
 
     #[test]

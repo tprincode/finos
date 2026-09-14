@@ -316,6 +316,8 @@ pub const DIV1_ISSUERS: &[Div1Issuer] = &[
         urls: |s| {
             urls_for(
                 &[
+                    "https://tappalphafunds.com/{sym}",
+                    "https://www.tappalphafunds.com/{sym}",
                     "https://www.tappalphafunds.com/etfs/{sym}",
                     "https://www.tappalpha.com/{sym}",
                     "https://tappalpha.com/etfs/{sym}",
@@ -459,6 +461,97 @@ pub fn parse_tappalpha_distributions(body: &str) -> Vec<Value> {
     out
 }
 
+/// Newest posted Distributions-table ROC% (Amount / ROC / 19a-1 Notice). Future nulls skipped.
+/// 0 only when the table prints 0. `XX%` / missing is unknown.
+pub fn parse_tappalpha_table_roc(body: &str) -> Option<(i64, String)> {
+    for row in parse_tappalpha_distributions(body) {
+        let Some(pct) = row.get("rocPctMinor").and_then(|x| x.as_i64()) else {
+            continue;
+        };
+        if !(0..=10_000).contains(&pct) {
+            continue;
+        }
+        let on = row
+            .get("paymentPeriod")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_string();
+        return Some((pct, on));
+    }
+    parse_tappalpha_html_roc(body)
+}
+
+fn parse_tappalpha_html_roc(html: &str) -> Option<(i64, String)> {
+    let lower = html.to_ascii_lowercase();
+    let start = lower
+        .find("ns-distributions-table")
+        .or_else(|| lower.find(">roc</"))
+        .or_else(|| lower.find(">roc<"))?;
+    let slice = html.get(start..start.saturating_add(12_000).min(html.len()))?;
+    let bytes = slice.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] != b'%' {
+            continue;
+        }
+        let mut end = i;
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        let mut j = end;
+        while j > 0 && (bytes[j - 1].is_ascii_digit() || bytes[j - 1] == b'.') {
+            j -= 1;
+        }
+        if j >= end {
+            continue;
+        }
+        if let Some(pct) = crate::retrieve::percent_to_minor(std::str::from_utf8(&bytes[j..end]).ok()?)
+        {
+            return Some((pct, String::new()));
+        }
+    }
+    None
+}
+
+/// Newest `notice_19a1_url` first (same order as the table).
+pub fn tappalpha_19a1_notice_urls(body: &str) -> Vec<String> {
+    let trimmed = body.trim();
+    let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+        return hrefs_from_tappalpha_html(body);
+    };
+    let rows = match &v {
+        Value::Array(a) => a.clone(),
+        Value::Object(o) => o
+            .get("distributions")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        _ => return hrefs_from_tappalpha_html(body),
+    };
+    let mut dated: Vec<(String, String)> = Vec::new();
+    for row in rows {
+        let Some(url) = row.get("notice_19a1_url").and_then(|u| u.as_str()) else {
+            continue;
+        };
+        let url = url.trim();
+        if url.is_empty() {
+            continue;
+        }
+        let pay = json_pay_date(&row).unwrap_or_default();
+        if !dated.iter().any(|(_, u)| u == url) {
+            dated.push((pay, url.to_string()));
+        }
+    }
+    dated.sort_by(|a, b| b.0.cmp(&a.0));
+    dated.into_iter().map(|(_, u)| u).collect()
+}
+
+fn hrefs_from_tappalpha_html(html: &str) -> Vec<String> {
+    crate::retrieve::adapters::hrefs_matching(html, "19a-1", "https://tappalphafunds.com")
+        .into_iter()
+        .filter(|u| u.to_ascii_lowercase().contains(".pdf"))
+        .collect()
+}
+
 pub fn tappalpha_distributions_url(symbol: &str) -> String {
     format!(
         "https://jdkfnvgkfwotjlyovbrk.supabase.co/functions/v1/fund-public-api?ticker={}&view=all",
@@ -468,7 +561,7 @@ pub fn tappalpha_distributions_url(symbol: &str) -> String {
 
 pub fn tappalpha_fund_page_url(symbol: &str) -> String {
     format!(
-        "https://www.tappalphafunds.com/etfs/{}",
+        "https://tappalphafunds.com/{}",
         symbol.trim().to_ascii_lowercase()
     )
 }
@@ -1091,21 +1184,24 @@ pub fn globalx_19a_notice_urls(html: &str, symbol: &str) -> Vec<String> {
         }
         search = start + needle.len();
     }
-    out.sort_by(|a, b| globalx_19a_stamp(b).cmp(&globalx_19a_stamp(a)));
+    out.sort_by(|a, b| globalx_19a_recency(b).cmp(&globalx_19a_recency(a)));
     out
 }
 
-fn globalx_19a_stamp(url: &str) -> String {
+/// `Form-19a_MMDDYYYY` → (year, month, day). String MMDDYYYY would rank Dec 2025 above Aug 2026.
+pub(crate) fn globalx_19a_recency(url: &str) -> (i32, i32, i32) {
     let lower = url.to_ascii_lowercase();
     let Some(idx) = lower.rfind("form-19a_") else {
-        return String::new();
+        return (0, 0, 0);
     };
-    lower
-        .get(idx + 9..)
-        .unwrap_or("")
-        .chars()
-        .take(8)
-        .collect()
+    let stamp: String = lower.get(idx + 9..).unwrap_or("").chars().take(8).collect();
+    if stamp.len() < 8 || !stamp.chars().all(|c| c.is_ascii_digit()) {
+        return (0, 0, 0);
+    }
+    let mm: i32 = stamp.get(0..2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let dd: i32 = stamp.get(2..4).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let yyyy: i32 = stamp.get(4..8).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (yyyy, mm, dd)
 }
 
 pub fn collapse_spaced_financial(text: &str) -> String {
@@ -1190,6 +1286,53 @@ fn take_labeled_date(after_label: &str) -> Option<String> {
         }
     }
     tokens.iter().find_map(|t| parse_issuer_date(t))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_json_uses_newest_posted_roc_not_future_null() {
+        let body = r#"{
+          "distributions": [
+            {"pay_date":"2026-10-07","amount":null,"roc_estimate_pct":null,"notice_19a1_url":null},
+            {"pay_date":"2026-09-02","amount":0.2954,"roc_estimate_pct":100,"notice_19a1_url":"https://example.test/TSPY_19a-1_Notice_Ex_9.1.26.pdf"},
+            {"pay_date":"2026-07-01","amount":0.29518,"roc_estimate_pct":82,"notice_19a1_url":"https://example.test/old.pdf"}
+          ]
+        }"#;
+        let (pct, on) = parse_tappalpha_table_roc(body).expect("posted ROC");
+        assert_eq!(pct, 10_000);
+        assert_eq!(on, "2026-09-02");
+        let notices = tappalpha_19a1_notice_urls(body);
+        assert!(notices[0].contains("9.1.26"), "{notices:?}");
+    }
+
+    #[test]
+    fn html_distributions_table_reads_roc_column() {
+        let html = r#"<table class="ns-distributions-table"><thead><tr><th>Pay Date</th><th>Amount</th><th>ROC</th><th>19a-1</th></tr></thead>
+        <tbody><tr class="ns-dist-recent"><td>Sep 2, 2026</td><td>$0.29540</td><td>100%</td><td><a href="https://example.test/TSPY_19a-1.pdf">19a-1 Notice</a></td></tr></tbody></table>"#;
+        let (pct, _) = parse_tappalpha_table_roc(html).expect("html ROC");
+        assert_eq!(pct, 10_000);
+    }
+
+    #[test]
+    fn xx_percent_placeholder_is_unknown() {
+        let html = "The return of capital for this most recent distribution was estimated to be XX%.";
+        assert!(parse_tappalpha_table_roc(html).is_none());
+    }
+
+    #[test]
+    fn globalx_form_19a_sorts_by_year_not_mmdd_string() {
+        let html = r#"
+            QYLD_Form-19a_12222025.pdf
+            QYLD_Form-19a_07212025.pdf
+            QYLD_Form-19a_08242026.docx
+        "#;
+        let urls = globalx_19a_notice_urls(html, "QYLD");
+        assert!(urls[0].contains("08242026"), "{urls:?}");
+        assert!(globalx_19a_recency(&urls[0]) > globalx_19a_recency(&urls[1]));
+    }
 }
 
 fn take_labeled_amount(after_label: &str) -> Option<(i64, u8)> {

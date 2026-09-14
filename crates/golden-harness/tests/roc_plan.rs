@@ -247,6 +247,46 @@ async fn roc_unknown_is_not_zero_and_car_magi_plans_then_actuals() {
         basis_before["openPerformanceMinor"],
         "ROC must not reduce original economic cost"
     );
+    let car_plan = query_json(
+        &platform,
+        "CarRocPlanGet",
+        serde_json::json!({ "asOfDate": "2026-08-22" }),
+    )
+    .await;
+    assert!(
+        car_plan["estimateNote"]
+            .as_str()
+            .unwrap_or("")
+            .contains("prior-year ROC guidance"),
+        "{car_plan}"
+    );
+    assert!(
+        car_plan["taxNote"]
+            .as_str()
+            .unwrap_or("")
+            .contains("April 2027"),
+        "{car_plan}"
+    );
+    let rem_ord = car_plan["remainingOrdinaryMinor"].as_i64().unwrap();
+    let rem_roc = car_plan["remainingRocMinor"].as_i64().unwrap();
+    assert_eq!(
+        rem_ord + rem_roc,
+        car_plan["remainingTotalMinor"].as_i64().unwrap(),
+        "Car remaining ordinary + ROC is the remaining cash: {car_plan}"
+    );
+    assert_eq!(car_plan["ytdPaidMinor"].as_i64(), Some(10_000));
+    assert_eq!(car_plan["ytdOrdinaryMinor"].as_i64(), Some(3_000));
+    assert_eq!(car_plan["ytdRocMinor"].as_i64(), Some(7_000));
+    assert!(car_plan["ytdLongTermGainMinor"].is_null(), "{car_plan}");
+    assert!(car_plan["ytdShortTermGainMinor"].is_null(), "{car_plan}");
+    assert!(car_plan["lotSalePlMinor"].is_null(), "{car_plan}");
+    assert!(
+        car_plan["lotSaleNote"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Long-term and short-term stay unknown"),
+        "{car_plan}"
+    );
 }
 
 #[tokio::test]
@@ -574,4 +614,258 @@ async fn owner_confirm_100_roc_keeps_cited_url() {
         }),
         "100% must keep the cited URL: {research}"
     );
+}
+
+fn roc_19a1_candidate(pct: i64, url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "rocPctMinor": pct,
+        "scale": 2,
+        "taxYear": "2026",
+        "source": "19a-1",
+        "sourceUrl": url,
+        "method": "19a-1-current-year",
+        "asOf": "2026-05-29",
+        "kind": "estimate",
+        "ownerOverride": false
+    })
+}
+
+#[tokio::test]
+async fn live_roc_change_tickets_without_overwriting_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "QYLD", "name": "QYLD"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "divType": "DIV-1",
+            "isActive": true,
+            "rocPct2026EstimateMinor": 8000,
+            "rocPct2025ActualMinor": 7200,
+            "rocScale": 2,
+            "needsRocResearch": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RocResearchRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "QYLD",
+            "asOfDate": "2026-09-14",
+            "candidates": [roc_19a1_candidate(
+                7500,
+                "https://www.globalxetfs.com/filings-and-tax-supplements/QYLD"
+            )]
+        }),
+    )
+    .await;
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-14" }),
+    )
+    .await;
+    assert_eq!(
+        inv["rocPct2026EstimateMinor"].as_i64(),
+        Some(8000),
+        "live change must not overwrite the projection: {inv}"
+    );
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    let change = tickets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["code"] == "roc_pct_change")
+        .expect("roc_pct_change ticket");
+    let reason = change["reason"].as_str().unwrap_or("");
+    assert!(
+        reason.contains("ROC % was 80.00 and now ROC % should be 75.00"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("Last year 1099 was 72.00 (informational)"),
+        "{reason}"
+    );
+    assert_eq!(change["tool"], "roc_confirm");
+}
+
+#[tokio::test]
+async fn accept_roc_change_updates_current_year_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "QDVO", "name": "QDVO"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "divType": "DIV-1",
+            "isActive": true,
+            "rocPct2026EstimateMinor": 9800,
+            "rocScale": 2,
+            "needsRocResearch": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RocResearchRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "QDVO",
+            "asOfDate": "2026-09-14",
+            "candidates": [roc_19a1_candidate(
+                9000,
+                "https://amplifyetfs.com/wp-content/uploads/files/19a-1_Notice_05-29-26_QDVO.pdf"
+            )]
+        }),
+    )
+    .await;
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    let ticket_id = tickets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["code"] == "roc_pct_change")
+        .expect("ticket")["ticketId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    must_ok(
+        &platform,
+        "WorkTicketResolve",
+        serde_json::json!({
+            "ticketId": ticket_id,
+            "tool": "roc_confirm",
+            "action": "accept"
+        }),
+    )
+    .await;
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-14" }),
+    )
+    .await;
+    assert_eq!(inv["rocPct2026EstimateMinor"].as_i64(), Some(9000));
+    assert_eq!(
+        inv["needsRocResearch"].as_bool(),
+        Some(false),
+        "ticket Accept locks the plan % the same way Collectors Accept ROC does"
+    );
+    let after = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["code"] != "roc_pct_change"),
+        "{after}"
+    );
+}
+
+#[tokio::test]
+async fn reject_roc_change_keeps_previous_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "SVOL", "name": "SVOL"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "divType": "DIV-1",
+            "isActive": true,
+            "rocPct2026EstimateMinor": 2500,
+            "rocScale": 2,
+            "needsRocResearch": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RocResearchRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "SVOL",
+            "asOfDate": "2026-09-14",
+            "candidates": [roc_19a1_candidate(
+                3000,
+                "https://www.simplify.us/etfs/1721/supplemental-tax-information"
+            )]
+        }),
+    )
+    .await;
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    let ticket_id = tickets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["code"] == "roc_pct_change")
+        .expect("ticket")["ticketId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    must_ok(
+        &platform,
+        "WorkTicketResolve",
+        serde_json::json!({
+            "ticketId": ticket_id,
+            "tool": "roc_confirm",
+            "action": "reject"
+        }),
+    )
+    .await;
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-14" }),
+    )
+    .await;
+    assert_eq!(inv["rocPct2026EstimateMinor"].as_i64(), Some(2500));
 }

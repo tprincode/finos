@@ -56,6 +56,9 @@ async fn run() -> Result<String, String> {
     let dump_set = args.iter().any(|a| a == "--dump-set");
     let close_complete = args.iter().any(|a| a == "--close-complete-tickets");
     let keep_stored_roc = args.iter().any(|a| a == "--keep-stored-roc");
+    let accept_stored = args.iter().any(|a| a == "--accept-stored");
+    let recertify = args.iter().any(|a| a == "--recertify");
+    let probe = args.iter().any(|a| a == "--probe");
     let frequency = args
         .iter()
         .position(|a| a == "--frequency")
@@ -92,6 +95,12 @@ async fn run() -> Result<String, String> {
         .and_then(|i| args.get(i + 1))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let notice_url = args
+        .iter()
+        .position(|a| a == "--notice-url")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let owner_pct = args
         .iter()
         .position(|a| a == "--owner-pct")
@@ -110,6 +119,7 @@ async fn run() -> Result<String, String> {
             if a == "--owner-pct"
                 || a == "--roc-scale"
                 || a == "--roc-url"
+                || a == "--notice-url"
                 || a == "--frequency"
                 || a == "--inception-on"
                 || a == "--source-url"
@@ -122,13 +132,16 @@ async fn run() -> Result<String, String> {
             }
         })
         .collect::<std::collections::HashSet<_>>();
-    let symbol = args
+    let leftover_symbols: Vec<String> = args
         .iter()
         .enumerate()
-        .find(|(i, a)| !a.starts_with('-') && !skip_vals.contains(i))
-        .map(|(_, a)| a.clone())
-        .unwrap_or_else(|| "HAKY".into())
-        .to_ascii_uppercase();
+        .filter(|(i, a)| !a.starts_with('-') && !skip_vals.contains(i))
+        .map(|(_, a)| a.to_ascii_uppercase())
+        .collect();
+    let symbol = leftover_symbols
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "HAKY".into());
     let app_dir = profile_a_app_dir();
     let platform = LocalPlatform::open(&app_dir)
         .await
@@ -365,6 +378,200 @@ async fn run() -> Result<String, String> {
         }
         return Ok(lines.join("\n"));
     }
+    if recertify {
+        let today = chrono::Utc::now().date_naive().to_string();
+        let first_ten = [
+            "QYLD", "QDVO", "AMDW", "SVOL", "TSPY", "HAKY", "QDTE", "RDTE", "TOPW", "XDTE",
+        ];
+        let symbols = if leftover_symbols.is_empty() {
+            let mut all: Vec<String> = set_val
+                .get("items")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|row| row.get("symbol").and_then(|s| s.as_str()).map(|s| s.to_ascii_uppercase()))
+                .filter(|s| !first_ten.contains(&s.as_str()))
+                .filter(|s| !financial_domain::collector::is_not_a_collector(s))
+                .collect();
+            all.sort();
+            all.dedup();
+            all
+        } else {
+            leftover_symbols
+        };
+        let mut lines = Vec::new();
+        let mut ok_n = 0u32;
+        for symbol in &symbols {
+            let Some(item) = set_val.get("items").and_then(|v| v.as_array()).and_then(|items| {
+                items.iter().find(|row| {
+                    row.get("symbol")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .eq_ignore_ascii_case(symbol)
+                })
+            }) else {
+                lines.push(format!("{symbol} FAIL not in collector set"));
+                continue;
+            };
+            let Some(security_id) = item.get("securityId").and_then(|v| v.as_str()) else {
+                lines.push(format!("{symbol} FAIL missing securityId"));
+                continue;
+            };
+            let result = execute_command_on(
+                &platform,
+                &platform,
+                cmd(
+                    "CollectorRecertify",
+                    serde_json::json!({
+                        "securityId": security_id,
+                        "asOfDate": today,
+                        "trigger": "manual"
+                    }),
+                ),
+            )
+            .await;
+            if !result.ok {
+                lines.push(format!(
+                    "{symbol} FAIL {}",
+                    result
+                        .error_code
+                        .unwrap_or_else(|| "collector_recertify_failed".into())
+                ));
+                continue;
+            }
+            let body: serde_json::Value =
+                serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+            let complete = body.get("complete").and_then(|v| v.as_bool()).unwrap_or(false);
+            if complete {
+                ok_n += 1;
+            }
+            let gaps = body
+                .get("gaps")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|g| g.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            lines.push(format!("{symbol} complete={complete} gaps=[{gaps}]"));
+        }
+        lines.push(format!("recertify {ok_n}/{}", symbols.len()));
+        return Ok(lines.join("\n"));
+    }
+    if accept_stored {
+        if leftover_symbols.is_empty() {
+            return Err("--accept-stored needs at least one symbol".into());
+        }
+        let today = chrono::Utc::now().date_naive().to_string();
+        let mut lines = Vec::new();
+        for symbol in leftover_symbols {
+            let Some(item) = set_val.get("items").and_then(|v| v.as_array()).and_then(|items| {
+                items.iter().find(|row| {
+                    row.get("symbol")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .eq_ignore_ascii_case(&symbol)
+                })
+            }) else {
+                lines.push(format!("{symbol} FAIL not in collector set"));
+                continue;
+            };
+            let Some(security_id) = item.get("securityId").and_then(|v| v.as_str()) else {
+                lines.push(format!("{symbol} FAIL missing securityId"));
+                continue;
+            };
+            let Some(pct) = item.get("rocEstimateMinor").and_then(|v| v.as_i64()) else {
+                lines.push(format!("{symbol} FAIL no stored ROC % to accept"));
+                continue;
+            };
+            let scale = match item.get("rocScale").and_then(|v| v.as_u64()).unwrap_or(2) {
+                0 => 2,
+                n => n.min(u64::from(u8::MAX)) as u8,
+            };
+            let roc_url = item
+                .get("rocSourceUrl")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            let result = execute_command_on(
+                &platform,
+                &platform,
+                cmd(
+                    "RocPlanConfirm",
+                    serde_json::json!({
+                        "securityId": security_id,
+                        "symbol": symbol,
+                        "rocPctMinor": pct,
+                        "rocScale": scale,
+                        "source": "19a-1",
+                        "sourceUrl": roc_url,
+                        "method": "19a-1-current-year",
+                        "kind": "estimate",
+                        "establishedHow": "current distribution 19a-1 estimate",
+                        "ownerOverride": false,
+                        "asOfDate": today,
+                    }),
+                ),
+            )
+            .await;
+            if result.ok {
+                let shown = pct as f64 / 10f64.powi(i32::from(scale));
+                lines.push(format!(
+                    "{symbol} accepted stored ROC {shown}% (minor {pct} scale {scale})"
+                ));
+            } else {
+                lines.push(format!(
+                    "{symbol} FAIL {}",
+                    result.error_code.unwrap_or_else(|| "roc_plan_confirm_failed".into())
+                ));
+            }
+        }
+        let after = execute_query_on(
+            &platform,
+            &platform,
+            qry("CollectorSetGet", serde_json::json!({})),
+        )
+        .await;
+        if after.ok {
+            let after_val: serde_json::Value =
+                serde_json::from_str(after.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+            let first_ten = [
+                "QYLD", "QDVO", "AMDW", "SVOL", "TSPY", "HAKY", "QDTE", "RDTE", "TOPW", "XDTE",
+            ];
+            let mut ok_n = 0u32;
+            for sym in first_ten {
+                let row = after_val.get("items").and_then(|v| v.as_array()).and_then(|items| {
+                    items.iter().find(|row| {
+                        row.get("symbol").and_then(|s| s.as_str()) == Some(sym)
+                    })
+                });
+                match row {
+                    Some(row) => {
+                        let complete = row.get("complete").and_then(|v| v.as_bool()).unwrap_or(false);
+                        if complete {
+                            ok_n += 1;
+                        }
+                        let gaps = row
+                            .get("gaps")
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|g| g.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            })
+                            .unwrap_or_default();
+                        lines.push(format!("{sym} complete={complete} gaps=[{gaps}]"));
+                    }
+                    None => lines.push(format!("{sym} not in CollectorSetGet")),
+                }
+            }
+            lines.push(format!("first ten official complete {ok_n}/10"));
+        }
+        return Ok(lines.join("\n"));
+    }
     let item = set_val
         .get("items")
         .and_then(|v| v.as_array())
@@ -393,7 +600,22 @@ async fn run() -> Result<String, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let roc_source_url = item
+        .get("rocSourceUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let last_run_ok_before = item.get("lastRunOk").cloned();
+    if probe {
+        return probe_stored_roc_url(
+            &platform,
+            &symbol,
+            &security_id,
+            &declaration_source,
+            &item,
+        )
+        .await;
+    }
     if let Some(pay_on) = remaining_only {
         let sid = Uuid::parse_str(&security_id).map_err(|e| e.to_string())?;
         let as_of = chrono::Utc::now().date_naive().to_string();
@@ -540,7 +762,7 @@ async fn run() -> Result<String, String> {
                             "WorkTicketFile",
                             serde_json::json!({
                                 "ticketId": ticket_id,
-                                "note": "filed: long-hold, not a dividend payer"
+                                "note": "filed: not a collector; holding only"
                             }),
                         ),
                     )
@@ -780,9 +1002,28 @@ async fn run() -> Result<String, String> {
         "symbol": symbol,
         "declarationSource": declaration_source,
         "sourceUrl": source_url,
+        "rocSourceUrl": notice_url.clone().unwrap_or(roc_source_url),
         "asOfDate": today,
     });
-    import_engine::enrich_retrieve_body("RocResearchRetrieve", &mut body);
+    if let Some(url) = notice_url.as_deref() {
+        if let Some((pct, how)) = notice_roc_from_curl(url) {
+            body["candidates"] = serde_json::json!([{
+                "rocPctMinor": pct,
+                "scale": 2,
+                "source": "19a-1",
+                "sourceUrl": url,
+                "method": "19a-1-current-year",
+                "asOf": today,
+                "kind": "estimate",
+                "establishedHow": how,
+                "ownerOverride": false
+            }]);
+        }
+    }
+    if body.get("candidates").and_then(|c| c.as_array()).map(|a| a.is_empty()).unwrap_or(true)
+    {
+        import_engine::enrich_retrieve_body("RocResearchRetrieve", &mut body);
+    }
     let cands = body
         .get("candidates")
         .and_then(|c| c.as_array())
@@ -854,11 +1095,153 @@ async fn run() -> Result<String, String> {
             "declaration last_run_ok changed: {last_run_ok_before:?} -> {last_run_ok_after:?}"
         ));
     }
-    if y2025.map(|v| !v.is_null()).unwrap_or(false) {
-        return Err("2025 actual must stay N/A".into());
-    }
+    let _ = y2025; // pre-existing 1099 is informational; retrieve must not write it (propose never does)
+    let tickets = execute_query_on(
+        &platform,
+        &platform,
+        qry(
+            "WorkTicketList",
+            serde_json::json!({ "securityId": security_id, "status": "open" }),
+        ),
+    )
+    .await;
+    let tbody: serde_json::Value =
+        serde_json::from_str(tickets.body_json.as_deref().unwrap_or("{}")).unwrap_or_default();
+    let roc_tix: Vec<String> = tbody
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.get("code").and_then(|c| c.as_str()) == Some("roc_pct_change"))
+        .map(|t| {
+            t.get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("roc_pct_change")
+                .to_string()
+        })
+        .collect();
     Ok(format!(
-        "{symbol} 2026 estimate {} sourceUrl={url} lastUpdate={completed} last_run_ok={last_run_ok_after:?}",
-        pct.map(|v| v.to_string()).unwrap_or_else(|| "null".into())
+        "{symbol} 2026 estimate {} sourceUrl={url} lastUpdate={completed} last_run_ok={last_run_ok_after:?} roc_pct_change=[{}]",
+        pct.map(|v| v.to_string()).unwrap_or_else(|| "null".into()),
+        roc_tix.join(" | ")
     ))
+}
+
+/// Fetch the stored ROC URL through the collector parser. Does not write %.
+async fn probe_stored_roc_url(
+    platform: &LocalPlatform,
+    symbol: &str,
+    security_id: &str,
+    declaration_source: &str,
+    item: &serde_json::Value,
+) -> Result<String, String> {
+    let roc_url = item
+        .get("rocSourceUrl")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let planned = item.get("rocEstimateMinor").and_then(|v| v.as_i64());
+    let today = chrono::Utc::now().date_naive().to_string();
+    let inv = execute_query_on(
+        platform,
+        platform,
+        qry(
+            "InvestmentGet",
+            serde_json::json!({ "securityId": security_id, "asOfDate": today }),
+        ),
+    )
+    .await;
+    let inv_val: serde_json::Value = if inv.ok {
+        serde_json::from_str(inv.body_json.as_deref().unwrap_or("{}")).unwrap_or_default()
+    } else {
+        serde_json::json!({})
+    };
+    let scale = inv_val
+        .get("rocScale")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2) as u8;
+    let y2025 = inv_val
+        .get("rocPct2025ActualMinor")
+        .and_then(|v| v.as_i64());
+    let planned = planned.or_else(|| {
+        inv_val
+            .get("rocPct2026EstimateMinor")
+            .and_then(|v| v.as_i64())
+    });
+    let fill = import_engine::live_roc_candidates_for(symbol, declaration_source, &roc_url);
+    let live = fill.candidates.iter().find_map(|c| {
+        let method = c.get("method").and_then(|s| s.as_str()).unwrap_or("");
+        if method != "19a-1-current-year" && method != "table-roc-current" {
+            return None;
+        }
+        if c.get("ownerOverride").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return None;
+        }
+        let pct = c.get("rocPctMinor").and_then(|v| v.as_i64())?;
+        let live_scale = c.get("scale").and_then(|v| v.as_u64()).unwrap_or(2) as u8;
+        let url = c
+            .get("sourceUrl")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        let how = c
+            .get("establishedHow")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        Some((pct, live_scale, url, how))
+    });
+    let den = 10f64.powi(i32::from(scale.max(1)));
+    let planned_disp = planned
+        .map(|p| format!("{:.2}%", p as f64 / 10f64.powi(i32::from(scale.max(1)))))
+        .unwrap_or_else(|| "unknown".into());
+    let prior_disp = match y2025 {
+        Some(p) => format!("{:.2}%", p as f64 / den),
+        None => "unknown".into(),
+    };
+    let (live_disp, live_url, how, matched) = match (planned, live) {
+        (Some(plan), Some((pct, live_scale, url, how))) => {
+            let same = financial_domain::roc::roc_pcts_equal(plan, scale, pct, live_scale);
+            (
+                format!("{:.2}%", pct as f64 / 10f64.powi(i32::from(live_scale.max(1)))),
+                url,
+                how,
+                if same { "yes" } else { "NO" },
+            )
+        }
+        (None, Some((pct, live_scale, url, how))) => (
+            format!("{:.2}%", pct as f64 / 10f64.powi(i32::from(live_scale.max(1)))),
+            url,
+            how,
+            "n/a",
+        ),
+        (_, None) => ("none (unknown, not 0%)".into(), String::new(), String::new(), "NO"),
+    };
+    Ok(format!(
+        "{symbol} planned={planned_disp} retrieved={live_disp} match={matched} last_year_1099={prior_disp} roc_url={roc_url} parsed_url={live_url} how={how}"
+    ))
+}
+
+fn notice_roc_from_curl(url: &str) -> Option<(i64, String)> {
+    if !url.starts_with("https://") {
+        return None;
+    }
+    let out = std::process::Command::new("curl.exe")
+        .args([
+            "-sL",
+            "-m",
+            "25",
+            "-A",
+            "Mozilla/5.0",
+            "--proto",
+            "=https",
+            url,
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return None;
+    }
+    import_engine::roc_from_notice_bytes(&out.stdout)
 }

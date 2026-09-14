@@ -527,6 +527,15 @@ pub struct WorkTicketSyncMissesBody {
     pub scanned: u64,
     pub raised: u64,
     pub open_count: u64,
+    /// Enabled collectors whose last retrieve today is not OK.
+    #[serde(default)]
+    pub fail_count: u64,
+    /// Open retrieve-failure tickets on those failed names only.
+    #[serde(default)]
+    pub fail_ticket_count: u64,
+    /// `fail_count` symbols == `fail_ticket_count` symbols.
+    #[serde(default)]
+    pub fail_ticket_parity: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1609,6 +1618,15 @@ pub struct DataSummaryBody {
     /// Open work_ticket rows. Owner work queue — not today's miss count.
     #[serde(default)]
     pub open_ticket_count: u64,
+    /// Enabled collectors not current today (`declarationCollectorCount - declarationCount`).
+    #[serde(default)]
+    pub declaration_fail_count: u64,
+    /// Open retrieve-failure tickets on those failed names only.
+    #[serde(default)]
+    pub declaration_fail_ticket_count: u64,
+    /// Fail count must equal miss-ticket count after the fleet run.
+    #[serde(default)]
+    pub declaration_fail_ticket_parity: bool,
     pub market_value_minor: Option<i64>,
     pub market_value_complete: bool,
     /// Lifetime paid dividends (all yield actuals).
@@ -1961,6 +1979,31 @@ pub struct CashManagementRemindersBody {
     pub tom_ssa: CashManagementTomSsa,
     #[serde(default)]
     pub ssa_payees: Vec<CashManagementSsaPayee>,
+    pub scale: u8,
+}
+
+/// Car account ROC **plan** (2026 estimate). Not 1099 actual.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CarRocPlanBody {
+    pub account_name: String,
+    pub tax_year: String,
+    pub as_of_date: String,
+    pub remaining_total_minor: i64,
+    pub remaining_ordinary_minor: Option<i64>,
+    pub remaining_roc_minor: Option<i64>,
+    pub ytd_paid_minor: i64,
+    pub ytd_ordinary_minor: Option<i64>,
+    pub ytd_roc_minor: Option<i64>,
+    pub ytd_long_term_gain_minor: Option<i64>,
+    pub ytd_short_term_gain_minor: Option<i64>,
+    pub lot_sale_pl_minor: Option<i64>,
+    pub lot_sale_count: u64,
+    pub names_with_estimate: u64,
+    pub names_missing_estimate: u64,
+    pub estimate_note: String,
+    pub tax_note: String,
+    pub lot_sale_note: String,
     pub scale: u8,
 }
 
@@ -2660,12 +2703,31 @@ pub struct CollectorSetItem {
     pub open_lot_count: u64,
     #[serde(default)]
     pub last_payable_on: String,
+    /// Locked declaration weekday (Monday / Wednesday). Empty keeps R5 same-day skip.
+    #[serde(default)]
+    pub declaration_weekday: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectorSetBody {
     pub items: Vec<CollectorSetItem>,
+}
+
+/// Same `collector_is_complete` as first LotOpen. Existing lots do not skip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectorRecertifyBody {
+    pub security_id: Uuid,
+    pub symbol: String,
+    #[serde(default)]
+    pub complete: bool,
+    #[serde(default)]
+    pub gaps: Vec<String>,
+    #[serde(default)]
+    pub trigger: String,
+    #[serde(default)]
+    pub recertified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2687,10 +2749,16 @@ pub struct CollectorStatsBody {
     pub price_current: u64,
     pub price_stale: u64,
     pub open_exceptions: u64,
-    /// Declaration retrieves today that are not income-fleet payers (e.g. MSTU, SOXL, TSLL).
+    /// Declaration retrieves today that are not income-fleet payers.
     #[serde(default)]
     pub ran_outside_fleet: Vec<String>,
     pub as_of_date: String,
+    #[serde(default)]
+    pub fail_count: u64,
+    #[serde(default)]
+    pub fail_ticket_count: u64,
+    #[serde(default)]
+    pub fail_ticket_parity: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -2747,6 +2815,13 @@ pub struct PositionResearchSeedBody {
     pub expected_paid_since_inception: Option<u8>,
     #[serde(default)]
     pub inception_search_miss: bool,
+    /// True when Research ran on a name that already has lots (Recreate).
+    #[serde(default)]
+    pub recertified: bool,
+    #[serde(default)]
+    pub collector_complete: bool,
+    #[serde(default)]
+    pub collector_gaps: Vec<String>,
 }
 
 /// Shared hole-fill research path (Process A after seed, Position Details Complete research,
@@ -2806,6 +2881,13 @@ pub struct PositionResearchRefreshBody {
     pub expected_paid_since_inception: Option<u8>,
     #[serde(default)]
     pub inception_search_miss: bool,
+    /// True when Complete research / Refresh ran on a name that already has lots.
+    #[serde(default)]
+    pub recertified: bool,
+    #[serde(default)]
+    pub collector_complete: bool,
+    #[serde(default)]
+    pub collector_gaps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

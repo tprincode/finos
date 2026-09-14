@@ -242,7 +242,7 @@ pub fn vendor_host(source: &str) -> &'static str {
         "gladstone" => "gladstoneinvestment.com",
         "mplx" => "mplx.com",
         "orchidisland" => "orchidislandcap.com",
-        "tappalpha" => "tappalpha.com",
+        "tappalpha" => "tappalphafunds.com",
         "trinity" => "trincapinvestment.com",
         "cornerstone" => "cornerstonetotalreturn.com",
         _ => "",
