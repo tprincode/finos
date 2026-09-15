@@ -300,6 +300,97 @@ pub fn validate_cash_distribution(
     Ok(net)
 }
 
+/// Capture accounts that may post `Cash_Adjust` (UI shows Account 9 for name `"9"`).
+pub const CASH_ADJUST_ACCOUNT_NAMES: &[&str] =
+    &["Income", "FI Roth", "Speculation", "Health", "Car", "9"];
+
+pub fn is_cash_adjust_type(activity_type: &str) -> bool {
+    activity_type == "Cash_Adjust"
+}
+
+pub fn is_cash_adjust_account(account_name: &str) -> bool {
+    CASH_ADJUST_ACCOUNT_NAMES
+        .iter()
+        .any(|n| account_name.trim().eq_ignore_ascii_case(n))
+}
+
+/// Default money-market symbol when `account.cash_symbol` is empty.
+pub fn default_cash_symbol(account_name: &str) -> Option<&'static str> {
+    match account_name.trim() {
+        "Income" | "FI Roth" | "Speculation" | "Car" => Some("SPAXX"),
+        "Health" => Some("FDRXX"),
+        "9" => Some("SWVXX"),
+        _ => None,
+    }
+}
+
+pub fn resolve_cash_symbol(account_name: &str, column: Option<&str>) -> Option<String> {
+    if let Some(raw) = column.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(raw.to_string());
+    }
+    default_cash_symbol(account_name).map(str::to_string)
+}
+
+pub fn cash_adjust_gap(typed_minor: i64, reference_minor: i64) -> i64 {
+    typed_minor - reference_minor
+}
+
+pub fn cash_gap_is_material(gap_minor: i64) -> bool {
+    gap_minor.abs() >= 1
+}
+
+pub fn cash_adjust_idempotency_key(account_id: uuid::Uuid, period_end: &str) -> String {
+    format!("cash-adjust-{account_id}-{period_end}")
+}
+
+/// Reason note: `fee` | `split` | `other`, or `fee: detail`.
+pub fn format_cash_adjust_note(reason_raw: &str) -> Result<String, DomainError> {
+    let raw = reason_raw.trim();
+    if raw.is_empty() {
+        return Err(DomainError::CashAdjustReasonRequired);
+    }
+    let (kind, detail) = match raw.split_once(':') {
+        Some((k, rest)) => (k.trim(), Some(rest.trim())),
+        None => (raw, None),
+    };
+    let kind_l = kind.to_ascii_lowercase();
+    if !matches!(kind_l.as_str(), "fee" | "split" | "other") {
+        return Err(DomainError::CashAdjustReasonRequired);
+    }
+    match detail {
+        Some(d) if !d.is_empty() => Ok(format!("{kind_l}: {d}")),
+        _ => Ok(kind_l),
+    }
+}
+
+/// Validate a Cash_Adjust post. Negatives allowed; withholding refused; not distribution rules.
+pub fn validate_cash_adjust(
+    activity_type: &str,
+    account_name: &str,
+    amount_minor: Option<i64>,
+    federal_withholding_minor: i64,
+    state_withholding_minor: i64,
+    reason_raw: &str,
+) -> Result<(i64, String), DomainError> {
+    if !is_cash_adjust_type(activity_type) {
+        return Err(DomainError::CashDistributionType);
+    }
+    if !is_cash_adjust_account(account_name) {
+        return Err(DomainError::CashAdjustAccount);
+    }
+    if federal_withholding_minor != 0 || state_withholding_minor != 0 {
+        return Err(DomainError::CashAdjustWithholdingNotAllowed);
+    }
+    let Some(amount) = amount_minor else {
+        return Err(DomainError::UnknownAmount);
+    };
+    if amount == 0 {
+        return Err(DomainError::CashAdjustAmount);
+    }
+    let note = format_cash_adjust_note(reason_raw)?;
+    Ok((amount, note))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,5 +575,32 @@ mod tests {
     fn july_third_is_july_not_june_week_sum() {
         assert!(occurred_in_calendar_month("2026-07-03", 2026, 7));
         assert!(!occurred_in_calendar_month("2026-07-03", 2026, 6));
+    }
+
+    #[test]
+    fn cash_adjust_allows_negative_refuses_withholding() {
+        let (amt, note) =
+            validate_cash_adjust("Cash_Adjust", "Car", Some(-825), 0, 0, "fee").unwrap();
+        assert_eq!(amt, -825);
+        assert_eq!(note, "fee");
+        assert_eq!(
+            validate_cash_adjust("Cash_Adjust", "Car", Some(-825), 1, 0, "fee").unwrap_err(),
+            DomainError::CashAdjustWithholdingNotAllowed
+        );
+        assert_eq!(
+            validate_cash_adjust("Cash_Adjust", "Car", Some(-825), 0, 0, "").unwrap_err(),
+            DomainError::CashAdjustReasonRequired
+        );
+        assert_eq!(format_cash_adjust_note("fee: wire").unwrap(), "fee: wire");
+        assert_eq!(cash_adjust_gap(10_000, 10_825), -825);
+        assert!(cash_gap_is_material(-825));
+        assert!(!cash_gap_is_material(0));
+        assert_eq!(resolve_cash_symbol("Health", None).as_deref(), Some("FDRXX"));
+        assert_eq!(
+            resolve_cash_symbol("Car", Some("CASH1")).as_deref(),
+            Some("CASH1")
+        );
+        assert_eq!(magi_add_minor("Cash_Adjust", Some(-825)), None);
+        assert!(!crate::trends::is_non_roi_distribution("Cash_Adjust"));
     }
 }

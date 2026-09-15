@@ -503,6 +503,18 @@
         {
           "path": "crates/application-core/src/queries.rs",
           "mustContain": "\"CashDistributionPost\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"WeekCaptureAccept\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CashAdjustPost\""
+        },
+        {
+          "path": "apps/desktop/src/features/graphing/TrendsCapture.tsx",
+          "mustContain": "aria-label=\"Week cash recon\""
         }
       ]
     },

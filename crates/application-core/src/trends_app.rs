@@ -218,6 +218,9 @@ pub async fn trends_week_capture_view(
         populated_period_ends: saved,
         missing_required: missing,
         scale: 2,
+        cash_references: crate::cash_management::cash_references_for_week(canonical, &period_end)
+            .await
+            .unwrap_or_default(),
     })
 }
 

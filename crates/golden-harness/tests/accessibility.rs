@@ -390,6 +390,69 @@ fn dividend_weeks_lives_on_income_plan_not_trends_middle() {
 }
 
 #[test]
+fn t5_blank_income_cash_blocks_next() {
+    let capture = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/TrendsCapture.tsx"),
+    )
+    .unwrap();
+    assert!(
+        capture.contains("draft[row.totalKey].trim() !== \"\" && draft[row.cashKey].trim() !== \"\""),
+        "Next requires both Total and Cash filled"
+    );
+    assert!(
+        capture.contains("cashKey: \"incomeCashMinor\""),
+        "Income cash field must gate Next"
+    );
+}
+
+#[test]
+fn t7_speculation_still_in_steps_and_recon_panel() {
+    let capture = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/TrendsCapture.tsx"),
+    )
+    .unwrap();
+    let steps_idx = capture.find("const STEPS = [").expect("STEPS");
+    let steps_slice = &capture[steps_idx..steps_idx + 220];
+    assert!(
+        steps_slice.contains("\"Speculation\""),
+        "Speculation must remain in STEPS"
+    );
+    assert!(
+        steps_slice.matches('"').count() >= 16,
+        "STEPS must stay length 8 (quoted names)"
+    );
+    let after_week = steps_slice.find("\"Week\"").unwrap();
+    let after_income = steps_slice.find("\"Income\"").unwrap();
+    let after_roth = steps_slice.find("\"FI Roth\"").unwrap();
+    let after_spec = steps_slice.find("\"Speculation\"").unwrap();
+    assert!(after_week < after_income && after_income < after_roth && after_roth < after_spec);
+    assert!(
+        capture.contains("aria-label=\"Week cash recon\""),
+        "recon panel aria-label locked"
+    );
+    assert!(
+        !capture.contains("\"Week cash recon\"")
+            || capture.contains("aria-label=\"Week cash recon\""),
+        "Week cash recon is a panel, not a new STEPS rail entry"
+    );
+    assert!(
+        !STEPS_HAS_RECON_AS_STEP(&capture),
+        "do not add Week cash recon to STEPS"
+    );
+}
+
+#[allow(non_snake_case)]
+fn STEPS_HAS_RECON_AS_STEP(src: &str) -> bool {
+    let Some(start) = src.find("const STEPS = [") else {
+        return false;
+    };
+    let Some(end) = src[start..].find("] as const") else {
+        return false;
+    };
+    src[start..start + end].contains("Week cash recon")
+}
+
+#[test]
 fn dividend_weeks_newest_first_empty_not_na() {
     let src = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/graphing/DividendWeeks.tsx"),
