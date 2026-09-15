@@ -8,6 +8,7 @@ Governing target architecture for the Finance Management System.
 | [_docx_extract.txt](../../_docx_extract.txt) | Plain-text extract for search and tooling |
 | [mvp-boundary.md](mvp-boundary.md) | V1 desktop-local in / out / forbidden (Milestone 0) |
 | [component-contracts.md](component-contracts.md) | Bounded component commands, queries, events and table isolation |
+| [core-functions.json](core-functions.json) | Owner-facing function catalog (Settings Core functions + `--test core_functions`) |
 | [m1-macos-gate.md](m1-macos-gate.md) | Same restore/handoff cases to run on macOS |
 | [m2-gate.md](m2-gate.md) | Canonical foundation seed-reconcile and anti-drift tests |
 | [m3-gate.md](m3-gate.md) | Dividend vertical slice: one actual updates Income Plan / Dashboard / Trends |

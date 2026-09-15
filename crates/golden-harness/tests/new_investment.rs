@@ -2928,11 +2928,11 @@ async fn lot_open_grandfather_is_already_has_open_lots() {
     .await;
     must_ok(
         &platform,
-        "PositionCharacteristicUpsert",
+        "CollectorFieldDecisionSet",
         serde_json::json!({
             "securityId": pay1,
-            "riskTier": "",
-            "isActive": true
+            "field": "roc_estimate",
+            "decision": "skip"
         }),
     )
     .await;

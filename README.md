@@ -132,12 +132,16 @@ cargo test
 
 **Desktop app** (see `apps/desktop/README.md`):
 
+Coding days: Desktop `finos.bat` or `apps/desktop/start-finos-dev.bat` (`npm run desktop`). The console is expected.
+
+Household no-console sessions: Desktop `finos-installed.bat` after a one-off `npm run desktop:build` + NSIS install. Do not use that as the daily rebuild start.
+
 ```
 npm install
 npm run desktop
 ```
 
-Start command: `npm run desktop` (from repo root). Exit: File → Exit, the Exit button, the window X, or `Ctrl+C` in that terminal.
+Exit: File → Exit, the Exit button, the window X, or `Ctrl+C` in the dev console.
 
 The window should show HealthGet, HandoffStatusGet, CanonicalWeekGet (Sat–Fri), account/exception lists, dividend actual totals, lots/ROI, MAGI decision, and Calculator Plan / burndown.
 

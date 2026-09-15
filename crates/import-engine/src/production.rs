@@ -120,6 +120,13 @@ fn decimal_scale(raw: &str) -> u8 {
     }
 }
 
+fn withheld_to_minor(raw: &str) -> Result<i64, String> {
+    if raw.trim().is_empty() {
+        return Ok(0);
+    }
+    to_minor(raw, 2)
+}
+
 fn to_minor(raw: &str, scale: u8) -> Result<i64, String> {
     let mut t = raw.trim().replace(',', "");
     // Tolerate spreadsheet typos like 12002..70
@@ -299,13 +306,20 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
             ));
         }
         let txn_type = get(row, "txn_type");
+        let activity_type = if txn_type.is_empty() {
+            "Withdrawal".into()
+        } else {
+            txn_type.to_string()
+        };
+        let mut federal_withholding_minor = withheld_to_minor(get(row, "fed_tax_withheld"))?;
+        let mut state_withholding_minor = withheld_to_minor(get(row, "state_tax_withheld"))?;
+        if activity_type == "Roth_Distribution" {
+            federal_withholding_minor = 0;
+            state_withholding_minor = 0;
+        }
         disbursement_rows.push(ProductionSeedDisbursement {
             account_name: get(row, "account_name").to_string(),
-            activity_type: if txn_type.is_empty() {
-                "Withdrawal".into()
-            } else {
-                txn_type.to_string()
-            },
+            activity_type,
             amount_minor: to_minor(gross, 2)?,
             scale: 2,
             occurred_on: as_iso_date(get(row, "txn_date")),
@@ -314,6 +328,8 @@ pub fn parse_production_templates(production_dir: &Path) -> Result<ProductionSee
                 get(row, "source_year"),
                 get(row, "source_ref")
             ),
+            federal_withholding_minor,
+            state_withholding_minor,
         });
     }
 

@@ -17,20 +17,22 @@ pub use adapters::{
     parse_roundhill_distribution_api, parse_roundhill_distributions, parse_yieldmax_distributions,
     roundhill_fund_page,
 };
-pub use edgar::{parse_edgar_offering_as_of, parse_edgar_offering_price};
+pub use edgar::{
+    offering_keep_stored, parse_edgar_offering_as_of, parse_edgar_offering_price, uses_offering_price,
+};
 #[allow(unused_imports)]
 pub(crate) use adapters::{
     parse_roundhill_csv, parse_roundhill_roc_html, parse_vendor_distributions_with_csv,
 };
 pub(crate) use edgar::{
-    live_edgar_offering_quote, live_energyx_investor_quote, live_offering_snapshot, uses_offering_price,
-    ENERGYX_CIK,
+    live_edgar_offering_quote_fast, live_offering_snapshot, ENERGYX_CIK,
 };
 pub(crate) use html::{
     candidate_amount, strip_html, upcoming_from_candidates,
 };
 use lookthrough::{empty_lookthrough, extract_lookthrough};
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{Datelike, TimeZone, Utc};
@@ -66,31 +68,34 @@ fn yahoo_symbol(symbol: &str) -> String {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct LastPriceTarget {
     pub security_id: String,
     pub symbol: String,
     pub price_source: String,
     pub source_symbol: String,
+    pub known_as_of: String,
+    pub known_price_minor: i64,
+    pub known_scale: u8,
 }
 
 
 fn live_offering_or_yahoo(target: &LastPriceTarget) -> Option<Value> {
     if uses_offering_price(&target.price_source, &target.symbol) {
+        if offering_keep_stored(target.known_price_minor, &target.known_as_of) {
+            return Some(json!({
+                "priceMinor": target.known_price_minor,
+                "scale": if target.known_scale == 0 { 2 } else { target.known_scale },
+                "asOfAt": target.known_as_of,
+                "source": "sec-edgar",
+            }));
+        }
         let cik = if target.source_symbol.chars().any(|c| c.is_ascii_digit()) {
             target.source_symbol.trim()
         } else {
             ENERGYX_CIK
         };
-        if let Some(q) = live_edgar_offering_quote(cik) {
-            return Some(q);
-        }
-        if target.symbol.trim().eq_ignore_ascii_case("ENERGYX") {
-            if let Some(q) = live_energyx_investor_quote() {
-                return Some(q);
-            }
-        }
-        return None;
+        return live_edgar_offering_quote_fast(cik);
     }
     let symbol = if target.source_symbol.trim().is_empty() {
         target.symbol.as_str()
@@ -143,6 +148,47 @@ fn http_agent() -> ureq::Agent {
         builder = builder.tls_connector(std::sync::Arc::new(tls));
     }
     builder.build()
+}
+
+/// Reused TLS session for last-price JSON. Issuer HTML keep using `http_agent`.
+fn quote_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        let mut builder = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(8))
+            .user_agent(HTTP_UA);
+        if let Ok(tls) = native_tls::TlsConnector::new() {
+            builder = builder.tls_connector(std::sync::Arc::new(tls));
+        }
+        builder.build()
+    })
+}
+
+/// Last-price Yahoo JSON only. No issuer HTML, no 25s curl, no quiet-header retry.
+fn http_get_quote(url: &str) -> Result<String, String> {
+    match quote_agent()
+        .get(url)
+        .set("Accept", "application/json,*/*")
+        .call()
+    {
+        Ok(resp) => {
+            let body = resp.into_string().map_err(|e| e.to_string())?;
+            if body.trim().is_empty() {
+                return Err("empty_body".into());
+            }
+            Ok(body)
+        }
+        Err(e) => {
+            let (status, msg) = http_status_from_err(&e);
+            if status == Some(403) {
+                #[cfg(windows)]
+                {
+                    return http_get_via_os_curl_timed(url, "8");
+                }
+            }
+            Err(classify_http_error(url, status, &msg))
+        }
+    }
 }
 
 fn apply_browser_headers(req: ureq::Request, _url: &str, referer: Option<&str>) -> ureq::Request {
@@ -331,6 +377,11 @@ fn https_url_safe_for_os_curl(url: &str) -> bool {
 
 #[cfg(windows)]
 fn http_get_via_os_curl(url: &str) -> Result<String, String> {
+    http_get_via_os_curl_timed(url, "25")
+}
+
+#[cfg(windows)]
+fn http_get_via_os_curl_timed(url: &str, max_secs: &str) -> Result<String, String> {
     if !https_url_safe_for_os_curl(url) {
         return Err("invalid_url".into());
     }
@@ -338,11 +389,11 @@ fn http_get_via_os_curl(url: &str) -> Result<String, String> {
         .args([
             "-sL",
             "-m",
-            "25",
+            max_secs,
             "-A",
             HTTP_UA,
             "-H",
-            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept: application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "-H",
             "Accept-Language: en-US,en;q=0.9",
             "-H",
@@ -384,14 +435,26 @@ fn http_get_bytes_probed(url: &str) -> (Result<Vec<u8>, String>, Value) {
             let mut buf = Vec::new();
             match std::io::Read::read_to_end(&mut reader, &mut buf) {
                 Ok(_) => (Ok(buf), http_probe(url, Some(status), None)),
-                Err(e) => (
-                    Err(e.to_string()),
-                    http_probe(url, Some(status), Some(&e.to_string())),
-                ),
+                Err(e) => {
+                    #[cfg(windows)]
+                    if let Ok(via_curl) = http_get_bytes_via_os_curl(url) {
+                        return (Ok(via_curl), http_probe(url, Some(200), None));
+                    }
+                    (
+                        Err(e.to_string()),
+                        http_probe(url, Some(status), Some(&e.to_string())),
+                    )
+                }
             }
         }
         Err(e) => {
             let (status, msg) = http_status_from_err(&e);
+            #[cfg(windows)]
+            if status.is_none() {
+                if let Ok(buf) = http_get_bytes_via_os_curl(url) {
+                    return (Ok(buf), http_probe(url, Some(200), None));
+                }
+            }
             let classified = classify_http_error(url, status, &msg);
             (
                 Err(classified.clone()),
@@ -399,6 +462,24 @@ fn http_get_bytes_probed(url: &str) -> (Result<Vec<u8>, String>, Value) {
             )
         }
     }
+}
+
+#[cfg(windows)]
+fn http_get_bytes_via_os_curl(url: &str) -> Result<Vec<u8>, String> {
+    if !https_url_safe_for_os_curl(url) {
+        return Err("invalid_url".into());
+    }
+    let out = std::process::Command::new("curl.exe")
+        .args(["-sL", "-m", "25", "-A", HTTP_UA, "--proto", "=https", url])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("curl_exit {}", out.status));
+    }
+    if out.stdout.is_empty() {
+        return Err("empty_body".into());
+    }
+    Ok(out.stdout)
 }
 
 fn http_get_probed(url: &str) -> (Result<String, String>, Value) {
@@ -409,7 +490,14 @@ fn http_get_probed(url: &str) -> (Result<String, String>, Value) {
     if first.0.is_ok() {
         return first;
     }
-    if first.1.get("status").and_then(|s| s.as_u64()) != Some(403) {
+    let status = first.1.get("status").and_then(|s| s.as_u64());
+    if status != Some(403) {
+        #[cfg(windows)]
+        if status.is_none() {
+            if let Ok(body) = http_get_via_os_curl(url) {
+                return (Ok(body), http_probe(url, Some(200), None));
+            }
+        }
         return first;
     }
     let quiet = ureq_get_string(apply_quiet_browser_headers(http_agent().get(url)), url);
@@ -554,10 +642,46 @@ fn notice_text_from_bytes(bytes: &[u8]) -> String {
     pdf_notice_text(bytes)
 }
 
+/// Parse a downloaded 19a-1 PDF/DOCX. Empty means unknown, not 0%.
+pub fn roc_from_notice_bytes(bytes: &[u8]) -> Option<(i64, String)> {
+    parse_19a1_notice(&notice_text_from_bytes(bytes))
+}
+
 fn docx_plain_text(bytes: &[u8]) -> Option<String> {
     if !bytes.starts_with(b"PK") {
         return None;
     }
+    if let Some(text) = docx_from_central_directory(bytes) {
+        return Some(text);
+    }
+    docx_from_local_headers(bytes)
+}
+
+/// Prefer the ZIP central directory so data-descriptor local headers (comp_size 0) still extract.
+fn docx_from_central_directory(bytes: &[u8]) -> Option<String> {
+    let mut i = 0usize;
+    while i + 46 < bytes.len() {
+        if &bytes[i..i + 4] != b"PK\x01\x02" {
+            i += 1;
+            continue;
+        }
+        let method = u16::from_le_bytes([bytes[i + 10], bytes[i + 11]]);
+        let comp_size = u32::from_le_bytes(bytes[i + 20..i + 24].try_into().ok()?) as usize;
+        let name_len = u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
+        let extra_len = u16::from_le_bytes([bytes[i + 30], bytes[i + 31]]) as usize;
+        let comment_len = u16::from_le_bytes([bytes[i + 32], bytes[i + 33]]) as usize;
+        let local_off = u32::from_le_bytes(bytes[i + 42..i + 46].try_into().ok()?) as usize;
+        let name_at = i + 46;
+        let name = std::str::from_utf8(bytes.get(name_at..name_at + name_len)?).ok()?;
+        if name == "word/document.xml" {
+            return inflate_docx_xml(bytes, local_off, method, comp_size);
+        }
+        i = name_at + name_len + extra_len + comment_len;
+    }
+    None
+}
+
+fn docx_from_local_headers(bytes: &[u8]) -> Option<String> {
     let mut i = 0usize;
     while i + 30 < bytes.len() {
         if &bytes[i..i + 4] != b"PK\x03\x04" {
@@ -565,31 +689,60 @@ fn docx_plain_text(bytes: &[u8]) -> Option<String> {
             continue;
         }
         let method = u16::from_le_bytes([bytes[i + 8], bytes[i + 9]]);
-        let comp_size = u32::from_le_bytes(bytes[i + 18..i + 22].try_into().ok()?) as usize;
+        let flags = u16::from_le_bytes([bytes[i + 6], bytes[i + 7]]);
+        let mut comp_size = u32::from_le_bytes(bytes[i + 18..i + 22].try_into().ok()?) as usize;
         let name_len = u16::from_le_bytes([bytes[i + 26], bytes[i + 27]]) as usize;
         let extra_len = u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
         let name_at = i + 30;
         let name = std::str::from_utf8(bytes.get(name_at..name_at + name_len)?).ok()?;
         let data_at = name_at + name_len + extra_len;
-        let data = bytes.get(data_at..data_at + comp_size)?;
         if name == "word/document.xml" {
-            let xml = if method == 0 {
-                String::from_utf8_lossy(data).into_owned()
-            } else if method == 8 {
-                use flate2::read::DeflateDecoder;
-                use std::io::Read;
-                let mut dec = DeflateDecoder::new(data);
-                let mut s = String::new();
-                dec.read_to_string(&mut s).ok()?;
-                s
-            } else {
-                return None;
-            };
-            return Some(strip_html(&xml.replace('<', " <")));
+            if comp_size == 0 || flags & 8 != 0 {
+                comp_size = bytes.len().saturating_sub(data_at);
+            }
+            return inflate_docx_payload(bytes.get(data_at..data_at + comp_size)?, method);
         }
-        i = data_at + comp_size;
+        i = data_at + comp_size.max(1);
     }
     None
+}
+
+fn inflate_docx_xml(bytes: &[u8], local_off: usize, method: u16, comp_size: usize) -> Option<String> {
+    if local_off + 30 > bytes.len() {
+        return None;
+    }
+    if &bytes[local_off..local_off + 4] != b"PK\x03\x04" {
+        return None;
+    }
+    let name_len = u16::from_le_bytes([bytes[local_off + 26], bytes[local_off + 27]]) as usize;
+    let extra_len = u16::from_le_bytes([bytes[local_off + 28], bytes[local_off + 29]]) as usize;
+    let data_at = local_off + 30 + name_len + extra_len;
+    let take = if comp_size == 0 {
+        bytes.len().saturating_sub(data_at)
+    } else {
+        comp_size
+    };
+    inflate_docx_payload(bytes.get(data_at..data_at + take)?, method)
+}
+
+fn inflate_docx_payload(data: &[u8], method: u16) -> Option<String> {
+    let xml = if method == 0 {
+        String::from_utf8_lossy(data).into_owned()
+    } else if method == 8 {
+        use flate2::read::DeflateDecoder;
+        use std::io::Read;
+        let mut dec = DeflateDecoder::new(data);
+        let mut s = String::new();
+        dec.read_to_string(&mut s).ok()?;
+        s
+    } else {
+        return None;
+    };
+    if xml.contains("w:t") || xml.contains("<w:") {
+        Some(strip_html(&xml.replace('<', " <")))
+    } else {
+        None
+    }
 }
 
 fn pdf_ascii(bytes: &[u8]) -> String {
@@ -630,7 +783,32 @@ pub fn parse_19a1_notice(text: &str) -> Option<(i64, String)> {
             }
         }
     }
+    if let Some(hit) = parse_19a1_return_of_capital_table(&adapters::collapse_spaced_financial(text))
+    {
+        return Some(hit);
+    }
     adapters::parse_return_of_capital_pct(text)
+}
+
+/// Global X table row: `Return of Capital $0.1824 99.72%` (not the prose mention).
+fn parse_19a1_return_of_capital_table(text: &str) -> Option<(i64, String)> {
+    let lower = text.to_ascii_lowercase();
+    let mut search = 0usize;
+    while let Some(rel) = lower.get(search..).and_then(|s| s.find("return of capital")) {
+        let idx = search + rel + 17;
+        let after = text.get(idx..idx.saturating_add(80).min(text.len())).unwrap_or("");
+        if let Some(dollar) = after.find('$') {
+            if dollar < 24 {
+                if let Some(pct) = first_percent(&after[dollar..]) {
+                    if (1..=10_000).contains(&pct) {
+                        return Some((pct, "19a-1 table current distribution".into()));
+                    }
+                }
+            }
+        }
+        search = idx;
+    }
+    None
 }
 
 fn trailing_percent(before: &str) -> Option<i64> {
@@ -976,20 +1154,22 @@ fn live_vendor_search_roc(
     let mut seed_urls = Vec::new();
     if let Ok(html) = &search_got {
         if let Some((pct, how)) = financial_domain::collector::roc_from_payment_type(html) {
-            let as_of = Utc::now().date_naive().to_string();
-            return (
-                LiveRocFill {
-                    candidates: vec![roc_estimate(
-                        pct,
-                        source_url,
-                        &as_of,
-                        how.to_string(),
-                        "payment-type",
-                    )],
-                    probes,
-                },
-                true,
-            );
+            if pct > 0 {
+                let as_of = Utc::now().date_naive().to_string();
+                return (
+                    LiveRocFill {
+                        candidates: vec![roc_estimate(
+                            pct,
+                            source_url,
+                            &as_of,
+                            how.to_string(),
+                            "payment-type",
+                        )],
+                        probes,
+                    },
+                    true,
+                );
+            }
         }
         seed_urls = rank_roc_search_urls(&parse_search_result_urls(html), vendor_host, &sym);
     }
@@ -1036,7 +1216,7 @@ fn follow_vendor_19a1_seeds(
             continue;
         }
         let lower = url.to_ascii_lowercase();
-        if lower.contains(".pdf") {
+        if lower.contains(".pdf") || lower.contains(".docx") {
             if !pdf_queue.iter().any(|u| u == url) {
                 pdf_queue.push(url.clone());
             }
@@ -1055,35 +1235,45 @@ fn follow_vendor_19a1_seeds(
             continue;
         };
         if let Some((pct, how)) = financial_domain::collector::roc_from_payment_type(&html) {
-            let as_of = Utc::now().date_naive().to_string();
-            return LiveRocFill {
-                candidates: vec![roc_estimate(pct, &page, &as_of, how.to_string(), "payment-type")],
-                probes: probes.clone(),
-            };
+            if pct > 0 {
+                let as_of = Utc::now().date_naive().to_string();
+                return LiveRocFill {
+                    candidates: vec![roc_estimate(pct, &page, &as_of, how.to_string(), "payment-type")],
+                    probes: probes.clone(),
+                };
+            }
         }
         for needle in [
             "19a-1_Notice_",
             "19a-1",
             "form 19a-1",
             "form-19a",
+            "s19a",
+            "s19(a)",
+            "19(a)",
             "tax-center",
             "tax center",
             "tax-supplements",
+            "supplemental-tax",
         ] {
             for href in hrefs_matching(&html, needle, origin) {
                 if is_blocked_roc_crawl_url(&href) {
                     continue;
                 }
                 let lower = href.to_ascii_lowercase();
+                let ticker_in_url = href.to_ascii_uppercase().contains(&sym_u);
+                let simplify_s19a = lower.contains("s19a") || lower.contains("s19(a)");
                 if (lower.contains(".pdf") || lower.contains(".docx"))
-                    && href.to_ascii_uppercase().contains(&sym_u)
+                    && (ticker_in_url || simplify_s19a)
                 {
                     if !pdf_queue.iter().any(|u| u == &href) {
                         pdf_queue.push(href);
                     }
                 } else if (lower.contains("tax-center")
                     || lower.contains("19a-1")
-                    || lower.contains("19a1"))
+                    || lower.contains("19a1")
+                    || lower.contains("s19a")
+                    || lower.contains("supplemental-tax"))
                     && !lower.contains(".pdf")
                     && seen_hubs.insert(href.clone())
                     && seen_hubs.len() < 8
@@ -1094,6 +1284,13 @@ fn follow_vendor_19a1_seeds(
         }
     }
 
+    pdf_queue.sort_by(|a, b| {
+        adapters::globalx_19a_recency(b)
+            .cmp(&adapters::globalx_19a_recency(a))
+            .then_with(|| {
+                adapters::simplify_s19a_recency(b).cmp(&adapters::simplify_s19a_recency(a))
+            })
+    });
     for href in pdf_queue {
         let (got, probe) = http_get_bytes_probed(&href);
         probes.push(probe);
@@ -1101,7 +1298,8 @@ fn follow_vendor_19a1_seeds(
             continue;
         };
         let text = notice_text_from_bytes(&bytes);
-        if let Some((pct, how)) = parse_19a1_notice(&text)
+        if let Some((pct, how)) = adapters::parse_simplify_s19a_roc(&text, &sym_u)
+            .or_else(|| parse_19a1_notice(&text))
             .or_else(|| adapters::parse_return_of_capital_pct(&text))
         {
             if pct <= 0 {
@@ -1217,6 +1415,13 @@ fn live_globalx_roc(symbol: &str) -> LiveRocFill {
             }
         }
     }
+    notices.sort_by(|a, b| {
+        adapters::globalx_19a_recency(b).cmp(&adapters::globalx_19a_recency(a))
+    });
+    let year_now = Utc::now().year();
+    if notices.iter().any(|u| adapters::globalx_19a_recency(u).0 == year_now) {
+        notices.retain(|u| adapters::globalx_19a_recency(u).0 >= year_now);
+    }
     if notices.is_empty() {
         return LiveRocFill {
             candidates: Vec::new(),
@@ -1231,22 +1436,181 @@ fn live_globalx_roc(symbol: &str) -> LiveRocFill {
     )
 }
 
-fn live_roundhill_roc(symbol: &str) -> LiveRocFill {
-    let Some((url, html, _)) = fetch_adapter_page("roundhill", symbol, None) else {
-        return LiveRocFill::default();
-    };
-    let probes = vec![http_probe(&url, Some(200), None)];
-    if let Some(pct) = parse_roundhill_roc_html(&html) {
+fn drop_false_payment_type_zero(fill: LiveRocFill) -> LiveRocFill {
+    let candidates: Vec<Value> = fill
+        .candidates
+        .into_iter()
+        .filter(|c| {
+            let method = c.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            let pct = c.get("rocPctMinor").and_then(|p| p.as_i64());
+            !(method == "payment-type" && pct == Some(0))
+        })
+        .collect();
+    LiveRocFill {
+        candidates,
+        probes: fill.probes,
+    }
+}
+
+fn live_simplify_roc(symbol: &str) -> LiveRocFill {
+    let mut probes = Vec::new();
+    let mut seeds = Vec::new();
+    let fund = adapters::simplify_fund_url(symbol);
+    let (fund_got, fund_probe) = http_get_probed(&fund);
+    probes.push(fund_probe);
+    let mut hubs = vec![
+        "https://www.simplify.us/etfs/2221/supplemental-tax-information".into(),
+    ];
+    if let Ok(html) = &fund_got {
+        if let Some(tax) = adapters::simplify_supplemental_tax_url(html) {
+            if !hubs.iter().any(|u| u == &tax) {
+                hubs.insert(0, tax);
+            }
+        }
+        for url in adapters::simplify_s19a_notice_urls(html, "https://www.simplify.us") {
+            if !seeds.iter().any(|u| u == &url) {
+                seeds.push(url);
+            }
+        }
+    }
+    for hub in hubs {
+        let (got, probe) = http_get_probed(&hub);
+        probes.push(probe);
+        let Ok(html) = got else {
+            continue;
+        };
+        for url in adapters::simplify_s19a_notice_urls(&html, "https://www.simplify.us") {
+            if !seeds.iter().any(|u| u == &url) {
+                seeds.push(url);
+            }
+        }
+        for url in adapters::https_urls_matching(&html, "s19a") {
+            let lower = url.to_ascii_lowercase();
+            if lower.contains(".pdf") && !seeds.iter().any(|u| u == &url) {
+                seeds.push(url);
+            }
+        }
+    }
+    seeds.sort_by(|a, b| adapters::simplify_s19a_recency(b).cmp(&adapters::simplify_s19a_recency(a)));
+    if seeds.is_empty() {
         return LiveRocFill {
-            candidates: vec![roc_estimate(
-                pct,
-                &url,
-                &Utc::now().date_naive().to_string(),
-                "issuer page 19a-1 sentence".into(),
-                "19a-1-current-year",
-            )],
+            candidates: Vec::new(),
             probes,
         };
+    }
+    follow_vendor_19a1_seeds(
+        &yahoo_symbol(symbol),
+        &seeds,
+        "https://www.simplify.us",
+        &mut probes,
+    )
+}
+
+fn live_tappalpha_roc(symbol: &str) -> LiveRocFill {
+    let mut probes = Vec::new();
+    let page = adapters::tappalpha_fund_page_url(symbol);
+    let api = adapters::tappalpha_distributions_url(symbol);
+    let (got, probe) = http_get_probed(&api);
+    probes.push(probe);
+    if let Ok(body) = &got {
+        if let Some((pct, on)) = adapters::parse_tappalpha_table_roc(body) {
+            let as_of = if on.is_empty() {
+                Utc::now().date_naive().to_string()
+            } else {
+                on
+            };
+            return LiveRocFill {
+                candidates: vec![roc_estimate(
+                    pct,
+                    &page,
+                    &as_of,
+                    "distributions table ROC percent".into(),
+                    "table-roc-current",
+                )],
+                probes,
+            };
+        }
+        let notices = adapters::tappalpha_19a1_notice_urls(body);
+        if !notices.is_empty() {
+            return follow_vendor_19a1_seeds(
+                &yahoo_symbol(symbol),
+                &notices,
+                "https://tappalphafunds.com",
+                &mut probes,
+            );
+        }
+    }
+    let (page_got, page_probe) = http_get_probed(&page);
+    probes.push(page_probe);
+    if let Ok(html) = page_got {
+        if let Some((pct, on)) = adapters::parse_tappalpha_table_roc(&html) {
+            let as_of = if on.is_empty() {
+                Utc::now().date_naive().to_string()
+            } else {
+                on
+            };
+            return LiveRocFill {
+                candidates: vec![roc_estimate(
+                    pct,
+                    &page,
+                    &as_of,
+                    "distributions table ROC percent".into(),
+                    "table-roc-current",
+                )],
+                probes,
+            };
+        }
+        let notices = adapters::tappalpha_19a1_notice_urls(&html);
+        if !notices.is_empty() {
+            return follow_vendor_19a1_seeds(
+                &yahoo_symbol(symbol),
+                &notices,
+                "https://tappalphafunds.com",
+                &mut probes,
+            );
+        }
+    }
+    LiveRocFill {
+        candidates: Vec::new(),
+        probes,
+    }
+}
+
+fn live_roundhill_roc(symbol: &str) -> LiveRocFill {
+    let mut probes = Vec::new();
+    for url in adapter_probe_urls("roundhill", symbol) {
+        let (got, probe) = http_get_probed(&url);
+        probes.push(probe);
+        let Ok(html) = got else {
+            continue;
+        };
+        if let Some(pct) = parse_roundhill_roc_html(&html) {
+            return LiveRocFill {
+                candidates: vec![roc_estimate(
+                    pct,
+                    &url,
+                    &Utc::now().date_naive().to_string(),
+                    "issuer page 19a-1 sentence".into(),
+                    "19a-1-current-year",
+                )],
+                probes,
+            };
+        }
+    }
+    if let Some((url, html, _)) = fetch_adapter_page("roundhill", symbol, None) {
+        probes.push(http_probe(&url, Some(200), None));
+        if let Some(pct) = parse_roundhill_roc_html(&html) {
+            return LiveRocFill {
+                candidates: vec![roc_estimate(
+                    pct,
+                    &url,
+                    &Utc::now().date_naive().to_string(),
+                    "issuer page 19a-1 sentence".into(),
+                    "19a-1-current-year",
+                )],
+                probes,
+            };
+        }
     }
     LiveRocFill {
         candidates: Vec::new(),
@@ -1315,8 +1679,41 @@ pub fn live_roc_candidates_for(symbol: &str, declaration_source: &str, source_ur
         if !stored.candidates.is_empty() {
             return stored;
         }
+        let file = source_url.to_ascii_lowercase();
+        if file.contains(".pdf") || file.contains(".docx") {
+            return stored;
+        }
+    }
+    // Global X tax hub is the standing source. Search after the hub so a DDG/timeout
+    // cannot block Form 19a files already linked from the issuer index.
+    if src == "globalx" {
+        let page = live_globalx_roc(symbol);
+        if !page.candidates.is_empty() {
+            return page;
+        }
+    }
+    if src == "roundhill" {
+        let page = live_roundhill_roc(symbol);
+        if !page.candidates.is_empty() {
+            return page;
+        }
     }
     let (searched, search_hit) = live_vendor_search_roc(symbol, vendor_name, &host, source_url);
+    let searched = drop_false_payment_type_zero(searched);
+    // Simplify monthly S19(a) notices: walk the fund/tax hubs and take the newest month.
+    // A search hit on one dated PDF must not freeze an older estimate.
+    if src == "simplify" {
+        let page = live_simplify_roc(symbol);
+        if !page.candidates.is_empty() {
+            return page;
+        }
+    }
+    if src == "tappalpha" {
+        let page = live_tappalpha_roc(symbol);
+        if !page.candidates.is_empty() {
+            return page;
+        }
+    }
     if !searched.candidates.is_empty() {
         return searched;
     }
@@ -1326,6 +1723,8 @@ pub fn live_roc_candidates_for(symbol: &str, declaration_source: &str, source_ur
         "yieldmax" => live_yieldmax_roc(symbol, source_url),
         "roundhill" => live_roundhill_roc(symbol),
         "globalx" => live_globalx_roc(symbol),
+        "simplify" => live_simplify_roc(symbol),
+        "tappalpha" => live_tappalpha_roc(symbol),
         _ => LiveRocFill::default(),
     };
     if !page.candidates.is_empty() {
@@ -1564,13 +1963,13 @@ fn live_price_snapshot(symbol: &str) -> Value {
         return empty_snapshot(symbol);
     }
     let yahoo = format!(
-        "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=5d"
+        "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
     );
     let yahoo2 = format!(
-        "https://query2.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=5d"
+        "https://query2.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
     );
     for url in [yahoo, yahoo2] {
-        if let Ok(body) = http_get(&url) {
+        if let Ok(body) = http_get_quote(&url) {
             if let Some(parsed) = parse_yahoo_chart(&sym, &body) {
                 if parsed.get("quote").map(|q| !q.is_null()).unwrap_or(false) {
                     return parsed;
@@ -1606,8 +2005,7 @@ pub fn collect_last_price_quotes(pairs: Vec<(String, String)>) -> Vec<Value> {
             .map(|(security_id, symbol)| LastPriceTarget {
                 security_id,
                 symbol,
-                price_source: String::new(),
-                source_symbol: String::new(),
+                ..Default::default()
             })
             .collect(),
     )
@@ -1615,27 +2013,195 @@ pub fn collect_last_price_quotes(pairs: Vec<(String, String)>) -> Vec<Value> {
 
 /// Same as collect_last_price_quotes, honoring retrieval template (EDGAR vs Yahoo).
 pub fn collect_last_price_quotes_for(targets: Vec<LastPriceTarget>) -> Vec<Value> {
+    collect_last_price_quotes_for_with_progress(targets, |_, _, _| {})
+}
+
+/// Reports each start and finish so a slow quote (ELVR/Yahoo) does not pin the
+/// activity label on the first symbol of an 8-wide batch.
+pub fn collect_last_price_quotes_for_with_progress(
+    targets: Vec<LastPriceTarget>,
+    mut on_progress: impl FnMut(u32, u32, &str),
+) -> Vec<Value> {
+    let total = targets.len() as u32;
     let mut out = Vec::new();
-    for batch in targets.chunks(8) {
+    let mut done = 0u32;
+    let mut yahoo = Vec::new();
+    let mut offering = Vec::new();
+    for target in targets {
+        if uses_offering_price(&target.price_source, &target.symbol) {
+            offering.push(target);
+        } else {
+            yahoo.push(target);
+        }
+    }
+    for batch in yahoo.chunks(40) {
+        for target in batch {
+            on_progress(done, total, &target.symbol);
+        }
+        let mut quotes = fetch_yahoo_spark_quotes(
+            &batch
+                .iter()
+                .map(yahoo_fetch_symbol)
+                .collect::<Vec<_>>(),
+        );
+        let missing: Vec<LastPriceTarget> = batch
+            .iter()
+            .filter(|t| !quotes.contains_key(&yahoo_fetch_symbol(t)))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            fill_yahoo_quotes_parallel(&missing, &mut quotes);
+        }
+        for target in batch {
+            let row = quotes
+                .get(&yahoo_fetch_symbol(target))
+                .cloned()
+                .and_then(|q| last_price_quote_json(&target.security_id, q));
+            done = done.saturating_add(1);
+            if let Some(row) = row {
+                out.push(row);
+            }
+            on_progress(done, total, &target.symbol);
+        }
+    }
+    for target in offering {
+        on_progress(done, total, &target.symbol);
+        if let Some(row) = live_offering_or_yahoo(&target)
+            .and_then(|q| last_price_quote_json(&target.security_id, q))
+        {
+            out.push(row);
+        }
+        done = done.saturating_add(1);
+        on_progress(done, total, &target.symbol);
+    }
+    out
+}
+
+fn yahoo_fetch_symbol(target: &LastPriceTarget) -> String {
+    let raw = if target.source_symbol.trim().is_empty()
+        || target.source_symbol.chars().any(|c| c.is_ascii_digit())
+    {
+        target.symbol.as_str()
+    } else {
+        target.source_symbol.as_str()
+    };
+    yahoo_symbol(raw)
+}
+
+/// Yahoo spark last prices. Missing or nonpositive stays unknown — never $0.
+pub fn parse_yahoo_spark(body: &str) -> HashMap<String, Value> {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return HashMap::new(),
+    };
+    let Some(obj) = v.as_object() else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for (key, row) in obj {
+        if matches!(key.as_str(), "error" | "spark" | "finance") {
+            continue;
+        }
+        let Some(row) = row.as_object() else {
+            continue;
+        };
+        let symbol = row
+            .get("symbol")
+            .and_then(|s| s.as_str())
+            .unwrap_or(key);
+        let price = row
+            .get("fulldayPrice")
+            .and_then(|p| p.as_f64())
+            .filter(|p| *p > 0.0)
+            .or_else(|| {
+                row.get("close")
+                    .and_then(|c| c.as_array())
+                    .and_then(|a| {
+                        a.iter()
+                            .rev()
+                            .find_map(|x| x.as_f64().filter(|p| *p > 0.0))
+                    })
+            });
+        let Some(price) = price else {
+            continue;
+        };
+        let as_of = row
+            .get("timestamp")
+            .and_then(|t| t.as_array())
+            .and_then(|a| a.last())
+            .and_then(|t| t.as_i64())
+            .map(iso_from_unix)
+            .unwrap_or_default();
+        out.insert(
+            yahoo_symbol(symbol),
+            json!({
+                "priceMinor": dollars_to_minor(price, 2),
+                "scale": 2,
+                "asOfAt": as_of,
+                "source": "yahoo",
+            }),
+        );
+    }
+    out
+}
+
+fn fetch_yahoo_spark_quotes(symbols: &[String]) -> HashMap<String, Value> {
+    let mut unique = Vec::new();
+    let mut seen = HashSet::new();
+    for symbol in symbols {
+        let symbol = yahoo_symbol(symbol);
+        if symbol.is_empty() || !seen.insert(symbol.clone()) {
+            continue;
+        }
+        unique.push(symbol);
+    }
+    if unique.is_empty() {
+        return HashMap::new();
+    }
+    let joined = unique.join(",");
+    let urls = [
+        format!(
+            "https://query1.finance.yahoo.com/v8/finance/spark?symbols={joined}&range=1d&interval=1d"
+        ),
+        format!(
+            "https://query2.finance.yahoo.com/v8/finance/spark?symbols={joined}&range=1d&interval=1d"
+        ),
+    ];
+    for url in urls {
+        if let Ok(body) = http_get_quote(&url) {
+            let parsed = parse_yahoo_spark(&body);
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+    }
+    HashMap::new()
+}
+
+fn fill_yahoo_quotes_parallel(
+    missing: &[LastPriceTarget],
+    quotes: &mut HashMap<String, Value>,
+) {
+    for batch in missing.chunks(8) {
         std::thread::scope(|scope| {
             let handles: Vec<_> = batch
                 .iter()
                 .map(|target| {
                     let target = target.clone();
                     scope.spawn(move || {
-                        live_offering_or_yahoo(&target)
-                            .and_then(|quote| last_price_quote_json(&target.security_id, quote))
+                        let key = yahoo_fetch_symbol(&target);
+                        let quote = live_price_quote(&key);
+                        (key, quote)
                     })
                 })
                 .collect();
             for handle in handles {
-                if let Ok(Some(quote)) = handle.join() {
-                    out.push(quote);
+                if let Ok((key, Some(quote))) = handle.join() {
+                    quotes.insert(key, quote);
                 }
             }
         });
     }
-    out
 }
 
 /// Dated daily closes from a Yahoo v8 chart. Network-free. Never a CurrentPrice post.
@@ -2980,7 +3546,43 @@ fn apply_mlp_sec_8k_empty(
     }
 }
 
+fn outcome_has_security(rows: &[Value], security_id: &str) -> bool {
+    rows.iter()
+        .any(|row| row.get("securityId").and_then(|v| v.as_str()) == Some(security_id))
+}
+
+/// Incremental retrieve with nothing new to store still counts as today's run.
+fn stamp_declaration_run_if_quiet(out: &mut DeclarationCollectOutcome, target: &DeclarationTarget) {
+    let id = target.security_id.as_str();
+    if outcome_has_security(&out.misses, id) || outcome_has_security(&out.unchanged, id) {
+        return;
+    }
+    let hash = out
+        .candidates
+        .iter()
+        .chain(out.pay_dates.iter())
+        .find_map(|row| row.get("contentHash").and_then(|h| h.as_str()))
+        .unwrap_or(target.last_content_hash.as_str());
+    out.unchanged.push(json!({
+        "securityId": target.security_id,
+        "symbol": target.symbol,
+        "contentHash": hash,
+    }));
+}
+
 fn apply_fetched_page(
+    out: &mut DeclarationCollectOutcome,
+    target: &DeclarationTarget,
+    source: &str,
+    html: Option<&str>,
+    fetched_url: &str,
+    payment_calendar_url: Option<&str>,
+) {
+    apply_fetched_page_inner(out, target, source, html, fetched_url, payment_calendar_url);
+    stamp_declaration_run_if_quiet(out, target);
+}
+
+fn apply_fetched_page_inner(
     out: &mut DeclarationCollectOutcome,
     target: &DeclarationTarget,
     source: &str,
@@ -3801,6 +4403,26 @@ mod tests {
     }
 
     #[test]
+    fn yahoo_spark_fixture_fills_last_price() {
+        let body = r#"{"GOF":{"symbol":"GOF","fulldayPrice":14.85,"timestamp":[1755705600],"close":[14.80]}}"#;
+        let parsed = parse_yahoo_spark(body);
+        assert_eq!(parsed.len(), 1);
+        let quote = parsed.get("GOF").expect("GOF spark quote");
+        assert_eq!(quote["priceMinor"], 1485);
+        assert_eq!(quote["source"], "yahoo");
+        assert_eq!(quote["asOfAt"], "2025-08-20");
+    }
+
+    #[test]
+    fn yahoo_spark_zero_or_missing_stays_unknown() {
+        let body = r#"{"ZZZ":{"symbol":"ZZZ","fulldayPrice":0,"close":[null]}}"#;
+        assert!(
+            parse_yahoo_spark(body).is_empty(),
+            "nonpositive spark last price must stay unknown"
+        );
+    }
+
+    #[test]
     fn amplify_short_name_suggests_provider() {
         assert_eq!(
             super::suggested_provider_from_name("Amplify HACK Cybersecurity Cove"),
@@ -3868,6 +4490,10 @@ mod tests {
     fn collect_last_price_quotes_empty_is_unknown() {
         assert!(collect_last_price_quotes(Vec::new()).is_empty());
         assert!(collect_last_price_quotes_for(Vec::new()).is_empty());
+        let mut n = 0u32;
+        let out = collect_last_price_quotes_for_with_progress(Vec::new(), |_, _, _| n += 1);
+        assert!(out.is_empty());
+        assert_eq!(n, 0);
     }
 
     #[test]
@@ -3905,7 +4531,7 @@ mod tests {
     #[test]
     #[ignore = "live SEC; not required for CI"]
     fn live_energyx_edgar_thirteen() {
-        let quote = live_edgar_offering_quote(ENERGYX_CIK).expect("sec-edgar offering quote");
+        let quote = live_edgar_offering_quote_fast(ENERGYX_CIK).expect("sec-edgar offering quote");
         assert_eq!(quote["priceMinor"], 1300);
         assert_eq!(quote["scale"], 2);
         assert_eq!(quote["source"], "sec-edgar");
@@ -3916,6 +4542,42 @@ mod tests {
     fn energyx_increment_only_stays_unknown() {
         let html = "<p>Purchases must be in increments of at least $13.00</p>";
         assert!(parse_edgar_offering_price(html).is_none());
+    }
+
+    #[test]
+    fn energyx_stored_offering_skips_live_fetch() {
+        assert!(offering_keep_stored(1300, "2026-07-13"));
+        assert!(!offering_keep_stored(0, "2026-07-13"));
+        assert!(!offering_keep_stored(1300, ""));
+        let target = LastPriceTarget {
+            security_id: "sec-1".into(),
+            symbol: "ENERGYX".into(),
+            price_source: "edgar".into(),
+            source_symbol: "1830166".into(),
+            known_as_of: "2026-07-13".into(),
+            known_price_minor: 1300,
+            known_scale: 2,
+        };
+        let quote = live_offering_or_yahoo(&target).expect("keep stored offering");
+        assert_eq!(quote["priceMinor"], 1300);
+        assert_eq!(quote["asOfAt"], "2026-07-13");
+        assert_eq!(quote["source"], "sec-edgar");
+        let row = last_price_quote_json(&target.security_id, quote).expect("row");
+        assert_eq!(row["priceMinor"], 1300);
+        assert_eq!(row["asOfAt"], "2026-07-13");
+    }
+
+    #[test]
+    fn last_price_offering_path_does_not_hit_investor_page() {
+        let retrieve = include_str!("mod.rs");
+        let start = retrieve
+            .find("fn live_offering_or_yahoo")
+            .expect("live_offering_or_yahoo");
+        let body = &retrieve[start..start + 900];
+        assert!(body.contains("offering_keep_stored"));
+        assert!(body.contains("live_edgar_offering_quote_fast"));
+        assert!(!body.contains("live_energyx_investor_quote"));
+        assert!(!body.contains("invest.energyx.com"));
     }
 
     #[test]
@@ -3935,12 +4597,26 @@ mod tests {
     }
 
     #[test]
+    fn globalx_current_distribution_table_is_99_72() {
+        let text = "Net Investment Income $0.0005 0.28% Return of Capital $0.1824 99.72% Total (per Capital Share) $0.1829 100.00%";
+        let (pct, how) = parse_19a1_notice(text).expect("QYLD table");
+        assert_eq!(pct, 9_972);
+        assert!(how.contains("table"));
+    }
+
+    #[test]
     fn stored_roc_url_blocks_invented_filenames() {
         let stored = "https://issuer.example/files/19a-1_Notice_05-29-26_PAY1.pdf";
         assert!(looks_like_roc_notice_url(stored));
         assert!(!should_invent_dated_19a1_filenames("amplify", stored));
         assert!(should_invent_dated_19a1_filenames("amplify", ""));
         assert!(!should_invent_dated_19a1_filenames("issuer", ""));
+        assert!(looks_like_roc_notice_url(
+            "https://www.simplify.us/sites/default/files/2026-08/S19a_Notice_2026_August_M.pdf"
+        ));
+        assert!(!looks_like_roc_notice_url(
+            "https://www.simplify.us/etfs/svol-simplify-volatility-premium-etf"
+        ));
     }
 
     #[test]
@@ -4603,6 +5279,12 @@ Amplify HACK Cybersecurity Covered Call ETF HAKY
         );
         assert_eq!(out.page_paid.len(), 3);
         assert!(out.misses.is_empty(), "increment of stored pays is not empty: {:?}", out.misses);
+        assert_eq!(
+            out.unchanged.len(),
+            1,
+            "known pays still count as today's retrieve: {:?}",
+            out.unchanged
+        );
     }
 
     #[test]
@@ -4884,7 +5566,15 @@ Amplify HACK Cybersecurity Covered Call ETF HAKY
             force_refresh: true,
             ..Default::default()
         }]);
-        assert!(out.unchanged.is_empty());
+        let early_skip = out.unchanged.len() == 1
+            && out.candidates.is_empty()
+            && out.misses.is_empty()
+            && out.unchanged[0]["contentHash"] == "deadbeef";
+        assert!(
+            !early_skip,
+            "force_refresh must not skip the issuer fetch: {:?}",
+            out.unchanged
+        );
     }
 
     #[test]

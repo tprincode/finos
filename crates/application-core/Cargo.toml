@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 financial-domain = { path = "../financial-domain" }
 rust_xlsxwriter = "0.84"
 serde.workspace = true
