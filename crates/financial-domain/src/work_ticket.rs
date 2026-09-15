@@ -15,9 +15,13 @@ pub const TOOL_SET_PROVIDER: &str = "set_provider";
 pub const TOOL_SET_RISK: &str = "set_risk";
 pub const TOOL_FIX_REMAINING_YEAR: &str = "fix_remaining_year";
 pub const TOOL_RUN_ROC: &str = "run_roc";
+pub const TOOL_ROC_CONFIRM: &str = "roc_confirm";
+pub const CODE_ROC_PCT_CHANGE: &str = "roc_pct_change";
 
 pub const CODE_ADAPTER_URL_MISMATCH: &str = "adapter_url_mismatch";
 pub const CODE_MISSING_SEED_URL: &str = "missing_seed_url";
+pub const TOOL_ESTABLISH_RECERTIFY: &str = "establish_recertify";
+pub const CODE_COLLECTOR_ESTABLISH_INCOMPLETE: &str = "collector_establish_incomplete";
 
 /// Codes this slice can raise. Every entry must have a tool (`tool_for_code`).
 pub const RAISEABLE_CODES: &[&str] = &[
@@ -36,6 +40,7 @@ pub const RAISEABLE_CODES: &[&str] = &[
     "provider",
     "risk_tier",
     "roc_estimate",
+    CODE_ROC_PCT_CHANGE,
     "remaining_year",
     "paid_payable_supersede",
     crate::mlp_sec::CODE_PAYABLE_DATE_MOVED,
@@ -43,6 +48,7 @@ pub const RAISEABLE_CODES: &[&str] = &[
     crate::mlp_sec::CODE_OWNER_AMOUNT,
     CODE_ADAPTER_URL_MISMATCH,
     CODE_MISSING_SEED_URL,
+    CODE_COLLECTOR_ESTABLISH_INCOMPLETE,
 ];
 
 pub fn tool_for_code(code: &str) -> Option<&'static str> {
@@ -68,6 +74,8 @@ pub fn tool_for_code(code: &str) -> Option<&'static str> {
         | "paid_payable_supersede"
         | crate::mlp_sec::CODE_PAYABLE_DATE_MOVED => TOOL_FIX_REMAINING_YEAR,
         "roc_estimate" => TOOL_RUN_ROC,
+        CODE_ROC_PCT_CHANGE => TOOL_ROC_CONFIRM,
+        CODE_COLLECTOR_ESTABLISH_INCOMPLETE => TOOL_ESTABLISH_RECERTIFY,
         _ => return None,
     })
 }
@@ -94,7 +102,8 @@ pub fn field_for_code(code: &str) -> &'static str {
         "remaining_year"
         | "paid_payable_supersede"
         | crate::mlp_sec::CODE_PAYABLE_DATE_MOVED => "remaining_year",
-        "roc_estimate" => "roc_estimate",
+        "roc_estimate" | CODE_ROC_PCT_CHANGE => "roc_estimate",
+        CODE_COLLECTOR_ESTABLISH_INCOMPLETE => "establish",
         _ => "last_run",
     }
 }
@@ -105,6 +114,51 @@ pub fn is_amount_confirm_code(code: &str) -> bool {
         code.trim(),
         "declaration_amount_variation" | "declaration_plan_mismatch"
     )
+}
+
+/// Live 19a-1 % differs from the stored current-year projection.
+pub fn is_roc_pct_change_code(code: &str) -> bool {
+    code.trim() == CODE_ROC_PCT_CHANGE
+}
+
+/// `ROC % was 80.00 and now ROC % should be 75.00. Last year 1099 was 70.00 (informational). [8000->7500 @2]`
+pub fn roc_pct_change_reason(
+    was_minor: i64,
+    now_minor: i64,
+    scale: u8,
+    last_year_1099_minor: Option<i64>,
+) -> String {
+    let was = crate::roc::rescale_roc_pct(was_minor, scale, crate::roc::ROC_PCT_SCALE);
+    let now = crate::roc::rescale_roc_pct(now_minor, scale, crate::roc::ROC_PCT_SCALE);
+    let den = 10f64.powi(i32::from(crate::roc::ROC_PCT_SCALE));
+    let prior = match last_year_1099_minor {
+        Some(p) => {
+            let v = crate::roc::rescale_roc_pct(p, scale, crate::roc::ROC_PCT_SCALE);
+            format!("Last year 1099 was {:.2} (informational)", v as f64 / den)
+        }
+        None => "Last year 1099 is unknown (informational)".into(),
+    };
+    format!(
+        "ROC % was {:.2} and now ROC % should be {:.2}. {prior} [{was}->{now} @{}]",
+        was as f64 / den,
+        now as f64 / den,
+        crate::roc::ROC_PCT_SCALE
+    )
+}
+
+/// Proposed (new) ROC minor and scale from a `roc_pct_change` reason.
+pub fn parse_roc_pct_change_proposed(reason: &str) -> Option<(i64, u8)> {
+    let start = reason.rfind('[')?;
+    let end = reason.rfind(']')?;
+    if end <= start {
+        return None;
+    }
+    let inner = reason.get(start + 1..end)?;
+    let (pair, scale_s) = inner.split_once(" @")?;
+    let (_, now_s) = pair.split_once("->")?;
+    let now = now_s.trim().parse::<i64>().ok()?;
+    let scale = scale_s.trim().parse::<u8>().ok()?;
+    Some((now, scale))
 }
 
 /// First history parse fail prompts a second URL once. Not lookback-short.
@@ -210,5 +264,15 @@ mod tests {
             "roundhill",
             "https://www.roundhillinvestments.com/etf/topw/"
         ));
+    }
+
+    #[test]
+    fn roc_pct_change_reason_round_trips_proposed() {
+        let reason = roc_pct_change_reason(8_000, 7_500, 2, Some(7_000));
+        assert!(reason.starts_with("ROC % was 80.00 and now ROC % should be 75.00"));
+        assert!(reason.contains("Last year 1099 was 70.00 (informational)"));
+        assert_eq!(parse_roc_pct_change_proposed(&reason), Some((7_500, 2)));
+        let unknown = roc_pct_change_reason(8_000, 7_500, 2, None);
+        assert!(unknown.contains("Last year 1099 is unknown (informational)"));
     }
 }

@@ -360,6 +360,131 @@ async fn weekly_payer_lists_every_week_with_plan_even_without_that_week_actual()
 }
 
 #[tokio::test]
+async fn weekly_last_week_issuer_row_does_not_clone_onto_next_forecast_friday() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "AMDY", "name": "AMDY"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id, "AMDY").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "replaceCadence": true,
+            "riskTier": "Risk On"
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        security_id,
+        "AMDY",
+        "Weekly",
+        true,
+    )
+    .await
+    .expect("complete collector");
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 3763,
+            "amountScale": 4,
+            "paymentPeriod": "2026-09-11",
+            "source": "yieldmax",
+            "enteredAt": "2026-09-09"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 40,
+            "amountScale": 2,
+            "planningPeriodsPerYear": 52,
+            "effectiveFrom": "2026-08-01",
+            "decisionReason": "owner",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-01-02",
+            "origin": "purchase",
+            "quantityMinor": 100,
+            "quantityScale": 0,
+            "performanceBasisMinor": 200_000,
+            "taxBasisMinor": 200_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-12",
+            "dates": [
+                {"payOn": "2026-09-11", "source": "yieldmax"},
+                {"payOn": "2026-09-18", "source": "derived_walk"}
+            ]
+        }),
+    )
+    .await;
+    let w36 = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-11" }),
+    )
+    .await;
+    let last = w36["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "AMDY")
+        .unwrap_or_else(|| panic!("AMDY missing W36: {w36}"));
+    assert_eq!(last["declarationKnown"], true, "{last}");
+    assert_eq!(last["payOn"], "2026-09-11");
+    let w37 = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-12" }),
+    )
+    .await;
+    let next = w37["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "AMDY")
+        .unwrap_or_else(|| panic!("AMDY missing W37 forecast row: {w37}"));
+    assert_eq!(next["declarationKnown"], false, "{next}");
+    assert_eq!(next["payOn"], "2026-09-18");
+}
+
+#[tokio::test]
 async fn monthly_with_prior_actual_uses_issuer_date_not_thirty_day_walk() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
@@ -759,8 +884,177 @@ async fn dividend_performance_unknown_plan_is_na_not_zero_percent() {
     );
 }
 
-/// Plan $ is owner. Declaration $ is issuer payable in the Sat–Fri week. Actual $ is broker import.
-/// Collect does not write plan. Missing declaration or actual is unknown, never $0.
+#[tokio::test]
+async fn dividend_performance_keeps_empty_gap_weeks() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "VTI", "name": "Vanguard Total"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security["securityId"],
+            "activityType": "dividend",
+            "amountMinor": 12_500,
+            "scale": 2,
+            "occurredOn": "2026-07-28",
+            "idempotencyKey": "gap-week-vti"
+        }),
+    )
+    .await;
+    let perf = query_json(
+        &platform,
+        "DividendPerformanceGet",
+        serde_json::json!({ "asOfDate": "2026-08-26", "range": "30d" }),
+    )
+    .await;
+    let weeks = perf["weeks"].as_array().unwrap();
+    let ends: Vec<&str> = weeks
+        .iter()
+        .map(|w| w["end"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ends,
+        vec!["2026-07-31", "2026-08-07", "2026-08-14", "2026-08-21"],
+        "30d must list every Sat–Fri week, including empty gaps: {perf}"
+    );
+    let paid = weeks.iter().find(|w| w["end"] == "2026-07-31").unwrap();
+    assert_eq!(paid["actualMinor"].as_i64().unwrap(), 12_500);
+    let gap = weeks.iter().find(|w| w["end"] == "2026-08-07").unwrap();
+    assert_eq!(gap["planKnown"], false);
+    assert_eq!(gap["declarationKnown"], false);
+}
+
+#[tokio::test]
+async fn dividend_performance_week_plan_survives_one_unplanned_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let planned = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "NVDW", "name": "NVDW"}),
+    )
+    .await;
+    let planned_id = planned["securityId"].as_str().unwrap();
+    research_template(&platform, planned_id, "NVDW").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": planned_id,
+            "paymentFrequency": "Weekly",
+            "replaceCadence": true,
+            "riskTier": "Risk On"
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        planned_id,
+        "NVDW",
+        "Weekly",
+        true,
+    )
+    .await
+    .expect("complete collector");
+    record_decl(&platform, planned_id, "2026-08-17").await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": planned_id,
+            "amountPerShareMinor": 35,
+            "amountScale": 2,
+            "planningPeriodsPerYear": 52,
+            "effectiveFrom": "2026-01-03",
+            "decisionReason": "Locked weekly Plan",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": planned_id,
+            "openedOn": "2026-01-05",
+            "origin": "purchase",
+            "quantityMinor": 100,
+            "quantityScale": 0,
+            "performanceBasisMinor": 200_000,
+            "taxBasisMinor": 200_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    let leftover = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "VTI", "name": "Vanguard Total"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": leftover["securityId"],
+            "activityType": "dividend",
+            "amountMinor": 12_500,
+            "scale": 2,
+            "occurredOn": "2026-08-17",
+            "idempotencyKey": "week-income-vti-mixed"
+        }),
+    )
+    .await;
+    let perf = query_json(
+        &platform,
+        "DividendPerformanceGet",
+        serde_json::json!({ "asOfDate": "2026-08-26", "range": "all" }),
+    )
+    .await;
+    let paid = perf["weeks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["end"] == "2026-08-21")
+        .unwrap_or_else(|| panic!("week ending 2026-08-21 missing: {perf}"));
+    assert_eq!(
+        paid["planKnown"], true,
+        "one unplanned name must not blank the week's Plan: {paid}"
+    );
+    assert_eq!(paid["plannedMinor"].as_i64().unwrap(), 3_500);
+    let vti = paid["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "VTI")
+        .unwrap();
+    assert_eq!(vti["planKnown"], false);
+}
+
+/// Plan $ is owner. Declaration $ is the week's money (issuer payable in the Sat–Fri week).
+/// Collect does not write plan. Missing declaration stays unknown, never $0.
 #[tokio::test]
 async fn week_carries_plan_declaration_actual_as_three_amounts() {
     let dir = tempfile::tempdir().unwrap();
@@ -870,6 +1164,10 @@ async fn week_carries_plan_declaration_actual_as_three_amounts() {
     assert_eq!(row["plannedMinor"], 120);
     assert_eq!(row["declarationKnown"], true);
     assert_eq!(row["declarationMinor"], 110);
+    assert_eq!(row["declarationPerShareMinor"], 1100);
+    assert_eq!(row["declarationPerShareScale"], 4);
+    assert_eq!(row["declarationEnteredOn"], "2026-08-28");
+    assert_eq!(row["declarationCurrent"], true);
     assert_eq!(row["actualKnown"], false);
     assert_eq!(row["actualMinor"], 0);
     assert_eq!(row["payOn"], "2026-08-31");
@@ -945,4 +1243,99 @@ async fn week_carries_plan_declaration_actual_as_three_amounts() {
     assert_eq!(imported["actualKnown"], true);
     assert_eq!(imported["actualMinor"], 105);
     assert_eq!(imported["declarationKnown"], true);
+}
+
+#[test]
+fn weekly_grid_week_window_applies_on_select() {
+    let ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/ui-components/src/index.tsx"),
+    )
+    .expect("ui-components");
+    let app = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/App.tsx"),
+    )
+    .expect("App.tsx");
+    assert!(
+        ui.contains("aria-label=\"Historical weeks\"")
+            && ui.contains("aria-label=\"Future weeks\""),
+        "week window controls must stay labeled"
+    );
+    assert!(
+        ui.contains("<select\n            aria-label=\"Historical weeks\"")
+            && ui.contains("<select\n            aria-label=\"Future weeks\""),
+        "week window is a closed list, not a spinner that refreshes each tick"
+    );
+    assert!(
+        !ui.contains("Apply week window") && !ui.contains("Go weeks"),
+        "week window is a view filter — no second commit button"
+    );
+    assert!(
+        app.contains("onHistoricalWeeks") && app.contains("withIncomeLoading"),
+        "choosing a week count must reload the grid after the list closes"
+    );
+}
+
+#[test]
+fn weekly_report_by_position_keeps_decl_per_share_column() {
+    let ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/ui-components/src/index.tsx"),
+    )
+    .expect("ui-components");
+    assert!(
+        ui.contains("By position for the week"),
+        "Weekly report heading must stay"
+    );
+    assert!(
+        ui.contains("aria-label=\"Income plan by position\""),
+        "by-position table must stay"
+    );
+    assert!(
+        ui.contains("<th className=\"ip-decl-sh\">Decl $/sh</th>"),
+        "Decl $/sh column header must stay on Weekly report by position"
+    );
+    assert!(
+        ui.contains("declarationPerShareMinor"),
+        "week rows must still bind per-share declaration"
+    );
+    assert!(
+        !ui.contains("<th>Actual $</th>"),
+        "Weekly report must not show broker Actual $; Decl $ is the week's money"
+    );
+    assert!(
+        ui.contains("Week declared") && !ui.contains("Week actual"),
+        "KPI must label declared, not broker actual"
+    );
+    assert!(
+        !ui.contains("Amount exceptions"),
+        "paid-vs-plan exceptions stay off the weekly report"
+    );
+    assert!(
+        ui.contains("Current ·") && ui.contains("ip-current"),
+        "Weekly report must show a Current subtotals row"
+    );
+    assert!(
+        ui.contains("Grand Total ·") && ui.contains("ip-grand"),
+        "Weekly report must keep Grand Total"
+    );
+    assert!(
+        ui.contains("function declShareTone") && ui.contains("ip-decl-${declShareTone"),
+        "Decl $/sh must stay color-coded current/stale/none"
+    );
+    let css = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/App.css"),
+    )
+    .expect("App.css");
+    assert!(
+        css.contains("td.numeric.ip-decl-current")
+            && css.contains("td.numeric.ip-decl-stale")
+            && css.contains("td.numeric.ip-decl-none"),
+        "numeric Decl $/sh cells must keep current/stale/none colors"
+    );
+    assert!(
+        css.contains("tr.ip-current td.numeric")
+            && css.contains("tr.ip-grand td.numeric")
+            && css.contains("color: #fff")
+            && css.contains("font-weight: 700"),
+        "Current and Grand Total money cells must be bold white on the blue/green bars"
+    );
 }

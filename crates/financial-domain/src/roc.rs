@@ -4,6 +4,57 @@ use crate::schedule::{remaining_year_payments, DateOverride};
 
 pub const ROC_PCT_SCALE: u8 = 2;
 
+/// Car ROC plan uses prior-year / 19a-1 estimates — not 1099 actual.
+pub const CAR_ROC_PLAN_NOTE: &str =
+    "Remaining and YTD ordinary vs ROC use the current-year plan and prior-year ROC guidance.";
+
+/// 1099 actual for the Car tax year stays unknown until the following April.
+pub const CAR_TAX_UNKNOWN_NOTE: &str =
+    "Tax unknown until the 1099 is in (April 2027 for 2026). Unknown is not $0.";
+
+/// No named lot sales yet — long/short stay unknown (never invent $0).
+pub const NO_ASSIGNED_LOT_SALES_NOTE: &str =
+    "Long-term and short-term stay unknown until a named lot sale is assigned.";
+
+/// Sum two known minors; unknown + anything stays unknown (never invent $0).
+pub fn sum_known(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.saturating_add(y)),
+        _ => None,
+    }
+}
+
+/// Convert a ROC percent minor between decimal scales (e.g. 8000@2 ↔ 80.00%).
+pub fn rescale_roc_pct(value: i64, from_scale: u8, to_scale: u8) -> i64 {
+    if from_scale == to_scale {
+        return value;
+    }
+    if to_scale > from_scale {
+        let factor = 10i64.pow(u32::from(to_scale - from_scale));
+        return value.saturating_mul(factor);
+    }
+    let factor = 10i64.pow(u32::from(from_scale - to_scale));
+    if factor == 0 {
+        return value;
+    }
+    // Round half away from zero so 75.005@3 → 75.01@2.
+    let half = factor / 2;
+    if value >= 0 {
+        (value + half) / factor
+    } else {
+        (value - half) / factor
+    }
+}
+
+/// True when two ROC minors represent the same percent after scale normalize.
+pub fn roc_pcts_equal(a: i64, a_scale: u8, b: i64, b_scale: u8) -> bool {
+    if a_scale == b_scale {
+        return a == b;
+    }
+    let common = a_scale.max(b_scale);
+    rescale_roc_pct(a, a_scale, common) == rescale_roc_pct(b, b_scale, common)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RocSuggestion {
     pub roc_pct_minor: Option<i64>,
@@ -230,5 +281,18 @@ mod tests {
     fn car_is_magi_eligible() {
         assert!(account_is_car_magi("Car"));
         assert!(!account_is_car_magi("Income"));
+    }
+
+    #[test]
+    fn rescale_preserves_percent_across_scales() {
+        assert_eq!(rescale_roc_pct(8_000, 2, 2), 8_000);
+        assert_eq!(rescale_roc_pct(8_000, 2, 4), 800_000);
+        assert_eq!(rescale_roc_pct(800_000, 4, 2), 8_000);
+    }
+
+    #[test]
+    fn roc_pcts_equal_across_scales() {
+        assert!(roc_pcts_equal(8_000, 2, 800_000, 4));
+        assert!(!roc_pcts_equal(8_000, 2, 7_500, 2));
     }
 }

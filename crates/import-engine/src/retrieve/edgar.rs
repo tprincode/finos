@@ -110,9 +110,23 @@ pub(crate) fn edgar_http_get(url: &str) -> Result<String, String> {
     edgar_http_get_timeout(url, 20)
 }
 
+/// Last-price ENERGYX only. Offering price changes 1–2×/year — do not use the
+/// 45s-connect EDGAR agent or the invest.energyx.com curl fallback.
+pub(crate) fn edgar_http_get_fast(url: &str) -> Result<String, String> {
+    edgar_http_get_with_timeouts(url, 4, 6)
+}
+
 pub(crate) fn edgar_http_get_timeout(url: &str, timeout_secs: u64) -> Result<String, String> {
+    edgar_http_get_with_timeouts(url, 45, timeout_secs)
+}
+
+fn edgar_http_get_with_timeouts(
+    url: &str,
+    connect_secs: u64,
+    timeout_secs: u64,
+) -> Result<String, String> {
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(45))
+        .timeout_connect(Duration::from_secs(connect_secs))
         .timeout(Duration::from_secs(timeout_secs))
         .user_agent("FINOS Desktop lastprice@finos.local")
         .build();
@@ -132,11 +146,23 @@ pub(crate) fn edgar_http_get_timeout(url: &str, timeout_secs: u64) -> Result<Str
         })
 }
 
-pub(crate) fn live_edgar_offering_quote(cik: &str) -> Option<Value> {
+/// Stored offering last price is enough for daily refresh. New 253G2 is rare.
+pub fn offering_keep_stored(known_price_minor: i64, known_as_of: &str) -> bool {
+    known_price_minor > 0 && !known_as_of.trim().is_empty()
+}
+
+pub(crate) fn live_edgar_offering_quote_fast(cik: &str) -> Option<Value> {
+    live_edgar_offering_quote_with(cik, edgar_http_get_fast)
+}
+
+fn live_edgar_offering_quote_with(
+    cik: &str,
+    get: fn(&str) -> Result<String, String>,
+) -> Option<Value> {
     let padded = pad_cik(cik);
     let bare: String = cik.chars().filter(|c| c.is_ascii_digit()).collect();
     let submissions = format!("https://data.sec.gov/submissions/CIK{padded}.json");
-    let body = edgar_http_get(&submissions).ok()?;
+    let body = get(&submissions).ok()?;
     let v: Value = serde_json::from_str(&body).ok()?;
     let recent = v.get("filings")?.get("recent")?;
     let forms = recent.get("form")?.as_array()?;
@@ -161,7 +187,7 @@ pub(crate) fn live_edgar_offering_quote(cik: &str) -> Option<Value> {
             continue;
         }
         let url = format!("https://www.sec.gov/Archives/edgar/data/{bare}/{acc}/{doc}");
-        if let Ok(html) = edgar_http_get(&url) {
+        if let Ok(html) = get(&url) {
             if let Some(mut quote) = edgar_quote_from_html(&html) {
                 let as_of = quote.get("asOfAt").and_then(|s| s.as_str()).unwrap_or("");
                 if as_of.is_empty() {
@@ -176,6 +202,7 @@ pub(crate) fn live_edgar_offering_quote(cik: &str) -> Option<Value> {
     None
 }
 
+#[allow(dead_code)]
 pub(crate) fn live_energyx_investor_quote() -> Option<Value> {
     let html = http_get("https://invest.energyx.com").ok()?;
     let mut quote = edgar_quote_from_html(&html)?;
@@ -183,7 +210,7 @@ pub(crate) fn live_energyx_investor_quote() -> Option<Value> {
     Some(quote)
 }
 
-pub(crate) fn uses_offering_price(source: &str, symbol: &str) -> bool {
+pub fn uses_offering_price(source: &str, symbol: &str) -> bool {
     let src = source.trim().to_ascii_lowercase();
     matches!(
         src.as_str(),
@@ -191,13 +218,7 @@ pub(crate) fn uses_offering_price(source: &str, symbol: &str) -> bool {
     ) || symbol.trim().eq_ignore_ascii_case("ENERGYX")
 }
 pub(crate) fn live_offering_snapshot(symbol: &str, cik: &str) -> Value {
-    let quote = live_edgar_offering_quote(cik).or_else(|| {
-        if symbol.trim().eq_ignore_ascii_case("ENERGYX") {
-            live_energyx_investor_quote()
-        } else {
-            None
-        }
-    });
+    let quote = live_edgar_offering_quote_fast(cik);
     let Some(quote) = quote else {
         return empty_snapshot(symbol);
     };

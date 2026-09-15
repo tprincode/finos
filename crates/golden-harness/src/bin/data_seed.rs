@@ -46,6 +46,12 @@ async fn run() -> Result<String, String> {
     let plans_before = production_seed_plan_count(&platform).await?;
     load_production_seed_via_commands(&platform, &production).await?;
     let after = production_seed_actual_counts(&platform).await?;
+    // Template row count (5862) includes exact account+symbol+date+amount copies that
+    // are not posted again; gate posted unique yield like production_seed tests.
+    let yield_audit =
+        import_engine::audit_yield_template(&production).map_err(|e| e.to_string())?;
+    let mut expected_posted = expected.counts.clone();
+    expected_posted.transactions_yield = yield_audit.unique_count;
     let trends = execute_query_on(
         &platform,
         &platform,
@@ -66,36 +72,37 @@ async fn run() -> Result<String, String> {
     };
     let existing_profile =
         before.accounts > 0 && before.lots_total >= expected.counts.lots_total;
-    if after != expected.counts {
+    if after != expected_posted {
         // Collectors / owner activity can add yield rows after the locked template gate.
         if existing_profile {
             eprintln!(
-                "warning: counts {:?} != expected {:?} (existing Profile A DB; Trends weeks {trends_weeks})",
-                after, expected.counts
+                "warning: counts {:?} != expected posted {:?} (template rows {}; existing Profile A DB; Trends weeks {trends_weeks})",
+                after, expected_posted, expected.counts.transactions_yield
             );
         } else {
             return Err(format!(
-                "counts {:?} != expected {:?}",
-                after, expected.counts
+                "counts {:?} != expected posted {:?} (template rows {})",
+                after, expected_posted, expected.counts.transactions_yield
             ));
         }
     }
     let totals = production_seed_actual_totals(&platform).await?;
-    if totals.yield_amount_minor != expected.totals.yield_amount_minor
+    let expected_yield_posted = yield_audit.unique_amount_minor;
+    if totals.yield_amount_minor != expected_yield_posted
         || totals.disbursement_gross_minor != expected.totals.disbursement_gross_minor
     {
         if existing_profile {
             eprintln!(
                 "warning: money totals {:?} != expected yield {} gross {} (existing Profile A DB)",
                 totals,
-                expected.totals.yield_amount_minor,
+                expected_yield_posted,
                 expected.totals.disbursement_gross_minor
             );
         } else {
             return Err(format!(
                 "money totals {:?} != expected yield {} gross {}",
                 totals,
-                expected.totals.yield_amount_minor,
+                expected_yield_posted,
                 expected.totals.disbursement_gross_minor
             ));
         }
@@ -119,14 +126,15 @@ async fn run() -> Result<String, String> {
     } else {
         String::new()
     };
-    if before == expected.counts && plans_before >= 40 {
+    if before == expected_posted && plans_before >= 40 {
         return Ok(format!(
             "data already loaded at {} (calculator/trends refreshed; Trends weeks {trends_weeks}{coverage_note})",
             platform.db_path().display()
         ));
     }
     Ok(format!(
-        "data loaded at {} (8/75/1679/1250/5862/129; Trends weeks {trends_weeks}{coverage_note})",
-        platform.db_path().display()
+        "data loaded at {} (8/75/1679/1250/{}/129; Trends weeks {trends_weeks}{coverage_note})",
+        platform.db_path().display(),
+        expected_posted.transactions_yield
     ))
 }

@@ -622,6 +622,8 @@ async fn g_ip_p02_pdf_pattern_b_single_week() {
     let pdf = String::from_utf8_lossy(&pdf_bytes);
     assert!(pdf.contains("WeekDetail"));
     assert!(pdf.contains("week-ending: 2026-09-04"));
+    assert!(pdf.contains("Declaration $"));
+    assert!(!pdf.contains("Actual $"));
     assert!(!pdf.contains("AccountRollup"));
 }
 
@@ -761,10 +763,34 @@ async fn g_ip_p06_excel_table2_has_last_update_not_qty() {
 #[test]
 fn g_ip_p07_file_menu_delegates() {
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
-    assert!(app.contains("Print current view"));
-    assert!(app.contains("runIncomeExport(\"print\")"));
-    assert!(app.contains("aria-label=\"Print to page\""));
-    assert!(app.contains("finos-income-print"));
+    let ui = std::fs::read_to_string(
+        repo_root().join("packages/ui-components/src/index.tsx"),
+    )
+    .unwrap();
+    assert!(!app.contains("Print current view"));
+    assert!(!app.contains("Export current view"));
+    assert!(app.contains("requestIncomeExport()"));
+    assert!(app.contains("aria-label=\"Print Export\""));
+    assert!(
+        !app.contains("onPrintExport(\"print\")")
+            && app.contains("commitIncomeExport(\"print\")")
+            && app.contains("commitIncomeExport(\"pdf\")")
+            && app.contains("commitIncomeExport(\"excel\")"),
+        "one preview; Print / PDF / Excel are chosen after review"
+    );
+    assert!(
+        app.contains("Income Plan export preview")
+            && app.contains("Confirm Income Plan export"),
+        "Print / PDF / Excel must preview on screen and wait for confirm"
+    );
+    assert!(
+        app.contains("styleIncomePrintHtml") && app.contains("data-finos-print-skin"),
+        "preview must apply grid lines and color in the iframe"
+    );
+    assert!(
+        app.contains("incomeExportLoading") && ui.contains("is-loading"),
+        "Print Export must turn loading color while the preview builds"
+    );
 }
 
 #[test]
@@ -840,6 +866,46 @@ async fn g_ip_p10_cover_lists_filter_state() {
     assert_eq!(
         exp["sheetNames"],
         serde_json::json!(["WeekDetail", "Cover"])
+    );
+    let html = exp["printHtml"].as_str().unwrap();
+    assert!(
+        html.contains("Current ·") && html.contains("Grand Total ·"),
+        "weekly report preview must include Current and Grand Total: {html}"
+    );
+    assert!(
+        html.contains("color:#fff") && html.contains("font-weight:700"),
+        "Current/Grand Total in preview must be bold white on the bar: {html}"
+    );
+    let table_at = html.find("<h2>WeekDetail").unwrap_or(0);
+    let cover_at = html.find("aria-label=\"Report details\"").unwrap_or(0);
+    assert!(
+        table_at > 0 && cover_at > table_at,
+        "report details belong under the tables"
+    );
+    assert!(
+        html.contains("table.ip-print")
+            && html.contains("border-collapse:collapse")
+            && html.contains("border:1px solid"),
+        "preview tables must have grid lines"
+    );
+    assert!(
+        html.contains("background:#1b365d") && html.contains("ip-stripe"),
+        "preview tables must use header and row color"
+    );
+}
+
+#[test]
+fn export_preview_review_copy_sits_under_the_frame() {
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let dialog = app
+        .split("aria-label=\"Income Plan export preview\"")
+        .nth(1)
+        .unwrap_or("");
+    let frame = dialog.find("income-export-preview-frame").unwrap_or(0);
+    let review = dialog.find("Review the ").unwrap_or(0);
+    assert!(
+        frame > 0 && review > frame,
+        "PDF description belongs under the preview frame"
     );
 }
 

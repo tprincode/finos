@@ -116,6 +116,10 @@ async fn production_seed_counts_reconcile() {
         "posted disbursement gross must match owner-approved total"
     );
     assert_eq!(
+        actual_totals.disbursement_net_minor, expected.totals.disbursement_net_minor,
+        "posted disbursement net must match template gross minus withheld"
+    );
+    assert_eq!(
         actual_totals.open_performance_minor, expected.totals.open_performance_minor,
         "open original cost must match the locked lots template (cents)"
     );
@@ -411,6 +415,23 @@ async fn robinhood_btc_splits_from_grayscale_btc() {
     let spec_id = speculation["accountId"].as_str().unwrap();
     let rh_id = robinhood["accountId"].as_str().unwrap();
     let btc_id = btc["securityId"].as_str().unwrap();
+    // Process B: LotOpen needs a researched identity + complete collector gate.
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": btc_id,
+            "sourceSymbol": "BTC",
+            "declarationSource": "issuer",
+            "collectorEnabled": false,
+            "lookbackCount": 12,
+            "calendarPolicy": "none"
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot(&platform, btc_id, "BTC")
+        .await
+        .expect("complete collector for BTC LotOpen");
     must_ok(
         &platform,
         "LotOpen",

@@ -881,6 +881,68 @@ async fn energyx_offering_quote_sets_market_value() {
     assert_eq!(line["marketValueMinor"].as_i64(), Some(260_000));
 }
 
+#[test]
+fn last_price_refresh_skips_stored_energyx_offering() {
+    let root = golden_harness::repo_root();
+    let host = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
+    let retrieve = std::fs::read_to_string(root.join("crates/import-engine/src/retrieve/mod.rs")).unwrap();
+    let edgar = std::fs::read_to_string(root.join("crates/import-engine/src/retrieve/edgar.rs")).unwrap();
+    assert!(
+        host.contains("offering_keep_stored"),
+        "daily last-price must skip ENERGYX when an offering quote is already stored"
+    );
+    assert!(
+        host.contains("uses_offering_price"),
+        "host must recognize Form 1-A / ENERGYX as offering price"
+    );
+    assert!(retrieve.contains("live_edgar_offering_quote_fast"));
+    assert!(edgar.contains("fn edgar_http_get_fast"));
+    assert!(edgar.contains("edgar_http_get_with_timeouts(url, 4, 6)"));
+    assert!(edgar.contains("fn offering_keep_stored"));
+    let start = retrieve
+        .find("fn live_offering_or_yahoo")
+        .expect("live_offering_or_yahoo");
+    let body = &retrieve[start..start + 900];
+    assert!(
+        !body.contains("live_energyx_investor_quote"),
+        "daily last-price must not wait on invest.energyx.com"
+    );
+}
+
+#[test]
+fn last_price_auto_refresh_uses_weekday_eastern_window() {
+    let root = golden_harness::repo_root();
+    let host = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    let helper = std::fs::read_to_string(
+        root.join("crates/application-core/src/last_price_window.rs"),
+    )
+    .unwrap();
+    assert!(
+        host.contains("weekday 9-4 Eastern"),
+        "host must document the auto last-price window"
+    );
+    assert!(
+        host.contains("last refresh under 4 hours"),
+        "host must skip a last refresh under 4 hours"
+    );
+    assert!(host.contains("last_price_auto_skip"));
+    assert!(host.contains("autoPrice"));
+    assert!(app.contains("refreshLastPrices(true)"));
+    assert!(app.contains("LastPriceAutoWindowGet"));
+    assert!(
+        app.contains("allowed = body.allowed === true"),
+        "auto last-price must run only when LastPriceAutoWindowGet allowed is true"
+    );
+    assert!(app.contains("autoPrice: true"));
+    assert!(
+        !app.contains("Last prices skipped —"),
+        "auto skip must not leave a last-price banner on screen"
+    );
+    assert!(helper.contains("weekday 9-4 Eastern"));
+    assert!(helper.contains("fn auto_last_price_allowed"));
+}
+
 #[tokio::test]
 async fn ac_pd_04_as_of_qty_reconciles_to_open_lots() {
     let dir = tempfile::tempdir().unwrap();
@@ -1344,5 +1406,34 @@ async fn pay1_characteristics_are_visible_risk_not_auto_applied() {
     assert_eq!(inv["lookthrough"]["themeStrategy"], "Covered Call");
     assert_eq!(inv["lookthrough"]["riskTierSuggestion"], "Risk On");
     assert_eq!(inv["riskTier"], "");
+}
+
+#[test]
+fn position_information_table_edits_owner_facts_in_row() {
+    let ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/App.tsx"),
+    )
+    .unwrap();
+    let identity = ui
+        .split("id=\"hub-identity\"")
+        .nth(1)
+        .expect("hub-identity");
+    let identity = identity
+        .split("id=\"hub-calculator\"")
+        .next()
+        .expect("hub-calculator after identity");
+    assert!(
+        identity.contains("aria-label=\"Position risk\""),
+        "Risk must edit in the Position information table, not only a collapsed details block"
+    );
+    assert!(identity.contains("aria-label=\"Position frequency\""));
+    assert!(identity.contains("aria-label=\"Position name\""));
+    assert!(identity.contains("aria-label=\"Position provider\""));
+    assert!(identity.contains("aria-label=\"Position underlying\""));
+    assert!(identity.contains("RISK_TIERS"));
+    assert!(
+        !identity.contains("Undecided"),
+        "Undecided is not a permitted owner risk"
+    );
 }
 

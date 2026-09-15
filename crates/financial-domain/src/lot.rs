@@ -8,6 +8,42 @@ use crate::money::{rescale, Money};
 /// Fractional share scale for estimated CRF DRIP lots (cash ÷ close).
 pub const DRIP_QUANTITY_SCALE: u8 = 4;
 
+/// Tax holding period for a named lot sale. Unknown dates stay unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldingTerm {
+    Short,
+    Long,
+}
+
+/// Long-term if held more than one calendar year (opened_on → sold_on). Bad dates → None.
+pub fn holding_term(opened_on: &str, sold_on: &str) -> Option<HoldingTerm> {
+    let open = parse_ymd(opened_on)?;
+    let sold = parse_ymd(sold_on)?;
+    if sold < open {
+        return None;
+    }
+    let anniversary = (open.0 + 1, open.1, open.2);
+    if sold > anniversary {
+        Some(HoldingTerm::Long)
+    } else {
+        Some(HoldingTerm::Short)
+    }
+}
+
+fn parse_ymd(raw: &str) -> Option<(i32, u32, u32)> {
+    let s = raw.trim();
+    if s.len() < 10 {
+        return None;
+    }
+    let y: i32 = s.get(..4)?.parse().ok()?;
+    let m: u32 = s.get(5..7)?.parse().ok()?;
+    let d: u32 = s.get(8..10)?.parse().ok()?;
+    if m == 0 || m > 12 || d == 0 || d > 31 {
+        return None;
+    }
+    Some((y, m, d))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LotOrigin {
     Purchase,
@@ -208,6 +244,33 @@ pub fn recommend_lowest_cost_first(lots: &[LotCostView]) -> Vec<Uuid> {
     ranked.into_iter().map(|l| l.lot_id).collect()
 }
 
+/// Proportional remaining basis for a named qty. Unknown remaining is 0, not invented.
+pub fn proportional_basis(remaining_basis_minor: i64, remaining_qty: i64, take_qty: i64) -> i64 {
+    if remaining_qty <= 0 || take_qty <= 0 {
+        return 0;
+    }
+    let take = take_qty.min(remaining_qty);
+    ((remaining_basis_minor as i128) * (take as i128) / (remaining_qty as i128)) as i64
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LotTaxLossView {
+    pub lot_id: Uuid,
+    pub tax_gain_minor: Option<i64>,
+}
+
+/// Most negative tax P/L first. Unknown last (missing last price). Does not assign.
+pub fn recommend_largest_tax_loss_first(lots: &[LotTaxLossView]) -> Vec<Uuid> {
+    let mut ranked: Vec<LotTaxLossView> = lots.to_vec();
+    ranked.sort_by(|a, b| match (a.tax_gain_minor, b.tax_gain_minor) {
+        (Some(x), Some(y)) => x.cmp(&y).then(a.lot_id.cmp(&b.lot_id)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.lot_id.cmp(&b.lot_id),
+    });
+    ranked.into_iter().map(|l| l.lot_id).collect()
+}
+
 pub fn lifetime_gains(proceeds_minor: i64, performance_cost_minor: i64, tax_cost_minor: i64) -> (i64, i64) {
     (
         proceeds_minor - performance_cost_minor,
@@ -311,5 +374,48 @@ mod tests {
         ]);
         assert_eq!(order[0], cheap);
         assert_eq!(require_explicit_lot(Some(expensive)).unwrap(), expensive);
+    }
+
+    #[test]
+    fn largest_tax_loss_sorts_most_negative_first() {
+        let loss = Uuid::from_u128(1);
+        let gain = Uuid::from_u128(2);
+        let unknown = Uuid::from_u128(3);
+        let order = recommend_largest_tax_loss_first(&[
+            LotTaxLossView {
+                lot_id: gain,
+                tax_gain_minor: Some(5_000),
+            },
+            LotTaxLossView {
+                lot_id: unknown,
+                tax_gain_minor: None,
+            },
+            LotTaxLossView {
+                lot_id: loss,
+                tax_gain_minor: Some(-600),
+            },
+        ]);
+        assert_eq!(order[0], loss);
+        assert_eq!(order[1], gain);
+        assert_eq!(order[2], unknown);
+    }
+
+    #[test]
+    fn proportional_basis_is_named_qty_not_fifo() {
+        assert_eq!(proportional_basis(10_000, 10, 4), 4_000);
+        assert_eq!(proportional_basis(10_000, 0, 4), 0);
+    }
+
+    #[test]
+    fn holding_term_is_long_only_after_one_year() {
+        assert_eq!(
+            holding_term("2025-01-15", "2026-01-15"),
+            Some(HoldingTerm::Short)
+        );
+        assert_eq!(
+            holding_term("2025-01-15", "2026-01-16"),
+            Some(HoldingTerm::Long)
+        );
+        assert_eq!(holding_term("bad", "2026-01-16"), None);
     }
 }

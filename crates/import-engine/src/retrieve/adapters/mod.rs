@@ -30,20 +30,24 @@ pub(crate) use roundhill::{
 pub(crate) use saba::saba_fund_page;
 pub use saba::{parse_saba_distributions, parse_saba_nuxt_distributions, saba_fund_url};
 pub use simplify::{
-    extract_simplify_node_id, parse_simplify_distributions, simplify_distributions_url,
-    simplify_fund_url,
+    extract_simplify_node_id, parse_simplify_distributions, parse_simplify_s19a_roc,
+    simplify_distributions_url, simplify_fund_url, simplify_s19a_notice_urls,
+    simplify_supplemental_tax_url,
 };
+pub(crate) use simplify::simplify_s19a_recency;
+pub(crate) use div1::globalx_19a_recency;
 pub use yieldmax::parse_yieldmax_distributions;
 pub(crate) use yieldmax::yieldmax_fund_page;
 pub use div1::{
     cornerstone_candidates_table, div1_fund_page, div1_probe_urls, ftvest_history_form,
-    ftvest_history_url, ftvest_history_years, globalx_19a_notice_urls, globalx_filings_hub_url,
+    ftvest_history_url, ftvest_history_years,     globalx_19a_notice_urls, globalx_filings_hub_url,
     globalx_fund_url, globalx_tax_supplements_url, jpmorgan_cusip_from_seed,
     jpmorgan_historical_data_url, parse_cornerstone_press, parse_div1_distributions,
     parse_gladstone_press, parse_globalx_distribution_history,
     parse_jpmorgan_distributions, parse_proshares_distribution_summary, parse_return_of_capital_pct,
-    parse_tappalpha_distributions, rexshares_calendar_covers_inception, tappalpha_distributions_url,
-    tappalpha_fund_page_url,
+    collapse_spaced_financial,
+    parse_tappalpha_distributions, parse_tappalpha_table_roc, rexshares_calendar_covers_inception,
+    tappalpha_19a1_notice_urls, tappalpha_distributions_url, tappalpha_fund_page_url,
 };
 pub(crate) use dividendinvestor::dividendinvestor_fund_page;
 #[allow(unused_imports)]

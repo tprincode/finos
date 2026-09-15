@@ -109,6 +109,42 @@ fn parse_iso_day(raw: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()
 }
 
+/// Listed-pay history is 1990 through next calendar year. Year 0000 / 0004 / 2096
+/// is a parse miss, not an owner Except/Reject.
+pub fn is_plausible_payment_period(period: &str) -> bool {
+    is_plausible_payment_period_as_of(period, "")
+}
+
+pub fn is_plausible_payment_period_as_of(period: &str, as_of: &str) -> bool {
+    let Some(d) = parse_iso_day(period) else {
+        return false;
+    };
+    if d.year() < 1990 {
+        return false;
+    }
+    let max_year = parse_iso_day(as_of)
+        .map(|a| a.year() + 1)
+        .unwrap_or(2035);
+    d.year() <= max_year
+}
+
+/// Ticket reason cites a YYYY-MM-DD that is not a real pay date.
+pub fn reason_cites_implausible_payment_period(reason: &str) -> bool {
+    let bytes = reason.as_bytes();
+    let mut i = 0;
+    while i + 10 <= bytes.len() {
+        if bytes[i + 4] == b'-' && bytes[i + 7] == b'-' {
+            if let Ok(slice) = std::str::from_utf8(&bytes[i..i + 10]) {
+                if parse_iso_day(slice).is_some() && !is_plausible_payment_period(slice) {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// A pay/declaration date has occurred only when it is strictly before `as_of`.
 /// Future placeholders with a copied amount are not paid history.
 pub fn period_has_occurred(period: &str, as_of: &str) -> bool {
@@ -120,6 +156,8 @@ pub fn period_has_occurred(period: &str, as_of: &str) -> bool {
 
 /// Unoccurred copied last-pay / orphan calendar rows. Not an issuer notice.
 /// Future planning $ is Plan $/share, not this row.
+/// A row entered on or after `as_of` is a live issuer notice — keep it even when
+/// the dollar matches a prior paid amount (XPAY and other same-$ monthlies).
 pub fn unoccurred_declaration_is_placeholder(
     period: &str,
     amount: i64,
@@ -127,9 +165,15 @@ pub fn unoccurred_declaration_is_placeholder(
     as_of: &str,
     occurred_amounts: &[(i64, u8)],
     pay_ons: &[&str],
+    entered_at: &str,
 ) -> bool {
     if period_has_occurred(period, as_of) {
         return false;
+    }
+    if let (Some(entered), Some(as_of_d)) = (parse_iso_day(entered_at), parse_iso_day(as_of)) {
+        if entered >= as_of_d {
+            return false;
+        }
     }
     let key = period.trim();
     let key10 = if key.len() >= 10 { &key[..10] } else { key };
@@ -285,21 +329,74 @@ fn year_month(raw: &str) -> Option<String> {
     Some(format!("{:04}-{:02}", d.year(), d.month()))
 }
 
-/// Runtime collect: add new unpaid payables and move unoccurred same-month dates.
-/// Already-paid months are conflicts — do not silent-supersede. Keep other dates.
+/// Same payable slot: weekly uses Sat–Fri week or a 3-day window; other cadences use calendar month.
+pub fn vendor_payables_same_period(frequency: &str, left: &str, right: &str) -> bool {
+    if PaymentCadence::parse(frequency) == Some(PaymentCadence::Weekly) {
+        return same_pay_week(left, right) || within_calendar_days(left, right, 3);
+    }
+    year_month(left) == year_month(right)
+}
+
+fn same_pay_week(left: &str, right: &str) -> bool {
+    match (parse_iso_day(left), parse_iso_day(right)) {
+        (Some(a), Some(b)) => week_containing(a).start == week_containing(b).start,
+        _ => false,
+    }
+}
+
+/// Ticket reason dates: vendor first, paid/occurred second.
+pub fn parse_paid_payable_supersede_dates(reason: &str) -> Option<(String, String)> {
+    let dates = iso_dates_in(reason);
+    (dates.len() >= 2).then(|| (dates[0].clone(), dates[1].clone()))
+}
+
+fn iso_dates_in(reason: &str) -> Vec<String> {
+    let bytes = reason.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 10 <= bytes.len() {
+        let slice = &bytes[i..i + 10];
+        if slice[4] == b'-'
+            && slice[7] == b'-'
+            && slice.iter().enumerate().all(|(j, b)| {
+                matches!(j, 4 | 7) || b.is_ascii_digit()
+            })
+        {
+            if let Ok(s) = std::str::from_utf8(slice) {
+                if parse_iso_day(s).is_some() {
+                    out.push(s.to_string());
+                    i += 10;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn within_calendar_days(left: &str, right: &str, days: i64) -> bool {
+    match (parse_iso_day(left), parse_iso_day(right)) {
+        (Some(a), Some(b)) => (a - b).num_days().abs() <= days,
+        _ => false,
+    }
+}
+
+/// Runtime collect: add new unpaid payables and move unoccurred dates in the same period.
+/// Weekly period = Sat–Fri week or 3 calendar days. Monthly/other = calendar month.
+/// Already-paid periods are conflicts — do not silent-supersede. Keep other dates.
 pub fn merge_runtime_vendor_payables(
     as_of: &str,
     existing: &[String],
     paid_periods: &[String],
     vendor: &[String],
+    payment_frequency: &str,
 ) -> RuntimePayablePlan {
     let as_of_d = parse_iso_day(as_of);
-    let paid_months: Vec<String> = paid_periods
+    let paid_occurred: Vec<String> = paid_periods
         .iter()
-        .filter_map(|p| {
-            let ym = year_month(p)?;
-            period_has_occurred(p, as_of).then_some(ym)
-        })
+        .filter(|p| period_has_occurred(p, as_of))
+        .cloned()
         .collect();
     let mut keep: Vec<String> = existing
         .iter()
@@ -317,35 +414,27 @@ pub fn merge_runtime_vendor_payables(
         if vendor_on.is_empty() || parse_iso_day(vendor_on).is_none() {
             continue;
         }
-        let Some(month) = year_month(vendor_on) else {
-            continue;
-        };
-        if paid_months.iter().any(|m| m == &month) {
-            if let Some(existing_on) = keep.iter().find(|d| year_month(d).as_deref() == Some(month.as_str()))
-            {
-                if existing_on != vendor_on {
-                    plan.conflicts.push(VendorPayableConflict {
-                        vendor_pay_on: vendor_on.to_string(),
-                        existing_pay_on: existing_on.clone(),
-                    });
-                }
-            } else {
-                plan.conflicts.push(VendorPayableConflict {
-                    vendor_pay_on: vendor_on.to_string(),
-                    existing_pay_on: String::new(),
-                });
-            }
-            continue;
-        }
         if keep.iter().any(|d| d == vendor_on) {
             continue;
         }
-        if let Some(existing_on) = keep.iter().find(|d| year_month(d).as_deref() == Some(month.as_str())).cloned()
-        {
+        let same = keep
+            .iter()
+            .find(|d| vendor_payables_same_period(payment_frequency, d, vendor_on))
+            .cloned();
+        if let Some(existing_on) = same {
+            let paid = paid_occurred.iter().any(|p| {
+                p == &existing_on
+                    || vendor_payables_same_period(payment_frequency, p, &existing_on)
+            }) && period_has_occurred(&existing_on, as_of);
             let unoccurred = as_of_d
                 .and_then(|as_of| parse_iso_day(&existing_on).map(|d| d >= as_of))
                 .unwrap_or(false);
-            if unoccurred {
+            if paid {
+                plan.conflicts.push(VendorPayableConflict {
+                    vendor_pay_on: vendor_on.to_string(),
+                    existing_pay_on: existing_on,
+                });
+            } else if unoccurred {
                 keep.retain(|d| d != &existing_on);
                 keep.push(vendor_on.to_string());
                 plan.moves.push((existing_on, vendor_on.to_string()));
@@ -400,7 +489,9 @@ pub fn leftover_ex_to_payable_moves(
 }
 
 /// Remaining unpaid dates through 31 Dec from paid history + cadence.
-/// Monthly: walk one month from the latest paid day-of-month (not last calendar day).
+/// Monthly early-month names (paid day 1–10, e.g. BITO ex/pay in the first three
+/// days): the 3rd of each remaining month. Other monthly names: +1 month from
+/// the latest paid day-of-month.
 pub fn derive_remaining_pay_ons(
     as_of: &str,
     payment_frequency: &str,
@@ -422,6 +513,9 @@ pub fn derive_remaining_pay_ons(
     };
     match PaymentCadence::parse(payment_frequency).and_then(PaymentCadence::periods) {
         Some(12) => {
+            if paid.iter().rev().take(6).all(|d| d.day() <= 10) {
+                return monthly_fixed_day(as_of_d, year_end, 3);
+            }
             let mut out = Vec::new();
             let mut cursor = latest;
             for _ in 0..12 {
@@ -538,6 +632,37 @@ fn last_day_of_month(year: i32, month: u32) -> Option<NaiveDate> {
     } else {
         NaiveDate::from_ymd_opt(year, month + 1, 1).and_then(|d| d.pred_opt())
     }
+}
+
+/// Day `day` of each remaining month from `as_of` through 31 Dec (clamped to month length).
+fn monthly_fixed_day(as_of: NaiveDate, year_end: NaiveDate, day: u32) -> Vec<String> {
+    monthly_fixed_days(as_of, year_end, day)
+        .into_iter()
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .collect()
+}
+
+fn monthly_fixed_days(as_of: NaiveDate, year_end: NaiveDate, day: u32) -> Vec<NaiveDate> {
+    let mut dates = Vec::new();
+    let mut month = as_of.month();
+    let year = as_of.year();
+    for _ in 0..12 {
+        let Some(last) = last_day_of_month(year, month) else {
+            break;
+        };
+        let dom = day.min(last.day());
+        let Some(d) = NaiveDate::from_ymd_opt(year, month, dom) else {
+            break;
+        };
+        if d >= as_of && d <= year_end {
+            dates.push(d);
+        }
+        if month == 12 || last >= year_end {
+            break;
+        }
+        month += 1;
+    }
+    dates
 }
 
 /// Last calendar day of each remaining month from `as_of` through 31 Dec.
@@ -694,6 +819,30 @@ fn single_lot(quantity_minor: i64, quantity_scale: u8) -> OpenLotQty {
     }
 }
 
+fn schedule_from_derived_ons(
+    spec: RemainingYearSpec<'_>,
+    year_end: NaiveDate,
+    ons: &[String],
+    provenance: &str,
+) -> RemainingYearSchedule {
+    let raw: Vec<NaiveDate> = ons.iter().filter_map(|p| parse_iso_day(p)).collect();
+    if raw.is_empty() {
+        return unknown("unknown — derived remaining dates empty");
+    }
+    let orphaned = orphaned_from(&raw, spec.overrides);
+    let tagged = apply_overrides(&raw, spec.overrides);
+    assemble(
+        tagged,
+        year_end,
+        provenance.into(),
+        "derived_walk",
+        spec.lots,
+        spec.plan_minor,
+        spec.plan_scale,
+        orphaned,
+    )
+}
+
 /// Rest-of-year payment dates. Weekly = remaining Sat–Fri weeks. Monthly = last
 /// calendar day of each remaining month through 31 Dec. Quarterly walks ~91 days
 /// from the latest parseable declaration period (or an owner-named next date).
@@ -729,7 +878,22 @@ pub fn remaining_year_from_spec(spec: RemainingYearSpec<'_>) -> RemainingYearSch
     match spec.calendar_policy {
         CalendarPolicy::None => unknown("unknown — cadence is None"),
         CalendarPolicy::IssuerCalendar => {
-            if spec.issuer_pay_ons.is_empty() && spec.periods_per_year > 0 {
+            let has_remaining = spec.issuer_pay_ons.iter().any(|p| {
+                parse_iso_day(p).is_some_and(|d| d >= as_of_d && d <= year_end)
+            });
+            if !has_remaining && spec.periods_per_year > 0 {
+                if spec.periods_per_year == 12 {
+                    let paid: Vec<&str> = spec.issuer_pay_ons.iter().map(String::as_str).collect();
+                    let derived = derive_remaining_pay_ons(spec.as_of, "Monthly", &paid);
+                    if !derived.is_empty() {
+                        return schedule_from_derived_ons(
+                            spec,
+                            year_end,
+                            &derived,
+                            "from paid history: remaining months on the 3rd",
+                        );
+                    }
+                }
                 derived_walk_schedule(spec, as_of_d, year_end)
             } else {
                 issuer_calendar_schedule(spec, as_of_d, year_end)
@@ -1059,6 +1223,45 @@ mod tests {
     }
 
     #[test]
+    fn issuer_calendar_past_only_early_month_derives_third() {
+        let lots = [single_lot(10, 0)];
+        let dates = [
+            "2026-06-05".into(),
+            "2026-07-08".into(),
+            "2026-08-07".into(),
+            "2026-09-08".into(),
+        ];
+        let schedule = remaining_year_from_spec(RemainingYearSpec {
+            as_of: "2026-09-14",
+            latest_payment_period: Some("2026-09-08"),
+            periods_per_year: 12,
+            lots: &lots,
+            plan_minor: 100,
+            plan_scale: 2,
+            overrides: &[],
+            issuer_pay_ons: &dates,
+            calendar_policy: CalendarPolicy::IssuerCalendar,
+        });
+        assert!(schedule.known);
+        let pay: Vec<_> = schedule.payments.iter().map(|p| p.pay_on.as_str()).collect();
+        assert_eq!(pay, ["2026-10-03", "2026-11-03", "2026-12-03"]);
+        assert!(schedule
+            .payments
+            .iter()
+            .all(|p| p.date_provenance == "derived_walk"));
+    }
+
+    #[test]
+    fn derive_remaining_early_month_uses_third() {
+        let ons = derive_remaining_pay_ons(
+            "2026-09-14",
+            "Monthly",
+            &["2026-06-05", "2026-07-08", "2026-08-07", "2026-09-08"],
+        );
+        assert_eq!(ons, ["2026-10-03", "2026-11-03", "2026-12-03"]);
+    }
+
+    #[test]
     fn qty_on_pay_date_excludes_lot_opened_after_that_date() {
         let lots = [
             OpenLotQty {
@@ -1229,6 +1432,7 @@ mod tests {
             &["2026-09-30".into(), "2026-10-31".into(), "2026-11-30".into()],
             &["2026-08-31".into()],
             &["2026-09-28".into(), "2026-12-31".into()],
+            "Monthly",
         );
         assert_eq!(plan.add, ["2026-12-31"]);
         assert_eq!(plan.moves, [("2026-09-30".into(), "2026-09-28".into())]);
@@ -1248,6 +1452,7 @@ mod tests {
             "2026-09-07",
             &[(68255, 5), (70497, 5)],
             &["2026-10-03"],
+            "2026-08-15",
         ));
         assert!(unoccurred_declaration_is_placeholder(
             "2026-09-30",
@@ -1256,6 +1461,7 @@ mod tests {
             "2026-09-07",
             &[(1215, 4)],
             &["2026-09-15"],
+            "2026-08-15",
         ));
         assert!(unoccurred_declaration_is_placeholder(
             "2026-11-06",
@@ -1264,6 +1470,7 @@ mod tests {
             "2026-09-07",
             &[(3400, 4)],
             &["2026-11-06"],
+            "2026-08-15",
         ));
         assert!(!unoccurred_declaration_is_placeholder(
             "2026-09-09",
@@ -1272,6 +1479,7 @@ mod tests {
             "2026-09-07",
             &[(572959, 6)],
             &["2026-09-09"],
+            "2026-08-15",
         ));
         assert!(!unoccurred_declaration_is_placeholder(
             "2026-09-03",
@@ -1280,6 +1488,16 @@ mod tests {
             "2026-09-07",
             &[(68255, 5)],
             &["2026-09-03"],
+            "2026-09-03",
+        ));
+        assert!(!unoccurred_declaration_is_placeholder(
+            "2026-09-10",
+            899537,
+            6,
+            "2026-09-09",
+            &[(899537, 6)],
+            &["2026-09-10", "2026-10-15"],
+            "2026-09-09",
         ));
     }
 
@@ -1290,6 +1508,7 @@ mod tests {
             &["2026-10-01".into(), "2026-11-03".into()],
             &["2026-09-03".into(), "2026-10-01".into()],
             &["2026-10-03".into()],
+            "Monthly",
         );
         assert_eq!(plan.moves, [("2026-10-01".into(), "2026-10-03".into())]);
         assert!(plan.conflicts.is_empty());
@@ -1304,12 +1523,80 @@ mod tests {
             &["2026-08-31".into(), "2026-09-30".into()],
             &["2026-08-31".into()],
             &["2026-08-28".into()],
+            "Monthly",
         );
         assert!(plan.add.is_empty());
         assert!(plan.moves.is_empty());
         assert_eq!(plan.conflicts.len(), 1);
         assert_eq!(plan.conflicts[0].existing_pay_on, "2026-08-31");
         assert!(plan.keep.contains(&"2026-08-31".to_string()));
+    }
+
+    #[test]
+    fn weekly_next_friday_adds_without_supersede() {
+        let plan = merge_runtime_vendor_payables(
+            "2026-09-10",
+            &["2026-09-04".into(), "2026-09-18".into()],
+            &["2026-09-04".into()],
+            &["2026-09-11".into()],
+            "Weekly",
+        );
+        assert_eq!(plan.add, ["2026-09-11"]);
+        assert!(plan.moves.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert!(plan.keep.contains(&"2026-09-04".to_string()));
+        assert!(plan.keep.contains(&"2026-09-11".to_string()));
+    }
+
+    #[test]
+    fn weekly_vendor_date_already_stored_is_not_a_conflict() {
+        let plan = merge_runtime_vendor_payables(
+            "2026-09-10",
+            &["2026-09-04".into(), "2026-09-11".into()],
+            &["2026-09-04".into()],
+            &["2026-09-11".into()],
+            "Weekly",
+        );
+        assert!(plan.add.is_empty());
+        assert!(plan.moves.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert!(plan.keep.contains(&"2026-09-04".to_string()));
+        assert!(plan.keep.contains(&"2026-09-11".to_string()));
+    }
+
+    #[test]
+    fn implausible_years_are_not_pay_dates() {
+        assert!(!is_plausible_payment_period("0000-02-10"));
+        assert!(!is_plausible_payment_period("0004-11-05"));
+        assert!(!is_plausible_payment_period("2096-05-10"));
+        assert!(is_plausible_payment_period("2026-02-13"));
+        assert!(reason_cites_implausible_payment_period(
+            "paid 0000-02-10 50 varies more than 30% from prior 0000-02-04 475"
+        ));
+        assert!(!reason_cites_implausible_payment_period(
+            "paid 2026-08-31 $14.00 vs prior 2026-07-31 $10.00"
+        ));
+    }
+
+    #[test]
+    fn parse_paid_payable_supersede_reason_dates() {
+        let parsed = parse_paid_payable_supersede_dates(
+            "Vendor payable 2026-09-11 would silent-supersede paid/occurred 2026-09-04.",
+        );
+        assert_eq!(
+            parsed,
+            Some(("2026-09-11".into(), "2026-09-04".into()))
+        );
+        assert!(!vendor_payables_same_period(
+            "Weekly",
+            "2026-09-11",
+            "2026-09-04"
+        ));
+        assert!(vendor_payables_same_period(
+            "Monthly",
+            "2026-09-11",
+            "2026-09-04"
+        ));
     }
 
     #[test]

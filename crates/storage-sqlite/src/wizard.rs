@@ -14,6 +14,8 @@ use financial_domain::error::DomainError;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
+use std::collections::{BTreeSet, HashSet};
+
 use crate::store::StorageError;
 
 fn map_err(err: StorageError) -> PlatformError {
@@ -793,6 +795,7 @@ pub async fn collector_set(pool: &SqlitePool) -> Result<CollectorSetBody, Platfo
                 COALESCE(rt.last_content_hash, '') AS last_content_hash,
                 COALESCE(rt.roc_source_url, '') AS roc_source_url,
                 COALESCE(rt.inception_on, '') AS inception_on,
+                COALESCE(epp.declaration_weekday, '') AS declaration_weekday,
                 EXISTS(
                     SELECT 1 FROM lot l
                     WHERE l.security_id = s.security_id AND l.remaining_quantity_minor > 0
@@ -800,6 +803,7 @@ pub async fn collector_set(pool: &SqlitePool) -> Result<CollectorSetBody, Platfo
          FROM security s
          LEFT JOIN position_characteristic pc ON pc.security_id = s.security_id
          LEFT JOIN retrieval_template rt ON rt.security_id = s.security_id
+         LEFT JOIN expected_payment_pattern epp ON epp.security_id = s.security_id
          WHERE EXISTS(
                 SELECT 1 FROM lot l
                 WHERE l.security_id = s.security_id AND l.remaining_quantity_minor > 0
@@ -863,6 +867,7 @@ pub async fn collector_set(pool: &SqlitePool) -> Result<CollectorSetBody, Platfo
             roc_tax_year: String::new(),
             open_lot_count: 0,
             last_payable_on: String::new(),
+            declaration_weekday: row.try_get("declaration_weekday").unwrap_or_default(),
         });
     }
     Ok(CollectorSetBody { items })
@@ -870,6 +875,9 @@ pub async fn collector_set(pool: &SqlitePool) -> Result<CollectorSetBody, Platfo
 
 /// Collectors fleet is for income names only — exclude non-payers (cadence None / equity).
 fn collector_symbol_pays(div_type: &str, payment_frequency: &str, symbol: &str) -> bool {
+    if financial_domain::collector::is_not_a_collector(symbol) {
+        return false;
+    }
     if financial_domain::current_price::uses_cash_par(div_type, symbol) {
         return true;
     }
@@ -907,34 +915,55 @@ pub async fn collector_stats(
         })
         .count() as u64;
 
-    // Declaration-only stats scoped to enabled collectors, counting distinct symbols.
+    // Declaration-only stats scoped to the income fleet (open-lot payers), not every retrieve_run.
+    let fleet: HashSet<Uuid> = set.items.iter().map(|i| i.security_id).collect();
     let today_pat = format!("{as_of_date}%");
-    let ran_today: i64 = sqlx::query_scalar(
-        "SELECT COUNT(DISTINCT security_id) FROM retrieve_run
-         WHERE requested_at LIKE ? AND kind = 'declaration'",
+    let run_rows = sqlx::query(
+        "SELECT r.security_id, COALESCE(s.symbol, '') AS symbol, r.ok, r.unchanged
+         FROM retrieve_run r
+         LEFT JOIN security s ON s.security_id = r.security_id
+         WHERE r.requested_at LIKE ? AND r.kind = 'declaration'",
     )
     .bind(&today_pat)
-    .fetch_one(pool)
+    .fetch_all(pool)
     .await
-    .unwrap_or(0);
-
-    let miss_today: i64 = sqlx::query_scalar(
-        "SELECT COUNT(DISTINCT security_id) FROM retrieve_run
-         WHERE requested_at LIKE ? AND kind = 'declaration' AND ok = 0",
-    )
-    .bind(&today_pat)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
-
-    let unchanged_today: i64 = sqlx::query_scalar(
-        "SELECT COUNT(DISTINCT security_id) FROM retrieve_run
-         WHERE requested_at LIKE ? AND kind = 'declaration' AND unchanged > 0",
-    )
-    .bind(&today_pat)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
+    .unwrap_or_default();
+    let mut ran_fleet: HashSet<Uuid> = HashSet::new();
+    let mut had_miss: HashSet<Uuid> = HashSet::new();
+    let mut unchanged_fleet: HashSet<Uuid> = HashSet::new();
+    let mut ran_outside_fleet: BTreeSet<String> = BTreeSet::new();
+    for row in run_rows {
+        let Ok(sid) = parse_uuid(&row, "security_id") else {
+            continue;
+        };
+        let symbol: String = row.try_get("symbol").unwrap_or_default();
+        let ok: i64 = row.try_get("ok").unwrap_or(0);
+        let unchanged: i64 = row.try_get("unchanged").unwrap_or(0);
+        if fleet.contains(&sid) {
+            ran_fleet.insert(sid);
+            if ok == 0 {
+                had_miss.insert(sid);
+            }
+            if unchanged > 0 {
+                unchanged_fleet.insert(sid);
+            }
+        } else if !symbol.trim().is_empty() {
+            ran_outside_fleet.insert(symbol);
+        }
+    }
+    let still_miss = set
+        .items
+        .iter()
+        .filter(|i| {
+            i.collector_enabled
+                && !i.declaration_source.trim().is_empty()
+                && !financial_domain::collector::declaration_daily_retrieve_current(
+                    i.last_run_ok,
+                    &i.last_run_at,
+                    as_of_date,
+                )
+        })
+        .count() as u64;
 
     let open_exceptions: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM work_ticket WHERE status = 'open'",
@@ -958,13 +987,19 @@ pub async fn collector_stats(
     Ok(CollectorStatsBody {
         assigned,
         enabled,
-        ran_today: ran_today as u64,
-        miss_today: miss_today as u64,
-        unchanged_today: unchanged_today as u64,
+        ran_today: ran_fleet.len() as u64,
+        still_miss,
+        had_miss_today: had_miss.len() as u64,
+        miss_today: still_miss,
+        unchanged_today: unchanged_fleet.len() as u64,
         cash_par,
         price_current,
         price_stale,
         open_exceptions: open_exceptions as u64,
+        ran_outside_fleet: ran_outside_fleet.into_iter().collect(),
         as_of_date: as_of_date.to_string(),
+        fail_count: 0,
+        fail_ticket_count: 0,
+        fail_ticket_parity: true,
     })
 }

@@ -76,14 +76,18 @@ See [tests/golden/README.md](tests/golden/README.md) for the Golden Business Out
 - [x] `BurndownGet` obligation is Plan remaining
 - Gate: [docs/architecture/m5-gate.md](docs/architecture/m5-gate.md)
 
-## Milestone 6 — Decision intelligence
+## Milestone 6 — Decision intelligence (**architecture proof**)
 
-- [x] Slice 1: `AllocationTargetSet` / `AllocationGet` do not post cash
-- [x] Slice 2: Shopping cart (`CartItemAdd` / `CartItemRemove` / `CartGet`) is not a fill
-- [x] Slice 3: Backtesting stub (`BacktestRun` / `BacktestGet`) does not post facts
+These checkboxes are **crate/API proofs**, not a claim that owner Profile A UX is complete.
+
+- [x] Slice 1: `AllocationTargetSet` / `AllocationGet` do not post cash (**API proof**; no owner Allocation menu)
+- [x] Slice 2: M6 `CartItemAdd` / `CartItemRemove` / `CartGet` is not a fill (**API proof**)
+- [x] Slice 3: Backtesting stub (`BacktestRun` / `BacktestGet`) does not post facts (**API proof**; no owner Backtest menu)
 - [x] Slice 4: Classification review does not rewrite MAGI oracles
-- [x] Slice 5: AI Gateway (`AiAnalyze`) is advisory-only; Grok key from env
+- [x] Slice 5: AI Gateway (`AiAnalyze`) is advisory-only; Grok key from env (**parked UX**)
 - Gate: [docs/architecture/m6-gate.md](docs/architecture/m6-gate.md)
+
+**Owner Profile A product (separate from M6 boxes):** live Shopping Cart scenarios, Tools → Components inventory, and Cash Management desk ship on the recovered product tip — track via `execution.md` / `ui_modules` / `cash_management`, not these M6 checkboxes.
 
 ## Milestone 7 — Release hardening (in progress)
 
@@ -101,17 +105,21 @@ See [tests/golden/README.md](tests/golden/README.md) for the Golden Business Out
 - [x] Slice 3: Import sample Fidelity dividend through FinanceClient
 - Gate: [docs/architecture/profile-a-depth.md](docs/architecture/profile-a-depth.md)
 
-## Milestone 8 — Centralization proof (desktop stays SQLite)
+## Milestone 8 — Centralization proof (**architecture proof**; desktop stays SQLite)
+
+M8 boxes mean **ports / server / Postgres adapter proofs**. They do **not** mean Profile A product cutover or that Components / Cash Management / Shopping Cart live only on Postgres.
 
 - [x] `crates/storage-postgres` implements the same ports for Account / Dividend / Lot / PositionDetails / MAGI
 - [x] Dual-adapter contract: same cents; `DATABASE_URL` required (no SQLite fallback)
 - [x] MAGI pack on Postgres matches owner-approved oracles
-- [x] Axum `finos-server` + `RemoteHttpFinanceClient` (desktop App.tsx stays LocalTauri)
+- [x] Axum `finos-server` + `RemoteHttpFinanceClient` (desktop `App.tsx` stays `LocalTauriFinanceClient`)
 - [x] Optimistic concurrency: `expectedVersion` / `concurrency_conflict`
 - [x] `SnapshotImport` SQLite bundle → PostgreSQL reconcile (AC-ARCH-08)
 - Gate: [docs/architecture/m8-gate.md](docs/architecture/m8-gate.md)
 
-## Milestone 9 — Multi-client production (desktop stays SQLite)
+## Milestone 9 — Multi-client production (**architecture proof**; desktop stays SQLite)
+
+M9 boxes are **HTTP / JWT / web-client proofs**. Owner Profile A remains local SQLite until the owner unlocks authority cutover.
 
 - [x] Slice B1: Axum Bearer JWT (test issuer); `command_audit` user/device/correlation/result; unauthenticated fail closed
 - [x] Slice B2: `apps/web` on `RemoteHttpFinanceClient`; Health / Dividend / MAGI; no UI SQL
@@ -119,7 +127,7 @@ See [tests/golden/README.md](tests/golden/README.md) for the Golden Business Out
 - [ ] Authority cutover (owner-gated): do not switch `App.tsx` until named
 - Gate: [docs/architecture/m9-gate.md](docs/architecture/m9-gate.md)
 
-Active work board: [docs/architecture/execution.md](docs/architecture/execution.md) (Now / Next). Do not wait for a re-attached plan.
+Active work board: [docs/architecture/execution.md](docs/architecture/execution.md) (Now / Next). Do not wait for a re-attached plan. Anti-erasure: `scripts/components-anti-erasure.sh` and CI job `components-anti-erasure` (`ui_modules` + `core_functions`).
 
 ## Development
 
@@ -132,12 +140,16 @@ cargo test
 
 **Desktop app** (see `apps/desktop/README.md`):
 
+Coding days: Desktop `finos.bat` or `apps/desktop/start-finos-dev.bat` (`npm run desktop`). The console is expected.
+
+Household no-console sessions: Desktop `finos-installed.bat` after a one-off `npm run desktop:build` + NSIS install. Do not use that as the daily rebuild start.
+
 ```
 npm install
 npm run desktop
 ```
 
-Start command: `npm run desktop` (from repo root). Exit: File → Exit, the Exit button, the window X, or `Ctrl+C` in that terminal.
+Exit: File → Exit, the Exit button, the window X, or `Ctrl+C` in the dev console.
 
 The window should show HealthGet, HandoffStatusGet, CanonicalWeekGet (Sat–Fri), account/exception lists, dividend actual totals, lots/ROI, MAGI decision, and Calculator Plan / burndown.
 

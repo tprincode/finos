@@ -1,6 +1,7 @@
 //! SQLite adapter — local operational system of record (ARCH-01, ADR-0003).
 
 pub mod migrations;
+mod account_value;
 mod ai;
 mod allocation;
 mod backtest;

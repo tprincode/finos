@@ -52,6 +52,22 @@ export function addUtcDays(iso: string, days: number): string {
   return formatUtcDay(d);
 }
 
+/** Inclusive Saturday starts from the week containing `fromIso` through `throughIso`. */
+export function saturdaysFromTo(fromIso: string, throughIso: string): string[] {
+  let cur = saturdayOfWeek(fromIso);
+  const last = saturdayOfWeek(throughIso);
+  if (!cur || !last || cur > last) {
+    return cur && last && cur === last ? [cur] : [];
+  }
+  const out: string[] = [];
+  while (cur <= last) {
+    out.push(cur);
+    cur = addUtcDays(cur, 7);
+    if (out.length > 200) break;
+  }
+  return out;
+}
+
 /** Saturday that starts the Sat–Fri week containing `iso`. */
 export function saturdayOfWeek(iso: string): string {
   const d = parseUtcDay(iso);

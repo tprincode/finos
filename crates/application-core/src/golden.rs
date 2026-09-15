@@ -39,9 +39,5 @@ pub trait GoldenDriver {
 
 /// Compares actual production-path results to an independent expected oracle.
 pub trait GoldenComparator {
-    fn compare(
-        &self,
-        actual: &MagiProjection,
-        expected: &GoldenOracle,
-    ) -> GoldenCompareReport;
+    fn compare(&self, actual: &MagiProjection, expected: &GoldenOracle) -> GoldenCompareReport;
 }

@@ -7,6 +7,17 @@ alwaysApply: true
 
 Read [docs/architecture/execution.md](docs/architecture/execution.md) at the start of implementation work. Follow the **Now** item until it is validated, then start **Next** in the same turn.
 
+## Product tip + Components (stop conditions)
+
+**Recovery baseline:** `origin/cursor/core-functions-decl-color` @ **`fc84bfe`** (or successor merge that preserves Tools → Components). See [phase0-recovery-baseline.mdc](phase0-recovery-baseline.mdc).
+
+**Stop immediately** (do not invent or re-implement from `master` alone) when:
+
+- Checkout is pre-recovery `master` without the recovered Components / Cash Management / catalog commits.
+- Tools → Components is missing (no `.text("components", "Components")` / `navButton("components", "Components")`).
+- `CoreFunctionsGet` / `ui-modules.json` / `core-functions.json` / `ui_modules` / `core_functions` tests are absent or erased.
+- A PR touching `apps/desktop` or architecture module catalogs would merge without green `ui_modules` + `core_functions` (CI job `components-anti-erasure` / `scripts/components-anti-erasure.sh`).
+
 ## Loop (do not skip)
 
 1. Name the current step and its pass check.
@@ -16,6 +27,7 @@ Read [docs/architecture/execution.md](docs/architecture/execution.md) at the sta
 
 ## Stop only when
 
+- Wrong tip / missing Components (above) — refuse and report.
 - Owner must approve or change golden MAGI numbers (ADR-0013).
 - The step needs a Mac (M1 macOS gate) and this machine is Windows.
 - The next milestone is M6+ AI, Postgres, OIDC, or signed installers and the user has not unlocked it.

@@ -21,7 +21,8 @@ mod production_seed;
 pub use magi_run::{compare_magi_pack, compare_magi_pack_postgres, magi_pack_run};
 pub use production_seed::{
     load_production_expected, load_production_seed_via_commands, production_seed_actual_counts,
-    production_seed_actual_totals, production_seed_plan_count, production_template_totals,
+    production_seed_actual_totals, production_seed_parent_totals, production_seed_plan_count,
+    production_template_totals,
     profile_a_app_dir, ProductionCounts, ProductionExpected, ProductionTotals,
 };
 
@@ -365,14 +366,37 @@ pub async fn complete_collector_for_first_lot_as(
     )
     .unwrap_or_else(|_| serde_json::json!({}));
     let tpl = existing_json.get("template").cloned().unwrap_or_default();
+    let roc_url = tpl
+        .get("rocSourceUrl")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            format!(
+                "https://example.test/{}/19a-1",
+                symbol.to_ascii_lowercase()
+            )
+        });
+    let source_url = {
+        let existing = tpl.get("sourceUrl").and_then(|v| v.as_str()).unwrap_or("");
+        if existing.is_empty() {
+            format!(
+                "https://example.test/{}/distributions",
+                symbol.to_ascii_lowercase()
+            )
+        } else {
+            existing.to_string()
+        }
+    };
     steps.push((
         "RetrievalTemplateSet",
         serde_json::json!({
+            "sourceUrl": source_url,
             "securityId": security_id,
             "priceSource": tpl.get("priceSource").and_then(|v| v.as_str()).unwrap_or("public"),
-            "sourceSymbol": tpl.get("sourceSymbol").and_then(|v| v.as_str()).unwrap_or(symbol),
+            "sourceSymbol": tpl.get("sourceSymbol").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(symbol),
             "declarationSource": tpl.get("declarationSource").and_then(|v| v.as_str()).unwrap_or("issuer"),
-            "sourceUrl": tpl.get("sourceUrl").and_then(|v| v.as_str()).unwrap_or(""),
+            "rocSourceUrl": roc_url,
             "calendarPolicy": tpl.get("calendarPolicy").and_then(|v| v.as_str()).unwrap_or("issuer_calendar"),
             "collectorEnabled": tpl.get("collectorEnabled").and_then(|v| v.as_bool()).unwrap_or(true),
             "lookbackCount": tpl.get("lookbackCount").and_then(|v| v.as_u64()).unwrap_or(12),
@@ -572,7 +596,16 @@ pub fn desktop_ui_contains_no_sql(src_dir: &Path) -> Result<(), String> {
             let text = fs::read_to_string(&path)?;
             for (i, line) in text.lines().enumerate() {
                 let lower = line.to_ascii_lowercase();
-                if (lower.contains("select ") && !lower.contains("select all"))
+                // UI copy ("Select account", aria-label="Select week") is not SQL.
+                let ui_select_copy = lower.contains("<option")
+                    || lower.contains("aria-label")
+                    || lower.contains("select account")
+                    || lower.contains("select week")
+                    || lower.contains("select reason")
+                    || lower.contains("select draft");
+                if (lower.contains("select ")
+                    && !lower.contains("select all")
+                    && !ui_select_copy)
                     || lower.contains("insert into")
                     || lower.contains("delete from")
                     || lower.contains("sqlite")

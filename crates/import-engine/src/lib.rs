@@ -20,13 +20,14 @@ pub use production::{
 };
 pub use retrieve::{
     collect_declaration_candidates_for, collect_declarations_for, collect_from_fetched_page,
-    collect_last_price_quotes, collect_last_price_quotes_for, declaration_candidates,
+    collect_last_price_quotes, collect_last_price_quotes_for,
+    collect_last_price_quotes_for_with_progress, declaration_candidates,
     enrich_collector_quote_only, enrich_retrieve_body, is_registered_declaration_source, live_market_snapshot, live_price_quote,
     live_research_identity, live_roc_candidates, live_roc_candidates_for, looks_like_roc_notice_url,
     page_content_hash, parse_19a1_notice, parse_amplify_distribution_pack, parse_amplify_distributions,
     pdf_notice_text, should_invent_dated_19a1_filenames,
-    parse_search_result_urls, rank_roc_search_urls, roc_19a1_search_query, roc_estimate_from_search_hits,
-    inception_search_query, inception_on_from_search_hits,
+    offering_keep_stored, parse_search_result_urls, rank_roc_search_urls, roc_19a1_search_query, roc_estimate_from_search_hits,
+    inception_search_query, inception_on_from_search_hits, uses_offering_price,
     ftvest_history_years, parse_cornerstone_press, parse_div1_distributions, parse_edgar_offering_as_of, parse_edgar_offering_price,
     parse_generic_distributions,
     parse_jpmorgan_distributions, jpmorgan_cusip_from_seed, parse_globalx_distribution_history,
@@ -34,10 +35,10 @@ pub use retrieve::{
     parse_proshares_distribution_summary, parse_roundhill_distribution_api,
     rexshares_calendar_covers_inception,
     parse_roundhill_distributions, parse_saba_distributions, parse_simplify_distributions,
-    parse_yahoo_daily_closes,
+    parse_yahoo_daily_closes, parse_yahoo_spark,
     parse_yieldmax_distributions,
     price_quote_candidates, profile_from_vendor_htmls, registered_declaration_sources,
-    retrieve_result, roundhill_fund_page, DeclarationCollectOutcome, DeclarationTarget,
+    retrieve_result, roc_from_notice_bytes, roundhill_fund_page, DeclarationCollectOutcome, DeclarationTarget,
     LastPriceTarget, LiveRocFill,
 };
 pub use financial_domain::div1::{div1_adapter_missing, is_div1};

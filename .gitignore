@@ -47,3 +47,6 @@ data/
 
 # Extract artifacts (regenerate from docx as needed)
 _docx_extract/
+
+# Profile A local SQLite (data-seed)
+com.finos.desktop/

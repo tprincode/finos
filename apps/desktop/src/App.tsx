@@ -23,6 +23,7 @@ import {
   type HandoffStatus,
   type HoldingsGet,
   type DataSummaryGet,
+  type CoreFunctionsGet,
   type IncomePlanWeekGet,
   type IncomePlanGridGet,
   type IncomePlanExportGet,
@@ -38,15 +39,40 @@ import {
   type RocResearchGet,
   type SecurityListItem,
   type TrendsGet,
+  type CashManagementWeekGet,
+  type CashManagementRemindersGet,
+  type CashManagementMonthGet,
+  type MagiProjection,
+  type AccountValueHomeGet,
+  type DividendPlanHomeGet,
+  type DataSnapshotExport,
 } from "@finos/app-contracts";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import { LocalTauriFinanceClient } from "./financeClient";
-import { TrendsChartsPanel } from "./TrendsCharts";
-import { DividendWeeksPanel } from "./DividendWeeks";
-import { DeclarationPaymentsChart } from "./DeclarationPaymentsChart";
-import { TrendsCapturePanel, type TrendsWeekCapture } from "./TrendsCapture";
-import { openImportWizardWindow } from "./ImportWizard";
+import { TrendsChartsPanel } from "./features/graphing/TrendsCharts";
+import { type GraphPeriod } from "./features/graphing/graphPeriod";
+import { DividendWeeksPanel } from "./features/graphing/DividendWeeks";
+import { DeclarationPaymentsChart } from "./features/graphing/DeclarationPaymentsChart";
+import { TrendsCapturePanel, type TrendsWeekCapture } from "./features/graphing/TrendsCapture";
+import { CashManagementPanel } from "./CashManagement";
+import { HomeAccountCharts } from "./features/graphing/HomeAccountCharts";
+import { HomeDividendPlan } from "./features/home/HomeDividendPlan";
+import {
+  INCOME_TX_PERIOD_OPTIONS,
+  incomeTxRange,
+  inIncomeTxRange,
+  localIsoDate,
+  type IncomeTxPeriod,
+} from "./incomeTxPeriod";
+import { ShoppingCartScreen } from "./features/shopping-cart";
+import {
+  AccountSelect,
+  LotCostTable,
+  ResearchedSymbolCombobox,
+  type LotSortMode,
+} from "./features/shared/pickers";
+import { openImportWizardWindow } from "./openImportWizard";
 import {
   CalculatorPanel,
   type CollectorCompletionProof,
@@ -74,7 +100,28 @@ import {
 import "./App.css";
 
 const RISK_TIERS = ["Foundation", "Core", "Risk On"];
-const OWNER_RISK_CHOICES = ["Foundation", "Core", "Risk On", "Undecided"];
+
+/** Preview/print tables get grid + color even if the host printHtml is stale. */
+function styleIncomePrintHtml(html: string): string {
+  const css = `<style data-finos-print-skin>
+table{width:100%;border-collapse:collapse;font-size:11px;line-height:1.25}
+table th,table td{border:1px solid #c5d0dc;padding:3px 6px}
+table th{background:#1b365d;color:#fff;font-weight:600;text-align:left}
+table td:not(:first-child){text-align:right}
+table tr:nth-child(even) td{background:#f4f7fb}
+table tr.ip-grp th{background:#e7eef6;color:#1b365d}
+table tr.ip-plan-total td{background:#22c55e;color:#111;font-weight:700}
+table tr.ip-act-total td{background:#86efac;color:#111;font-weight:700}
+table tr.ip-planrow td{background:#eef8f1}
+table tr.ip-actrow td{background:#f7fafc}
+table tr.ip-diff-total td,table tr.ip-delta td{background:#eef2f7}
+table tr.ip-current td{background:#2d5a8a !important;color:#fff;font-weight:700}
+table tr.ip-grand td{background:#1f6b4a !important;color:#fff;font-weight:700}
+</style>`;
+  if (html.includes("data-finos-print-skin")) return html;
+  if (html.includes("</head>")) return html.replace("</head>", `${css}</head>`);
+  return `${css}${html}`;
+}
 
 const emptyLookthrough = (): LookthroughResearch => ({
   themeStrategy: "",
@@ -90,6 +137,75 @@ const emptyLookthrough = (): LookthroughResearch => ({
   coveredCall: false,
   leveraged: false,
 });
+
+type RefreshProgress = {
+  current: number;
+  total: number;
+  symbol: string;
+};
+
+function lastPriceRefreshLabel(lastPriceProgress: RefreshProgress | null): string {
+  if (!lastPriceProgress || lastPriceProgress.total <= 0) {
+    return "Refreshing last prices…";
+  }
+  return `Refreshing last prices ${formatCount(lastPriceProgress.current)} of ${formatCount(lastPriceProgress.total)}${
+    lastPriceProgress.symbol ? `: ${lastPriceProgress.symbol}` : ""
+  }`;
+}
+
+function declarationRefreshLabel(
+  declarationProgress: RefreshProgress | null,
+): string {
+  if (!declarationProgress || declarationProgress.total <= 0) {
+    return "Refreshing declarations…";
+  }
+  return `Refreshing ${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}${
+    declarationProgress.symbol ? `: ${declarationProgress.symbol}` : ""
+  }`;
+}
+
+function RefreshActivityBar({
+  lastPriceBusy,
+  lastPriceProgress,
+  declarationBusy,
+  declarationProgress,
+}: {
+  lastPriceBusy: boolean;
+  lastPriceProgress: RefreshProgress | null;
+  declarationBusy: boolean;
+  declarationProgress: RefreshProgress | null;
+}) {
+  if (!lastPriceBusy && !declarationBusy) {
+    return null;
+  }
+  const progress = lastPriceBusy ? lastPriceProgress : declarationProgress;
+  const label = lastPriceBusy
+    ? lastPriceRefreshLabel(lastPriceProgress)
+    : declarationRefreshLabel(declarationProgress);
+  return (
+    <section
+      className="process-a-research-progress refresh-activity-bar"
+      aria-label={
+        lastPriceBusy
+          ? "Last price refresh progress"
+          : "Declaration refresh progress"
+      }
+      aria-busy="true"
+    >
+      <p role="status" aria-live="polite">
+        {label}
+      </p>
+      {progress && progress.total > 0 ? (
+        <progress
+          max={progress.total}
+          value={Math.min(progress.current, progress.total)}
+        />
+      ) : (
+        <div className="process-a-research-spinner" aria-hidden="true" />
+      )}
+    </section>
+  );
+}
 
 function isNewOrChangedDeclaration(
   period: string | undefined,
@@ -600,6 +716,8 @@ type Screen =
   | "calculator"
   | "dashboard"
   | "trends"
+  | "cash-management"
+  | "shopping-cart"
   | "holdings"
   | "import"
   | "settings"
@@ -608,7 +726,8 @@ type Screen =
   | "position-details"
   | "collectors"
   | "tickets"
-  | "collector-establish";
+  | "collector-establish"
+  | "components";
 
 const SCREENS: readonly Screen[] = [
   "home",
@@ -616,6 +735,8 @@ const SCREENS: readonly Screen[] = [
   "calculator",
   "dashboard",
   "trends",
+  "cash-management",
+  "shopping-cart",
   "holdings",
   "import",
   "settings",
@@ -625,6 +746,7 @@ const SCREENS: readonly Screen[] = [
   "collectors",
   "tickets",
   "collector-establish",
+  "components",
 ];
 
 function isScreen(id: string): id is Screen {
@@ -820,12 +942,15 @@ type CollectorStats = {
   assigned: number;
   enabled: number;
   ranToday: number;
+  stillMiss: number;
+  hadMissToday: number;
   missToday: number;
   unchangedToday: number;
   cashPar: number;
   priceCurrent: number;
   priceStale: number;
   openExceptions: number;
+  ranOutsideFleet?: string[];
   asOfDate: string;
 };
 
@@ -946,27 +1071,49 @@ export default function App() {
   screenRef.current = screen;
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthView | null>(null);
+  const [coreFunctions, setCoreFunctions] = useState<CoreFunctionsGet | null>(null);
   const [handoff, setHandoff] = useState<HandoffStatus | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [deviceName, setDeviceName] = useState("");
   const [asOfDate, setAsOfDate] = useState(() =>
     saturdayOfWeek(new Date().toISOString().slice(0, 10)),
   );
   const [incomeWeek, setIncomeWeek] = useState<IncomePlanWeekGet | null>(null);
+  const [incomeWeekLoading, setIncomeWeekLoading] = useState(false);
+  const [incomeWeekNav, setIncomeWeekNav] = useState<"prev" | "next" | null>(null);
+  const prevIncomeAsOfRef = useRef<string | null>(null);
+  const incomeLoadGen = useRef(0);
+  const skipFullRefreshOnAsOfRef = useRef(false);
   const [incomeGrid, setIncomeGrid] = useState<IncomePlanGridGet | null>(null);
-  const [incomePattern, setIncomePattern] = useState<"A" | "B">("A");
+  const [incomePattern, setIncomePattern] = useState<"A" | "B">("B");
   const [incomeHistWeeks, setIncomeHistWeeks] = useState(6);
   const [incomeFutWeeks, setIncomeFutWeeks] = useState(6);
   const [burndown, setBurndown] = useState<DashboardBurndownGet | null>(null);
   const [trends, setTrends] = useState<TrendsGet | null>(null);
   const [trendsError, setTrendsError] = useState<string | null>(null);
   const [trendsCapture, setTrendsCapture] = useState<TrendsWeekCapture | null>(null);
+  const trendsWeekAsOfRef = useRef("");
+  const [cashWeek, setCashWeek] = useState<CashManagementWeekGet | null>(null);
+  const [cashReminders, setCashReminders] =
+    useState<CashManagementRemindersGet | null>(null);
+  const [cashMonth, setCashMonth] = useState<CashManagementMonthGet | null>(null);
+  const [cashDirty, setCashDirty] = useState(false);
+  const [cartDirty, setCartDirty] = useState(false);
+  const [holdingsLotSort, setHoldingsLotSort] = useState<LotSortMode>("lowest-cost");
+  const pendingCartBuyRef = useRef<{ scenarioId: string } | null>(null);
+  const [cashMagi, setCashMagi] = useState<MagiProjection | null>(null);
+  const [accountValues, setAccountValues] = useState<AccountValueHomeGet | null>(null);
+  const [dividendPlan, setDividendPlan] = useState<DividendPlanHomeGet | null>(null);
   const [perfRange, setPerfRange] = useState<DividendPerformanceRange>("ytd");
   const [dividendPerf, setDividendPerf] = useState<DividendPerformanceGet | null>(null);
+  const [trendsDividendPerf, setTrendsDividendPerf] =
+    useState<DividendPerformanceGet | null>(null);
   const perfRangeRef = useRef(perfRange);
   perfRangeRef.current = perfRange;
+  const trendsGraphPeriodRef = useRef<GraphPeriod>("12m");
   const [holdings, setHoldings] = useState<HoldingsGet | null>(null);
   const [calculator, setCalculator] = useState<CalculatorGet | null>(null);
   const [declHistory, setDeclHistory] = useState<DeclarationHistoryGet | null>(null);
@@ -1009,6 +1156,11 @@ export default function App() {
   ]);
   const [accounts, setAccounts] = useState<AccountListItem[]>([]);
   const [securities, setSecurities] = useState<SecurityListItem[]>([]);
+  const [incomeTxOpen, setIncomeTxOpen] = useState(false);
+  const [incomeTxPeriod, setIncomeTxPeriod] = useState<IncomeTxPeriod>("month");
+  const [incomeTxCustomStart, setIncomeTxCustomStart] = useState("");
+  const [incomeTxCustomEnd, setIncomeTxCustomEnd] = useState("");
+  const [incomeTxAccountId, setIncomeTxAccountId] = useState("");
   const [wizSymbol, setWizSymbol] = useState("");
   const [wizName, setWizName] = useState("");
   const [wizProvider, setWizProvider] = useState("");
@@ -1124,7 +1276,7 @@ export default function App() {
     source: string;
   } | null>(null);
   /** Post–Complete research owner risk; never auto-applied. */
-  const [ownerRiskChoice, setOwnerRiskChoice] = useState("Undecided");
+  const [ownerRiskChoice, setOwnerRiskChoice] = useState("");
   const [addLotQuery, setAddLotQuery] = useState("");
   const [addLotSymbolOpen, setAddLotSymbolOpen] = useState(false);
   const [wizTierSuggestion, setWizTierSuggestion] = useState<{
@@ -1143,8 +1295,22 @@ export default function App() {
   const [pdPeriodBaseline, setPdPeriodBaseline] = useState(() => JSON.stringify(emptyPeriod()));
   const [savedPeriodId, setSavedPeriodId] = useState("");
   const [lastPriceBusy, setLastPriceBusy] = useState(false);
+  const [lastPriceProgress, setLastPriceProgress] = useState<RefreshProgress | null>(
+    null,
+  );
   const [declarationBusy, setDeclarationBusy] = useState(false);
+  const [declarationProgress, setDeclarationProgress] = useState<RefreshProgress | null>(
+    null,
+  );
+  const [snapshotConfirm, setSnapshotConfirm] = useState(false);
+  const [incomeExportPreview, setIncomeExportPreview] =
+    useState<IncomePlanExportGet | null>(null);
+  const [incomeExportLoading, setIncomeExportLoading] = useState(false);
+  const jobsBusyRef = useRef(false);
+  const restartingRef = useRef(false);
   const lastPriceKickoff = useRef(false);
+  const [weekWizardActive, setWeekWizardActive] = useState(false);
+  const [cashWeekSavedAt, setCashWeekSavedAt] = useState(0);
   const [collectorItems, setCollectorItems] = useState<CollectorSetItem[]>([]);
   const [collectorStats, setCollectorStats] = useState<CollectorStats | null>(null);
   const [collectorSymbol, setCollectorSymbol] = useState("");
@@ -1186,6 +1352,10 @@ export default function App() {
   const [retryingTicket, setRetryingTicket] = useState<{
     ticketId: string;
     symbol: string;
+  } | null>(null);
+  const [ticketDecision, setTicketDecision] = useState<{
+    ticketId: string;
+    action: string;
   } | null>(null);
   const [, setDiv1Compliance] = useState<Div1ComplianceRow[]>([]);
   const [, setCollectorProofs] = useState<CollectorCompletionProof[]>([]);
@@ -2017,6 +2187,7 @@ export default function App() {
     ticket: WorkTicketRecord,
     action: "except" | "reject",
   ) => {
+    setTicketDecision({ ticketId: ticket.ticketId, action });
     setBusy(true);
     try {
       const result = await client.executeCommand("WorkTicketResolve", {
@@ -2034,6 +2205,33 @@ export default function App() {
       setActionMessage(String(err));
     } finally {
       setBusy(false);
+      setTicketDecision(null);
+    }
+  };
+
+  const resolveRocPctChange = async (
+    ticket: WorkTicketRecord,
+    action: "accept" | "reject",
+  ) => {
+    setTicketDecision({ ticketId: ticket.ticketId, action });
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("WorkTicketResolve", {
+        ticketId: ticket.ticketId,
+        tool: ticket.tool,
+        action,
+      });
+      setActionMessage(
+        result.ok
+          ? `${ticket.symbol}: ${action === "accept" ? "accepted — new ROC % stored." : "rejected — previous ROC % kept."}`
+          : `ROC ${action} failed: ${result.errorCode ?? "error"}`,
+      );
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+      setTicketDecision(null);
     }
   };
 
@@ -2156,7 +2354,7 @@ export default function App() {
 
   const refreshData = useCallback(async (asOf: string) => {
     await client.executeQuery("CashDividendCoverageGet", { asOfDate: asOf });
-    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult] =
+    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, cashWeekResult, cashRemindersResult, cashMonthResult, cashMagiResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult, trendsPerfResult, accountValueResult, dividendPlanResult] =
       await Promise.all([
         client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf }),
         client.executeQuery("IncomePlanGridGet", {
@@ -2168,7 +2366,13 @@ export default function App() {
         }),
         client.executeQuery("DashboardBurndownGet", { asOfDate: asOf }),
         client.executeQuery("TrendsGet", { asOfDate: asOf }),
-        client.executeQuery("TrendsWeekGet", { asOfDate: asOf }),
+        client.executeQuery("TrendsWeekGet", {
+          asOfDate: trendsWeekAsOfRef.current || "",
+        }),
+        client.executeQuery("CashManagementWeekGet", { asOfDate: asOf }),
+        client.executeQuery("CashManagementRemindersGet", { asOfDate: asOf }),
+        client.executeQuery("CashManagementMonthGet", { asOfDate: asOf }),
+        client.executeQuery("MagiProjectionGet"),
         client.executeQuery("HoldingsGet"),
         client.executeQuery("ExceptionList"),
         client.executeQuery("DataSummaryGet"),
@@ -2199,6 +2403,12 @@ export default function App() {
           asOfDate: asOf,
           range: perfRangeRef.current,
         }),
+        client.executeQuery("DividendPerformanceGet", {
+          asOfDate: asOf,
+          range: trendsGraphPeriodRef.current,
+        }),
+        client.executeQuery("AccountValueHomeGet"),
+        client.executeQuery("DividendPlanHomeGet", { asOfDate: asOf }),
       ]);
     const failed = [
       weekResult,
@@ -2206,6 +2416,9 @@ export default function App() {
       burnResult,
       trendsResult,
       trendsWeekResult,
+      cashWeekResult,
+      cashRemindersResult,
+      cashMonthResult,
       holdingsResult,
       exceptionResult,
       summaryResult,
@@ -2218,6 +2431,8 @@ export default function App() {
       masterResult,
       coverageResult,
       perfResult,
+      accountValueResult,
+      dividendPlanResult,
     ].filter((r) => !r.ok);
     if (failed.length > 0) {
       const stale = failed.some((r) => r.errorCode === "unknown_query");
@@ -2249,7 +2464,28 @@ export default function App() {
       setTrendsError(trendsResult.errorCode ?? "TrendsGet failed");
     }
     if (trendsWeekResult.ok) {
-      setTrendsCapture(parse<TrendsWeekCapture>(trendsWeekResult.bodyJson));
+      const parsed = parse<TrendsWeekCapture>(trendsWeekResult.bodyJson);
+      setTrendsCapture(parsed);
+      if (!trendsWeekAsOfRef.current) {
+        trendsWeekAsOfRef.current =
+          parsed?.firstUnpopulatedStart || parsed?.periodStart || "";
+      }
+    }
+    if (cashWeekResult.ok) {
+      setCashWeek(parse<CashManagementWeekGet>(cashWeekResult.bodyJson));
+    }
+    if (cashRemindersResult.ok) {
+      setCashReminders(
+        parse<CashManagementRemindersGet>(cashRemindersResult.bodyJson),
+      );
+    }
+    if (cashMonthResult.ok) {
+      setCashMonth(parse<CashManagementMonthGet>(cashMonthResult.bodyJson));
+    }
+    if (cashMagiResult.ok) {
+      setCashMagi(parse<MagiProjection>(cashMagiResult.bodyJson));
+    } else {
+      setCashMagi(null);
     }
     setHoldings(parse<HoldingsGet>(holdingsResult.bodyJson));
     setCalculator(parse<CalculatorGet>(calcResult.bodyJson));
@@ -2263,6 +2499,21 @@ export default function App() {
       setDividendPerf(parse<DividendPerformanceGet>(perfResult.bodyJson));
     } else {
       setDividendPerf(null);
+    }
+    if (trendsPerfResult.ok) {
+      setTrendsDividendPerf(parse<DividendPerformanceGet>(trendsPerfResult.bodyJson));
+    } else {
+      setTrendsDividendPerf(null);
+    }
+    if (accountValueResult.ok) {
+      setAccountValues(parse<AccountValueHomeGet>(accountValueResult.bodyJson));
+    } else {
+      setAccountValues(null);
+    }
+    if (dividendPlanResult.ok) {
+      setDividendPlan(parse<DividendPlanHomeGet>(dividendPlanResult.bodyJson));
+    } else {
+      setDividendPlan(null);
     }
     if (accountResult.bodyJson) {
       try {
@@ -2353,24 +2604,77 @@ export default function App() {
     [],
   );
 
-  const runIncomeExport = useCallback(
-    async (format: "print" | "pdf" | "excel") => {
-      const result = await client.executeQuery("IncomePlanExportGet", {
+  const withIncomeLoading = useCallback(async (work: () => Promise<void>) => {
+    const gen = ++incomeLoadGen.current;
+    setIncomeWeekLoading(true);
+    try {
+      await work();
+    } finally {
+      if (gen === incomeLoadGen.current) {
+        setIncomeWeekLoading(false);
+        setIncomeWeekNav(null);
+      }
+    }
+  }, []);
+
+  const loadIncomeWeek = useCallback(
+    async (sat: string) => {
+      skipFullRefreshOnAsOfRef.current = true;
+      setAsOfDate(sat);
+      await withIncomeLoading(async () => {
+        const week = await client.executeQuery("IncomePlanWeekGet", {
+          asOfDate: sat,
+        });
+        if (week.ok && week.bodyJson) {
+          try {
+            setIncomeWeek(JSON.parse(week.bodyJson) as IncomePlanWeekGet);
+          } catch {
+            setIncomeWeek(null);
+          }
+        }
+      });
+    },
+    [withIncomeLoading],
+  );
+
+  const incomeExportQuery = useCallback(
+    (format: "html" | "pdf" | "xlsx") =>
+      client.executeQuery("IncomePlanExportGet", {
         pattern: incomePattern,
-        format: format === "excel" ? "xlsx" : format === "print" ? "html" : "pdf",
+        format,
         asOfDate: asOfDate,
         historicalWeeks: incomeHistWeeks,
         futureWeeks: incomeFutWeeks,
         accounts: drillAccounts,
         weekEnding: incomeWeek?.end || asOfDate,
         printedAt: new Date().toISOString().slice(0, 16) + "Z",
-      });
+      }),
+    [asOfDate, drillAccounts, incomeFutWeeks, incomeHistWeeks, incomePattern, incomeWeek?.end],
+  );
+
+  const requestIncomeExport = useCallback(async () => {
+    if (incomeExportLoading) return;
+    setIncomeExportLoading(true);
+    setBusy(true);
+    try {
+      const result = await incomeExportQuery("html");
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Print / Export failed: ${result.errorCode ?? "error"}`);
         return;
       }
-      const body = JSON.parse(result.bodyJson) as IncomePlanExportGet;
-      if (format === "print") {
+      setIncomeExportPreview(JSON.parse(result.bodyJson) as IncomePlanExportGet);
+    } finally {
+      setIncomeExportLoading(false);
+      setBusy(false);
+    }
+  }, [incomeExportLoading, incomeExportQuery]);
+
+  const commitIncomeExport = useCallback(
+    async (action: "print" | "pdf" | "excel") => {
+      const preview = incomeExportPreview;
+      if (!preview) return;
+      if (action === "print") {
+        setIncomeExportPreview(null);
         const frame = document.createElement("iframe");
         frame.setAttribute("aria-hidden", "true");
         frame.style.position = "fixed";
@@ -2383,7 +2687,7 @@ export default function App() {
         const doc = frame.contentDocument;
         if (doc) {
           doc.open();
-          doc.write(body.printHtml);
+          doc.write(styleIncomePrintHtml(preview.printHtml));
           doc.close();
           frame.contentWindow?.focus();
           frame.contentWindow?.print();
@@ -2391,43 +2695,120 @@ export default function App() {
         setTimeout(() => frame.remove(), 1000);
         return;
       }
+      setIncomeExportLoading(true);
+      setBusy(true);
       try {
+        const result = await incomeExportQuery(action === "excel" ? "xlsx" : "pdf");
+        if (!result.ok || !result.bodyJson) {
+          setActionMessage(`Print / Export failed: ${result.errorCode ?? "error"}`);
+          return;
+        }
+        const body = JSON.parse(result.bodyJson) as IncomePlanExportGet;
         const bytes = Uint8Array.from(atob(body.bytesBase64), (c) => c.charCodeAt(0));
         await invoke("save_local_bytes", {
           defaultFileName: body.defaultFileName,
           bytes: Array.from(bytes),
         });
+        setIncomeExportPreview(null);
         setActionMessage(`Saved ${body.defaultFileName} on this computer.`);
       } catch (err: unknown) {
         setActionMessage(`Save failed: ${String(err)}`);
+      } finally {
+        setIncomeExportLoading(false);
+        setBusy(false);
       }
     },
-    [asOfDate, drillAccounts, incomeFutWeeks, incomeHistWeeks, incomePattern, incomeWeek?.end],
+    [incomeExportPreview, incomeExportQuery],
   );
-  const runIncomeExportRef = useRef(runIncomeExport);
-  runIncomeExportRef.current = runIncomeExport;
 
-  const refreshLastPrices = useCallback(async () => {
+  const requestIncomeExportRef = useRef(requestIncomeExport);
+  requestIncomeExportRef.current = requestIncomeExport;
+
+  const runDataSnapshot = useCallback(async () => {
+    setBusy(true);
+    setActionMessage(null);
+    try {
+      const result = await client.executeCommand("DataSnapshotExport", {});
+      if (!result.ok || !result.bodyJson) {
+        setActionMessage(`Data snapshot failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      const body = JSON.parse(result.bodyJson) as DataSnapshotExport;
+      setActionMessage(`Saved ${body.files.length} files to ${body.folder}`);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  const requestDataSnapshot = useCallback(() => {
+    setSnapshotConfirm(true);
+  }, []);
+  const requestDataSnapshotRef = useRef(requestDataSnapshot);
+  requestDataSnapshotRef.current = requestDataSnapshot;
+  const runDataSnapshotRef = useRef(runDataSnapshot);
+  runDataSnapshotRef.current = runDataSnapshot;
+
+  const refreshLastPrices = useCallback(async (force = false) => {
+    if (!force) {
+      let allowed = false;
+      try {
+        const window = await client.executeQuery("LastPriceAutoWindowGet", {});
+        if (window.ok && window.bodyJson) {
+          const body = JSON.parse(window.bodyJson) as {
+            allowed?: boolean;
+          };
+          allowed = body.allowed === true;
+        }
+      } catch {
+        allowed = false;
+      }
+      if (!allowed) {
+        return;
+      }
+    }
     setLastPriceBusy(true);
+    setLastPriceProgress({ current: 0, total: 0, symbol: "" });
     try {
       await client.executeCommand("ProviderDeclarationSourcesApply", {});
-      const result = await client.executeCommand("LastPriceRefresh", {});
+      const result = await client.executeCommand(
+        "LastPriceRefresh",
+        force ? { force: true } : {},
+      );
       if (!result.ok) {
         setActionMessage(
           `Last price refresh failed: ${result.errorCode ?? "error"}. Last stored price still shows, including stale.`,
         );
         return;
       }
+      if (result.bodyJson) {
+        try {
+          const body = JSON.parse(result.bodyJson) as { skipReason?: string };
+          if (body.skipReason) {
+            return;
+          }
+        } catch {
+          /* keep going */
+        }
+      }
+      const snap = await client.executeCommand("AccountValueSnapshotRecord", {});
+      if (!snap.ok && snap.errorCode !== "unknown_command") {
+        setActionMessage(
+          `Account value snapshot failed: ${snap.errorCode ?? "error"}.`,
+        );
+      }
       await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
       setLastPriceBusy(false);
+      setLastPriceProgress(null);
     }
   }, [asOfDate, refreshData]);
 
   const refreshDeclarations = useCallback(async () => {
     setDeclarationBusy(true);
+    setDeclarationProgress({ current: 0, total: 0, symbol: "" });
     try {
       await client.executeCommand("ProviderDeclarationSourcesApply", {});
       const result = await client.executeCommand("DeclarationRefresh", {});
@@ -2442,6 +2823,7 @@ export default function App() {
       setActionMessage(String(err));
     } finally {
       setDeclarationBusy(false);
+      setDeclarationProgress(null);
     }
   }, [asOfDate, refreshData]);
 
@@ -2555,8 +2937,10 @@ export default function App() {
       try {
         const result = await client.executeCommand("MarketRetrieve", {
           symbol: body.symbol,
+          securityId: body.securityId,
           priceSource: draft.priceSource,
           sourceSymbol: draft.sourceSymbol,
+          autoPrice: true,
         });
         if (result.ok && result.bodyJson) {
           const retrieve = JSON.parse(result.bodyJson) as {
@@ -2709,6 +3093,14 @@ export default function App() {
           error: String(err),
         });
       });
+    client.executeQuery("CoreFunctionsGet").then((result) => {
+      if (cancelled || !result.ok || !result.bodyJson) return;
+      try {
+        setCoreFunctions(JSON.parse(result.bodyJson) as CoreFunctionsGet);
+      } catch {
+        /* ignore */
+      }
+    });
     client.executeQuery("ConfigGet").then((result) => {
       if (cancelled || !result.bodyJson) return;
       try {
@@ -2757,9 +3149,31 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    refreshData(asOfDate).catch((err: unknown) => {
-      setActionMessage(String(err));
-    });
+    if (skipFullRefreshOnAsOfRef.current) {
+      skipFullRefreshOnAsOfRef.current = false;
+      prevIncomeAsOfRef.current = asOfDate;
+      return;
+    }
+    const prev = prevIncomeAsOfRef.current;
+    const weekChanged = prev !== null && prev !== asOfDate;
+    prevIncomeAsOfRef.current = asOfDate;
+    if (prev !== null && !weekChanged) {
+      return;
+    }
+    if (weekChanged) {
+      setIncomeWeekLoading(true);
+    }
+    const gen = ++incomeLoadGen.current;
+    refreshData(asOfDate)
+      .catch((err: unknown) => {
+        setActionMessage(String(err));
+      })
+      .finally(() => {
+        if (gen === incomeLoadGen.current) {
+          setIncomeWeekLoading(false);
+          setIncomeWeekNav(null);
+        }
+      });
   }, [asOfDate, refreshData]);
 
   useEffect(() => {
@@ -2840,17 +3254,22 @@ export default function App() {
     if (lastPriceKickoff.current) {
       return;
     }
-    if (!summary || summary.openLotCount <= 0) {
+    if (!summary) {
       return;
     }
     lastPriceKickoff.current = true;
     void (async () => {
-      await refreshLastPrices();
-      await refreshDeclarations();
+      if (summary.openLotCount > 0) {
+        await refreshLastPrices();
+        await refreshDeclarations();
+        return;
+      }
+      await client.executeCommand("AccountValueSnapshotRecord", {});
+      await refreshData(asOfDate);
     })().catch((err: unknown) => {
       setActionMessage(String(err));
     });
-  }, [summary, refreshLastPrices, refreshDeclarations]);
+  }, [summary, refreshLastPrices, refreshDeclarations, refreshData, asOfDate]);
 
   useEffect(() => {
     if (screen !== "new-investment" || !wizSecurityId) {
@@ -3285,6 +3704,7 @@ export default function App() {
       const result = await client.executeCommand("MarketRetrieve", {
         symbol,
         researchOnly: true,
+        force: true,
       });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Source research failed: ${result.errorCode ?? "error"}`);
@@ -3317,6 +3737,7 @@ export default function App() {
         declarationSource: wizDeclSource || undefined,
         priceSource: wizPriceSource || undefined,
         sourceUrl: wizSourceUrl || undefined,
+        force: true,
       });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Issuer retrieve failed: ${result.errorCode ?? "error"}`);
@@ -3387,6 +3808,7 @@ export default function App() {
         declarationSource: wizDeclSource || undefined,
         priceSource: wizPriceSource || undefined,
         sourceUrl: wizSourceUrl || undefined,
+        force: true,
       });
       if (marketResult.ok && marketResult.bodyJson) {
         market = applyMarketBody(marketResult.bodyJson).body;
@@ -4167,7 +4589,7 @@ export default function App() {
         source: "issuer page + AiAnalyze draft",
       });
       setOwnerRiskChoice(
-        RISK_TIERS.includes(nextSuggested) ? nextSuggested : "Undecided",
+        RISK_TIERS.includes(nextSuggested) ? nextSuggested : "",
       );
       setWizAiThesis(overview);
 
@@ -4488,11 +4910,15 @@ export default function App() {
     ...(pdDirty ? (["position-details"] as const) : []),
     ...(wizDirty ? (["new-investment"] as const) : []),
     ...(addLotDirty ? (["add-lot"] as const) : []),
+    ...(cashDirty ? (["cash-management"] as const) : []),
+    ...(cartDirty ? (["shopping-cart"] as const) : []),
   ];
   const dirtyScreenNames = [
     pdDirty ? "Position Details" : null,
     wizDirty ? "Add Position" : null,
     addLotDirty ? "Add Lot" : null,
+    cashDirty ? "Cash Management" : null,
+    cartDirty ? "Shopping Cart" : null,
   ]
     .filter((name): name is string => name != null)
     .join(" and ");
@@ -4525,6 +4951,7 @@ export default function App() {
     if (pdDirty) cancelPositionEdits();
     if (wizDirty) cancelWizEdits();
     if (addLotDirty) cancelAddLotEdits();
+    if (cashDirty) setCashDirty(false);
   };
 
   const saveOwnerPeriod = async () => {
@@ -4653,60 +5080,24 @@ export default function App() {
       return;
     }
     if (!RISK_TIERS.includes(ownerRiskChoice)) {
-      setActionMessage(
-        "Choose Foundation, Core, or Risk On to set risk. Or Leave undecided.",
-      );
+      setActionMessage("Choose Foundation, Core, or Risk On. Risk is mandatory.");
       return;
     }
     await applySuggestedTier(ownerRiskChoice);
     setPdDraft((prev) => (prev ? { ...prev, risk: ownerRiskChoice } : prev));
   };
 
-  const leaveRiskUndecided = async () => {
-    if (!investment) {
-      return;
-    }
-    const cadence =
-      parseCadence(pdDraft?.freq || investment.paymentFrequency || "")?.label ||
-      investment.paymentFrequency ||
-      "";
-    if (!cadence) {
-      setActionMessage("Frequency must be set before leaving risk undecided.");
-      return;
-    }
-    setBusy(true);
-    setActionMessage(null);
-    try {
-      const result = await client.executeCommand("PositionCharacteristicUpsert", {
-        securityId: investment.securityId,
-        paymentFrequency: cadence,
-        riskTier: "Undecided",
-        provider: investment.provider || pdDraft?.provider || undefined,
-        underlying: investment.underlying || pdDraft?.underlying || undefined,
-        needsRocResearch: true,
-        isActive: investment.isActive !== false,
-      });
-      if (!result.ok) {
-        setActionMessage(
-          `Leave undecided failed: ${result.errorCode ?? "error"}`,
-        );
-        return;
-      }
-      setOwnerRiskChoice("Undecided");
-      setPdDraft((prev) => (prev ? { ...prev, risk: "Undecided" } : prev));
-      setActionMessage("Risk left undecided. Overview stays; not auto-applied.");
-      await refreshData(asOfDate);
-      await loadInvestment(investment.symbol, { skipPriceRefresh: true });
-    } catch (err: unknown) {
-      setActionMessage(String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
+  jobsBusyRef.current = busy || lastPriceBusy || declarationBusy;
 
   const leaveWithoutSaving = (next: () => void, target?: Screen) => {
+    if (weekWizardActive && (target == null || target !== "cash-management")) {
+      setActionMessage(
+        "Finish the week on Review → Accept before leaving.",
+      );
+      return;
+    }
     if (
-      (pdDirty || wizDirty || addLotDirty) &&
+      (pdDirty || wizDirty || addLotDirty || cashDirty) &&
       (target == null || !dirtyTargets.includes(target))
     ) {
       setActionMessage(
@@ -4719,6 +5110,46 @@ export default function App() {
 
   const leaveWithoutSavingRef = useRef(leaveWithoutSaving);
   leaveWithoutSavingRef.current = leaveWithoutSaving;
+
+  const runAppRestart = useCallback(async () => {
+    if (restartingRef.current) {
+      return;
+    }
+    if (pdDirty || wizDirty || addLotDirty || cashDirty || weekWizardActive) {
+      setActionMessage(
+        weekWizardActive
+          ? "Finish the week on Review → Accept before restarting."
+          : "Save or Cancel before restarting. Restart stays blocked while edits are unsaved.",
+      );
+      return;
+    }
+    restartingRef.current = true;
+    setRestarting(true);
+    setActionMessage(
+      "Restarting coding launch. Waiting for in-flight work, then closing the data file. A new finos (dev) console opens if the supervisor is running.",
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const deadline = Date.now() + 30_000;
+    while (jobsBusyRef.current && Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+    }
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const wizard = await WebviewWindow.getByLabel("import-wizard");
+      await wizard?.close();
+    } catch {
+      /* no extra window */
+    }
+    try {
+      await invoke("app_restart");
+    } catch (err: unknown) {
+      restartingRef.current = false;
+      setRestarting(false);
+      setActionMessage(`Restart failed: ${String(err)}`);
+    }
+  }, [pdDirty, wizDirty, addLotDirty, cashDirty, weekWizardActive]);
+  const runAppRestartRef = useRef(runAppRestart);
+  runAppRestartRef.current = runAppRestart;
 
   useEffect(() => {
     let cancelled = false;
@@ -4735,26 +5166,50 @@ export default function App() {
           if (!isScreen(id)) return;
           leaveWithoutSavingRef.current(() => setScreen(id), id);
         });
-        const stopPrint = await listen<string>("finos-income-print", () => {
-          if (screenRef.current === "income-plan") {
-            void runIncomeExportRef.current("print");
-          }
+        const stopSnapshot = await listen<string>("finos-data-snapshot", () => {
+          requestDataSnapshotRef.current();
         });
-        const stopExport = await listen<string>("finos-income-export", () => {
-          if (screenRef.current === "income-plan") {
-            void runIncomeExportRef.current("excel");
-          }
+        const stopRestart = await listen<string>("finos-app-restart", () => {
+          void runAppRestartRef.current();
+        });
+        const stopDeclProgress = await listen<{
+          current?: number;
+          total?: number;
+          symbol?: string;
+        }>("declaration-refresh-progress", (event) => {
+          const p = event.payload;
+          setDeclarationProgress({
+            current: p.current ?? 0,
+            total: p.total ?? 0,
+            symbol: p.symbol ?? "",
+          });
+        });
+        const stopPriceProgress = await listen<{
+          current?: number;
+          total?: number;
+          symbol?: string;
+        }>("last-price-refresh-progress", (event) => {
+          const p = event.payload;
+          setLastPriceProgress({
+            current: p.current ?? 0,
+            total: p.total ?? 0,
+            symbol: p.symbol ?? "",
+          });
         });
         if (cancelled) {
           stop();
-          stopPrint();
-          stopExport();
+          stopSnapshot();
+          stopRestart();
+          stopDeclProgress();
+          stopPriceProgress();
           return;
         }
         unlisten = () => {
           stop();
-          stopPrint();
-          stopExport();
+          stopSnapshot();
+          stopRestart();
+          stopDeclProgress();
+          stopPriceProgress();
         };
       } catch {
         /* browser preview without Tauri events */
@@ -4769,14 +5224,18 @@ export default function App() {
   useEffect(() => {
     const close = () => setOpenMenu(null);
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") {
+        close();
+        setSnapshotConfirm(false);
+        setIncomeExportPreview(null);
+      }
       if (
         (event.ctrlKey || event.metaKey) &&
         event.key.toLowerCase() === "p" &&
         screenRef.current === "income-plan"
       ) {
         event.preventDefault();
-        void runIncomeExportRef.current("print");
+        void requestIncomeExportRef.current();
       }
     };
     window.addEventListener("click", close);
@@ -4804,10 +5263,8 @@ export default function App() {
       setActionMessage("Choose a symbol first.");
       return;
     }
-    if (!OWNER_RISK_CHOICES.includes(pdDraft.risk)) {
-      setActionMessage(
-        "Choose Foundation, Core, Risk On, or Undecided before saving.",
-      );
+    if (!RISK_TIERS.includes(pdDraft.risk)) {
+      setActionMessage("Choose Foundation, Core, or Risk On before saving.");
       return;
     }
     const cadence = parseCadence(pdDraft.freq);
@@ -4975,8 +5432,10 @@ export default function App() {
     try {
       const result = await client.executeCommand("MarketRetrieve", {
         symbol: investment.symbol,
+        securityId: investment.securityId,
         priceSource: pdDraft.priceSource,
         sourceSymbol: pdDraft.sourceSymbol,
+        force: true,
       });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Last price retrieve missed: ${result.errorCode ?? "error"}`);
@@ -5391,6 +5850,22 @@ export default function App() {
         await refreshHandoff();
         return;
       }
+      const opened = result.bodyJson
+        ? (JSON.parse(result.bodyJson) as { lotId?: string })
+        : {};
+      const pending = pendingCartBuyRef.current;
+      if (pending && opened.lotId) {
+        const step = await client.executeCommand("CartExecuteBuyStep", {
+          scenarioId: pending.scenarioId,
+          lotId: opened.lotId,
+        });
+        pendingCartBuyRef.current = null;
+        if (!step.ok) {
+          setActionMessage(
+            `Lot opened; cart buy step not recorded: ${step.errorCode ?? "error"}`,
+          );
+        }
+      }
       // Success: keep symbol (and account/origin); clear qty/cost/date so submit is not a duplicate.
       setAddLotOpenedOn("");
       setAddLotQty("");
@@ -5646,7 +6121,7 @@ export default function App() {
 
   useEffect(() => {
     const onLeave = (event: BeforeUnloadEvent) => {
-      if (!pdDirty && !wizDirty && !addLotDirty) return;
+      if (!pdDirty && !wizDirty && !addLotDirty && !weekWizardActive) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -5657,10 +6132,12 @@ export default function App() {
       .then(({ getCurrentWindow }) => {
         if (cancelled) return undefined;
         return getCurrentWindow().onCloseRequested((event) => {
-          if (!pdDirty && !wizDirty && !addLotDirty) return;
+          if (!pdDirty && !wizDirty && !addLotDirty && !weekWizardActive) return;
           event.preventDefault();
           setActionMessage(
-            "Save or Cancel before leaving. Navigation stays blocked while edits are unsaved.",
+            weekWizardActive
+              ? "Finish the week on Review → Accept before leaving."
+              : "Save or Cancel before leaving. Navigation stays blocked while edits are unsaved.",
           );
         });
       })
@@ -5675,7 +6152,7 @@ export default function App() {
       window.removeEventListener("beforeunload", onLeave);
       unlisten?.();
     };
-  }, [pdDirty, wizDirty, addLotDirty]);
+  }, [pdDirty, wizDirty, addLotDirty, weekWizardActive]);
 
   // Process A UI does not call the former 9-step handlers; keep bindings referenced for tsc.
   void [
@@ -5700,6 +6177,65 @@ export default function App() {
     if (!q) return positionSymbolOptions;
     return positionSymbolOptions.filter((sym) => sym.toUpperCase().startsWith(q));
   }, [positionSymbolOptions, positionSymbolQuery]);
+
+  const incomeThroughOn = summary?.latestYieldOn?.trim() ?? "";
+  const incomeTxToday = localIsoDate();
+  const incomeTxWindow = useMemo(
+    () =>
+      incomeTxRange(
+        incomeTxPeriod,
+        incomeTxToday,
+        incomeTxCustomStart,
+        incomeTxCustomEnd,
+      ),
+    [incomeTxPeriod, incomeTxToday, incomeTxCustomStart, incomeTxCustomEnd],
+  );
+  const incomeTxAccountOptions = useMemo(
+    () =>
+      accounts
+        .filter((a) => a.name.trim() && a.name.toLowerCase() !== "external")
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [accounts],
+  );
+  const incomeThroughRows = useMemo(() => {
+    const accountName = new Map(accounts.map((a) => [a.accountId, a.name]));
+    const symbolOf = new Map(securities.map((s) => [s.securityId, s.symbol]));
+    return (dividendLifetime?.actuals ?? [])
+      .filter((row) => inIncomeTxRange(row.occurredOn, incomeTxWindow))
+      .filter((row) => !incomeTxAccountId || row.accountId === incomeTxAccountId)
+      .slice()
+      .sort((a, b) => {
+        const day = b.occurredOn.localeCompare(a.occurredOn);
+        if (day !== 0) return day;
+        const acct = (accountName.get(a.accountId) ?? "").localeCompare(
+          accountName.get(b.accountId) ?? "",
+        );
+        if (acct !== 0) return acct;
+        const sa = a.securityId ? (symbolOf.get(a.securityId) ?? "") : "";
+        const sb = b.securityId ? (symbolOf.get(b.securityId) ?? "") : "";
+        return sa.localeCompare(sb);
+      })
+      .map((row) => ({
+        id: row.actualId,
+        date: row.occurredOn,
+        account: accountName.get(row.accountId) ?? "unknown",
+        symbol: row.securityId
+          ? (symbolOf.get(row.securityId) ?? "unknown")
+          : "unknown",
+        amountMinor: row.amountMinor,
+        scale: row.scale,
+      }));
+  }, [accounts, securities, dividendLifetime, incomeTxWindow, incomeTxAccountId]);
+
+  useEffect(() => {
+    if (!incomeTxOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIncomeTxOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [incomeTxOpen]);
 
   const addLotSecurityOptions = useMemo(() => {
     return securities
@@ -6031,7 +6567,6 @@ export default function App() {
   const goHome = () => {
     setOpenMenu(null);
     leaveWithoutSaving(() => {
-      setIncomePattern("A");
       setScreen("home");
     }, "home");
   };
@@ -6048,8 +6583,9 @@ export default function App() {
       disabled={
         busy ||
         (screen !== id &&
-          (pdDirty || wizDirty || addLotDirty) &&
-          !dirtyTargets.includes(id))
+          ((weekWizardActive && id !== "cash-management") ||
+            ((pdDirty || wizDirty || addLotDirty || cashDirty) &&
+              !dirtyTargets.includes(id))))
       }
       onClick={() => {
         setOpenMenu(null);
@@ -6098,6 +6634,18 @@ export default function App() {
           <button
             type="button"
             className="menubar-trigger"
+            aria-label="Income Plan"
+            aria-current={screen === "income-plan" ? "page" : undefined}
+            onClick={() => {
+              setOpenMenu(null);
+              leaveWithoutSaving(() => setScreen("income-plan"), "income-plan");
+            }}
+          >
+            Income Plan
+          </button>
+          <button
+            type="button"
+            className="menubar-trigger"
             aria-label="Trends"
             aria-current={screen === "trends" ? "page" : undefined}
             onClick={() => {
@@ -6115,29 +6663,26 @@ export default function App() {
                 type="button"
                 role="menuitem"
                 className="menubar-item"
-                aria-label="Print current view"
+                aria-label="Save data snapshot"
                 onClick={() => {
                   setOpenMenu(null);
-                  if (screen === "income-plan") {
-                    void runIncomeExport("print");
-                  }
+                  requestDataSnapshot();
                 }}
               >
-                Print current view
+                Save data snapshot
               </button>
               <button
                 type="button"
                 role="menuitem"
                 className="menubar-item"
-                aria-label="Export current view"
+                aria-label="Restart Application"
+                disabled={restarting}
                 onClick={() => {
                   setOpenMenu(null);
-                  if (screen === "income-plan") {
-                    void runIncomeExport("excel");
-                  }
+                  void runAppRestart();
                 }}
               >
-                Export current view
+                Restart Application
               </button>
               <button
                 type="button"
@@ -6157,10 +6702,10 @@ export default function App() {
             "plan",
             "Plan",
             <>
-              {navButton("income-plan", "Income Plan")}
               {navButton("calculator", "Calculator")}
               {navButton("dashboard", "Dashboard")}
-              {navButton("trends", "Trends")}
+              {navButton("cash-management", "Cash Management")}
+              {navButton("shopping-cart", "Shopping Cart")}
             </>,
           )}
           {menuGroup(
@@ -6187,6 +6732,7 @@ export default function App() {
             "Tools",
             <>
               {navButton("collector-establish", "Reevaluate collector")}
+              {navButton("components", "Components")}
               {navButton("settings", "Settings")}
             </>,
           )}
@@ -6195,23 +6741,31 @@ export default function App() {
           {formatMenuWeek(incomeWeek?.start ?? asOfDate)}
         </p>
       </nav>
+      {restarting ? (
+        <div
+          className="blocked unsaved-bar restart-bar"
+          role="status"
+          aria-busy="true"
+          aria-label="Restart in progress"
+        >
+          <p>
+            Restart in progress. Waiting for in-flight work, then closing the
+            data file. Do not force-quit.
+          </p>
+        </div>
+      ) : null}
+      <RefreshActivityBar
+        lastPriceBusy={lastPriceBusy}
+        lastPriceProgress={lastPriceProgress}
+        declarationBusy={declarationBusy}
+        declarationProgress={declarationProgress}
+      />
       <main className="container" aria-label="finos">
       {screen === "home" ? (
         <>
-        <div className="home-shortcuts">
-          <button
-            type="button"
-            aria-label="Open Trends"
-            disabled={busy}
-            onClick={() => {
-              leaveWithoutSaving(() => setScreen("trends"), "trends");
-            }}
-          >
-            Open Trends — weekly capture and charts
-          </button>
-        </div>
+        <div className="home-top-row">
         {summary ? (
-        <section aria-label="Portfolio summary">
+        <section className="home-portfolio-pane" aria-label="Portfolio summary">
           <dl className="portfolio-summary">
             <div className="ps-cell ps-mv">
               <dt>Market value</dt>
@@ -6263,16 +6817,46 @@ export default function App() {
               <p className="ps-note">Lifetime paid dividends (cash)</p>
             </div>
             <div className="ps-cell ps-count">
-              <dt>Accounts</dt>
-              <dd>{formatCount(summary.accountCount)}</dd>
-            </div>
-            <div className="ps-cell ps-count">
               <dt>Symbols</dt>
               <dd>{formatCount(summary.symbolCount ?? 0)}</dd>
             </div>
-            <div className="ps-cell ps-count">
-              <dt>Open lots</dt>
-              <dd>{formatCount(summary.openLotCount)}</dd>
+            <div className="ps-pair" aria-label="Average monthly income">
+              <div className="ps-cell ps-income">
+                <dt>
+                  Average <strong>previous</strong> 12 months
+                  <span className="ps-avg-income">Income</span>
+                </dt>
+                <dd>
+                  {summary.avgMonthlyActualIncomeMinor == null
+                    ? "unknown"
+                    : `${formatUsd(
+                        summary.avgMonthlyActualIncomeMinor,
+                        summary.scale ?? 2,
+                      )} (${formatUsd(
+                        summary.avgMonthlyActualIncomeMinor * 12,
+                        summary.scale ?? 2,
+                      )})`}
+                </dd>
+                <p className="ps-note">Actual paid dividends, same accounts</p>
+              </div>
+              <div className="ps-cell ps-income">
+                <dt>
+                  Average Monthly Plan
+                  <span className="ps-avg-income">Income</span>
+                </dt>
+                <dd>
+                  {summary.avgMonthlyPlanIncomeMinor == null
+                    ? "unknown"
+                    : `${formatUsd(
+                        summary.avgMonthlyPlanIncomeMinor,
+                        summary.scale ?? 2,
+                      )} (${formatUsd(
+                        summary.avgMonthlyPlanIncomeMinor * 12,
+                        summary.scale ?? 2,
+                      )})`}
+                </dd>
+                <p className="ps-note">9, Income, FI Roth, Car — annual ÷ 12</p>
+              </div>
             </div>
             <div className="ps-cell ps-coverage">
               <dt>Last prices</dt>
@@ -6289,12 +6873,15 @@ export default function App() {
               <button
                 type="button"
                 aria-label="Refresh last prices"
+                aria-busy={lastPriceBusy}
                 disabled={lastPriceBusy || busy}
                 onClick={() => {
-                  void refreshLastPrices();
+                  void refreshLastPrices(true);
                 }}
               >
-                {lastPriceBusy ? "Refreshing last prices…" : "Refresh last prices"}
+                {lastPriceBusy
+                  ? lastPriceRefreshLabel(lastPriceProgress)
+                  : "Refresh last prices"}
               </button>
             </div>
             <div className="ps-cell ps-coverage">
@@ -6304,46 +6891,300 @@ export default function App() {
                 {formatCount(summary.declarationCollectorCount ?? 0)}
               </dd>
               <p className="ps-note">
-                Today {summary.declarationAsOf?.trim() || "—"}. One issuer retrieve
-                per enabled collector
+                Last retrieve today OK {summary.declarationAsOf?.trim() || "—"}.
+                One issuer retrieve per enabled collector
               </p>
               <button
                 type="button"
                 aria-label="Refresh declarations"
+                aria-busy={declarationBusy}
                 disabled={declarationBusy || busy}
                 onClick={() => {
                   void refreshDeclarations();
                 }}
               >
-                {declarationBusy ? "Refreshing declarations…" : "Refresh declarations"}
+                {declarationBusy
+                  ? declarationRefreshLabel(declarationProgress)
+                  : "Refresh declarations"}
               </button>
             </div>
-            <div className="ps-cell ps-count">
-              <dt>Yield events</dt>
-              <dd>{formatCount(summary.yieldCount)}</dd>
-              <p className="ps-note">Count of paid dividend posts</p>
-            </div>
-            <div className="ps-cell ps-count">
-              <dt>Disbursements</dt>
-              <dd>{formatCount(summary.disbursementCount)}</dd>
-              <p className="ps-note">Count of Non-ROI posts</p>
+            <div className="ps-cell ps-coverage">
+              <dt>Open tickets</dt>
+              <dd>{formatCount(summary.openTicketCount ?? 0)}</dd>
+              <p className="ps-note">
+                Stay until filed — not today&apos;s miss count
+              </p>
+              <button
+                type="button"
+                aria-label="Work Tickets"
+                onClick={() => {
+                  setTicketFocusSymbol("");
+                  setScreen("tickets");
+                }}
+              >
+                Work Tickets
+              </button>
             </div>
             <div className="ps-cell ps-count">
               <dt>Calculator plans</dt>
               <dd>{formatCount(summary.planCount)}</dd>
+              <p className="ps-note">DIV-1 and CASH collector plans</p>
             </div>
             <div className="ps-cell ps-date">
-              <dt>Last yield</dt>
-              <dd>{summary.latestYieldOn?.trim() || "none"}</dd>
+              <dt>Income through</dt>
+              <dd>
+                {incomeThroughOn ? (
+                  <button
+                    type="button"
+                    className="ps-date-link"
+                    aria-label="Income through transactions"
+                    onClick={() => setIncomeTxOpen(true)}
+                  >
+                    {incomeThroughOn}
+                  </button>
+                ) : (
+                  "none"
+                )}
+              </dd>
+              <p className="ps-note">Last imported paid dividend date</p>
             </div>
           </dl>
         </section>
         ) : (
           <p role="status">Loading portfolio summary…</p>
         )}
+        <HomeDividendPlan plan={dividendPlan} />
+        </div>
+        {incomeTxOpen ? (
+          <div
+            className="home-av-dialog-backdrop"
+            onClick={() => setIncomeTxOpen(false)}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Income through transactions"
+              className="home-av-dialog income-tx-dialog"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header>
+                <h3>
+                  Income through {incomeThroughOn || "none"}
+                </h3>
+                <button
+                  type="button"
+                  aria-label="Exit income through transactions"
+                  onClick={() => setIncomeTxOpen(false)}
+                >
+                  Exit
+                </button>
+              </header>
+              <div className="income-tx-period-bar">
+                <label>
+                  Period
+                  <select
+                    aria-label="Income transaction period"
+                    value={incomeTxPeriod}
+                    onChange={(e) => {
+                      const next = e.target.value as IncomeTxPeriod;
+                      setIncomeTxPeriod(next);
+                      if (next === "custom" && (!incomeTxCustomStart || !incomeTxCustomEnd)) {
+                        const month = incomeTxRange("month", incomeTxToday, "", "");
+                        setIncomeTxCustomStart(month?.startOn ?? incomeTxToday);
+                        setIncomeTxCustomEnd(month?.endOn ?? incomeTxToday);
+                      }
+                    }}
+                  >
+                    {INCOME_TX_PERIOD_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Account
+                  <select
+                    aria-label="Income transaction account"
+                    value={incomeTxAccountId}
+                    onChange={(e) => setIncomeTxAccountId(e.target.value)}
+                  >
+                    <option value="">All accounts</option>
+                    {incomeTxAccountOptions.map((acct) => (
+                      <option key={acct.accountId} value={acct.accountId}>
+                        {acct.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {incomeTxPeriod === "custom" ? (
+                  <>
+                    <label>
+                      From
+                      <input
+                        type="date"
+                        aria-label="Income transaction start"
+                        value={incomeTxCustomStart}
+                        onChange={(e) => setIncomeTxCustomStart(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      To
+                      <input
+                        type="date"
+                        aria-label="Income transaction end"
+                        value={incomeTxCustomEnd}
+                        onChange={(e) => setIncomeTxCustomEnd(e.target.value)}
+                      />
+                    </label>
+                  </>
+                ) : null}
+                <p className="income-tx-range-note">
+                  {incomeTxWindow
+                    ? `${incomeTxWindow.startOn} to ${incomeTxWindow.endOn}`
+                    : "Choose a start and end date"}
+                </p>
+              </div>
+              {incomeThroughRows.length === 0 ? (
+                <p className="home-av-empty">No paid dividends in this range.</p>
+              ) : (
+                <div className="income-tx-scroll">
+                  <table className="income-tx-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Acct</th>
+                        <th>Symbol</th>
+                        <th className="numeric">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {incomeThroughRows.map((row) => (
+                        <tr key={row.id}>
+                          <td>{row.date}</td>
+                          <td>{row.account}</td>
+                          <td>{row.symbol}</td>
+                          <td className="numeric">
+                            {formatUsd(row.amountMinor, row.scale)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+        <HomeAccountCharts values={accountValues} />
         </>
       ) : null}
-      {pdDirty || wizDirty || addLotDirty ? (
+      {incomeExportPreview ? (
+        <div
+          className="home-av-dialog-backdrop"
+          onClick={() => setIncomeExportPreview(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Income Plan export preview"
+            className="home-av-dialog income-export-preview-dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <h3>Print / Export preview</h3>
+              <button
+                type="button"
+                aria-label="Cancel Income Plan export"
+                onClick={() => setIncomeExportPreview(null)}
+              >
+                Cancel
+              </button>
+            </header>
+            <iframe
+              className="income-export-preview-frame"
+              title="Income Plan export preview"
+              srcDoc={styleIncomePrintHtml(incomeExportPreview.printHtml)}
+            />
+            <p>
+              Review the {incomeExportPreview.cover.pattern === "B" ? "weekly report" : "weekly grid"}{" "}
+              then choose print, PDF, or Excel.
+            </p>
+            <div
+              className="income-export-preview-actions"
+              aria-label="Confirm Income Plan export"
+            >
+              <button
+                type="button"
+                aria-label="Print to page"
+                disabled={busy}
+                onClick={() => void commitIncomeExport("print")}
+              >
+                Print
+              </button>
+              <button
+                type="button"
+                aria-label="Save PDF"
+                disabled={busy}
+                onClick={() => void commitIncomeExport("pdf")}
+              >
+                Save PDF
+              </button>
+              <button
+                type="button"
+                aria-label="Export Excel"
+                disabled={busy}
+                onClick={() => void commitIncomeExport("excel")}
+              >
+                Export Excel
+              </button>
+              <button
+                type="button"
+                aria-label="Cancel Income Plan export"
+                disabled={busy}
+                onClick={() => setIncomeExportPreview(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {snapshotConfirm ? (
+        <div
+          className="blocked unsaved-bar"
+          role="alertdialog"
+          aria-label="Confirm save data snapshot"
+          aria-modal="true"
+        >
+          <p>
+            Save a data snapshot under raw-data for today? Workbooks are written from
+            the live database. Today’s folder is replaced if it already exists.
+          </p>
+          <div className="buttons">
+            <button
+              type="button"
+              aria-label="Confirm save data snapshot"
+              disabled={busy}
+              onClick={() => {
+                setSnapshotConfirm(false);
+                void runDataSnapshot();
+              }}
+            >
+              Save snapshot
+            </button>
+            <button
+              type="button"
+              aria-label="Cancel save data snapshot"
+              disabled={busy}
+              onClick={() => setSnapshotConfirm(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {pdDirty || wizDirty || addLotDirty || cashDirty ? (
         <div className="blocked unsaved-bar" role="alert">
           <p>
             Unsaved edits on {dirtyScreenNames}. Save or Cancel. Other screens stay
@@ -6364,7 +7205,9 @@ export default function App() {
                     ? "Position Details"
                     : id === "new-investment"
                       ? "Add Position"
-                      : "Add Lot"}
+                      : id === "cash-management"
+                        ? "Cash Management"
+                        : "Add Lot"}
                 </button>
               ))}
             <button
@@ -6378,13 +7221,33 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      {screen !== "home" && actionMessage ? <p>{actionMessage}</p> : null}
+      {(screen !== "home" ||
+        /snapshot|Saved |Restart/i.test(actionMessage ?? "")) &&
+      actionMessage &&
+      !restarting ? (
+        <p>{actionMessage}</p>
+      ) : null}
       {writesBlocked ? (
         <p className="blocked">Ordinary writes are blocked until restore or explicit review.</p>
       ) : null}
 
       {screen === "income-plan" ? (
-        <section className="income-plan-page" aria-label="Income Plan">
+        <section
+          className="income-plan-page"
+          aria-label="Income Plan"
+          aria-busy={incomeWeekLoading}
+        >
+          {incomeWeekLoading ? (
+            <div
+              className="income-plan-loading"
+              role="status"
+              aria-live="polite"
+              aria-label="Loading Data"
+            >
+              <div className="process-a-research-spinner" aria-hidden="true" />
+              <p>Loading Data</p>
+            </div>
+          ) : null}
           <header className="income-plan-appbar">
             <div>
               <h2>Income Plan</h2>
@@ -6396,7 +7259,18 @@ export default function App() {
                 role="tab"
                 aria-selected={incomePattern === "A"}
                 className={incomePattern === "A" ? "is-active" : undefined}
-                onClick={() => setIncomePattern("A")}
+                onClick={() => {
+                  setIncomePattern("A");
+                  void withIncomeLoading(() =>
+                    loadIncomeGrid(
+                      asOfDate,
+                      incomeHistWeeks,
+                      incomeFutWeeks,
+                      drillAccounts,
+                      incomeGrid?.selectedWeekEnd || incomeWeek?.end,
+                    ),
+                  );
+                }}
               >
                 Weekly grid
               </button>
@@ -6409,7 +7283,7 @@ export default function App() {
                   setIncomePattern("B");
                   const weekEnd = incomeGrid?.selectedWeekEnd ?? incomeWeek?.end;
                   if (weekEnd) {
-                    setAsOfDate(saturdayOfWeek(weekEnd));
+                    void loadIncomeWeek(saturdayOfWeek(weekEnd));
                   }
                 }}
               >
@@ -6440,17 +7314,34 @@ export default function App() {
               futureWeeks={incomeFutWeeks}
               onHistoricalWeeks={(n) => {
                 setIncomeHistWeeks(n);
-                void loadIncomeGrid(asOfDate, n, incomeFutWeeks, drillAccounts, incomeGrid?.selectedWeekEnd);
+                void withIncomeLoading(() =>
+                  loadIncomeGrid(
+                    asOfDate,
+                    n,
+                    incomeFutWeeks,
+                    drillAccounts,
+                    incomeGrid?.selectedWeekEnd,
+                  ),
+                );
               }}
               onFutureWeeks={(n) => {
                 setIncomeFutWeeks(n);
-                void loadIncomeGrid(asOfDate, incomeHistWeeks, n, drillAccounts, incomeGrid?.selectedWeekEnd);
+                void withIncomeLoading(() =>
+                  loadIncomeGrid(
+                    asOfDate,
+                    incomeHistWeeks,
+                    n,
+                    drillAccounts,
+                    incomeGrid?.selectedWeekEnd,
+                  ),
+                );
               }}
               onOpenWeek={(weekEnd) => {
                 setIncomePattern("B");
-                setAsOfDate(saturdayOfWeek(weekEnd));
+                void loadIncomeWeek(saturdayOfWeek(weekEnd));
               }}
-              onPrintExport={(action) => void runIncomeExport(action)}
+              onPrintExport={() => void requestIncomeExport()}
+              exportLoading={incomeExportLoading}
             />
           ) : (
             <>
@@ -6476,7 +7367,8 @@ export default function App() {
                         <select
                           aria-label="Select week"
                           value={selectedSat}
-                          onChange={(e) => setAsOfDate(e.target.value)}
+                          disabled={incomeWeekLoading}
+                          onChange={(e) => void loadIncomeWeek(e.target.value)}
                         >
                           {weekChoices.map((sat) => (
                             <option key={sat} value={sat}>
@@ -6488,16 +7380,34 @@ export default function App() {
                       <button
                         type="button"
                         aria-label="Previous week"
-                        disabled={!selectedSat}
-                        onClick={() => setAsOfDate(shiftIso(selectedSat, -7))}
+                        aria-busy={incomeWeekNav === "prev" && incomeWeekLoading}
+                        className={
+                          incomeWeekNav === "prev" && incomeWeekLoading
+                            ? "is-loading"
+                            : undefined
+                        }
+                        disabled={!selectedSat || incomeWeekLoading}
+                        onClick={() => {
+                          setIncomeWeekNav("prev");
+                          void loadIncomeWeek(shiftIso(selectedSat, -7));
+                        }}
                       >
                         Previous week
                       </button>
                       <button
                         type="button"
                         aria-label="Next week"
-                        disabled={!selectedSat}
-                        onClick={() => setAsOfDate(shiftIso(selectedSat, 7))}
+                        aria-busy={incomeWeekNav === "next" && incomeWeekLoading}
+                        className={
+                          incomeWeekNav === "next" && incomeWeekLoading
+                            ? "is-loading"
+                            : undefined
+                        }
+                        disabled={!selectedSat || incomeWeekLoading}
+                        onClick={() => {
+                          setIncomeWeekNav("next");
+                          void loadIncomeWeek(shiftIso(selectedSat, 7));
+                        }}
                       >
                         Next week
                       </button>
@@ -6506,27 +7416,29 @@ export default function App() {
                         aria-label="Back to Weekly grid"
                         onClick={() => {
                           setIncomePattern("A");
-                          void loadIncomeGrid(
-                            asOfDate,
-                            incomeHistWeeks,
-                            incomeFutWeeks,
-                            drillAccounts,
-                            incomeWeek?.end,
+                          void withIncomeLoading(() =>
+                            loadIncomeGrid(
+                              asOfDate,
+                              incomeHistWeeks,
+                              incomeFutWeeks,
+                              drillAccounts,
+                              incomeWeek?.end,
+                            ),
                           );
                         }}
                       >
                         Back to Weekly grid
                       </button>
                       <div className="income-print-export">
-                        <span className="income-week-label">Print / Export</span>
-                        <button type="button" aria-label="Print to page" onClick={() => void runIncomeExport("print")}>
-                          Print to page
-                        </button>
-                        <button type="button" aria-label="Save PDF" onClick={() => void runIncomeExport("pdf")}>
-                          Save PDF
-                        </button>
-                        <button type="button" aria-label="Export Excel" onClick={() => void runIncomeExport("excel")}>
-                          Export Excel
+                        <button
+                          type="button"
+                          aria-label="Print Export"
+                          aria-busy={incomeExportLoading}
+                          className={incomeExportLoading ? "is-loading" : undefined}
+                          disabled={incomeWeekLoading || incomeExportLoading}
+                          onClick={() => void requestIncomeExport()}
+                        >
+                          Print Export
                         </button>
                       </div>
                     </div>
@@ -6571,6 +7483,26 @@ export default function App() {
               />
             </>
           )}
+          <DividendWeeksPanel
+            perf={dividendPerf}
+            range={perfRange}
+            onRangeChange={(next) => {
+              setPerfRange(next);
+              void (async () => {
+                const r = await client.executeQuery("DividendPerformanceGet", {
+                  asOfDate,
+                  range: next,
+                });
+                if (r.ok && r.bodyJson) {
+                  try {
+                    setDividendPerf(JSON.parse(r.bodyJson) as DividendPerformanceGet);
+                  } catch {
+                    setDividendPerf(null);
+                  }
+                }
+              })();
+            }}
+          />
         </section>
       ) : null}
 
@@ -6578,10 +7510,10 @@ export default function App() {
         <section aria-label="Calculator">
           <h2>Calculator</h2>
           <p>
-            Distribution history for paying positions, Friday columns. Default period is
-            the last 60 days; change From/To or pick This month, 90 days, or year to date.
-            Positions tagged None (does not pay) stay off Calculator. Empty is unknown,
-            not $0.00.
+            Distribution history for DIV-1 and CASH collector positions, Friday columns.
+            Default period is the last 60 days; change From/To or pick This month, 90 days,
+            or year to date. Names removed from collectors stay stored and stay off this
+            view. Empty is unknown, not $0.00.
           </p>
           <DeclarationHistoryPanel
             history={declHistory}
@@ -6649,10 +7581,13 @@ export default function App() {
             <button
               type="button"
               aria-label="Refresh last prices"
+              aria-busy={lastPriceBusy}
               disabled={lastPriceBusy || busy}
-              onClick={() => void refreshLastPrices()}
+              onClick={() => void refreshLastPrices(true)}
             >
-              {lastPriceBusy ? "Refreshing last prices…" : "Refresh last prices"}
+              {lastPriceBusy
+                ? lastPriceRefreshLabel(lastPriceProgress)
+                : "Refresh last prices"}
             </button>
             <button
               type="button"
@@ -6724,6 +7659,7 @@ export default function App() {
                 <button
                   type="button"
                   aria-label="Save stored facts"
+                  className={pdDirty ? "is-unsaved" : undefined}
                   disabled={busy || writesBlocked || !pdDirty}
                   onClick={() => void saveStoredFacts()}
                 >
@@ -6882,7 +7818,8 @@ export default function App() {
                           onChange={(e) => setOwnerRiskChoice(e.target.value)}
                           disabled={busy || writesBlocked}
                         >
-                          {OWNER_RISK_CHOICES.map((tier) => (
+                          <option value="">Choose owner tier</option>
+                          {RISK_TIERS.map((tier) => (
                             <option key={tier} value={tier}>
                               {suggested && tier === suggested
                                 ? `${tier} (suggestion)`
@@ -6905,7 +7842,7 @@ export default function App() {
                         </p>
                       ) : (
                         <p role="note">
-                          No suggested tier. Choose one or Leave undecided.
+                          No suggested tier. Choose Foundation, Core, or Risk On.
                         </p>
                       )}
                       <div className="buttons">
@@ -6920,14 +7857,6 @@ export default function App() {
                           onClick={() => void setOwnerRisk()}
                         >
                           Set risk
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Leave undecided"
-                          disabled={busy || writesBlocked}
-                          onClick={() => void leaveRiskUndecided()}
-                        >
-                          Leave undecided
                         </button>
                       </div>
                     </fieldset>
@@ -7016,11 +7945,32 @@ export default function App() {
                   openRecreateAdapter(t as WorkTicketRecord)
                 }
                 onExcept={(t) =>
+
                   void resolveAmountConfirm(t as WorkTicketRecord, "except")
+
                 }
+
                 onReject={(t) =>
+
                   void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+
                 }
+
+                onAcceptRoc={(t) =>
+
+                  void resolveRocPctChange(t as WorkTicketRecord, "accept")
+
+                }
+
+                onRejectRoc={(t) =>
+
+                  void resolveRocPctChange(t as WorkTicketRecord, "reject")
+
+                }
+
+                pendingTicketId={ticketDecision?.ticketId}
+
+                pendingAction={ticketDecision?.action}
                 onEnterAmount={(t, amount) =>
                   void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
                 }
@@ -7040,6 +7990,10 @@ export default function App() {
               </nav>
               <section className="hub-panel" id="hub-identity" aria-label="Position information">
                 <h3>Position information</h3>
+                <p>
+                  Owner facts edit in this table. Risk is mandatory: Foundation, Core,
+                  or Risk On. Frequency is required. Save or Cancel.
+                </p>
                 <div className="table-wrap">
                   <table aria-label="Position information">
                     <thead>
@@ -7055,32 +8009,70 @@ export default function App() {
                       </tr>
                       <tr>
                         <th scope="row">Name</th>
-                        <td>{pdDraft.name.trim() || investment.name || "—"}</td>
+                        <td>
+                          <input
+                            aria-label="Position name"
+                            value={pdDraft.name}
+                            onChange={(e) => patchDraft({ name: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          />
+                        </td>
                       </tr>
                       <tr>
                         <th scope="row">Provider</th>
-                        <td>{pdDraft.provider.trim() || investment.provider || "—"}</td>
+                        <td>
+                          <input
+                            aria-label="Position provider"
+                            value={pdDraft.provider}
+                            onChange={(e) => patchDraft({ provider: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          />
+                        </td>
                       </tr>
                       <tr>
                         <th scope="row">Underlying</th>
                         <td>
-                          {pdDraft.underlying.trim() ||
-                            investment.underlying?.trim() ||
-                            "—"}
+                          <input
+                            aria-label="Position underlying"
+                            value={pdDraft.underlying}
+                            onChange={(e) => patchDraft({ underlying: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          />
                         </td>
                       </tr>
                       <tr>
                         <th scope="row">Risk</th>
                         <td>
-                          {pdDraft.risk.trim() || investment.riskTier || "—"}
+                          <select
+                            aria-label="Position risk"
+                            value={pdDraft.risk}
+                            onChange={(e) => patchDraft({ risk: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          >
+                            <option value="">Choose owner tier</option>
+                            {RISK_TIERS.map((tier) => (
+                              <option key={tier} value={tier}>
+                                {tier}
+                              </option>
+                            ))}
+                          </select>
                         </td>
                       </tr>
                       <tr>
                         <th scope="row">Frequency</th>
                         <td>
-                          {pdDraft.freq.trim() ||
-                            investment.paymentFrequency ||
-                            "—"}
+                          <select
+                            aria-label="Position frequency"
+                            value={pdDraft.freq}
+                            onChange={(e) => patchDraft({ freq: e.target.value })}
+                            disabled={busy || writesBlocked}
+                          >
+                            <option value="">Choose cadence</option>
+                            <option value="Weekly">Weekly (52)</option>
+                            <option value="Monthly">Monthly (12)</option>
+                            <option value="Quarterly">Quarterly (4)</option>
+                            <option value="None">None (does not pay)</option>
+                          </select>
                         </td>
                       </tr>
                       <tr>
@@ -7563,7 +8555,7 @@ export default function App() {
                           disabled={busy || writesBlocked}
                         >
                           <option value="">Choose owner tier</option>
-                          {OWNER_RISK_CHOICES.map((tier) => (
+                          {RISK_TIERS.map((tier) => (
                             <option key={tier} value={tier}>
                               {tier}
                             </option>
@@ -8608,6 +9600,7 @@ export default function App() {
                 <button
                   type="button"
                   aria-label="Save owner period"
+                  className={periodDirty ? "is-unsaved" : undefined}
                   disabled={busy || writesBlocked || !periodReady || !periodDirty}
                   onClick={() => void saveOwnerPeriod()}
                 >
@@ -8878,97 +9871,304 @@ export default function App() {
       {screen === "trends" ? (
         <section aria-label="Trends">
           <h2>Trends</h2>
-          <TrendsCapturePanel
-            capture={trendsCapture}
-            busy={busy}
-            onReload={(d) => {
-              void (async () => {
-                const r = await client.executeQuery("TrendsWeekGet", { asOfDate: d });
-                if (r.ok && r.bodyJson) {
-                  setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
+          <p>
+            Charts from saved weeks and declared income. Enter the week on Cash
+            Management.
+          </p>
+          {trendsCapture &&
+          (!trendsCapture.exists || trendsCapture.firstUnpopulatedStart) ? (
+            <p role="status">
+              <button
+                type="button"
+                aria-label="Finish this week on Cash Management"
+                onClick={() =>
+                  leaveWithoutSaving(
+                    () => setScreen("cash-management"),
+                    "cash-management",
+                  )
                 }
-              })();
-            }}
-            onCopyPrior={() => {
-              if (!trendsCapture?.prior) return;
-              setTrendsCapture({
-                ...trendsCapture,
-                current: {
-                  profitMinor: trendsCapture.prior.profitMinor,
-                  monthlyDivsMinor: trendsCapture.prior.monthlyDivsMinor,
-                  fidelityTotalMinor: trendsCapture.prior.fidelityTotalMinor,
-                  schwabTotalMinor: trendsCapture.prior.schwabTotalMinor,
-                  incomeCashMinor: trendsCapture.prior.incomeCashMinor,
-                  acct9CashMinor: trendsCapture.prior.acct9CashMinor,
-                  acct9EtfValueMinor: trendsCapture.prior.acct9EtfValueMinor,
-                },
-              });
-            }}
-            onSave={async (body, correct) => {
-              setBusy(true);
-              try {
-                const r = await client.executeCommand(
-                  correct ? "TrendsWeekCorrect" : "TrendsWeekSave",
-                  body,
-                );
-                if (!r.ok) {
-                  setActionMessage(`Trends save failed: ${r.errorCode ?? "error"}`);
-                  return;
-                }
-                if (r.bodyJson) {
-                  setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
-                }
-                await refreshData(asOfDate || body.periodEnd as string);
-              } finally {
-                setBusy(false);
-              }
-            }}
-            onClose={async (periodEnd) => {
-              setBusy(true);
-              try {
-                const r = await client.executeCommand("TrendsWeekClose", { periodEnd });
-                if (!r.ok) {
-                  setActionMessage(`Trends close failed: ${r.errorCode ?? "error"}`);
-                  return;
-                }
-                if (r.bodyJson) {
-                  setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
-                }
-                await refreshData(asOfDate || periodEnd);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          />
-          <DividendWeeksPanel
-            perf={dividendPerf}
-            range={perfRange}
-            onRangeChange={(next) => {
-              setPerfRange(next);
+              >
+                Finish this week on Cash Management
+              </button>
+            </p>
+          ) : null}
+          <TrendsChartsPanel
+            weeks={trends?.weeks}
+            dividendPerf={trendsDividendPerf}
+            onGraphPeriodChange={(period) => {
+              trendsGraphPeriodRef.current = period;
               void (async () => {
                 const r = await client.executeQuery("DividendPerformanceGet", {
                   asOfDate,
-                  range: next,
+                  range: period,
                 });
                 if (r.ok && r.bodyJson) {
                   try {
-                    setDividendPerf(JSON.parse(r.bodyJson) as DividendPerformanceGet);
+                    setTrendsDividendPerf(
+                      JSON.parse(r.bodyJson) as DividendPerformanceGet,
+                    );
+                    return;
                   } catch {
-                    setDividendPerf(null);
+                    /* fall through */
                   }
+                }
+                if (period === "6m" || period === "12m") {
+                  const fallback = await client.executeQuery(
+                    "DividendPerformanceGet",
+                    { asOfDate, range: "all" },
+                  );
+                  if (fallback.ok && fallback.bodyJson) {
+                    try {
+                      setTrendsDividendPerf(
+                        JSON.parse(fallback.bodyJson) as DividendPerformanceGet,
+                      );
+                      return;
+                    } catch {
+                      /* fall through */
+                    }
+                  }
+                }
+                setTrendsDividendPerf(null);
+              })();
+            }}
+            note={trends?.note}
+            error={trendsError}
+            missingRequired={trends?.missingRequired}
+            accountValues={accountValues}
+            risk={accountValues?.risk ?? null}
+            asOf={accountValues?.asOf ?? asOfDate}
+          />
+        </section>
+      ) : null}
+
+      {screen === "shopping-cart" ? (
+        <ShoppingCartScreen
+          client={client}
+          accounts={accounts}
+          holdings={holdings}
+          calculator={calculator}
+          researched={addLotSecurityOptions}
+          positionMaster={positionMaster}
+          asOfDate={asOfDate}
+          busy={busy}
+          writesBlocked={writesBlocked}
+          onMessage={setActionMessage}
+          onBusy={setBusy}
+          onDirtyChange={setCartDirty}
+          onOpenBuyLot={(prefill) => {
+            leaveWithoutSaving(() => {
+              pendingCartBuyRef.current = { scenarioId: prefill.scenarioId };
+              setAddLotAccountId(prefill.accountId);
+              setAddLotSecurityId(prefill.securityId);
+              const row = securities.find((s) => s.securityId === prefill.securityId);
+              setAddLotQuery(
+                row
+                  ? `${row.symbol}${row.name ? ` — ${row.name}` : ""}`
+                  : prefill.symbol,
+              );
+              setAddLotQty(String(prefill.qtyWhole));
+              setAddLotCost((prefill.lastMinor / 100).toFixed(2));
+              setAddLotOpenedOn(prefill.openedOn);
+              setScreen("add-lot");
+            }, "add-lot");
+          }}
+        />
+      ) : null}
+
+      {screen === "cash-management" ? (
+        <section aria-label="Cash Management">
+          <h2>Cash Management</h2>
+          <p>
+            Enter this Sat–Fri week, then declare SSA, distributions, or
+            withdrawals. Trends only graphs saved weeks.
+          </p>
+          <CashManagementPanel
+            week={cashWeek}
+            month={cashMonth}
+            reminders={cashReminders}
+            magi={cashMagi}
+            accounts={accounts}
+            busy={busy}
+            distributions={trends?.distributions as never}
+            taxMonitor={trends?.taxMonitor as never}
+            weekJustSavedAt={cashWeekSavedAt}
+            weekDesk={{
+              weeks: trends?.weeks,
+              points: trends?.points,
+              dividendPerf: dividendPerf ?? trendsDividendPerf,
+              overview: trends?.overview as never,
+            }}
+            onDirtyChange={setCashDirty}
+            onReload={(d) => {
+              void (async () => {
+                const [r, rem, mo] = await Promise.all([
+                  client.executeQuery("CashManagementWeekGet", {
+                    asOfDate: d,
+                  }),
+                  client.executeQuery("CashManagementRemindersGet", {
+                    asOfDate: d,
+                  }),
+                  client.executeQuery("CashManagementMonthGet", {
+                    asOfDate: d,
+                  }),
+                ]);
+                if (r.ok && r.bodyJson) {
+                  setCashWeek(JSON.parse(r.bodyJson) as CashManagementWeekGet);
+                }
+                if (rem.ok && rem.bodyJson) {
+                  setCashReminders(
+                    JSON.parse(rem.bodyJson) as CashManagementRemindersGet,
+                  );
+                }
+                if (mo.ok && mo.bodyJson) {
+                  setCashMonth(
+                    JSON.parse(mo.bodyJson) as CashManagementMonthGet,
+                  );
                 }
               })();
             }}
-          />
-          <TrendsChartsPanel
-            weeks={trends?.weeks}
-            note={trends?.note}
-            error={trendsError}
-            overview={trends?.overview as never}
-            distributions={trends?.distributions as never}
-            taxMonitor={trends?.taxMonitor as never}
-            missingRequired={trends?.missingRequired}
-          />
+            onSave={async (body) => {
+              const r = await client.executeCommand("CashDistributionPost", body);
+              if (!r.ok) {
+                setActionMessage(
+                  `Cash distribution failed: ${r.errorCode ?? "error"}`,
+                );
+                return false;
+              }
+              const asOf = (body.occurredOn as string) || asOfDate;
+              const [week, rem, mo] = await Promise.all([
+                client.executeQuery("CashManagementWeekGet", {
+                  asOfDate: asOf,
+                }),
+                client.executeQuery("CashManagementRemindersGet", {
+                  asOfDate: asOf,
+                }),
+                client.executeQuery("CashManagementMonthGet", {
+                  asOfDate: asOf,
+                }),
+              ]);
+              if (week.ok && week.bodyJson) {
+                setCashWeek(JSON.parse(week.bodyJson) as CashManagementWeekGet);
+              }
+              if (rem.ok && rem.bodyJson) {
+                setCashReminders(
+                  JSON.parse(rem.bodyJson) as CashManagementRemindersGet,
+                );
+              }
+              if (mo.ok && mo.bodyJson) {
+                setCashMonth(JSON.parse(mo.bodyJson) as CashManagementMonthGet);
+              }
+              setCashDirty(false);
+              setActionMessage("Cash distribution saved.");
+              return true;
+            }}
+            onSsaConfirm={async (body) => {
+              const r = await client.executeCommand("SsaConfirm", body);
+              if (!r.ok) {
+                setActionMessage(
+                  `Social Security retirement confirm failed: ${r.errorCode ?? "error"}`,
+                );
+                return false;
+              }
+              const asOf = (body.occurredOn as string) || asOfDate;
+              const [week, rem, mo] = await Promise.all([
+                client.executeQuery("CashManagementWeekGet", {
+                  asOfDate: asOf,
+                }),
+                client.executeQuery("CashManagementRemindersGet", {
+                  asOfDate: asOf,
+                }),
+                client.executeQuery("CashManagementMonthGet", {
+                  asOfDate: asOf,
+                }),
+              ]);
+              if (week.ok && week.bodyJson) {
+                setCashWeek(JSON.parse(week.bodyJson) as CashManagementWeekGet);
+              }
+              if (rem.ok && rem.bodyJson) {
+                setCashReminders(
+                  JSON.parse(rem.bodyJson) as CashManagementRemindersGet,
+                );
+              }
+              if (mo.ok && mo.bodyJson) {
+                setCashMonth(JSON.parse(mo.bodyJson) as CashManagementMonthGet);
+              }
+              setCashDirty(false);
+              setActionMessage("Tom Social Security retirement confirmed.");
+              return true;
+            }}
+          >
+            <TrendsCapturePanel
+              capture={trendsCapture}
+              busy={busy}
+              onReload={(d) => {
+                trendsWeekAsOfRef.current = d;
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    const r = await client.executeQuery("TrendsWeekGet", { asOfDate: d });
+                    if (r.ok && r.bodyJson) {
+                      setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
+                    }
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
+              }}
+              onSave={async (body, correct) => {
+                setBusy(true);
+                try {
+                  const r = await client.executeCommand(
+                    correct ? "TrendsWeekCorrect" : "TrendsWeekSave",
+                    body,
+                  );
+                  if (!r.ok) {
+                    setActionMessage(`Trends save failed: ${r.errorCode ?? "error"}`);
+                    return;
+                  }
+                  const saved = r.bodyJson
+                    ? (JSON.parse(r.bodyJson) as TrendsWeekCapture)
+                    : null;
+                  if (saved) {
+                    setTrendsCapture(saved);
+                  }
+                  await refreshData(asOfDate || (body.periodEnd as string));
+                  if (!correct) {
+                    setCashWeekSavedAt(Date.now());
+                  }
+                  const next = saved?.firstUnpopulatedStart;
+                  if (next && next !== saved?.periodStart) {
+                    trendsWeekAsOfRef.current = next;
+                    const q = await client.executeQuery("TrendsWeekGet", {
+                      asOfDate: next,
+                    });
+                    if (q.ok && q.bodyJson) {
+                      setTrendsCapture(JSON.parse(q.bodyJson) as TrendsWeekCapture);
+                    }
+                  }
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              onClose={async (periodEnd) => {
+                setBusy(true);
+                try {
+                  const r = await client.executeCommand("TrendsWeekClose", { periodEnd });
+                  if (!r.ok) {
+                    setActionMessage(`Trends close failed: ${r.errorCode ?? "error"}`);
+                    return;
+                  }
+                  if (r.bodyJson) {
+                    setTrendsCapture(JSON.parse(r.bodyJson) as TrendsWeekCapture);
+                  }
+                  await refreshData(asOfDate || periodEnd);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              onWizardActive={setWeekWizardActive}
+            />
+          </CashManagementPanel>
         </section>
       ) : null}
 
@@ -8990,14 +10190,27 @@ export default function App() {
             onOpenSymbol={(symbol) => openPositionHub(symbol, "lots")}
           />
           <p>Open lots. Owner assigns sales; no FIFO. Type a sell activity id to assign.</p>
-          <label>
-            Lot id
-            <input
-              value={lotId}
-              onChange={(e) => setLotId(e.target.value)}
-              disabled={busy || writesBlocked}
-            />
-          </label>
+          <LotCostTable
+            lots={(holdings?.lots ?? []).map((l) => ({
+              lotId: l.lotId,
+              symbol: l.symbol,
+              accountName: l.accountName,
+              remainingQuantityMinor: l.remainingQuantityMinor,
+              quantityScale: l.quantityScale,
+              openedOn: l.openedOn,
+              remainingPerformanceMinor: l.remainingPerformanceMinor,
+              remainingTaxMinor: l.remainingTaxMinor,
+            }))}
+            value={lotId}
+            onChange={setLotId}
+            lastBySymbol={Object.fromEntries(
+              (calculator?.rows ?? []).map((r) => [r.symbol, r.lastPriceMinor]),
+            )}
+            sortMode={holdingsLotSort}
+            onSortModeChange={setHoldingsLotSort}
+            disabled={busy || writesBlocked}
+            ariaLabel="Lot id"
+          />
           <label>
             Sell activity id
             <input
@@ -9203,6 +10416,7 @@ export default function App() {
               <button
                 type="button"
                 aria-label="Save Process A research"
+                className={wizDirty ? "is-unsaved" : undefined}
                 disabled={busy || writesBlocked || !wizSecurityId}
                 onClick={() => saveProcessAResearch()}
               >
@@ -9688,6 +10902,7 @@ export default function App() {
                   <button
                     type="button"
                     aria-label="Confirm Plan"
+                    className={wizDirty ? "is-unsaved" : undefined}
                     disabled={
                       busy ||
                       writesBlocked ||
@@ -9749,6 +10964,7 @@ export default function App() {
             <button
               type="button"
               aria-label="Open lot"
+              className={addLotDirty ? "is-unsaved" : undefined}
               disabled={
                 busy ||
                 writesBlocked ||
@@ -9773,78 +10989,29 @@ export default function App() {
             </button>
           </div>
           <div className="form-grid">
-            <label className="symbol-combobox">
-              Researched symbol
-              <input
-                aria-label="Add lot symbol"
-                aria-expanded={addLotSymbolOpen}
-                aria-controls="add-lot-symbol-list"
-                aria-autocomplete="list"
-                role="combobox"
-                value={addLotQuery}
-                placeholder="Type to filter (e.g. NV)"
-                autoComplete="off"
-                onChange={(e) => {
-                  setAddLotQuery(e.target.value.toUpperCase());
-                  setAddLotSecurityId("");
-                  setAddLotSymbolOpen(true);
-                }}
-                onFocus={() => setAddLotSymbolOpen(true)}
-                onBlur={() => {
-                  window.setTimeout(() => setAddLotSymbolOpen(false), 150);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && filteredAddLotSecurities[0]) {
-                    e.preventDefault();
-                    selectAddLotSecurity(filteredAddLotSecurities[0]);
-                  }
-                  if (e.key === "Escape") {
-                    setAddLotSymbolOpen(false);
-                  }
-                }}
-                disabled={busy || writesBlocked}
-              />
-              {addLotSymbolOpen && filteredAddLotSecurities.length > 0 ? (
-                <ul
-                  id="add-lot-symbol-list"
-                  className="symbol-combobox-list"
-                  role="listbox"
-                  aria-label="Add lot symbol matches"
-                >
-                  {filteredAddLotSecurities.map((row) => (
-                    <li
-                      key={row.securityId}
-                      role="option"
-                      aria-selected={row.securityId === addLotSecurityId}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        selectAddLotSecurity(row);
-                      }}
-                    >
-                      {row.symbol}
-                      {row.name ? ` — ${row.name}` : ""}
-                      {row.openLotCount === 0 ? " (no lots yet)" : ""}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </label>
-            <label>
-              Account
-              <select
-                aria-label="Add lot account"
-                value={addLotAccountId}
-                onChange={(e) => setAddLotAccountId(e.target.value)}
-                disabled={busy || writesBlocked}
-              >
-                <option value="">Choose account</option>
-                {accounts.map((a) => (
-                  <option key={a.accountId} value={a.accountId}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <ResearchedSymbolCombobox
+              options={filteredAddLotSecurities}
+              query={addLotQuery}
+              onQueryChange={(q) => {
+                setAddLotQuery(q);
+                setAddLotSecurityId("");
+              }}
+              open={addLotSymbolOpen}
+              onOpenChange={setAddLotSymbolOpen}
+              selectedId={addLotSecurityId}
+              onSelect={selectAddLotSecurity}
+              disabled={busy || writesBlocked}
+              inputAriaLabel="Add lot symbol"
+              listId="add-lot-symbol-list"
+              listAriaLabel="Add lot symbol matches"
+            />
+            <AccountSelect
+              accounts={accounts}
+              value={addLotAccountId}
+              onChange={setAddLotAccountId}
+              ariaLabel="Add lot account"
+              disabled={busy || writesBlocked}
+            />
             <label>
               Opened on
               <input
@@ -10194,11 +11361,32 @@ export default function App() {
               openRecreateAdapter(t as WorkTicketRecord)
             }
             onExcept={(t) =>
+
               void resolveAmountConfirm(t as WorkTicketRecord, "except")
+
             }
+
             onReject={(t) =>
+
               void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+
             }
+
+            onAcceptRoc={(t) =>
+
+              void resolveRocPctChange(t as WorkTicketRecord, "accept")
+
+            }
+
+            onRejectRoc={(t) =>
+
+              void resolveRocPctChange(t as WorkTicketRecord, "reject")
+
+            }
+
+            pendingTicketId={ticketDecision?.ticketId}
+
+            pendingAction={ticketDecision?.action}
             onEnterAmount={(t, amount) =>
               void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
             }
@@ -10363,29 +11551,45 @@ export default function App() {
           ) : null}
           {collectorStats ? (
             <p aria-label="Collector statistics">
-              Assigned {formatCount(collectorStats.assigned)}.
-              Enabled {formatCount(collectorStats.enabled)}.
-              Ran {formatCount(collectorStats.ranToday)} symbols today.
-              Miss {formatCount(collectorStats.missToday)} symbols.
-              Unchanged {formatCount(collectorStats.unchangedToday)} symbols.
-              Price current {formatCount(collectorStats.priceCurrent)} / stale{" "}
-              {formatCount(collectorStats.priceStale)}.
-              Open tickets {formatCount(collectorStats.openExceptions)}.
+              Assigned {formatCount(collectorStats.assigned)}. Enabled{" "}
+              {formatCount(collectorStats.enabled)}. We collect these{" "}
+              {formatCount(collectorStats.enabled)} income names. Ran{" "}
+              {formatCount(collectorStats.ranToday)} of those{" "}
+              {formatCount(collectorStats.enabled)} we asked the issuer about
+              today
+              {(collectorStats.ranOutsideFleet ?? []).length > 0
+                ? ` (also retrieved ${(collectorStats.ranOutsideFleet ?? []).join(", ")} — not income fleet)`
+                : ""}
+              . Still miss {formatCount(collectorStats.stillMiss ?? collectorStats.missToday)}
+              — last ask today is not OK. Had a miss today{" "}
+              {formatCount(collectorStats.hadMissToday ?? 0)} — failed at least
+              once today; a later retry may have worked. Unchanged{" "}
+              {formatCount(collectorStats.unchangedToday)} — issuer page matched
+              the last copy; we did not rewrite Plan $. Price current{" "}
+              {formatCount(collectorStats.priceCurrent)} / stale{" "}
+              {formatCount(collectorStats.priceStale)} — share price quotes, not
+              dividend pages. Open tickets{" "}
+              {formatCount(collectorStats.openExceptions)} — owner work still
+              open, including older days.
             </p>
           ) : null}
           {(() => {
             const today = new Date().toISOString().slice(0, 10);
-            const todayMisses = collectorItems.filter(
+            const fleetEnabled = collectorItems.filter(
               (row) =>
-                row.collectorEnabled &&
-                row.lastRunOk === false &&
-                (row.lastRunAt || "").startsWith(today),
+                row.collectorEnabled && (row.declarationSource || "").trim(),
             );
-            const todayOk = collectorItems.filter(
+            const todayOk = fleetEnabled.filter(
               (row) =>
-                row.collectorEnabled &&
                 row.lastRunOk === true &&
                 (row.lastRunAt || "").startsWith(today),
+            );
+            const todayMisses = fleetEnabled.filter(
+              (row) =>
+                !(
+                  row.lastRunOk === true &&
+                  (row.lastRunAt || "").startsWith(today)
+                ),
             );
             const latestStored = [...todayOk, ...todayMisses]
               .map((row) => row.lastRunAt || "")
@@ -10397,8 +11601,9 @@ export default function App() {
                 <h3>Today&apos;s declaration status</h3>
                 <p>
                   As of {formatCollectorClock(latestStored || collectorStatusAt)}.{" "}
-                  {formatCount(todayOk.length)} ok · {formatCount(todayMisses.length)} miss
-                  of {formatCount(collectorItems.filter((r) => r.collectorEnabled).length)} enabled.
+                  {formatCount(todayOk.length)} last retrieve today OK ·{" "}
+                  {formatCount(todayMisses.length)} still miss of{" "}
+                  {formatCount(fleetEnabled.length)} enabled.
                   Older tickets below are a work queue, not this run.
                 </p>
                 {todayMisses.length > 0 ? (
@@ -10714,11 +11919,32 @@ export default function App() {
                 openRecreateAdapter(t as WorkTicketRecord)
               }
               onExcept={(t) =>
+
                 void resolveAmountConfirm(t as WorkTicketRecord, "except")
+
               }
+
               onReject={(t) =>
+
                 void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+
               }
+
+              onAcceptRoc={(t) =>
+
+                void resolveRocPctChange(t as WorkTicketRecord, "accept")
+
+              }
+
+              onRejectRoc={(t) =>
+
+                void resolveRocPctChange(t as WorkTicketRecord, "reject")
+
+              }
+
+              pendingTicketId={ticketDecision?.ticketId}
+
+              pendingAction={ticketDecision?.action}
               onEnterAmount={(t, amount) =>
                 void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
               }
@@ -10899,6 +12125,53 @@ export default function App() {
         </section>
       ) : null}
 
+      {screen === "components" ? (
+        <section className="actions" aria-label="Component registry">
+          <h2>Components</h2>
+          <p>
+            UI extraction catalog: whether a screen has left App.tsx. Not a
+            domain-completeness index and not a plugin host. Core functions
+            stay in Settings.
+          </p>
+          <div className="table-wrap">
+            <table aria-label="Component registry">
+              <thead>
+                <tr>
+                  <th scope="col">Module</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Folder</th>
+                  <th scope="col">Menu areas</th>
+                  <th scope="col">Core functions</th>
+                  <th scope="col">Host</th>
+                </tr>
+              </thead>
+              <tbody>
+                {coreFunctions?.modules?.length ? (
+                  coreFunctions.modules.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.title}</td>
+                      <td>{row.status}</td>
+                      <td>{row.folder}</td>
+                      <td>{row.menuAreas.join(", ")}</td>
+                      <td>
+                        {row.coreFunctionIds?.length
+                          ? row.coreFunctionIds.join(", ")
+                          : "—"}
+                      </td>
+                      <td>{row.host || "—"}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6}>Loading components…</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
       {screen === "settings" ? (
         <section className="actions" aria-label="Settings">
           <h2>Settings</h2>
@@ -10914,6 +12187,43 @@ export default function App() {
               <dd>{health.contractVersion}</dd>
             </dl>
           )}
+          <h3>Core functions</h3>
+          <p>
+            Owner-facing functions the golden harness must still find after a
+            change. Last changed is when that function's files last moved. Last
+            verified is when its sentinel last passed. Also verify lists the
+            golden test names that must still pass when that function changes.
+          </p>
+          <div className="table-wrap">
+            <table aria-label="Core functions">
+              <thead>
+                <tr>
+                  <th scope="col">Menu area</th>
+                  <th scope="col">Function</th>
+                  <th scope="col">Last changed</th>
+                  <th scope="col">Last verified</th>
+                  <th scope="col">Also verify</th>
+                </tr>
+              </thead>
+              <tbody>
+                {coreFunctions?.items.length ? (
+                  coreFunctions.items.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.menuArea}</td>
+                      <td>{row.function}</td>
+                      <td>{row.lastChanged}</td>
+                      <td>{row.lastVerified}</td>
+                      <td>{row.alsoVerify?.length ? row.alsoVerify.join(", ") : "—"}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={5}>Loading core functions…</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
           <h3>Retrieval templates</h3>
           <p>
             Standing template: adapter name, declaration URL, ROC URL, and
@@ -11086,6 +12396,14 @@ export default function App() {
               onClick={() => runCommand("ConfigSet", { deviceName })}
             >
               Save device name
+            </button>
+            <button
+              type="button"
+              aria-label="Save data snapshot"
+              disabled={busy}
+              onClick={() => requestDataSnapshot()}
+            >
+              Save data snapshot
             </button>
             <button
               type="button"
