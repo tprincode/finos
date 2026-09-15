@@ -62,6 +62,10 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::CashDistributionIdentity => "cash_distribution_identity",
         DomainError::RothWithholdingNotAllowed => "roth_withholding_not_allowed",
         DomainError::CashAccountKind => "cash_account_kind",
+        DomainError::CashAdjustWithholdingNotAllowed => "cash_adjust_withholding_not_allowed",
+        DomainError::CashAdjustReasonRequired => "cash_adjust_reason_required",
+        DomainError::CashAdjustAccount => "cash_adjust_account",
+        DomainError::CashAdjustAmount => "cash_adjust_amount",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -124,6 +128,7 @@ fn account_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AccountRecord, Plat
             .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
         name: row.try_get("name").map_err(|e| map_err(e.into()))?,
         kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+        cash_symbol: row.try_get::<Option<String>, _>("cash_symbol").unwrap_or(None),
         row_version: 1,
     })
 }
@@ -168,6 +173,7 @@ fn activity_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ActivityRecord, Pl
         state_withholding_minor: row
             .try_get::<i64, _>("state_withholding_minor")
             .unwrap_or(0),
+        note: row.try_get::<String, _>("note").unwrap_or_default(),
     })
 }
 
@@ -190,7 +196,8 @@ async fn find_duplicate_dividend(
             "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
                     occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
                     COALESCE(federal_withholding_minor, 0) AS federal_withholding_minor,
-                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor
+                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor,
+                    COALESCE(note, '') AS note
              FROM activity_event
              WHERE account_id = ? AND security_id = ? AND occurred_on = ? AND amount_minor = ?
                AND lower(activity_type) = 'dividend'
@@ -208,7 +215,8 @@ async fn find_duplicate_dividend(
             "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
                     occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
                     COALESCE(federal_withholding_minor, 0) AS federal_withholding_minor,
-                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor
+                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor,
+                    COALESCE(note, '') AS note
              FROM activity_event
              WHERE account_id = ? AND security_id IS NULL AND occurred_on = ? AND amount_minor = ?
                AND lower(activity_type) = 'dividend'
@@ -473,8 +481,8 @@ async fn insert_activity(
         "INSERT INTO activity_event (
             activity_id, account_id, security_id, activity_type, amount_minor, scale,
             occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
-            federal_withholding_minor, state_withholding_minor
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            federal_withholding_minor, state_withholding_minor, note
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(record.activity_id.to_string())
     .bind(record.account_id.to_string())
@@ -488,6 +496,7 @@ async fn insert_activity(
     .bind(&record.idempotency_key)
     .bind(record.federal_withholding_minor)
     .bind(record.state_withholding_minor)
+    .bind(&record.note)
     .execute(pool)
     .await;
     match result {
@@ -512,12 +521,14 @@ impl Canonical for LocalPlatform {
             account_id: Uuid::new_v4(),
             name,
             kind,
+            cash_symbol: None,
             row_version: 1,
         };
-        sqlx::query("INSERT INTO account (account_id, name, kind) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO account (account_id, name, kind, cash_symbol) VALUES (?, ?, ?, ?)")
             .bind(record.account_id.to_string())
             .bind(&record.name)
             .bind(&record.kind)
+            .bind(&record.cash_symbol)
             .execute(&*pool)
             .await
             .map_err(|e| map_err(e.into()))?;
@@ -530,6 +541,7 @@ impl Canonical for LocalPlatform {
         account_id: Uuid,
         name: Option<String>,
         kind: Option<String>,
+        cash_symbol: Option<String>,
         _expected_version: Option<i64>,
     ) -> Result<AccountRecord, PlatformError> {
         let mut current = self.account_get(account_id).await?;
@@ -539,10 +551,18 @@ impl Canonical for LocalPlatform {
         if let Some(kind) = kind {
             current.kind = kind;
         }
+        if let Some(sym) = cash_symbol {
+            current.cash_symbol = if sym.trim().is_empty() {
+                None
+            } else {
+                Some(sym)
+            };
+        }
         let pool = self.pool.read().await;
-        sqlx::query("UPDATE account SET name = ?, kind = ? WHERE account_id = ?")
+        sqlx::query("UPDATE account SET name = ?, kind = ?, cash_symbol = ? WHERE account_id = ?")
             .bind(&current.name)
             .bind(&current.kind)
+            .bind(&current.cash_symbol)
             .bind(account_id.to_string())
             .execute(&*pool)
             .await
@@ -553,21 +573,25 @@ impl Canonical for LocalPlatform {
 
     async fn account_get(&self, account_id: Uuid) -> Result<AccountRecord, PlatformError> {
         let pool = self.pool.read().await;
-        let row = sqlx::query("SELECT account_id, name, kind FROM account WHERE account_id = ?")
-            .bind(account_id.to_string())
-            .fetch_optional(&*pool)
-            .await
-            .map_err(|e| map_err(e.into()))?
-            .ok_or_else(|| PlatformError::new("not_found", "account not found"))?;
+        let row = sqlx::query(
+            "SELECT account_id, name, kind, cash_symbol FROM account WHERE account_id = ?",
+        )
+        .bind(account_id.to_string())
+        .fetch_optional(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?
+        .ok_or_else(|| PlatformError::new("not_found", "account not found"))?;
         account_from_row(&row)
     }
 
     async fn account_list(&self) -> Result<Vec<AccountRecord>, PlatformError> {
         let pool = self.pool.read().await;
-        let rows = sqlx::query("SELECT account_id, name, kind FROM account ORDER BY name")
-            .fetch_all(&*pool)
-            .await
-            .map_err(|e| map_err(e.into()))?;
+        let rows = sqlx::query(
+            "SELECT account_id, name, kind, cash_symbol FROM account ORDER BY name",
+        )
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
         rows.iter().map(account_from_row).collect()
     }
 
@@ -1134,6 +1158,7 @@ impl Canonical for LocalPlatform {
             idempotency_key: key,
             federal_withholding_minor: 0,
             state_withholding_minor: 0,
+            note: String::new(),
         };
         let pool = self.pool.read().await;
         match insert_activity(&pool, &record).await {
@@ -1151,7 +1176,10 @@ impl Canonical for LocalPlatform {
             Err(err) if err.code == "duplicate_post" => {
                 let row = sqlx::query(
                     "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
-                            occurred_on, corrects_activity_id, import_batch_id, idempotency_key
+                            occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
+                            COALESCE(federal_withholding_minor, 0) AS federal_withholding_minor,
+                            COALESCE(state_withholding_minor, 0) AS state_withholding_minor,
+                            COALESCE(note, '') AS note
                      FROM activity_event WHERE idempotency_key = ?",
                 )
                 .bind(&record.idempotency_key)
@@ -1194,7 +1222,8 @@ impl Canonical for LocalPlatform {
             "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
                     occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
                     COALESCE(federal_withholding_minor, 0) AS federal_withholding_minor,
-                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor
+                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor,
+                    COALESCE(note, '') AS note
              FROM activity_event WHERE activity_id = ?",
         )
         .bind(activity_id.to_string())
@@ -1211,7 +1240,8 @@ impl Canonical for LocalPlatform {
             "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
                     occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
                     COALESCE(federal_withholding_minor, 0) AS federal_withholding_minor,
-                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor
+                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor,
+                    COALESCE(note, '') AS note
              FROM activity_event ORDER BY occurred_on, activity_id",
         )
         .fetch_all(&*pool)
@@ -2911,6 +2941,16 @@ impl Canonical for LocalPlatform {
     ) -> Result<(), PlatformError> {
         let pool = self.pool.read().await;
         crate::trends::trends_week_save_atomic(&*pool, record, &balances).await
+    }
+
+    async fn week_capture_accept_with_balances(
+        &self,
+        record: TrendsWeekSourceRecord,
+        balances: Vec<(Uuid, i64, Option<i64>)>,
+        adjusts: Vec<ActivityRecord>,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::week_capture_accept_atomic(&*pool, record, &balances, &adjusts).await
     }
 
     async fn account_balance_snapshot_list(

@@ -282,3 +282,295 @@ async fn trends_acct9_etf_uses_last_price_not_tax_basis() {
         assert_ne!(v, 0, "Account 9 open lots have last prices");
     }
 }
+
+fn capture_body(
+    period_start: &str,
+    period_end: &str,
+    cash: &[i64; 6],
+    adjusts: serde_json::Value,
+) -> serde_json::Value {
+    // cash: Income, FI Roth, Speculation, Health, Car, Account 9
+    serde_json::json!({
+        "periodStart": period_start,
+        "periodEnd": period_end,
+        "capturedAt": format!("{period_end}T12:00:00Z"),
+        "incomeBalanceMinor": 20_000_000,
+        "rothBalanceMinor": 1_000_000,
+        "speculationBalanceMinor": 2_000_000,
+        "healthBalanceMinor": 1_500_000,
+        "carBalanceMinor": 4_000_000,
+        "acct9BalanceMinor": 3_500_000,
+        "incomeCashMinor": cash[0],
+        "rothCashMinor": cash[1],
+        "speculationCashMinor": cash[2],
+        "healthCashMinor": cash[3],
+        "carCashMinor": cash[4],
+        "acct9CashMinor": cash[5],
+        "acct9EtfValueMinor": 0,
+        "scale": 2,
+        "adjusts": adjusts
+    })
+}
+
+async fn count_cash_adjust(platform: &LocalPlatform, period_end: &str) -> usize {
+    let acts = query_json(platform, "ActivityList", None).await;
+    acts.as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| {
+            a["activityType"] == "Cash_Adjust" && a["occurredOn"] == period_end
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn t1_no_gap_posts_zero_cash_adjust() {
+    let root = repo_root();
+    let production = root.join("database/seed/production");
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    load_production_seed_via_commands(&platform, &production)
+        .await
+        .expect("seed");
+
+    let view = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    let cash = cash_from_references(&view, |_, ref_minor| ref_minor.unwrap_or(1_000));
+    must_cmd(
+        &platform,
+        "WeekCaptureAccept",
+        capture_body("2026-08-22", "2026-08-28", &cash, serde_json::json!([])),
+    )
+    .await;
+    assert_eq!(count_cash_adjust(&platform, "2026-08-28").await, 0);
+}
+
+#[tokio::test]
+async fn t2_car_gap_posts_one_adjust_and_snapshot_cash() {
+    let root = repo_root();
+    let production = root.join("database/seed/production");
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    load_production_seed_via_commands(&platform, &production)
+        .await
+        .expect("seed");
+
+    let view = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    let car_ref = view["cashReferences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["accountName"] == "Car")
+        .expect("Car ref");
+    let car_reference = car_ref["referenceMinor"]
+        .as_i64()
+        .expect("Car needs a reference for T2");
+    let car_id = car_ref["accountId"].as_str().unwrap().to_string();
+    let typed_car = car_reference - 825;
+    let cash = cash_from_references(&view, |name, ref_minor| {
+        if name == "Car" {
+            typed_car
+        } else {
+            ref_minor.unwrap_or(1_000)
+        }
+    });
+    must_cmd(
+        &platform,
+        "WeekCaptureAccept",
+        capture_body(
+            "2026-08-22",
+            "2026-08-28",
+            &cash,
+            serde_json::json!([{
+                "accountId": car_id,
+                "amountMinor": -825,
+                "reason": "fee"
+            }]),
+        ),
+    )
+    .await;
+    assert_eq!(count_cash_adjust(&platform, "2026-08-28").await, 1);
+    let acts = query_json(&platform, "ActivityList", None).await;
+    let adj = acts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["activityType"] == "Cash_Adjust" && a["occurredOn"] == "2026-08-28")
+        .expect("adjust");
+    assert_eq!(adj["amountMinor"], -825);
+    assert_eq!(adj["note"], "fee");
+    let capture = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    assert_eq!(capture["carCashMinor"], typed_car);
+}
+
+#[tokio::test]
+async fn t3_blank_reason_blocks_week_capture_accept() {
+    let root = repo_root();
+    let production = root.join("database/seed/production");
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    load_production_seed_via_commands(&platform, &production)
+        .await
+        .expect("seed");
+
+    let view = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    let car_ref = view["cashReferences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["accountName"] == "Car")
+        .expect("Car ref");
+    let car_reference = car_ref["referenceMinor"]
+        .as_i64()
+        .expect("Car needs a reference for T3");
+    let car_id = car_ref["accountId"].as_str().unwrap().to_string();
+    let cash = cash_from_references(&view, |name, ref_minor| {
+        if name == "Car" {
+            car_reference - 825
+        } else {
+            ref_minor.unwrap_or(1_000)
+        }
+    });
+    let blocked = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "WeekCaptureAccept",
+            capture_body(
+                "2026-08-22",
+                "2026-08-28",
+                &cash,
+                serde_json::json!([{
+                    "accountId": car_id,
+                    "amountMinor": -825,
+                    "reason": ""
+                }]),
+            ),
+        ),
+    )
+    .await;
+    assert!(!blocked.ok);
+    assert_eq!(
+        blocked.error_code.as_deref(),
+        Some("cash_adjust_reason_required")
+    );
+    assert_eq!(count_cash_adjust(&platform, "2026-08-28").await, 0);
+    let capture = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    assert_eq!(capture["exists"], false);
+}
+
+fn cash_from_references<F>(view: &serde_json::Value, mut typed_for: F) -> [i64; 6]
+where
+    F: FnMut(&str, Option<i64>) -> i64,
+{
+    let mut out = [1_000_i64; 6];
+    let order = ["Income", "FI Roth", "Speculation", "Health", "Car", "9"];
+    let refs = view["cashReferences"].as_array().unwrap();
+    for (i, name) in order.iter().enumerate() {
+        let reference = refs
+            .iter()
+            .find(|r| r["accountName"] == *name)
+            .and_then(|r| r["referenceMinor"].as_i64());
+        out[i] = typed_for(name, reference);
+    }
+    out
+}
+
+#[tokio::test]
+async fn t4_null_reference_skips_adjust() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    for (name, kind) in [
+        ("Income", "ira"),
+        ("FI Roth", "fi_roth"),
+        ("Speculation", "ira"),
+        ("Health", "hsa"),
+        ("Car", "taxable"),
+        ("9", "ira"),
+    ] {
+        must_cmd(
+            &platform,
+            "AccountRegister",
+            serde_json::json!({"name": name, "kind": kind}),
+        )
+        .await;
+    }
+    let cash = [1_000, 1_000, 1_000, 1_000, 1_000, 1_000];
+    must_cmd(
+        &platform,
+        "WeekCaptureAccept",
+        capture_body("2026-08-22", "2026-08-28", &cash, serde_json::json!([])),
+    )
+    .await;
+    assert_eq!(count_cash_adjust(&platform, "2026-08-28").await, 0);
+    let capture = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    assert_eq!(capture["exists"], true);
+    let refs = capture["cashReferences"].as_array().unwrap();
+    assert!(refs.iter().all(|r| r["referenceMinor"].is_null()));
+}
+
+#[tokio::test]
+async fn t6_cash_adjust_post_refuses_withholding() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    must_cmd(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Car", "kind": "taxable"}),
+    )
+    .await;
+    let accounts = query_json(&platform, "AccountList", None).await;
+    let car_id = accounts[0]["accountId"].as_str().unwrap();
+    let blocked = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "CashAdjustPost",
+            serde_json::json!({
+                "accountId": car_id,
+                "occurredOn": "2026-08-28",
+                "amountMinor": -825,
+                "scale": 2,
+                "reason": "fee",
+                "federalWithholdingMinor": 1,
+                "stateWithholdingMinor": 0
+            }),
+        ),
+    )
+    .await;
+    assert!(!blocked.ok);
+    assert_eq!(
+        blocked.error_code.as_deref(),
+        Some("cash_adjust_withholding_not_allowed")
+    );
+    assert_eq!(count_cash_adjust(&platform, "2026-08-28").await, 0);
+}

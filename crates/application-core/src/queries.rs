@@ -53,6 +53,7 @@ const ORDINARY_WRITES: &[&str] = &[
     "ImportPost",
     "ActivityPost",
     "CashDistributionPost",
+    "CashAdjustPost",
     "SsaConfirm",
     "ActivityCorrect",
     "ExceptionAcknowledge",
@@ -112,6 +113,7 @@ const ORDINARY_WRITES: &[&str] = &[
     "PositionTaxProfileUpsert",
     "TrendsWeekSave",
     "TrendsWeekCorrect",
+    "WeekCaptureAccept",
     "TrendsWeekClose",
     "AccountValueSnapshotRecord",
     "WorkTicketResolve",
@@ -8711,6 +8713,7 @@ pub async fn execute_command_on(
                         id,
                         jstr(&json, "name"),
                         jstr(&json, "kind"),
+                        jstr(&json, "cashSymbol"),
                         request.expected_version,
                     )
                     .await,
@@ -8815,6 +8818,24 @@ pub async fn execute_command_on(
                     ji64(&json, "federalWithholdingMinor").unwrap_or(0),
                     ji64(&json, "stateWithholdingMinor").unwrap_or(0),
                     ju8(&json, "scale", 2),
+                    jstr(&json, "idempotencyKey"),
+                )
+                .await,
+            ),
+            None => command_err(&request, "missing_account_id"),
+        },
+        "CashAdjustPost" => match juuid(&json, "accountId") {
+            Some(account_id) => map_c(
+                &request,
+                crate::cash_management::cash_adjust_post(
+                    canonical,
+                    account_id,
+                    jstr(&json, "occurredOn").unwrap_or_default(),
+                    ji64(&json, "amountMinor"),
+                    ju8(&json, "scale", 2),
+                    jstr(&json, "reason").unwrap_or_default(),
+                    ji64(&json, "federalWithholdingMinor").unwrap_or(0),
+                    ji64(&json, "stateWithholdingMinor").unwrap_or(0),
                     jstr(&json, "idempotencyKey"),
                 )
                 .await,
@@ -9657,6 +9678,143 @@ pub async fn execute_command_on(
             ),
             None => command_err(&request, "missing_activity_id"),
         },
+        "WeekCaptureAccept" => {
+            let period_end = jstr(&json, "periodEnd").unwrap_or_default();
+            let period_start = jstr(&json, "periodStart").unwrap_or_default();
+            if period_end.is_empty() {
+                return command_err(&request, "missing_period_end");
+            }
+            let allow_closed = jbool(&json, "allowClosed", false)
+                || jbool(&json, "correct", false);
+            let captured_at = jstr(&json, "capturedAt")
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+            let mut record = crate::contracts::TrendsWeekSourceRecord {
+                period_end: period_end.clone(),
+                period_start,
+                profit_minor: ji64(&json, "profitMinor").unwrap_or(0),
+                monthly_divs_minor: ji64(&json, "monthlyDivsMinor").unwrap_or(0),
+                fidelity_total_minor: ji64(&json, "fidelityTotalMinor").unwrap_or(0),
+                schwab_total_minor: ji64(&json, "schwabTotalMinor").unwrap_or(0),
+                income_cash_minor: ji64(&json, "incomeCashMinor").unwrap_or(0),
+                acct9_cash_minor: ji64(&json, "acct9CashMinor").unwrap_or(0),
+                acct9_etf_value_minor: ji64(&json, "acct9EtfValueMinor").unwrap_or(0),
+                scale: ju8(&json, "scale", 2),
+                captured_at,
+                closed: jbool(&json, "closed", false),
+            };
+            if record.fidelity_total_minor == 0 {
+                record.fidelity_total_minor = [
+                    ji64(&json, "incomeBalanceMinor"),
+                    ji64(&json, "rothBalanceMinor"),
+                    ji64(&json, "speculationBalanceMinor"),
+                    ji64(&json, "healthBalanceMinor"),
+                    ji64(&json, "carBalanceMinor"),
+                ]
+                .into_iter()
+                .flatten()
+                .sum();
+            }
+            let acct9_balance = ji64(&json, "acct9BalanceMinor");
+            if record.schwab_total_minor == 0 {
+                if let Some(v) = acct9_balance {
+                    record.schwab_total_minor = v;
+                }
+            }
+            let week_income = week_aligned_income_minor(canonical, &period_end)
+                .await
+                .unwrap_or(0);
+            let balances = [
+                (
+                    "Car",
+                    ji64(&json, "carBalanceMinor"),
+                    ji64(&json, "carCashMinor"),
+                ),
+                (
+                    "Income",
+                    ji64(&json, "incomeBalanceMinor"),
+                    ji64(&json, "incomeCashMinor"),
+                ),
+                (
+                    "Health",
+                    ji64(&json, "healthBalanceMinor"),
+                    ji64(&json, "healthCashMinor"),
+                ),
+                (
+                    "FI Roth",
+                    ji64(&json, "rothBalanceMinor"),
+                    ji64(&json, "rothCashMinor"),
+                ),
+                (
+                    "Speculation",
+                    ji64(&json, "speculationBalanceMinor"),
+                    ji64(&json, "speculationCashMinor"),
+                ),
+                (
+                    "9",
+                    acct9_balance.or(if record.schwab_total_minor != 0 {
+                        Some(record.schwab_total_minor)
+                    } else {
+                        None
+                    }),
+                    ji64(&json, "acct9CashMinor"),
+                ),
+            ];
+            let bal_refs: Vec<(&str, Option<i64>, Option<i64>)> = balances
+                .iter()
+                .map(|(n, v, c)| (*n, *v, *c))
+                .collect();
+            let accounts = match canonical.account_list().await {
+                Ok(a) => a,
+                Err(err) => return command_err(&request, &err.code),
+            };
+            let mut typed_cash = Vec::new();
+            for (name, _, cash) in &balances {
+                let Some(cash_minor) = cash else { continue };
+                let Some(acct) = accounts.iter().find(|a| a.name == *name) else {
+                    continue;
+                };
+                typed_cash.push((acct.account_id, *cash_minor));
+            }
+            let mut adjust_inputs = Vec::new();
+            if let Some(arr) = json.get("adjusts").and_then(|v| v.as_array()) {
+                for item in arr {
+                    let Some(account_id) = item
+                        .get("accountId")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    else {
+                        return command_err(&request, "missing_account_id");
+                    };
+                    let amount_minor = item
+                        .get("amountMinor")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let reason = item
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    adjust_inputs.push(crate::cash_management::WeekCaptureAdjustInput {
+                        account_id,
+                        amount_minor,
+                        reason,
+                    });
+                }
+            }
+            map_c(
+                &request,
+                crate::cash_management::week_capture_accept(
+                    canonical,
+                    record,
+                    &bal_refs,
+                    &typed_cash,
+                    &adjust_inputs,
+                    allow_closed,
+                    week_income,
+                )
+                .await,
+            )
+        }
         "TrendsWeekSave" | "TrendsWeekCorrect" => {
             let period_end = jstr(&json, "periodEnd").unwrap_or_default();
             let period_start = jstr(&json, "periodStart").unwrap_or_default();

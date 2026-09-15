@@ -65,6 +65,10 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::CashDistributionIdentity => "cash_distribution_identity",
         DomainError::RothWithholdingNotAllowed => "roth_withholding_not_allowed",
         DomainError::CashAccountKind => "cash_account_kind",
+        DomainError::CashAdjustWithholdingNotAllowed => "cash_adjust_withholding_not_allowed",
+        DomainError::CashAdjustReasonRequired => "cash_adjust_reason_required",
+        DomainError::CashAdjustAccount => "cash_adjust_account",
+        DomainError::CashAdjustAmount => "cash_adjust_amount",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -248,6 +252,7 @@ fn account_from_row(row: &sqlx::postgres::PgRow) -> Result<AccountRecord, Platfo
         account_id: parse_uuid(row, "account_id")?,
         name: row.try_get("name").map_err(|e| map_err(e.into()))?,
         kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+        cash_symbol: row.try_get::<Option<String>, _>("cash_symbol").unwrap_or(None),
         row_version: row.try_get::<i32, _>("row_version").map_err(|e| map_err(e.into()))? as i64,
     })
 }
@@ -319,6 +324,7 @@ impl Canonical for PostgresPlatform {
             account_id: Uuid::new_v4(),
             name,
             kind,
+            cash_symbol: None,
             row_version: 1,
         };
         sqlx::query("INSERT INTO account (account_id, name, kind, row_version) VALUES ($1, $2, $3, 1)")
@@ -347,6 +353,7 @@ impl Canonical for PostgresPlatform {
         account_id: Uuid,
         name: Option<String>,
         kind: Option<String>,
+        cash_symbol: Option<String>,
         expected_version: Option<i64>,
     ) -> Result<AccountRecord, PlatformError> {
         let mut current = self.account_get(account_id).await?;
@@ -355,6 +362,13 @@ impl Canonical for PostgresPlatform {
         }
         if let Some(kind) = kind {
             current.kind = kind;
+        }
+        if let Some(sym) = cash_symbol {
+            current.cash_symbol = if sym.trim().is_empty() {
+                None
+            } else {
+                Some(sym)
+            };
         }
         let result = if let Some(expected) = expected_version {
             sqlx::query(
@@ -466,6 +480,7 @@ impl Canonical for PostgresPlatform {
             idempotency_key: key,
             federal_withholding_minor: 0,
             state_withholding_minor: 0,
+            note: String::new(),
         };
         match insert_activity(&self.pool, &record).await {
             Ok(()) => {
@@ -504,6 +519,7 @@ impl Canonical for PostgresPlatform {
                         .map_err(|e| map_err(e.into()))?,
                     federal_withholding_minor: 0,
                     state_withholding_minor: 0,
+                    note: String::new(),
                 };
                 remember_dividend_actual(&self.pool, &existing).await?;
                 Ok(existing)
