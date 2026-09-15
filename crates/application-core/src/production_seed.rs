@@ -620,6 +620,36 @@ pub async fn apply_provider_declaration_sources(
         if matches!(sym.as_str(), "ENERGYX" | "BTC" | "BTC-USD") {
             continue;
         }
+        // Holdings-only names stay parked — Apply must not re-enable them.
+        if financial_domain::collector::is_not_a_collector(&security.symbol) {
+            let existing =
+                skip_ni(canonical.retrieval_template_get(security.security_id).await)?.flatten();
+            if let Some(row) = existing {
+                if row.collector_enabled {
+                    let mut parked = row;
+                    parked.collector_enabled = false;
+                    canonical.retrieval_template_set(parked).await?;
+                    updated += 1;
+                }
+            }
+            if let Ok(open) = canonical
+                .work_ticket_list(Some(security.security_id), Some("open".into()))
+                .await
+            {
+                let today = chrono::Utc::now().date_naive().to_string();
+                for mut ticket in open.into_iter().filter(|t| {
+                    t.code == "declaration_retrieve_miss" || t.code.ends_with("_retrieve_miss")
+                }) {
+                    ticket.status = "done".into();
+                    ticket.filed_on = today.clone();
+                    ticket.completed_how = "owner_filed".into();
+                    ticket.owner_note = "filed: not a collector; holding only".into();
+                    ticket.last_seen_on = today.clone();
+                    let _ = canonical.work_ticket_update(ticket).await;
+                }
+            }
+            continue;
+        }
         let Some(ch) = char_by.get(&security.security_id) else {
             continue;
         };

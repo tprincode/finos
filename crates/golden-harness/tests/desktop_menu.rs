@@ -106,6 +106,26 @@ async fn menu_queries_succeed_on_data_sqlite() {
         failures.join("; ")
     );
 
+    let securities = execute_query_on(
+        &platform,
+        &platform,
+        qry("SecurityList", serde_json::json!({})),
+    )
+    .await;
+    let securities_body: serde_json::Value =
+        serde_json::from_str(securities.body_json.as_deref().unwrap_or("[]")).unwrap();
+    let has_haky = securities_body
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|s| s["symbol"].as_str() == Some("HAKY"));
+    if !has_haky {
+        // Include Package templates omit HAKY; the locked 40-name income fleet lives on the
+        // household Profile A file. Seed-only DBs still exercise menu queries above.
+        eprintln!("skip: planCount gate needs household Profile A (HAKY not in seed templates)");
+        return;
+    }
+
     let summary = execute_query_on(
         &platform,
         &platform,

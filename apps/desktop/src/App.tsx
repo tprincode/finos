@@ -1353,6 +1353,10 @@ export default function App() {
     ticketId: string;
     symbol: string;
   } | null>(null);
+  const [ticketDecision, setTicketDecision] = useState<{
+    ticketId: string;
+    action: string;
+  } | null>(null);
   const [, setDiv1Compliance] = useState<Div1ComplianceRow[]>([]);
   const [, setCollectorProofs] = useState<CollectorCompletionProof[]>([]);
   const [missingUrlDrafts, setMissingUrlDrafts] = useState<
@@ -2183,6 +2187,7 @@ export default function App() {
     ticket: WorkTicketRecord,
     action: "except" | "reject",
   ) => {
+    setTicketDecision({ ticketId: ticket.ticketId, action });
     setBusy(true);
     try {
       const result = await client.executeCommand("WorkTicketResolve", {
@@ -2200,6 +2205,33 @@ export default function App() {
       setActionMessage(String(err));
     } finally {
       setBusy(false);
+      setTicketDecision(null);
+    }
+  };
+
+  const resolveRocPctChange = async (
+    ticket: WorkTicketRecord,
+    action: "accept" | "reject",
+  ) => {
+    setTicketDecision({ ticketId: ticket.ticketId, action });
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("WorkTicketResolve", {
+        ticketId: ticket.ticketId,
+        tool: ticket.tool,
+        action,
+      });
+      setActionMessage(
+        result.ok
+          ? `${ticket.symbol}: ${action === "accept" ? "accepted — new ROC % stored." : "rejected — previous ROC % kept."}`
+          : `ROC ${action} failed: ${result.errorCode ?? "error"}`,
+      );
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+      setTicketDecision(null);
     }
   };
 
@@ -7913,11 +7945,32 @@ export default function App() {
                   openRecreateAdapter(t as WorkTicketRecord)
                 }
                 onExcept={(t) =>
+
                   void resolveAmountConfirm(t as WorkTicketRecord, "except")
+
                 }
+
                 onReject={(t) =>
+
                   void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+
                 }
+
+                onAcceptRoc={(t) =>
+
+                  void resolveRocPctChange(t as WorkTicketRecord, "accept")
+
+                }
+
+                onRejectRoc={(t) =>
+
+                  void resolveRocPctChange(t as WorkTicketRecord, "reject")
+
+                }
+
+                pendingTicketId={ticketDecision?.ticketId}
+
+                pendingAction={ticketDecision?.action}
                 onEnterAmount={(t, amount) =>
                   void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
                 }
@@ -11308,11 +11361,32 @@ export default function App() {
               openRecreateAdapter(t as WorkTicketRecord)
             }
             onExcept={(t) =>
+
               void resolveAmountConfirm(t as WorkTicketRecord, "except")
+
             }
+
             onReject={(t) =>
+
               void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+
             }
+
+            onAcceptRoc={(t) =>
+
+              void resolveRocPctChange(t as WorkTicketRecord, "accept")
+
+            }
+
+            onRejectRoc={(t) =>
+
+              void resolveRocPctChange(t as WorkTicketRecord, "reject")
+
+            }
+
+            pendingTicketId={ticketDecision?.ticketId}
+
+            pendingAction={ticketDecision?.action}
             onEnterAmount={(t, amount) =>
               void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
             }
@@ -11845,11 +11919,32 @@ export default function App() {
                 openRecreateAdapter(t as WorkTicketRecord)
               }
               onExcept={(t) =>
+
                 void resolveAmountConfirm(t as WorkTicketRecord, "except")
+
               }
+
               onReject={(t) =>
+
                 void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+
               }
+
+              onAcceptRoc={(t) =>
+
+                void resolveRocPctChange(t as WorkTicketRecord, "accept")
+
+              }
+
+              onRejectRoc={(t) =>
+
+                void resolveRocPctChange(t as WorkTicketRecord, "reject")
+
+              }
+
+              pendingTicketId={ticketDecision?.ticketId}
+
+              pendingAction={ticketDecision?.action}
               onEnterAmount={(t, amount) =>
                 void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
               }

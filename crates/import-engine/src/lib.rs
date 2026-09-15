@@ -38,7 +38,7 @@ pub use retrieve::{
     parse_yahoo_daily_closes, parse_yahoo_spark,
     parse_yieldmax_distributions,
     price_quote_candidates, profile_from_vendor_htmls, registered_declaration_sources,
-    retrieve_result, roundhill_fund_page, DeclarationCollectOutcome, DeclarationTarget,
+    retrieve_result, roc_from_notice_bytes, roundhill_fund_page, DeclarationCollectOutcome, DeclarationTarget,
     LastPriceTarget, LiveRocFill,
 };
 pub use financial_domain::div1::{div1_adapter_missing, is_div1};

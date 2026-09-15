@@ -2172,8 +2172,21 @@ async fn complete_research_replaces_zero_and_stale_unconfirmed_estimate() {
         serde_json::json!({ "securityId": security_id, "asOfDate": "2026-08-29" }),
     )
     .await;
-    assert_eq!(inv["rocPct2026EstimateMinor"], 9874);
-    assert_eq!(inv["needsRocResearch"], true);
+    // Tip behavior (fc84bfe): a later different 19a-1 % tickets Accept/Reject — never silent replace.
+    assert_eq!(
+        inv["rocPct2026EstimateMinor"],
+        1000,
+        "stored projection stays until Accept: {inv}"
+    );
+    let tickets = query_json(&platform, "WorkTicketList", serde_json::json!({})).await;
+    assert!(
+        tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["code"] == "roc_pct_change"),
+        "different live % must raise roc_pct_change: {tickets}"
+    );
 }
 
 /// Imported Calculator plans are owner data. Adapter research must not replace any of them.

@@ -1204,22 +1204,30 @@ export function WorkTicketQueue({
   onRecreateAdapter,
   onExcept,
   onReject,
+  onAcceptRoc,
+  onRejectRoc,
   onEnterAmount,
   onFile,
   filterSymbol,
   retryingTicketId,
   retryingSymbol,
+  pendingTicketId,
+  pendingAction,
 }: {
   tickets: WorkTicketView[];
   onRetry?: (ticket: WorkTicketView) => void;
   onRecreateAdapter?: (ticket: WorkTicketView) => void;
   onExcept?: (ticket: WorkTicketView) => void;
   onReject?: (ticket: WorkTicketView) => void;
+  onAcceptRoc?: (ticket: WorkTicketView) => void;
+  onRejectRoc?: (ticket: WorkTicketView) => void;
   onEnterAmount?: (ticket: WorkTicketView, amount: string) => void;
   onFile?: (ticket: WorkTicketView) => void;
   filterSymbol?: string;
   retryingTicketId?: string;
   retryingSymbol?: string;
+  pendingTicketId?: string;
+  pendingAction?: string;
 }) {
   const open = tickets.filter((t) => t.status === "open");
   const scoped = filterSymbol
@@ -1270,7 +1278,8 @@ export function WorkTicketQueue({
                   <p>
                     {t.code}: {t.reason}
                   </p>
-                  {t.tool === "retry_retrieve" && onRecreateAdapter ? (
+                  {(t.tool === "retry_retrieve" || t.tool === "establish_recertify")
+                  && onRecreateAdapter ? (
                     <button
                       type="button"
                       aria-label={`Recreate adapter ${symbol}`}
@@ -1301,7 +1310,12 @@ export function WorkTicketQueue({
                     <button
                       type="button"
                       aria-label={`Except ${symbol} amount variation`}
-                      disabled={Boolean(retryingTicketId)}
+                      className={
+                        pendingTicketId === t.ticketId && pendingAction === "except"
+                          ? "is-unsaved"
+                          : undefined
+                      }
+                      disabled={Boolean(retryingTicketId) || Boolean(pendingTicketId)}
                       onClick={() => onExcept(t)}
                     >
                       Except — keep issuer amount
@@ -1311,10 +1325,50 @@ export function WorkTicketQueue({
                     <button
                       type="button"
                       aria-label={`Reject ${symbol} amount variation`}
-                      disabled={Boolean(retryingTicketId)}
+                      className={
+                        pendingTicketId === t.ticketId && pendingAction === "reject"
+                          ? "is-unsaved"
+                          : undefined
+                      }
+                      disabled={Boolean(retryingTicketId) || Boolean(pendingTicketId)}
                       onClick={() => onReject(t)}
                     >
                       Reject — keep stored amount
+                    </button>
+                  ) : null}
+                  {t.tool === "roc_confirm" ? (
+                    <p aria-label={`ROC percent change action ${symbol}`}>
+                      Accept writes the new projection. Reject leaves the previous %.
+                    </p>
+                  ) : null}
+                  {t.tool === "roc_confirm" && onAcceptRoc ? (
+                    <button
+                      type="button"
+                      aria-label={`Accept ${symbol} ROC percent change`}
+                      className={
+                        pendingTicketId === t.ticketId && pendingAction === "accept"
+                          ? "is-unsaved"
+                          : undefined
+                      }
+                      disabled={Boolean(retryingTicketId) || Boolean(pendingTicketId)}
+                      onClick={() => onAcceptRoc(t)}
+                    >
+                      Accept — use new ROC %
+                    </button>
+                  ) : null}
+                  {t.tool === "roc_confirm" && onRejectRoc ? (
+                    <button
+                      type="button"
+                      aria-label={`Reject ${symbol} ROC percent change`}
+                      className={
+                        pendingTicketId === t.ticketId && pendingAction === "reject"
+                          ? "is-unsaved"
+                          : undefined
+                      }
+                      disabled={Boolean(retryingTicketId) || Boolean(pendingTicketId)}
+                      onClick={() => onRejectRoc(t)}
+                    >
+                      Reject — keep previous ROC %
                     </button>
                   ) : null}
                   {t.tool === "enter_declared_amount" && onEnterAmount ? (

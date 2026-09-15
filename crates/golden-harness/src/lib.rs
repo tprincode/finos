@@ -377,14 +377,25 @@ pub async fn complete_collector_for_first_lot_as(
                 symbol.to_ascii_lowercase()
             )
         });
+    let source_url = {
+        let existing = tpl.get("sourceUrl").and_then(|v| v.as_str()).unwrap_or("");
+        if existing.is_empty() {
+            format!(
+                "https://example.test/{}/distributions",
+                symbol.to_ascii_lowercase()
+            )
+        } else {
+            existing.to_string()
+        }
+    };
     steps.push((
         "RetrievalTemplateSet",
         serde_json::json!({
+            "sourceUrl": source_url,
             "securityId": security_id,
             "priceSource": tpl.get("priceSource").and_then(|v| v.as_str()).unwrap_or("public"),
-            "sourceSymbol": tpl.get("sourceSymbol").and_then(|v| v.as_str()).unwrap_or(symbol),
+            "sourceSymbol": tpl.get("sourceSymbol").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(symbol),
             "declarationSource": tpl.get("declarationSource").and_then(|v| v.as_str()).unwrap_or("issuer"),
-            "sourceUrl": tpl.get("sourceUrl").and_then(|v| v.as_str()).unwrap_or(""),
             "rocSourceUrl": roc_url,
             "calendarPolicy": tpl.get("calendarPolicy").and_then(|v| v.as_str()).unwrap_or("issuer_calendar"),
             "collectorEnabled": tpl.get("collectorEnabled").and_then(|v| v.as_bool()).unwrap_or(true),
@@ -585,7 +596,16 @@ pub fn desktop_ui_contains_no_sql(src_dir: &Path) -> Result<(), String> {
             let text = fs::read_to_string(&path)?;
             for (i, line) in text.lines().enumerate() {
                 let lower = line.to_ascii_lowercase();
-                if (lower.contains("select ") && !lower.contains("select all"))
+                // UI copy ("Select account", aria-label="Select week") is not SQL.
+                let ui_select_copy = lower.contains("<option")
+                    || lower.contains("aria-label")
+                    || lower.contains("select account")
+                    || lower.contains("select week")
+                    || lower.contains("select reason")
+                    || lower.contains("select draft");
+                if (lower.contains("select ")
+                    && !lower.contains("select all")
+                    && !ui_select_copy)
                     || lower.contains("insert into")
                     || lower.contains("delete from")
                     || lower.contains("sqlite")

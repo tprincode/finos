@@ -561,7 +561,18 @@ async fn remaining_year_schedule_for(
     );
     let latest = latest_declaration_period(canonical, security_id, as_of).await?;
     let issuer = canonical.issuer_pay_date_list(security_id).await?;
-    let issuer_pay_ons: Vec<String> = issuer.into_iter().map(|d| d.pay_on).collect();
+    // Only vendor (non-derived) rows force IssuerCalendar. Derived fills still
+    // participate in the issuer schedule when that policy is active.
+    let vendor_count = issuer
+        .iter()
+        .filter(|d| {
+            !d.source.eq_ignore_ascii_case("derived_walk")
+                && !d
+                    .source
+                    .eq_ignore_ascii_case(financial_domain::mlp_sec::SOURCE_DERIVED_TEMPLATE)
+        })
+        .count();
+    let all_pay_ons: Vec<String> = issuer.iter().map(|d| d.pay_on.clone()).collect();
     let template = canonical.retrieval_template_get(security_id).await?;
     let policy = financial_domain::schedule::CalendarPolicy::resolve(
         template
@@ -569,8 +580,12 @@ async fn remaining_year_schedule_for(
             .map(|t| t.calendar_policy.as_str())
             .unwrap_or(""),
         periods,
-        issuer_pay_ons.len(),
+        vendor_count,
     );
+    let issuer_pay_ons = match policy {
+        financial_domain::schedule::CalendarPolicy::IssuerCalendar => all_pay_ons,
+        _ => Vec::new(),
+    };
     let basis = canonical.basis_get().await?;
     let mut lots: Vec<financial_domain::schedule::OpenLotQty> = basis
         .lots
@@ -6504,7 +6519,16 @@ async fn remaining_year_income_view(
     let stored = stored_date_overrides(canonical, security_id).await?;
     let overrides = merge_date_overrides(stored, draft_date_overrides(json));
     let issuer = canonical.issuer_pay_date_list(security_id).await?;
-    let issuer_pay_ons: Vec<String> = issuer.into_iter().map(|d| d.pay_on).collect();
+    let vendor_count = issuer
+        .iter()
+        .filter(|d| {
+            !d.source.eq_ignore_ascii_case("derived_walk")
+                && !d
+                    .source
+                    .eq_ignore_ascii_case(financial_domain::mlp_sec::SOURCE_DERIVED_TEMPLATE)
+        })
+        .count();
+    let all_pay_ons: Vec<String> = issuer.iter().map(|d| d.pay_on.clone()).collect();
     let template = canonical.retrieval_template_get(security_id).await?;
     let policy = financial_domain::schedule::CalendarPolicy::resolve(
         template
@@ -6512,8 +6536,12 @@ async fn remaining_year_income_view(
             .map(|t| t.calendar_policy.as_str())
             .unwrap_or(""),
         periods,
-        issuer_pay_ons.len(),
+        vendor_count,
     );
+    let issuer_pay_ons = match policy {
+        financial_domain::schedule::CalendarPolicy::IssuerCalendar => all_pay_ons,
+        _ => Vec::new(),
+    };
     let existing_lots: Vec<financial_domain::schedule::OpenLotQty> = basis
         .lots
         .iter()
@@ -9871,8 +9899,26 @@ pub async fn execute_command_on(
                             declaration_source,
                             lookback_count: ju8(&json, "lookbackCount", 12),
                             payment_source: "import".into(),
-                            source_url: jstr(&json, "sourceUrl").unwrap_or_default(),
-                            calendar_policy: jstr(&json, "calendarPolicy").unwrap_or_default(),
+                            source_url: if json_has(&json, "sourceUrl") {
+                                json
+                                    .get("sourceUrl")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string()
+                            } else {
+                                existing
+                                    .as_ref()
+                                    .map(|e| e.source_url.clone())
+                                    .unwrap_or_default()
+                            },
+                            calendar_policy: if json_has(&json, "calendarPolicy") {
+                                jstr(&json, "calendarPolicy").unwrap_or_default()
+                            } else {
+                                existing
+                                    .as_ref()
+                                    .map(|e| e.calendar_policy.clone())
+                                    .unwrap_or_default()
+                            },
                             last_run_at: String::new(),
                             last_run_ok: None,
                             last_run_message: String::new(),

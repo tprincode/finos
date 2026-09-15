@@ -269,6 +269,54 @@ pub async fn production_seed_actual_totals(
     })
 }
 
+/// Totals for the 129 `production-disb-*` seed parent rows (gross / fed / state → net).
+pub async fn production_seed_parent_totals(
+    platform: &LocalPlatform,
+) -> Result<ProductionTotals, String> {
+    let activities = execute_query_on(platform, platform, qry("ActivityList")).await;
+    if !activities.ok {
+        return Err("ActivityList failed".into());
+    }
+    let activity_val: Value =
+        serde_json::from_str(activities.body_json.as_deref().unwrap_or("[]")).map_err(|e| e.to_string())?;
+    let acts = activity_val.as_array().cloned().unwrap_or_default();
+    let parents: Vec<&Value> = acts
+        .iter()
+        .filter(|a| {
+            a["idempotencyKey"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("production-disb-")
+        })
+        .collect();
+    let disbursement_gross_minor = parents
+        .iter()
+        .map(|a| {
+            to_scale_2(
+                a["amountMinor"].as_i64().unwrap_or(0),
+                a["scale"].as_u64().unwrap_or(2) as u8,
+            )
+        })
+        .sum();
+    let disbursement_net_minor = parents
+        .iter()
+        .map(|a| {
+            let scale = a["scale"].as_u64().unwrap_or(2) as u8;
+            to_scale_2(a["amountMinor"].as_i64().unwrap_or(0), scale)
+                - to_scale_2(a["federalWithholdingMinor"].as_i64().unwrap_or(0), scale)
+                - to_scale_2(a["stateWithholdingMinor"].as_i64().unwrap_or(0), scale)
+        })
+        .sum();
+    Ok(ProductionTotals {
+        yield_amount_minor: 0,
+        disbursement_gross_minor,
+        disbursement_net_minor,
+        open_performance_minor: 0,
+        open_tax_minor: 0,
+        scale: 2,
+    })
+}
+
 pub async fn production_seed_plan_count(platform: &LocalPlatform) -> Result<u64, String> {
     let result = execute_query_on(platform, platform, qry("DataSummaryGet")).await;
     if !result.ok {
