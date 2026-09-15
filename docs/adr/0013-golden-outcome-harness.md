@@ -18,3 +18,7 @@ First locked pack: **2026 Marketplace MAGI** (G-MAGI-01 through G-MAGI-10). Deci
 
 - AC-ARCH-13 through AC-ARCH-17; Milestone 5 exit gate.
 - Golden mismatches block release; no tool or AI may auto-approve expected results.
+
+## Addendum — tax-family size freeze (2026-09-15)
+
+Owner lock: the ACA / Marketplace MAGI **tax-family size** dimension for the locked 2026 pack (encoded today as `household_size: 2`, threshold **$84,600**) is **immutable** product/rule data. Agents must not delete the size key, regenerate MAGI oracles to change it, or hardcode around removing `aca_threshold_rule`. Cosmetic rename of the word only if oracle numbers stay identical. See [immutable-tax-family-magi-freeze.md](../architecture/immutable-tax-family-magi-freeze.md).
