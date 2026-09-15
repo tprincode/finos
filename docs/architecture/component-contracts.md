@@ -80,15 +80,46 @@ Does not write Ledger facts (reads via queries). MAGI oracles are locked (ADR-00
 
 | Component | Commands | Queries | Events |
 |-----------|----------|---------|--------|
-| Position Details | — | `PositionDetailsGet` | — |
+| Position Details | — | `PositionDetailsGet`, `PositionMasterGet`, `HoldingsGet` | — |
 | ROI | — | `RoiGet` | — |
 | Trends (charts) | `TrendsWeekSave`, `TrendsWeekCorrect`, `TrendsWeekClose` | `TrendsGet`, `TrendsWeekGet` | — |
 | Dashboard | — | `DashboardBurndownGet`, `DashboardGet` | — |
 | Account values (Home) | — | `AccountValueHomeGet` (`points`, `trendsPoints`, `incomePoints`) | — |
 | Dividend plan (Home) | — | `DividendPlanHomeGet` | — |
 | Cash pile | — | `CashPileGet` | — |
+| Data / collectors (nav) | — | `DataSummaryGet`, `DeclarationHistoryGet` | — |
 
 Read models are not authoritative (ADR-0008). Week snapshot writes are Reporting; the owner enters them on Cash Management. `incomePoints` are closed Sat–Fri week actuals plotted on Friday.
+
+## Desktop menu queries (live)
+
+Every FinanceClient query the desktop nav issues (locked by `crates/golden-harness/tests/desktop_menu.rs` `MENU_QUERIES`). Must stay registered in `execute_query_on` and called from `App.tsx`.
+
+| Query | Owner surface |
+|-------|----------------|
+| `HealthGet` | Settings / shell |
+| `CoreFunctionsGet` | Tools → Components / Settings |
+| `ConfigGet` | Settings |
+| `HandoffStatusGet` | File / shell |
+| `IncomePlanWeekGet` | Income Plan (week) |
+| `IncomePlanGridGet` | Income Plan (grid) |
+| `DividendPerformanceGet` | Income Plan / Trends |
+| `DashboardBurndownGet` | Dashboard |
+| `HoldingsGet` | Holdings |
+| `WorkTicketList` | Tickets |
+| `ExceptionList` | Data / exceptions |
+| `DataSummaryGet` | Home / Data |
+| `CalculatorGet` | Calculator |
+| `CashManagementWeekGet` | Cash Management |
+| `CashManagementRemindersGet` | Cash Management |
+| `CashManagementMonthGet` | Cash Management |
+| `DeclarationHistoryGet` | Collectors / Data |
+| `AccountList` | Registries / nav |
+| `SecurityList` | Registries / nav |
+| `PositionDetailsGet` | Position Details |
+| `PositionMasterGet` | Position master |
+
+Anti-erasure: PRs must keep `ui_modules` + `core_functions` green (`scripts/components-anti-erasure.sh`).
 
 ## Decision support
 

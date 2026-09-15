@@ -46,7 +46,7 @@ Grouped by the contract buckets. Names are from `crates/storage-sqlite/migration
 
 ## 3. Component architecture (contracts vs code)
 
-`docs/architecture/component-contracts.md` is still `1.0.0-draft` and says “implementations land in later milestones.” That sentence is stale. Most listed queries exist in `queries.rs`.
+`docs/architecture/component-contracts.md` is `1.0.0-draft`. Live desktop menu queries are listed there (Phase 1). Isolation remains a review rule (one SQLite file).
 
 ### Implemented and used on desktop
 
@@ -65,12 +65,10 @@ Grouped by the contract buckets. Names are from `crates/storage-sqlite/migration
 
 | Issue | Detail |
 |---|---|
-| **Missing from contracts** | `CashManagementWeekGet` / `RemindersGet` / `MonthGet`, `CashDistributionPost`, `SsaConfirm`, `TrendsWeekGet`/`Save`/`Correct`/`Close`, `IncomePlanWeekGet`/`GridGet`/`ExportGet`, `DividendPerformanceGet`, `WorkTicket*`, `Collector*`, `LastPriceAutoWindowGet`, `CashPileGet` |
-| **Stale “parked”** | Shopping Cart scenario commands are in product (`cart.rs`). The “parked until SC-1” line is wrong. |
-| **Wrong owner screen** | `TrendsGet` / `TrendsWeek*` are Reporting, but week **entry** is Cash Management. Contracts still imply Trends owns the snapshot. |
-| **Income Plan names** | Contract lists `IncomePlanGet` / `IncomePlanUpdate`. Desktop uses week/grid/export queries. |
-| **Dashboard** | Contract `DashboardGet` vs UI `DashboardBurndownGet`. |
-| **AI / Backtest / Allocation** | Tables and some queries exist. No owner menu for AI, Backtest, or Allocation. Correct as parked **UX**, not missing schema. |
+| **Closed (Phase 1)** | Desktop menu queries listed in `component-contracts.md` § Desktop menu queries; Cash Management / Work tickets / Collector / Income Plan week-grid-export / `DividendPerformanceGet` / `LastPriceAutoWindowGet` / `CashPileGet` / `DashboardBurndownGet` are on the contract table. Shopping Cart scenarios marked shipped. |
+| **Remaining backlog** | See `execution.md` IDs **BL-CONTRACT-01** … **BL-CONTRACT-04** (Components catalog model; IncomePlanGet vs week/grid naming; DashboardGet alias; isolation-as-review-rule note). |
+| **Wrong owner screen (doc clarity)** | `TrendsGet` / `TrendsWeek*` are Reporting; week **entry** is Cash Management (stated on CM + Reporting sections). |
+| **AI / Backtest / Allocation** | Tables and some queries exist. No owner menu. Parked **UX**, not missing schema. |
 | **Layering** | UI → FinanceClient → application-core → ports → storage-sqlite. `App.tsx` is still the shell for most screens. Extracted: graphing, shopping-cart, pickers, HomeDividendPlan, CashWeekDesk. CM, Income Plan, Collectors, PD remain in `App.tsx`. |
 
 ---

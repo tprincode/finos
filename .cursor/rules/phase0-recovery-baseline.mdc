@@ -15,3 +15,5 @@ Until that tip (or its successor merge) is the default branch tip agents use for
 4. Never regenerate MAGI oracles (ADR-0013).
 
 Pass evidence for Phase 0 recover: default tip contains `.text("components", "Components")` in `apps/desktop/src-tauri/src/lib.rs` and `navButton("components", "Components")` in `App.tsx`; `ui_modules` / `core_functions` / `cash_management` golden tests green.
+
+Phase 1 anti-erasure: every PR runs CI job `components-anti-erasure` / `scripts/components-anti-erasure.sh` (`ui_modules` + `core_functions`) — path filters must not skip this job.

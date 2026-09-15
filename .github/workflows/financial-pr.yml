@@ -35,3 +35,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: CRF lots policy
         run: cargo test -p golden-harness --test lots_roi
+
+  # Phase 1 anti-erasure (finos-reset-plan §1.1). Always runs on every PR/push —
+  # do not path-filter this job (skipped required checks fail open).
+  # Covers apps/desktop, docs/architecture/*modules*, core-functions.json, and
+  # any other change that could erase Tools → Components / catalogs.
+  components-anti-erasure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: ui_modules + core_functions (Tools → Components)
+        run: bash scripts/components-anti-erasure.sh
