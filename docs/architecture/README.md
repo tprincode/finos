@@ -14,6 +14,7 @@ Governing target architecture for the Finance Management System.
 | [m3-gate.md](m3-gate.md) | Dividend vertical slice: one actual updates Income Plan / Dashboard / Trends |
 | [m4-gate.md](m4-gate.md) | Lots and ROI: dual basis, CRF policy, explicit assignment, broker recon |
 | [m5-gate.md](m5-gate.md) | Marketplace MAGI pack: owner-approved oracles pass on the production path |
+| [immutable-tax-family-magi-freeze.md](immutable-tax-family-magi-freeze.md) | Owner lock (2026-09-15): ACA tax-family size / $84,600 path immutable (ADR-0013) |
 | [m6-gate.md](m6-gate.md) | Decision intelligence: allocation, cart, backtest, classification, advisory AI |
 | [m7-gate.md](m7-gate.md) | Release hardening: recovery drill, signed NSIS, accessibility |
 | [m8-gate.md](m8-gate.md) | PostgreSQL adapter, MAGI pack, Axum, concurrency, snapshot import (desktop stays SQLite; no cutover) |
@@ -27,6 +28,7 @@ Governing target architecture for the Finance Management System.
 
 - **ARCH-01–09**: Local write-first SQLite, cross-platform Tauri desktop, modular monolith, deployment-independent domain, safe device handoff, path to PostgreSQL multi-client, explainable calculations, progressive automation, no autonomous financial action.
 - **Golden Harness (ADR-0013)**: Required release-control component; first pack is 2026 Marketplace MAGI (G-MAGI-01–10).
+- **Tax-family MAGI size freeze (2026-09-15)**: [immutable-tax-family-magi-freeze.md](immutable-tax-family-magi-freeze.md) — size 2 / $84,600 path is immutable product data; do not regenerate MAGI oracles.
 - **Milestone 0**: Architecture control — ADRs, contracts, MVP boundary, golden-harness contract.
 - **Milestone 2 gate**: [m2-gate.md](m2-gate.md) — seed reconcile; MAGI pack must not pass while pending-owner.
 - **Milestone 3 gate**: [m3-gate.md](m3-gate.md) — one `DividendActual` updates Income Plan / Dashboard / Trends; re-import is idempotent.

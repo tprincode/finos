@@ -2,7 +2,7 @@
 
 Exit (V1.1 §12): owner-approved G-MAGI-01–10 oracles pass through production-path commands (`MagiRuleSet`, `MagiFactRecord`, `MagiCoverageSet`, `MagiAdjustmentRecord`, `MagiProjectionGet`). Expected oracles are never generated or overwritten by the engine.
 
-Household of 2, contiguous US/DC, coverage year 2026. Threshold $84,600. Safety reserve $5,000. OVER when actual is at or above the threshold. G10-ADJ-1 is owner-approved; posted MAGI $52,000 matches adjusted forms.
+Tax family of 2 (ACA size; historically labeled `household_size`), contiguous US/DC, coverage year 2026. Threshold $84,600. Safety reserve $5,000. OVER when actual is at or above the threshold. G10-ADJ-1 is owner-approved; posted MAGI $52,000 matches adjusted forms. **Owner-locked immutable 2026-09-15** — see [immutable-tax-family-magi-freeze.md](immutable-tax-family-magi-freeze.md); do not regenerate MAGI oracles (ADR-0013).
 
 Calculator Plan is versioned and never rewrites actual cash. `BurndownGet` uses Plan remaining as the obligation.
 
