@@ -45,5 +45,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: System deps for seed (native-tls / OpenSSL)
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
       - name: ui_modules + core_functions (Tools → Components)
+        env:
+          # Absolute path so profile_a_app_dir is not cwd-relative under cargo test.
+          LOCALAPPDATA: ${{ github.workspace }}
         run: bash scripts/components-anti-erasure.sh
