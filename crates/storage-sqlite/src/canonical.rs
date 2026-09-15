@@ -1831,6 +1831,20 @@ impl Canonical for LocalPlatform {
         Ok(record)
     }
 
+    async fn lot_assignment_list(&self) -> Result<Vec<LotAssignmentRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        let rows = sqlx::query(
+            "SELECT assignment_id, lot_id, activity_id, quantity_minor, quantity_scale,
+                    proceeds_minor, performance_cost_minor, tax_cost_minor, scale
+             FROM lot_assignment
+             ORDER BY assignment_id",
+        )
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        rows.iter().map(assignment_from_row).collect()
+    }
+
     async fn lot_qty_add(
         &self,
         lot_id: Uuid,

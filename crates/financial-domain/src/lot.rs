@@ -8,6 +8,42 @@ use crate::money::{rescale, Money};
 /// Fractional share scale for estimated CRF DRIP lots (cash ÷ close).
 pub const DRIP_QUANTITY_SCALE: u8 = 4;
 
+/// Tax holding period for a named lot sale. Unknown dates stay unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldingTerm {
+    Short,
+    Long,
+}
+
+/// Long-term if held more than one calendar year (opened_on → sold_on). Bad dates → None.
+pub fn holding_term(opened_on: &str, sold_on: &str) -> Option<HoldingTerm> {
+    let open = parse_ymd(opened_on)?;
+    let sold = parse_ymd(sold_on)?;
+    if sold < open {
+        return None;
+    }
+    let anniversary = (open.0 + 1, open.1, open.2);
+    if sold > anniversary {
+        Some(HoldingTerm::Long)
+    } else {
+        Some(HoldingTerm::Short)
+    }
+}
+
+fn parse_ymd(raw: &str) -> Option<(i32, u32, u32)> {
+    let s = raw.trim();
+    if s.len() < 10 {
+        return None;
+    }
+    let y: i32 = s.get(..4)?.parse().ok()?;
+    let m: u32 = s.get(5..7)?.parse().ok()?;
+    let d: u32 = s.get(8..10)?.parse().ok()?;
+    if m == 0 || m > 12 || d == 0 || d > 31 {
+        return None;
+    }
+    Some((y, m, d))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LotOrigin {
     Purchase,
@@ -368,5 +404,18 @@ mod tests {
     fn proportional_basis_is_named_qty_not_fifo() {
         assert_eq!(proportional_basis(10_000, 10, 4), 4_000);
         assert_eq!(proportional_basis(10_000, 0, 4), 0);
+    }
+
+    #[test]
+    fn holding_term_is_long_only_after_one_year() {
+        assert_eq!(
+            holding_term("2025-01-15", "2026-01-15"),
+            Some(HoldingTerm::Short)
+        );
+        assert_eq!(
+            holding_term("2025-01-15", "2026-01-16"),
+            Some(HoldingTerm::Long)
+        );
+        assert_eq!(holding_term("bad", "2026-01-16"), None);
     }
 }

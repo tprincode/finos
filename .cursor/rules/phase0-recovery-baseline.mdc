@@ -1,0 +1,17 @@
+---
+description: Phase 0 recovery baseline — refuse master-only product work until recovered tip is the default
+alwaysApply: true
+---
+
+# Phase 0 recovery baseline (owner/agent instruction)
+
+**Recovery baseline (authoritative product tip):** `origin/cursor/core-functions-decl-color` @ **`fc84bfe`** (`fc84bfef4fc2898add03d6c155664d27bef71b6d`).
+
+Until that tip (or its successor merge) is the default branch tip agents use for Profile A product work:
+
+1. **Do not implement owner screens, menus, catalogs, Cash Management, Components, or Shopping Cart from `master` alone.** Pre-merge `master` @ `7cf9986` is a contaminated default for those surfaces.
+2. **Checkout / merge the recovery baseline** (or a branch that already contains it) before product Now work. Prefer the merged tip that preserves Tools → Components, `CoreFunctionsGet`, `ui-modules.json` / `core-functions.json`, and Cash Management.
+3. **Refuse master-only work** that recreates Components / Cash Management / catalogs without the recovered commits — that repeats the erasure failure mode.
+4. Never regenerate MAGI oracles (ADR-0013).
+
+Pass evidence for Phase 0 recover: default tip contains `.text("components", "Components")` in `apps/desktop/src-tauri/src/lib.rs` and `navButton("components", "Components")` in `App.tsx`; `ui_modules` / `core_functions` / `cash_management` golden tests green.

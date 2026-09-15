@@ -293,6 +293,9 @@ pub trait Canonical: Send + Sync {
     ) -> Result<LotAssignmentRecord, PlatformError> {
         ni()
     }
+    async fn lot_assignment_list(&self) -> Result<Vec<LotAssignmentRecord>, PlatformError> {
+        ni()
+    }
     async fn lot_get(&self, lot_id: Uuid) -> Result<LotRecord, PlatformError> {
         ni()
     }
@@ -1122,6 +1125,9 @@ impl Canonical for UnimplementedCanonical {
         _quantity_minor: i64,
         _quantity_scale: u8,
     ) -> Result<LotAssignmentRecord, PlatformError> {
+        ni()
+    }
+    async fn lot_assignment_list(&self) -> Result<Vec<LotAssignmentRecord>, PlatformError> {
         ni()
     }
     async fn lot_get(&self, _lot_id: Uuid) -> Result<LotRecord, PlatformError> {
