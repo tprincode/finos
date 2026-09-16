@@ -321,11 +321,35 @@ fn last_price_auto_window_body_for(last_ok_stamp: Option<&str>) -> LastPriceAuto
     }
 }
 
-async fn latest_ok_price_run_stamp(canonical: &dyn Canonical) -> Option<String> {
-    let runs = canonical.retrieve_run_list(None, 200).await.ok()?;
+/// Stamps come from `run_stamp_local()`, so the fixed-width format sorts chronologically.
+fn newest_ok_price_stamp(runs: Vec<RetrieveRunRecord>) -> Option<String> {
     runs.into_iter()
-        .find(|run| run.kind == "price" && run.ok)
+        .filter(|run| run.kind == "price" && run.ok)
         .map(|run| run.requested_at)
+        .max()
+}
+
+/// Newest successful last-price run, for the 4-hour auto gate.
+///
+/// Prefers the per-sweep marker (nil security id, one row per sweep): it cannot be
+/// crowded out of the run window by the per-security rows a declaration sweep writes.
+/// Also scans the unfiltered window so a database written before markers existed still
+/// reports freshness from its per-security price rows.
+async fn latest_ok_price_run_stamp(canonical: &dyn Canonical) -> Option<String> {
+    let marker = canonical
+        .retrieve_run_list(Some(Uuid::nil()), 200)
+        .await
+        .ok()
+        .and_then(newest_ok_price_stamp);
+    let per_security = canonical
+        .retrieve_run_list(None, 200)
+        .await
+        .ok()
+        .and_then(newest_ok_price_stamp);
+    match (marker, per_security) {
+        (Some(marker), Some(per_security)) => Some(marker.max(per_security)),
+        (marker, per_security) => marker.or(per_security),
+    }
 }
 
 fn query_ok(request: &QueryRequest, body_json: String) -> QueryResult {
@@ -10572,13 +10596,40 @@ pub async fn execute_command_on(
                     .await;
                 }
             }
+            let skip_reason = jstr(&json, "skipReason");
+            let attempted = attempted + misses.len() as u64;
+            let skipped = skipped + misses.len() as u64;
+            // The 4-hour gate reads the newest ok `price` run. The rows above exist only
+            // for symbols that returned a quote or a miss, so a sweep with nothing to
+            // fetch — every open lot already priced today, or only cash / offering-priced
+            // symbols — left no stamp at all, and a sweep that missed everywhere left only
+            // ok=false rows. Either way the gate stayed open and the UI re-entered the
+            // wait on every open. Record the sweep itself so the window advances once per
+            // run. A skipped sweep did not run, so it must not advance the window.
+            if skip_reason.is_none() {
+                persist_retrieve_run(
+                    canonical,
+                    Uuid::nil(),
+                    "price",
+                    &ran_at,
+                    true,
+                    crate::last_price_window::LAST_PRICE_RUN_CODE,
+                    "last price run completed",
+                    attempted,
+                    recorded,
+                    skipped,
+                    0,
+                    &serde_json::json!({ "lastPriceRun": true }),
+                )
+                .await;
+            }
             command_ok(
                 &request,
                 serde_json::to_string(&LastPriceRefreshBody {
-                    attempted: attempted + misses.len() as u64,
+                    attempted,
                     recorded,
-                    skipped: skipped + misses.len() as u64,
-                    skip_reason: jstr(&json, "skipReason"),
+                    skipped,
+                    skip_reason,
                 })
                 .unwrap_or_else(|_| "{\"attempted\":0,\"recorded\":0,\"skipped\":0}".into()),
             )

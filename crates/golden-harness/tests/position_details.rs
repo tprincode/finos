@@ -959,6 +959,26 @@ fn last_price_auto_refresh_uses_weekday_eastern_window() {
         queries.contains("last_price_auto_window_body_for"),
         "LastPriceAutoWindowGet must apply freshness before UI starts waiting"
     );
+    assert!(
+        helper.contains("LAST_PRICE_RUN_CODE") && queries.contains("LAST_PRICE_RUN_CODE"),
+        "the sweep must stamp itself so the 4h window advances once per run"
+    );
+    assert!(
+        queries.contains("if skip_reason.is_none() {"),
+        "a skipped sweep must not advance the 4h window"
+    );
+    assert!(
+        helper.contains("Local\n        .from_local_datetime(&naive)"),
+        "offset-less run stamps are machine-local; reading them as Eastern cuts the window short"
+    );
+    assert!(
+        helper.contains("local_run_stamp_reads_back_as_minutes_ago"),
+        "unit pass must prove a local run stamp survives a non-Eastern machine"
+    );
+    assert!(
+        !host.contains("latest_ok_price_requested_at(platform.inner().as_ref(), security_id)"),
+        "per-symbol auto price must use the portfolio-wide 4h window, not a per-security stamp"
+    );
 }
 
 /// Pass check: a successful price run minutes ago → LastPriceAutoWindowGet disallows
@@ -967,7 +987,7 @@ fn last_price_auto_refresh_uses_weekday_eastern_window() {
 async fn last_price_auto_window_get_no_wait_when_refreshed_minutes_ago() {
     use application_core::contracts::RetrieveRunRecord;
     use application_core::last_price_window::{
-        last_price_auto_window_now_with_last, now_eastern, LAST_PRICE_FRESH_HOURS,
+        last_price_auto_window_now_with_last, LAST_PRICE_FRESH_HOURS,
     };
     use chrono::Duration;
 
@@ -984,8 +1004,9 @@ async fn last_price_auto_window_get_no_wait_when_refreshed_minutes_ago() {
     let security_id = Uuid::parse_str(security["securityId"].as_str().unwrap()).unwrap();
     assert_eq!(LAST_PRICE_FRESH_HOURS, 4);
 
-    // Persist a live-relative ok price run so LastPriceAutoWindowGet sees freshness.
-    let stamp = (now_eastern() - Duration::minutes(12))
+    // Machine-local wall clock, the way run_stamp_local() writes retrieve-run stamps.
+    // Stamping in Eastern here would pass on an Eastern box and hide the offset bug.
+    let stamp = (chrono::Local::now() - Duration::minutes(12))
         .format("%Y-%m-%dT%H:%M:%S")
         .to_string();
     platform
@@ -1025,6 +1046,178 @@ async fn last_price_auto_window_get_no_wait_when_refreshed_minutes_ago() {
     assert_eq!(
         window["allowed"], false,
         "minutes-ago price run must not allow auto wait; got {window}"
+    );
+}
+
+async fn run_json(
+    platform: &LocalPlatform,
+    name: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let result = execute_query_on(
+        platform,
+        platform,
+        QueryRequest {
+            contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
+            query_name: name.to_string(),
+            correlation_id: Uuid::new_v4(),
+            body_json: Some(body.to_string()),
+        },
+    )
+    .await;
+    assert!(result.ok, "{name} failed: {:?}", result.error_code);
+    serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap()
+}
+
+/// The one ok `price` run the sweep records for itself, under the nil security id.
+async fn sweep_marker_stamps(platform: &LocalPlatform) -> Vec<String> {
+    let runs = run_json(
+        platform,
+        "RetrieveRunList",
+        serde_json::json!({ "securityId": Uuid::nil().to_string(), "limit": 200 }),
+    )
+    .await;
+    runs["runs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|run| {
+            run["kind"] == "price"
+                && run["ok"] == true
+                && run["code"] == application_core::last_price_window::LAST_PRICE_RUN_CODE
+        })
+        .filter_map(|run| run["requestedAt"].as_str().map(|s| s.to_string()))
+        .collect()
+}
+
+/// Pass check: a sweep that found nothing to fetch still closes the 4-hour window.
+///
+/// Per-symbol rows are written only for a quote or a miss, so an empty sweep used to
+/// leave no stamp and the UI re-entered the wait on the next open.
+#[tokio::test]
+async fn last_price_sweep_with_nothing_to_fetch_closes_four_hour_window() {
+    use application_core::last_price_window::{
+        last_price_auto_window_now_with_last, now_eastern, parse_run_stamp_et, LastPriceAutoSkip,
+        LAST_PRICE_FRESH_HOURS,
+    };
+    use chrono::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    // Every open lot already priced today: no quotes, no misses, nothing skipped.
+    let body = must_ok(
+        &platform,
+        "LastPriceRefresh",
+        serde_json::json!({ "quotes": [], "misses": [] }),
+    )
+    .await;
+    assert_eq!(body["attempted"], 0, "{body}");
+    assert_eq!(body["recorded"], 0, "{body}");
+
+    let stamps = sweep_marker_stamps(&platform).await;
+    assert_eq!(
+        stamps.len(),
+        1,
+        "empty sweep must still record one ok price run; got {stamps:?}"
+    );
+    let stamp = &stamps[0];
+    let elapsed =
+        now_eastern().signed_duration_since(parse_run_stamp_et(stamp).expect("stamp parses"));
+    assert!(
+        elapsed >= Duration::zero() && elapsed < Duration::hours(LAST_PRICE_FRESH_HOURS),
+        "sweep stamp must read back as just now; got {} minutes",
+        elapsed.num_minutes()
+    );
+    assert!(
+        last_price_auto_window_now_with_last(Some(stamp)).is_err(),
+        "recorded sweep stamp must hold the window shut"
+    );
+    // The query the UI calls before it sets busy must see the marker.
+    let window = query_json(&platform, "LastPriceAutoWindowGet").await;
+    assert_eq!(
+        window["allowed"], false,
+        "auto gate must stay shut after a sweep; got {window}"
+    );
+    // Inside weekday 9-4 Eastern the stamp is the only thing that can close the gate,
+    // so it must be the stated reason. Outside those hours the clock closes it anyway.
+    if last_price_auto_window_now_with_last(None).is_ok() {
+        assert_eq!(
+            last_price_auto_window_now_with_last(Some(stamp)),
+            Err(LastPriceAutoSkip::FreshUnderFourHours),
+        );
+    }
+}
+
+/// Pass check: a sweep where every symbol missed still closes the window. Miss rows are
+/// ok=false, so on their own they never satisfied the gate and the next open waited again.
+#[tokio::test]
+async fn last_price_sweep_that_missed_everywhere_closes_four_hour_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "HAKY", "name": "HAKY"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap().to_string();
+    let body = must_ok(
+        &platform,
+        "LastPriceRefresh",
+        serde_json::json!({
+            "quotes": [],
+            "misses": [{
+                "securityId": security_id,
+                "symbol": "HAKY",
+                "code": "price_retrieve_miss",
+                "reason": "Last price miss for HAKY."
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(body["recorded"], 0, "{body}");
+
+    let per_symbol = run_json(
+        &platform,
+        "RetrieveRunList",
+        serde_json::json!({ "securityId": security_id, "limit": 10 }),
+    )
+    .await;
+    assert_eq!(per_symbol["runs"][0]["ok"], false, "{per_symbol}");
+    assert_eq!(
+        sweep_marker_stamps(&platform).await.len(),
+        1,
+        "all-miss sweep must still record one ok price run"
+    );
+}
+
+/// Pass check: a sweep the host skipped did not run, so it must not extend the window —
+/// otherwise every open would push the next refresh out and prices would never update.
+#[tokio::test]
+async fn skipped_last_price_sweep_does_not_close_four_hour_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let body = must_ok(
+        &platform,
+        "LastPriceRefresh",
+        serde_json::json!({
+            "quotes": [],
+            "misses": [],
+            "skipReason": "last refresh under 4 hours"
+        }),
+    )
+    .await;
+    assert_eq!(body["skipReason"], "last refresh under 4 hours", "{body}");
+    assert!(
+        sweep_marker_stamps(&platform).await.is_empty(),
+        "a skipped sweep must not record a price run"
     );
 }
 
