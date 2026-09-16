@@ -120,9 +120,12 @@ async fn finance_command(
                 .unwrap_or(false)
             && !body.get("force").and_then(|v| v.as_bool()).unwrap_or(false)
         {
-            let security_id = body.get("securityId").and_then(|v| v.as_str());
-            let last =
-                latest_ok_price_requested_at(platform.inner().as_ref(), security_id).await;
+            // One auto refresh every 4 hours is a portfolio-wide policy, so the
+            // per-symbol auto fetch reads the same window as the sweep. A per-security
+            // stamp re-fetched on every screen open for any symbol the sweep skipped or
+            // missed, because those leave no ok price row. Manual Refresh sends force
+            // and still fetches one symbol on demand.
+            let last = latest_ok_price_requested_at(platform.inner().as_ref()).await;
             if let Some(skip) = last_price_auto_skip(last.as_deref()) {
                 body["quote"] = serde_json::Value::Null;
                 body["skipReason"] = serde_json::Value::String(skip.reason().to_string());
@@ -669,31 +672,40 @@ async fn stored_last_price(platform: &LocalPlatform, security_id: &str, today: &
     }
 }
 
-async fn latest_ok_price_requested_at(
-    platform: &LocalPlatform,
-    security_id: Option<&str>,
-) -> Option<String> {
-    let mut body = serde_json::json!({ "limit": 200 });
-    if let Some(id) = security_id {
-        body["securityId"] = serde_json::Value::String(id.to_string());
-    }
+async fn newest_ok_price_stamp(platform: &LocalPlatform, body: serde_json::Value) -> Option<String> {
     let result = execute_query_on(platform, platform, qry("RetrieveRunList", body)).await;
     if !result.ok {
         return None;
     }
     let val: serde_json::Value =
         serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).ok()?;
-    for run in val.get("runs")?.as_array()? {
-        let kind = run.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        let ok = run.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if kind == "price" && ok {
-            return run
-                .get("requestedAt")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-        }
+    val.get("runs")?
+        .as_array()?
+        .iter()
+        .filter(|run| {
+            run.get("kind").and_then(|v| v.as_str()) == Some("price")
+                && run.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)
+        })
+        .filter_map(|run| run.get("requestedAt").and_then(|v| v.as_str()))
+        .max()
+        .map(|s| s.to_string())
+}
+
+/// Newest successful last-price run. Mirrors `latest_ok_price_run_stamp` in
+/// application-core: the per-sweep marker (nil security id) first, then the unfiltered
+/// window for databases written before markers existed.
+async fn latest_ok_price_requested_at(platform: &LocalPlatform) -> Option<String> {
+    let marker = newest_ok_price_stamp(
+        platform,
+        serde_json::json!({ "securityId": Uuid::nil().to_string(), "limit": 200 }),
+    )
+    .await;
+    let per_security =
+        newest_ok_price_stamp(platform, serde_json::json!({ "limit": 200 })).await;
+    match (marker, per_security) {
+        (Some(marker), Some(per_security)) => Some(marker.max(per_security)),
+        (marker, per_security) => marker.or(per_security),
     }
-    None
 }
 
 fn last_price_auto_skip(
@@ -727,7 +739,7 @@ async fn fill_last_price_refresh(
     }
     let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     if !force {
-        let last = latest_ok_price_requested_at(platform, None).await;
+        let last = latest_ok_price_requested_at(platform).await;
         if let Some(skip) = last_price_auto_skip(last.as_deref()) {
             body["quotes"] = serde_json::json!([]);
             body["misses"] = serde_json::json!([]);
