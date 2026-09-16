@@ -231,11 +231,14 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Cash week overview\"",
         "aria-label=\"Trends weekly capture\"",
         "aria-label=\"Trends capture steps\"",
+        "aria-label=\"Week capture grid\"",
+        "aria-label=\"Account 9 ETF total\"",
         "aria-label=\"Account 9 70% ETF\"",
         "aria-label=\"Save Trends week\"",
         "aria-label=\"Edit Trends week\"",
         "aria-label=\"Correct Trends week\"",
         "aria-label=\"Close Trends week\"",
+        "aria-label=\"Cancel Trends edits\"",
         "aria-label=\"Trends graphing period\"",
         "aria-label=\"Cash Management\"",
         "aria-label=\"Save cash distribution\"",
@@ -247,6 +250,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"State withholding\"",
         "aria-label=\"Saturday income draft\"",
         "aria-label=\"Confirm Tom Social Security retirement\"",
+        "aria-label=\"Week cash recon\"",
         "aria-label=\"Tom SSA received\"",
         "aria-label=\"Cancel Tom SSA confirm\"",
         "aria-label=\"Cash MAGI preview\"",
@@ -396,48 +400,102 @@ fn t5_blank_income_cash_blocks_next() {
     )
     .unwrap();
     assert!(
-        capture.contains("draft[row.totalKey].trim() !== \"\" && draft[row.cashKey].trim() !== \"\""),
-        "Next requires both Total and Cash filled"
+        capture.contains("gridFilled")
+            && capture.contains(
+                "draft[row.totalKey].trim() !== \"\" && draft[row.cashKey].trim() !== \"\""
+            ),
+        "Next from Capture requires every account Total and Cash filled"
     );
     assert!(
         capture.contains("cashKey: \"incomeCashMinor\""),
         "Income cash field must gate Next"
     );
+    assert!(
+        capture.contains("step === \"Capture\" && !gridFilled"),
+        "blank Income (or any) cash blocks Next on the capture grid"
+    );
 }
 
 #[test]
-fn t7_speculation_still_in_steps_and_recon_panel() {
+fn t7_speculation_still_in_grid_and_recon_panel() {
     let capture = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/graphing/TrendsCapture.tsx"),
     )
     .unwrap();
     let steps_idx = capture.find("const STEPS = [").expect("STEPS");
-    let steps_slice = &capture[steps_idx..steps_idx + 220];
+    let steps_slice = &capture[steps_idx..steps_idx + 120];
     assert!(
-        steps_slice.contains("\"Speculation\""),
-        "Speculation must remain in STEPS"
+        steps_slice.contains("\"Week\"")
+            && steps_slice.contains("\"Capture\"")
+            && steps_slice.contains("\"Review\""),
+        "Slice 1b STEPS are Week → Capture → Review"
     );
     assert!(
-        steps_slice.matches('"').count() >= 16,
-        "STEPS must stay length 8 (quoted names)"
+        !steps_slice.contains("\"Income\"") && !steps_slice.contains("\"Speculation\""),
+        "account names are grid rows, not STEPS rail entries"
     );
-    let after_week = steps_slice.find("\"Week\"").unwrap();
-    let after_income = steps_slice.find("\"Income\"").unwrap();
-    let after_roth = steps_slice.find("\"FI Roth\"").unwrap();
-    let after_spec = steps_slice.find("\"Speculation\"").unwrap();
-    assert!(after_week < after_income && after_income < after_roth && after_roth < after_spec);
+    assert!(
+        capture.contains("label: \"Speculation\"")
+            && capture.contains("accountName: \"Speculation\""),
+        "Speculation must remain a capture-grid row"
+    );
     assert!(
         capture.contains("aria-label=\"Week cash recon\""),
         "recon panel aria-label locked"
     );
     assert!(
-        !capture.contains("\"Week cash recon\"")
-            || capture.contains("aria-label=\"Week cash recon\""),
-        "Week cash recon is a panel, not a new STEPS rail entry"
-    );
-    assert!(
         !STEPS_HAS_RECON_AS_STEP(&capture),
         "do not add Week cash recon to STEPS"
+    );
+}
+
+#[test]
+fn t8_slice1b_capture_grid_etf_edit_cancel() {
+    let capture = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/TrendsCapture.tsx"),
+    )
+    .unwrap();
+    assert!(
+        capture.contains("aria-label=\"Week capture grid\"")
+            && capture.contains("Account 9 ETF total")
+            && capture.contains("aria-label=\"Account 9 70% ETF\""),
+        "one capture grid with typed ETF total and read-only 70%"
+    );
+    assert!(
+        capture.contains("etfSeventy == null ? \"—\"")
+            && capture.contains("seventyFromEtfTotal")
+            && capture.contains("etfValueForTotals = etfSeventy ?? 0"),
+        "blank ETF total → 70% is — and excluded from totals"
+    );
+    assert!(
+        capture.contains("setStep(\"Capture\")")
+            && capture.contains("typedDraftRef")
+            && capture.contains("Edit Trends week"),
+        "Edit returns to Capture with last typed draft (never blank restart)"
+    );
+    assert!(
+        capture.contains("Abort capture completely")
+            && capture.contains("setStep(\"Week\")")
+            && capture.contains("setReasons({})")
+            && capture.contains("onWizardActive?.(false)")
+            && capture.contains("reloadWeekDraft(capture)"),
+        "Cancel aborts to clean Week, clears recon, does not save"
+    );
+    assert!(
+        capture.contains("disabled={busy || (step === \"Week\" && !dirty)}"),
+        "Cancel stays available mid-flow even before typing"
+    );
+    assert!(
+        !capture.contains("onSave(buildBody()")
+            || capture
+                .split("Cancel Trends edits")
+                .nth(1)
+                .map(|after| {
+                    let end = after.find("</button>").unwrap_or(after.len());
+                    !after[..end].contains("onSave")
+                })
+                .unwrap_or(false),
+        "Cancel must not call onSave / WeekCaptureAccept"
     );
 }
 

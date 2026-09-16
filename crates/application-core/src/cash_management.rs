@@ -667,13 +667,7 @@ pub async fn week_capture_accept(
     if record.monthly_divs_minor == 0 && week_income_minor != 0 {
         record.monthly_divs_minor = week_income_minor;
     }
-    if record.acct9_etf_value_minor == 0 {
-        if let Some(proxy) =
-            crate::trends_app::suggested_acct9_proxy(canonical, &record.period_end).await?
-        {
-            record.acct9_etf_value_minor = proxy;
-        }
-    }
+    // Slice 1b: blank ETF total stays 0 — do not invent last-price 70% proxy on Accept.
 
     let refs = cash_references_for_week(canonical, &record.period_end).await?;
     let mut expected: Vec<(uuid::Uuid, i64)> = Vec::new();
