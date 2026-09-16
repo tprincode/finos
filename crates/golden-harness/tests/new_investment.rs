@@ -778,6 +778,8 @@ async fn wz_monthly_remaining_year_without_actuals_schedules_income_plan() {
     );
 }
 
+/// Last price is one Yahoo lookup for any open-lot symbol. `LP1` is a
+/// golden-harness fixture (not a product ticker) used only to seed a lot.
 #[tokio::test]
 async fn last_price_stale_still_shows_on_calculator() {
     let dir = tempfile::tempdir().unwrap();

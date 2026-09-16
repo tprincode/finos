@@ -4414,6 +4414,21 @@ mod tests {
     }
 
     #[test]
+    fn yahoo_spark_fixture_is_keyed_by_any_symbol() {
+        // Spark last price is one Yahoo map, not a per-ticker adapter.
+        let body = r#"{
+            "AAA1":{"symbol":"AAA1","fulldayPrice":10.00,"timestamp":[1755705600],"close":[10.00]},
+            "ZZZ9":{"symbol":"ZZZ9","fulldayPrice":7.25,"timestamp":[1755705600],"close":[7.25]}
+        }"#;
+        let parsed = parse_yahoo_spark(body);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed["AAA1"]["priceMinor"], 1000);
+        assert_eq!(parsed["AAA1"]["source"], "yahoo");
+        assert_eq!(parsed["ZZZ9"]["priceMinor"], 725);
+        assert_eq!(parsed["ZZZ9"]["source"], "yahoo");
+    }
+
+    #[test]
     fn yahoo_spark_zero_or_missing_stays_unknown() {
         let body = r#"{"ZZZ":{"symbol":"ZZZ","fulldayPrice":0,"close":[null]}}"#;
         assert!(
@@ -4589,6 +4604,110 @@ mod tests {
         assert_eq!(yahoo_symbol("SOL"), "SOL-USD");
         assert_eq!(yahoo_symbol("AAPL"), "AAPL");
         assert_eq!(yahoo_symbol("BRK.B"), "BRK-B");
+    }
+
+    fn rust_fn_src<'a>(src: &'a str, sig: &str) -> &'a str {
+        let start = src.find(sig).unwrap_or_else(|| panic!("missing {sig}"));
+        let rest = &src[start..];
+        let end = rest
+            .match_indices("\nfn ")
+            .chain(rest.match_indices("\nasync fn "))
+            .map(|(i, _)| i)
+            .find(|&i| i > 0)
+            .unwrap_or(rest.len().min(8_000));
+        &rest[..end]
+    }
+
+    fn ordinary_yahoo_last_price_symbols() -> impl Iterator<Item = &'static str> {
+        financial_domain::collector::INCOME_FLEET_SYMBOLS
+            .iter()
+            .copied()
+            .chain(
+                financial_domain::collector::NOT_A_COLLECTOR_SYMBOLS
+                    .iter()
+                    .copied(),
+            )
+            .chain(std::iter::once("YAH1"))
+            .filter(|symbol| !financial_domain::current_price::is_cash_par_symbol(symbol))
+    }
+
+    #[test]
+    fn last_price_yahoo_path_is_generic_for_open_lot_symbols() {
+        use financial_domain::current_price::{is_cash_par_symbol, uses_cash_par};
+
+        for symbol in ordinary_yahoo_last_price_symbols() {
+            assert!(
+                !uses_offering_price("", symbol) && !uses_offering_price("public", symbol),
+                "{symbol} last price is Yahoo, not offering"
+            );
+            assert_eq!(
+                yahoo_symbol(symbol),
+                symbol,
+                "{symbol} uses its own Yahoo symbol"
+            );
+        }
+        for cash in ["SPAXX", "FDRXX", "SWVXX"] {
+            assert!(is_cash_par_symbol(cash), "{cash}");
+            assert!(uses_cash_par("", cash), "{cash} stays off the Yahoo last-price set");
+        }
+        assert!(uses_offering_price("", "ENERGYX"));
+        assert!(uses_offering_price("edgar", "ANY1"));
+
+        let retrieve = include_str!("mod.rs");
+        let yahoo_sym = rust_fn_src(retrieve, "fn yahoo_symbol");
+        assert!(
+            yahoo_sym.contains("\"ETH\" | \"SOL\""),
+            "yahoo_symbol may pair ETH/SOL; it has no product-ticker allowlist"
+        );
+        assert!(!yahoo_sym.contains("ORC"));
+        assert!(!yahoo_sym.contains("HAKY"));
+        assert!(!yahoo_sym.contains("LP1"));
+
+        let collect = rust_fn_src(retrieve, "pub fn collect_last_price_quotes_for_with_progress");
+        assert!(collect.contains("uses_offering_price"));
+        assert!(collect.contains("fetch_yahoo_spark_quotes") || collect.contains("yahoo"));
+        assert!(!collect.contains("ORC"));
+        assert!(!collect.contains("HAKY"));
+        assert!(!collect.contains("LP1"));
+        assert!(!collect.contains("nasdaq"));
+
+        let live = rust_fn_src(retrieve, "fn live_offering_or_yahoo");
+        assert!(live.contains("live_price_quote"));
+        assert!(!live.contains("ORC"));
+        assert!(!live.contains("nasdaq"));
+
+        let quote = rust_fn_src(retrieve, "pub fn live_price_quote");
+        assert!(quote.contains("live_price_snapshot"));
+        assert!(!quote.contains("ORC"));
+        assert!(!quote.contains("HAKY"));
+        assert!(!quote.contains("LP1"));
+
+        let host = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../apps/desktop/src-tauri/src/lib.rs"),
+        )
+        .expect("host last-price fill");
+        let fill = rust_fn_src(&host, "async fn fill_last_price_refresh");
+        assert!(fill.contains("collect_last_price_quotes_for_with_progress"));
+        assert!(fill.contains("uses_offering_price"));
+        assert!(
+            fill.contains("SPAXX") && fill.contains("FDRXX") && fill.contains("SWVXX"),
+            "cash-par is the only symbol skip on the host last-price fill"
+        );
+        assert!(!fill.contains("ORC"));
+        assert!(!fill.contains("HAKY"));
+        assert!(!fill.contains("LP1"));
+        assert!(!fill.contains("nasdaq"));
+
+        let nasdaq = include_str!("adapters/nasdaq.rs");
+        assert!(
+            nasdaq.contains("dividends"),
+            "Nasdaq ORC is dividends asset-class, not last price"
+        );
+        assert!(
+            !nasdaq.contains("last_price") && !nasdaq.contains("live_price_quote"),
+            "Nasdaq adapter must not route last price"
+        );
     }
 
     #[test]
