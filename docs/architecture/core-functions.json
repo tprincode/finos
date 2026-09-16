@@ -609,7 +609,7 @@
     {
       "id": "file-restart-graceful",
       "menuArea": "File",
-      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts the supervisor if missing, and exits. The supervisor Start-Process-es start-finos-dev.bat. Installed release uses app.restart() and must not destroy windows first. Owner Windows installed relaunch requires restart-owner-gate attestation.",
+      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts the supervisor if missing, and exits. The supervisor Start-Process-es start-finos-dev.bat. Installed release Start-Process-es current_exe then exits (does not rely on app.restart() alone). Owner Windows installed relaunch requires restart-owner-gate attestation.",
       "lastChanged": "2026-09-16",
       "lastVerified": "UNVERIFIED-owner-windows-installed",
       "alsoVerify": ["desktop_menu", "accessibility", "account_value"],
@@ -644,11 +644,15 @@
         },
         {
           "path": "apps/desktop/src-tauri/src/lib.rs",
-          "mustContain": "Installed release: never destroy windows before app.restart()"
+          "mustContain": "fn spawn_installed_release_relaunch"
         },
         {
           "path": "apps/desktop/src-tauri/src/lib.rs",
-          "mustContain": "app.restart()"
+          "mustContain": "Do not call app.restart()"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "mustContain": "Start-Process -FilePath"
         },
         {
           "path": "apps/desktop/start-finos-supervisor.bat",
@@ -676,7 +680,7 @@
         },
         {
           "path": "crates/golden-harness/tests/desktop_menu.rs",
-          "mustContain": "installed_release_restart_must_not_destroy_windows_before_app_restart"
+          "mustContain": "installed_release_restart_must_spawn_exe_before_exit"
         },
         {
           "path": "docs/architecture/restart-owner-gate.md",
@@ -688,7 +692,7 @@
         },
         {
           "path": "scripts/restart-owner-gate.sh",
-          "mustContain": "installed_release_restart_must_not_destroy_windows_before_app_restart"
+          "mustContain": "installed_release_restart_must_spawn_exe_before_exit"
         }
       ]
     },

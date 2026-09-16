@@ -1536,7 +1536,8 @@ fn app_exit(app: AppHandle) {
 /// Coding launch serves the UI from Vite on localhost:1420. The host writes
 /// `%LOCALAPPDATA%\com.finos.desktop\restart.token` and exits. The already-running
 /// supervisor Start-Process-es the titled finos (dev) stack. Installed release
-/// bundles the UI and uses `app.restart()`.
+/// bundles the UI and Start-Process-es the current exe, then exits (does not rely
+/// on `app.restart()` / `restart_on_exit` alone).
 fn write_restart_token() -> Result<(), String> {
     let local = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -1547,6 +1548,38 @@ fn write_restart_token() -> Result<(), String> {
     let stamp = chrono::Utc::now().to_rfc3339();
     std::fs::write(&path, format!("{stamp}\nreason=file-restart\n"))
         .map_err(|e| format!("restart.token: {e}"))?;
+    Ok(())
+}
+
+/// Installed-release relaunch: start a new process for this binary before exiting.
+/// Mirrors coding-supervisor reliability (`Start-Process`) so relaunch does not
+/// depend on Tauri `app.restart()` setting `restart_on_exit` from an async
+/// command thread (that Exit chain can still quit with no child).
+fn spawn_installed_release_relaunch() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    if !exe.is_file() {
+        return Err(format!("installed exe missing: {}", exe.display()));
+    }
+    #[cfg(windows)]
+    {
+        let path = exe.display().to_string().replace('\'', "''");
+        std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &format!("Start-Process -FilePath '{path}'"),
+            ])
+            .spawn()
+            .map_err(|e| format!("installed relaunch Start-Process: {e}"))?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new(&exe)
+            .spawn()
+            .map_err(|e| format!("installed relaunch spawn: {e}"))?;
+    }
     Ok(())
 }
 
@@ -1569,10 +1602,15 @@ async fn app_restart(
         app.exit(0);
         return Ok(());
     }
-    // Installed release: never destroy windows before app.restart().
-    // app_restart runs off the main thread; destroy-all triggers Exit before
-    // restart_on_exit is set, so the process quits and never relaunches.
-    app.restart();
+    // Installed release: spawn this exe first, then destroy + exit.
+    // Do not call app.restart() — off-thread restart_on_exit still yields
+    // quit-with-no-relaunch when Exit races ahead of process::restart.
+    spawn_installed_release_relaunch()?;
+    for (_label, window) in app.webview_windows() {
+        let _ = window.destroy();
+    }
+    app.exit(0);
+    Ok(())
 }
 
 fn supervisor_lock_dir() -> PathBuf {
