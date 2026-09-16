@@ -5126,7 +5126,7 @@ export default function App() {
     restartingRef.current = true;
     setRestarting(true);
     setActionMessage(
-      "Restarting coding launch. Waiting for in-flight work, then closing the data file. A new finos (dev) console opens if the supervisor is running.",
+      "Restarting. Waiting for in-flight work, then closing the data file. Coding launch: a new finos (dev) console opens if the supervisor is running. Installed release relaunches this app.",
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     const deadline = Date.now() + 30_000;

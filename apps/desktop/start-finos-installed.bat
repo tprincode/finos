@@ -5,7 +5,7 @@ set "EXE=%LOCALAPPDATA%\finos\finos-desktop.exe"
 if not exist "%EXE%" (
   echo Installed finos.exe is not on this PC yet.
   echo.
-  echo That is the no-console household launch. It is a frozen cut, not the daily coding start.
+  echo That is the no-console installed release launch. It is a frozen cut, not the daily coding start.
   echo When you want the Desktop icon to catch up:
   echo   1. Fully quit any running finos window and this console.
   echo   2. From the repo root: npm run desktop:build

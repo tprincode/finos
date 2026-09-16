@@ -1,5 +1,5 @@
-//! Owner-facing core function catalog. Same JSON is compiled in so household
-//! installs do not need the repo tree.
+//! Owner-facing core function catalog. Same JSON is compiled in so installed
+//! releases do not need the repo tree.
 
 use crate::contracts::CoreFunctionsGetBody;
 

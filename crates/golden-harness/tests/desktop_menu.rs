@@ -362,7 +362,7 @@ fn native_and_in_app_menus_list_screens() {
             && lib.contains("close_for_shutdown")
             && lib.contains("ensure_coding_supervisor")
             && lib.contains("app.restart()"),
-        "coding Restart writes restart.token, starts the supervisor if missing, then exits; household uses app.restart()"
+        "coding Restart writes restart.token, starts the supervisor if missing, then exits; installed release uses app.restart()"
     );
     for banned in [
         "schtasks",
@@ -381,8 +381,59 @@ fn native_and_in_app_menus_list_screens() {
         "Restart copy must name the supervisor"
     );
     assert!(
+        app.contains("Installed release relaunches this app"),
+        "Restart copy must name installed release relaunch"
+    );
+    assert!(
         !root.join("apps/desktop/spawn-finos-dev.cmd").exists(),
         "spawn-finos-dev.cmd must be deleted"
+    );
+}
+
+/// Hard gate: installed-release Restart must call `app.restart()` without
+/// destroying windows first. Destroy-all on the async command thread races
+/// Tauri Exit so restart_on_exit never runs (app quits and stays down).
+#[test]
+fn installed_release_restart_must_not_destroy_windows_before_app_restart() {
+    let root = repo_root();
+    let lib = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs"))
+        .expect("lib.rs");
+    let start = lib
+        .find("async fn app_restart")
+        .expect("app_restart command must exist");
+    let body = &lib[start..];
+    let end = body
+        .find("\nfn supervisor_lock_dir")
+        .or_else(|| body.find("\nfn coding_supervisor_running"))
+        .expect("app_restart must be followed by supervisor helpers");
+    let fn_src = &body[..end];
+    assert!(
+        fn_src.contains("cfg!(debug_assertions)"),
+        "coding vs installed release must branch on debug_assertions"
+    );
+    assert!(
+        fn_src.contains("Installed release: never destroy windows before app.restart()"),
+        "lib.rs must keep the installed-release destroy/restart race comment"
+    );
+    let restart_at = fn_src
+        .rfind("app.restart()")
+        .expect("installed release path must call app.restart()");
+    let before_restart = &fn_src[..restart_at];
+    let after_debug_return = before_restart
+        .rsplit("return Ok(());")
+        .next()
+        .expect("coding branch must return Ok after exit");
+    assert!(
+        !after_debug_return.contains("window.destroy()"),
+        "installed release must not destroy windows between coding return and app.restart(); that no-ops relaunch"
+    );
+    assert!(
+        before_restart.contains("window.destroy()"),
+        "coding path must still destroy windows before exit"
+    );
+    assert!(
+        !fn_src.to_ascii_lowercase().contains("household release"),
+        "Restart comments must say installed release, not household slang"
     );
 }
 

@@ -1535,7 +1535,7 @@ fn app_exit(app: AppHandle) {
 
 /// Coding launch serves the UI from Vite on localhost:1420. The host writes
 /// `%LOCALAPPDATA%\com.finos.desktop\restart.token` and exits. The already-running
-/// supervisor Start-Process-es the titled finos (dev) stack. Household release
+/// supervisor Start-Process-es the titled finos (dev) stack. Installed release
 /// bundles the UI and uses `app.restart()`.
 fn write_restart_token() -> Result<(), String> {
     let local = std::env::var_os("LOCALAPPDATA")
@@ -1559,15 +1559,19 @@ async fn app_restart(
         .close_for_shutdown()
         .await
         .map_err(|e| format!("data file still open: {e}"))?;
-    for (_label, window) in app.webview_windows() {
-        let _ = window.destroy();
-    }
     if cfg!(debug_assertions) {
+        // Coding: destroy windows before exit (Chromium UnregisterClass / tauri#7606).
+        for (_label, window) in app.webview_windows() {
+            let _ = window.destroy();
+        }
         write_restart_token()?;
         ensure_coding_supervisor()?;
         app.exit(0);
         return Ok(());
     }
+    // Installed release: never destroy windows before app.restart().
+    // app_restart runs off the main thread; destroy-all triggers Exit before
+    // restart_on_exit is set, so the process quits and never relaunches.
     app.restart();
 }
 

@@ -597,14 +597,14 @@
     {
       "id": "file-restart-graceful",
       "menuArea": "File",
-      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts the supervisor if missing, and exits. The supervisor Start-Process-es start-finos-dev.bat. Household release uses app.restart().",
-      "lastChanged": "2026-09-11",
-      "lastVerified": "2026-09-11",
+      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts the supervisor if missing, and exits. The supervisor Start-Process-es start-finos-dev.bat. Installed release uses app.restart() and must not destroy windows first.",
+      "lastChanged": "2026-09-16",
+      "lastVerified": "2026-09-16",
       "alsoVerify": ["desktop_menu", "accessibility", "account_value"],
       "sentinels": [
         {
           "path": "apps/desktop/src/App.tsx",
-          "mustContain": "Restarting coding launch. Waiting for in-flight work, then closing the data file. A new finos (dev) console opens if the supervisor is running."
+          "mustContain": "Restarting. Waiting for in-flight work, then closing the data file. Coding launch: a new finos (dev) console opens if the supervisor is running. Installed release relaunches this app."
         },
         {
           "path": "apps/desktop/src/App.tsx",
@@ -631,6 +631,14 @@
           "mustContain": "ensure_coding_supervisor"
         },
         {
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "mustContain": "Installed release: never destroy windows before app.restart()"
+        },
+        {
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "mustContain": "app.restart()"
+        },
+        {
           "path": "apps/desktop/start-finos-supervisor.bat",
           "mustContain": "start-finos-supervisor"
         },
@@ -647,8 +655,16 @@
           "mustContain": "wait_port_free"
         },
         {
+          "path": "apps/desktop/start-finos-installed.bat",
+          "mustContain": "finos-desktop.exe"
+        },
+        {
           "path": "crates/storage-sqlite/src/platform.rs",
           "mustContain": "pub async fn close_for_shutdown"
+        },
+        {
+          "path": "crates/golden-harness/tests/desktop_menu.rs",
+          "mustContain": "installed_release_restart_must_not_destroy_windows_before_app_restart"
         }
       ]
     },
