@@ -36,6 +36,23 @@ jobs:
       - name: CRF lots policy
         run: cargo test -p golden-harness --test lots_roi
 
+  # tsc is beforeBuildCommand for `npm run desktop:build`, so a type error here
+  # is an owner-visible "cannot build the installed app", not a lint nit.
+  # Nothing else in CI type-checks the frontend.
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Desktop frontend (tsc + vite build)
+        run: npm run desktop:check
+      - name: Web frontend (tsc + vite build)
+        run: npm run web:check
+
   # Phase 1 anti-erasure (finos-reset-plan §1.1). Always runs on every PR/push —
   # do not path-filter this job (skipped required checks fail open).
   # Covers apps/desktop, docs/architecture/*modules*, core-functions.json, and

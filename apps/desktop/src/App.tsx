@@ -1257,7 +1257,7 @@ export default function App() {
   const [wizInceptionOn, setWizInceptionOn] = useState("");
   const [wizExpectedPaid, setWizExpectedPaid] = useState<number | null>(null);
   const [wizRocUrl, setWizRocUrl] = useState("");
-  const [wizFieldDecision, setWizFieldDecision] = useState<Record<string, string>>({});
+  const [, setWizFieldDecision] = useState<Record<string, string>>({});
   /** Process A: owner Save → explicit completion screen (not a blank wizard). */
   const [wizProcessASaved, setWizProcessASaved] = useState(false);
   /** Shared long-action indicator for Complete research / Add Position / Fill gaps. */
@@ -4714,10 +4714,10 @@ export default function App() {
         const scale = body.rocScale ?? 2;
         setWizRoc({
           securityId: wizSecurityId,
-          accountId: wizAccountId || null,
           rocPctMinor: body.rocPctMinor,
           scale,
           complete: false,
+          reason: "current-year 19a-1 estimate",
           source: "19a-1",
           sourceUrl: body.rocSourceUrl || "",
           method: "19a-1-current-year",
@@ -4725,7 +4725,12 @@ export default function App() {
           systemRocPctMinor: body.rocPctMinor,
           candidates: [],
           observations: [],
-        } as RocResearchGet);
+          remainingPeriods: null,
+          remainingTotalMinor: null,
+          remainingOrdinaryMinor: null,
+          remainingRocMinor: null,
+          magiEligible: false,
+        });
         setWizRocPct((body.rocPctMinor / 10 ** scale).toFixed(scale));
       }
     } catch (err: unknown) {

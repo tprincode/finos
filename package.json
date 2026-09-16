@@ -8,8 +8,14 @@
     "packages/*"
   ],
     "scripts": {
+    "dev": "node scripts/dev-launch.mjs",
+    "dev:vite": "npm run dev:vite --workspace=@finos/desktop",
+    "doctor": "node scripts/dev-preflight.mjs",
+    "predesktop": "node scripts/dev-preflight.mjs",
     "desktop": "npm start --workspace=@finos/desktop",
+    "predesktop:build": "node scripts/dev-preflight.mjs --build",
     "desktop:build": "npm run tauri --workspace=@finos/desktop -- build",
+    "desktop:check": "npm run build --workspace=@finos/desktop",
     "data-seed": "cargo run -p golden-harness --bin data-seed",
     "components-anti-erasure": "bash scripts/components-anti-erasure.sh",
     "web": "npm run dev --workspace=@finos/web",

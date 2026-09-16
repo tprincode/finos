@@ -140,14 +140,33 @@ cargo test
 
 **Desktop app** (see `apps/desktop/README.md`):
 
-Coding days: Desktop `finos.bat` or `apps/desktop/start-finos-dev.bat` (`npm run desktop`). The console is expected.
+Coding days: Desktop `finos.bat` or `apps/desktop/start-finos-dev.bat` (`npm run dev`). The console is expected.
 
 Household no-console sessions: Desktop `finos-installed.bat` after a one-off `npm run desktop:build` + NSIS install. Do not use that as the daily rebuild start.
 
 ```
 npm install
-npm run desktop
+npm run dev
 ```
+
+`npm run dev` is the same launch as `npm run desktop` (`tauri dev`) with a
+preflight in front and an exit-code explanation after. It works from the repo
+root and from `apps/desktop`.
+
+| Command | What it does |
+|---------|--------------|
+| `npm run dev` | Preflight, then the full app (Vite UI + Tauri host + SQLite) |
+| `npm run doctor` | Preflight only — names a missing prerequisite, a busy port 1420, or a running `finos-desktop.exe` |
+| `npm run desktop` | `tauri dev` directly (preflight still runs via `predesktop`) |
+| `npm run dev:vite` | Frontend dev server only, no window — for isolating a UI-side failure |
+| `npm run desktop:check` | `tsc` + `vite build`, the same type check `desktop:build` runs first |
+| `npm run desktop:build` | Signed NSIS installer (long compile; needs `TAURI_SIGNING_PRIVATE_KEY`) |
+
+npm reports only the last child's exit code. On Windows a terminated child
+shows as `4294967295` (`-1`), which is what a normal shutdown, `Ctrl+C`, or
+File → Restart looks like — not a build failure. The real error is earlier in
+the console; `apps/desktop/capture-finos-dev-log.bat` saves the whole session
+to a file.
 
 Exit: File → Exit, the Exit button, the window X, or `Ctrl+C` in the dev console.
 

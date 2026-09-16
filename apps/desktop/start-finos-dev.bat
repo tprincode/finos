@@ -49,18 +49,20 @@ echo Starting finos desktop ^(Vite UI + Tauri host + local SQLite^)...
 echo This console is expected for daily coding. Close the window or Ctrl+C to stop.
 echo If Restart opened this window, close the previous finos console. Its "dev failed" line is the old session dying.
 echo.
-call npm run desktop
+call npm run dev
 if errorlevel 1 (
   echo.
-  echo finos did not start. See the error above.
+  echo finos did not start. Read the first error above, not the last npm code.
+  echo To save the whole session to a file: capture-finos-dev-log.bat
   pause
   exit /b 1
 )
 endlocal
 exit /b 0
 
+rem Match the local-address column only. A bare ":1420" also matches ":14201".
 :kill_port
-for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr /R /C:":%~1" ^| findstr LISTENING') do (
+for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr /R /C:":%~1 " ^| findstr LISTENING') do (
   taskkill /PID %%P /T /F >nul 2>&1
 )
 exit /b 0
@@ -68,7 +70,7 @@ exit /b 0
 :wait_port_free
 set /a _wait=0
 :wait_port_free_loop
-netstat -ano 2>nul | findstr /R /C:":%~1" | findstr LISTENING >nul
+netstat -ano 2>nul | findstr /R /C:":%~1 " | findstr LISTENING >nul
 if errorlevel 1 exit /b 0
 call :kill_port %~1
 set /a _wait+=1
