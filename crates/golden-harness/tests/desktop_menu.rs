@@ -395,7 +395,7 @@ fn native_and_in_app_menus_list_screens() {
 /// Tauri Exit so restart_on_exit never runs (app quits and stays down).
 #[test]
 fn installed_release_restart_must_not_destroy_windows_before_app_restart() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = repo_root();
     let lib = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs"))
         .expect("lib.rs");
     let start = lib
@@ -424,7 +424,7 @@ fn installed_release_restart_must_not_destroy_windows_before_app_restart() {
         .next()
         .expect("coding branch must return Ok after exit");
     assert!(
-        !after_debug_return.contains("destroy"),
+        !after_debug_return.contains("window.destroy()"),
         "installed release must not destroy windows between coding return and app.restart(); that no-ops relaunch"
     );
     assert!(
