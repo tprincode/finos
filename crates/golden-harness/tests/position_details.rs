@@ -1,6 +1,7 @@
 use application_core::contracts::{
     CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
 };
+use application_core::ports::canonical::Canonical;
 use application_core::queries::{execute_command_on, execute_query_on};
 use storage_sqlite::LocalPlatform;
 use uuid::Uuid;
@@ -918,6 +919,7 @@ fn last_price_auto_refresh_uses_weekday_eastern_window() {
         root.join("crates/application-core/src/last_price_window.rs"),
     )
     .unwrap();
+    let queries = std::fs::read_to_string(root.join("crates/application-core/src/queries.rs")).unwrap();
     assert!(
         host.contains("weekday 9-4 Eastern"),
         "host must document the auto last-price window"
@@ -934,6 +936,10 @@ fn last_price_auto_refresh_uses_weekday_eastern_window() {
         app.contains("allowed = body.allowed === true"),
         "auto last-price must run only when LastPriceAutoWindowGet allowed is true"
     );
+    assert!(
+        app.contains("if (!allowed) {\n        return;\n      }"),
+        "auto path must not set last-price busy when window/freshness disallows"
+    );
     assert!(app.contains("autoPrice: true"));
     assert!(
         !app.contains("Last prices skipped —"),
@@ -941,6 +947,85 @@ fn last_price_auto_refresh_uses_weekday_eastern_window() {
     );
     assert!(helper.contains("weekday 9-4 Eastern"));
     assert!(helper.contains("fn auto_last_price_allowed"));
+    assert!(
+        helper.contains("refreshed_minutes_ago_skips_no_wait_for_next_refresh"),
+        "unit pass must prove minutes-ago refresh does not wait again"
+    );
+    assert!(
+        queries.contains("latest_ok_price_run_stamp"),
+        "LastPriceAutoWindowGet must read last ok price run for 4h freshness"
+    );
+    assert!(
+        queries.contains("last_price_auto_window_body_for"),
+        "LastPriceAutoWindowGet must apply freshness before UI starts waiting"
+    );
+}
+
+/// Pass check: a successful price run minutes ago → LastPriceAutoWindowGet disallows
+/// auto refresh (cached last price; no forced wait).
+#[tokio::test]
+async fn last_price_auto_window_get_no_wait_when_refreshed_minutes_ago() {
+    use application_core::contracts::RetrieveRunRecord;
+    use application_core::last_price_window::{
+        last_price_auto_window_now_with_last, now_eastern, LAST_PRICE_FRESH_HOURS,
+    };
+    use chrono::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "HAKY", "name": "HAKY"}),
+    )
+    .await;
+    let security_id = Uuid::parse_str(security["securityId"].as_str().unwrap()).unwrap();
+    assert_eq!(LAST_PRICE_FRESH_HOURS, 4);
+
+    // Persist a live-relative ok price run so LastPriceAutoWindowGet sees freshness.
+    let stamp = (now_eastern() - Duration::minutes(12))
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    platform
+        .retrieve_run_record(RetrieveRunRecord {
+            run_id: Uuid::new_v4(),
+            security_id,
+            kind: "price".into(),
+            requested_at: stamp.clone(),
+            ok: true,
+            code: String::new(),
+            message: "last price recorded".into(),
+            attempted: 1,
+            recorded: 1,
+            skipped: 0,
+            unchanged: 0,
+            payload_json: "{}".into(),
+        })
+        .await
+        .expect("record price run");
+
+    let window = query_json(&platform, "LastPriceAutoWindowGet").await;
+    // Query must apply the stored stamp (not clock-only weekday hours).
+    match last_price_auto_window_now_with_last(Some(&stamp)) {
+        Ok(()) => {
+            assert_eq!(window["allowed"], true, "{window}");
+            assert!(window.get("skipReason").is_none() || window["skipReason"].is_null());
+        }
+        Err(skip) => {
+            assert_eq!(window["allowed"], false, "{window}");
+            assert_eq!(
+                window["skipReason"].as_str(),
+                Some(skip.reason()),
+                "{window}"
+            );
+        }
+    }
+    assert_eq!(
+        window["allowed"], false,
+        "minutes-ago price run must not allow auto wait; got {window}"
+    );
 }
 
 #[tokio::test]
