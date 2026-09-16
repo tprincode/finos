@@ -7,13 +7,24 @@ No SQLite, snapshots, or SQL in the UI.
 
 Two launch modes share the same live SQLite. Do not run both at once.
 
-**Coding days (this month’s default).** Console is expected. Desktop shortcut `finos.bat` calls [`start-finos-dev.bat`](start-finos-dev.bat), which is `npm run desktop` (`tauri dev`). Fully quit, then run the bat again after a Rust host change.
+**Coding days (this month’s default).** Console is expected. Desktop shortcut `finos.bat` calls [`start-finos-dev.bat`](start-finos-dev.bat), which is `npm run dev` (preflight → `tauri dev`). Fully quit, then run the bat again after a Rust host change.
 
 ```
-npm run desktop
+npm run dev
 ```
 
-Same command from `apps/desktop`: `npm start`.
+`npm run dev` works from the repo root and from `apps/desktop`. `npm run desktop` / `npm start` still run `tauri dev` directly; the preflight runs either way.
+
+**When it will not start.** `npm run doctor` checks the prerequisites on their own: Node against Vite's engines range, `node_modules` and the Tauri CLI, `rustc`, the WebView2 runtime, the MSVC C++ tools, a `finos-desktop.exe` that is still holding the live SQLite file, port 1420 (pinned by `vite.config.ts` with `strictPort`, so Vite exits rather than moving), and whether Profile A has been seeded.
+
+npm prints only the last child's exit code. `tauri dev` runs the Vite dev server as `beforeDevCommand` and terminates it on shutdown, so a finished session ends with a lifecycle failure for `dev:vite` — on Windows `code 4294967295` (`-1`). That is the shutdown, not the cause. [`capture-finos-dev-log.bat`](capture-finos-dev-log.bat) writes the whole session to `%TEMP%\finos-dev.log` and prints the first error lines.
+
+To split the stack when diagnosing:
+
+```
+npm run dev:vite                                                  UI only, no window
+cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml     Rust host only
+```
 
 **Use-the-app days (no console).** Desktop shortcut `finos-installed.bat` calls [`start-finos-installed.bat`](start-finos-installed.bat) and starts `%LOCALAPPDATA%\finos\finos-desktop.exe` if that frozen cut is installed. It does not compile. Rebuild the icon only when you want it to catch up — not after every host change.
 
@@ -31,6 +42,8 @@ The window should show `HealthGet` `ok`, status `ok`, contract `1.0.0-draft`, an
 ```
 npm run desktop:build
 ```
+
+`beforeBuildCommand` is `npm run build` (`tsc && vite build`), so a TypeScript error stops the bundle before any Rust compiles — `npm run desktop:check` runs that step alone. `bundle.createUpdaterArtifacts` is on, so `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key is encrypted) must be set in the shell from the gitignored `src-tauri/updater-keys/`; without it the bundler aborts at the very end of the release compile. The `desktop:build` preflight checks both, plus the signtool thumbprint and a running `finos-desktop.exe` that would block overwriting the exe.
 
 Then run `src-tauri/target/release/bundle/nsis/finos_0.1.0_x64-setup.exe` and pin Start Menu / Desktop to `%LOCALAPPDATA%\finos\finos-desktop.exe`. Self-signed `CN=finos`. On this PC the cert is in CurrentUser Root + TrustedPublisher; `Get-AuthenticodeSignature` is `Valid`. Public CA and auto-update stay parked.
 
