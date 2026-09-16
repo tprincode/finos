@@ -218,6 +218,9 @@ pub async fn trends_week_capture_view(
         populated_period_ends: saved,
         missing_required: missing,
         scale: 2,
+        cash_references: crate::cash_management::cash_references_for_week(canonical, &period_end)
+            .await
+            .unwrap_or_default(),
     })
 }
 
@@ -256,11 +259,7 @@ pub async fn save_trends_week(
     if to_save.monthly_divs_minor == 0 && week_income_minor != 0 {
         to_save.monthly_divs_minor = week_income_minor;
     }
-    if to_save.acct9_etf_value_minor == 0 {
-        if let Some(proxy) = suggested_acct9_proxy(canonical, &to_save.period_end).await? {
-            to_save.acct9_etf_value_minor = proxy;
-        }
-    }
+    // Slice 1b: blank ETF total stays 0 — do not invent last-price 70% proxy on save.
     let accounts = canonical.account_list().await?;
     let mut ids = std::collections::HashMap::new();
     for a in &accounts {

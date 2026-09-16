@@ -3,7 +3,8 @@
 use crate::contracts::{
     ActivityRecord, CashManagementMonthBody, CashManagementMonthRow, CashManagementRemindersBody,
     CashManagementSaturdayDraft, CashManagementSsaPayee, CashManagementSsaRecent,
-    CashManagementTomSsa, CashManagementWeekBody, CashManagementWeekRow,
+    CashManagementTomSsa, CashManagementWeekBody, CashManagementWeekRow, TrendsCashReference,
+    TrendsWeekCaptureBody, TrendsWeekSourceRecord,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
@@ -469,4 +470,305 @@ pub async fn cash_management_month(
         month_net_minor,
         scale: 2,
     })
+}
+
+pub async fn reference_cash_minor(
+    canonical: &dyn Canonical,
+    account_id: uuid::Uuid,
+    account_name: &str,
+    cash_symbol_column: Option<&str>,
+    period_end: &str,
+) -> Result<Option<i64>, PlatformError> {
+    let Some(symbol) =
+        financial_domain::cash_management::resolve_cash_symbol(account_name, cash_symbol_column)
+    else {
+        return Ok(None);
+    };
+    let basis = canonical.basis_get().await?;
+    let securities = canonical.security_list().await?;
+    let mut lot_sum: Option<i64> = None;
+    for lot in &basis.lots {
+        if lot.account_id != account_id || lot.remaining_quantity_minor <= 0 {
+            continue;
+        }
+        let Some(sec) = securities.iter().find(|s| s.security_id == lot.security_id) else {
+            continue;
+        };
+        if !sec.symbol.eq_ignore_ascii_case(&symbol) {
+            continue;
+        }
+        let dollars =
+            financial_domain::cart::cash_dollars_minor(lot.remaining_quantity_minor, lot.quantity_scale);
+        lot_sum = Some(lot_sum.unwrap_or(0) + dollars);
+    }
+    if lot_sum.is_some() {
+        return Ok(lot_sum);
+    }
+    let snaps = canonical.account_balance_snapshot_list().await?;
+    let mut best: Option<(String, i64)> = None;
+    for snap in &snaps {
+        if snap.account_id != account_id {
+            continue;
+        }
+        if snap.period_end.as_str() >= period_end {
+            continue;
+        }
+        let Some(cash) = snap.cash_minor else {
+            continue;
+        };
+        let take = best
+            .as_ref()
+            .map(|(pe, _)| snap.period_end.as_str() > pe.as_str())
+            .unwrap_or(true);
+        if take {
+            best = Some((snap.period_end.clone(), cash));
+        }
+    }
+    Ok(best.map(|(_, c)| c))
+}
+
+pub async fn cash_references_for_week(
+    canonical: &dyn Canonical,
+    period_end: &str,
+) -> Result<Vec<TrendsCashReference>, PlatformError> {
+    let accounts = canonical.account_list().await?;
+    let mut out = Vec::new();
+    for name in financial_domain::cash_management::CASH_ADJUST_ACCOUNT_NAMES {
+        let Some(account) = accounts.iter().find(|a| a.name == *name) else {
+            continue;
+        };
+        let symbol = financial_domain::cash_management::resolve_cash_symbol(
+            &account.name,
+            account.cash_symbol.as_deref(),
+        )
+        .unwrap_or_default();
+        let reference_minor = reference_cash_minor(
+            canonical,
+            account.account_id,
+            &account.name,
+            account.cash_symbol.as_deref(),
+            period_end,
+        )
+        .await?;
+        let display_name = if *name == "9" {
+            "Account 9".into()
+        } else {
+            (*name).to_string()
+        };
+        out.push(TrendsCashReference {
+            account_id: account.account_id,
+            account_name: account.name.clone(),
+            display_name,
+            cash_symbol: symbol,
+            reference_minor,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn cash_adjust_post(
+    canonical: &dyn Canonical,
+    account_id: uuid::Uuid,
+    occurred_on: String,
+    amount_minor: Option<i64>,
+    scale: u8,
+    reason: String,
+    federal_withholding_minor: i64,
+    state_withholding_minor: i64,
+    idempotency_key: Option<String>,
+) -> Result<ActivityRecord, PlatformError> {
+    let account = canonical.account_get(account_id).await?;
+    let (amount, note) = financial_domain::cash_management::validate_cash_adjust(
+        "Cash_Adjust",
+        &account.name,
+        amount_minor,
+        federal_withholding_minor,
+        state_withholding_minor,
+        &reason,
+    )
+    .map_err(|err| {
+        let code = match err {
+            financial_domain::error::DomainError::CashAdjustWithholdingNotAllowed => {
+                "cash_adjust_withholding_not_allowed"
+            }
+            financial_domain::error::DomainError::CashAdjustReasonRequired => {
+                "cash_adjust_reason_required"
+            }
+            financial_domain::error::DomainError::CashAdjustAccount => "cash_adjust_account",
+            financial_domain::error::DomainError::CashAdjustAmount => "cash_adjust_amount",
+            financial_domain::error::DomainError::UnknownAmount => "unknown_amount",
+            financial_domain::error::DomainError::CashDistributionType => "cash_distribution_type",
+            _ => "domain_error",
+        };
+        PlatformError::new(code, err.to_string())
+    })?;
+    let key = idempotency_key.unwrap_or_else(|| {
+        financial_domain::cash_management::cash_adjust_idempotency_key(account_id, &occurred_on)
+    });
+    let mut posted = canonical
+        .activity_post(
+            account_id,
+            None,
+            "Cash_Adjust".into(),
+            Some(amount),
+            scale,
+            occurred_on,
+            None,
+            None,
+            Some(key),
+        )
+        .await?;
+    // Helper path validates note; WeekCaptureAccept persists note in the atomic write.
+    posted.note = note;
+    Ok(posted)
+}
+
+pub struct WeekCaptureAdjustInput {
+    pub account_id: uuid::Uuid,
+    pub amount_minor: i64,
+    pub reason: String,
+}
+
+pub async fn week_capture_accept(
+    canonical: &dyn Canonical,
+    mut record: TrendsWeekSourceRecord,
+    balances: &[(&str, Option<i64>, Option<i64>)],
+    typed_cash: &[(uuid::Uuid, i64)],
+    adjusts: &[WeekCaptureAdjustInput],
+    allow_closed: bool,
+    week_income_minor: i64,
+) -> Result<TrendsWeekCaptureBody, PlatformError> {
+    let mut preserve_closed = false;
+    if let Some(existing) = canonical.trends_week_get(record.period_end.clone()).await? {
+        if existing.closed && !allow_closed {
+            return Err(PlatformError::new(
+                "trends_week_closed",
+                "week is closed; use Correct week",
+            ));
+        }
+        if existing.closed && allow_closed {
+            preserve_closed = true;
+        }
+    }
+    if preserve_closed {
+        record.closed = true;
+    }
+    if record.profit_minor == 0 {
+        let suggested = crate::trends_app::suggested_profit_for_week(
+            canonical,
+            &record.period_start,
+            &record.period_end,
+        )
+        .await?;
+        if suggested != 0 {
+            record.profit_minor = suggested;
+        }
+    }
+    if record.monthly_divs_minor == 0 && week_income_minor != 0 {
+        record.monthly_divs_minor = week_income_minor;
+    }
+    // Slice 1b: blank ETF total stays 0 — do not invent last-price 70% proxy on Accept.
+
+    let refs = cash_references_for_week(canonical, &record.period_end).await?;
+    let mut expected: Vec<(uuid::Uuid, i64)> = Vec::new();
+    for r in &refs {
+        let Some(reference) = r.reference_minor else {
+            continue;
+        };
+        let Some((_, typed)) = typed_cash.iter().find(|(id, _)| *id == r.account_id) else {
+            continue;
+        };
+        let gap = financial_domain::cash_management::cash_adjust_gap(*typed, reference);
+        if financial_domain::cash_management::cash_gap_is_material(gap) {
+            expected.push((r.account_id, gap));
+        }
+    }
+
+    let mut adjust_rows = Vec::new();
+    for (account_id, gap) in &expected {
+        let Some(input) = adjusts.iter().find(|a| a.account_id == *account_id) else {
+            return Err(PlatformError::new(
+                "cash_adjust_reason_required",
+                "material cash gap requires a per-account reason",
+            ));
+        };
+        if input.amount_minor != *gap {
+            return Err(PlatformError::new(
+                "cash_adjust_amount",
+                format!(
+                    "adjust amount {} does not match gap {}",
+                    input.amount_minor, gap
+                ),
+            ));
+        }
+        let account = canonical.account_get(*account_id).await?;
+        let (amount, note) = financial_domain::cash_management::validate_cash_adjust(
+            "Cash_Adjust",
+            &account.name,
+            Some(input.amount_minor),
+            0,
+            0,
+            &input.reason,
+        )
+        .map_err(|err| {
+            let code = match err {
+                financial_domain::error::DomainError::CashAdjustWithholdingNotAllowed => {
+                    "cash_adjust_withholding_not_allowed"
+                }
+                financial_domain::error::DomainError::CashAdjustReasonRequired => {
+                    "cash_adjust_reason_required"
+                }
+                financial_domain::error::DomainError::CashAdjustAccount => "cash_adjust_account",
+                financial_domain::error::DomainError::CashAdjustAmount => "cash_adjust_amount",
+                _ => "domain_error",
+            };
+            PlatformError::new(code, err.to_string())
+        })?;
+        adjust_rows.push(ActivityRecord {
+            activity_id: uuid::Uuid::new_v4(),
+            account_id: *account_id,
+            security_id: None,
+            activity_type: "Cash_Adjust".into(),
+            amount_minor: amount,
+            scale: record.scale,
+            occurred_on: record.period_end.clone(),
+            corrects_activity_id: None,
+            import_batch_id: None,
+            idempotency_key: financial_domain::cash_management::cash_adjust_idempotency_key(
+                *account_id,
+                &record.period_end,
+            ),
+            federal_withholding_minor: 0,
+            state_withholding_minor: 0,
+            note,
+        });
+    }
+    for extra in adjusts {
+        if !expected.iter().any(|(id, _)| *id == extra.account_id) {
+            return Err(PlatformError::new(
+                "cash_adjust_amount",
+                "adjust supplied for account with no material gap",
+            ));
+        }
+    }
+
+    let accounts = canonical.account_list().await?;
+    let mut ids = std::collections::HashMap::new();
+    for a in &accounts {
+        ids.insert(a.name.clone(), a.account_id);
+    }
+    let mut pairs = Vec::new();
+    for (name, bal, cash) in balances {
+        let Some(balance_minor) = *bal else { continue };
+        let Some(account_id) = ids.get(*name).copied() else {
+            continue;
+        };
+        pairs.push((account_id, balance_minor, *cash));
+    }
+
+    canonical
+        .week_capture_accept_with_balances(record.clone(), pairs, adjust_rows)
+        .await?;
+    crate::trends_app::trends_week_capture_view(canonical, &record.period_end, week_income_minor)
+        .await
 }

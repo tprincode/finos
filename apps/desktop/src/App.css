@@ -877,6 +877,62 @@ td.cell-future {
   font-size: 0.9rem;
 }
 
+.trends-capture-entry {
+  margin: 0.5rem 0 0.75rem;
+  overflow-x: auto;
+}
+
+.trends-capture-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.trends-capture-table th,
+.trends-capture-table td {
+  border-bottom: 1px solid #c9d3e0;
+  padding: 0.35rem 0.45rem;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.trends-capture-table input {
+  width: 100%;
+  min-width: 5.5rem;
+  box-sizing: border-box;
+}
+
+.trends-capture-etf {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.trends-cash-recon {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+}
+
+.trends-cash-recon table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.trends-cash-recon th,
+.trends-cash-recon td {
+  border-bottom: 1px solid #c9d3e0;
+  padding: 0.35rem 0.45rem;
+  text-align: left;
+}
+
+.trends-cash-recon-reason {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));

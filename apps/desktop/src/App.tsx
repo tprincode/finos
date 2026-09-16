@@ -10118,10 +10118,8 @@ export default function App() {
               onSave={async (body, correct) => {
                 setBusy(true);
                 try {
-                  const r = await client.executeCommand(
-                    correct ? "TrendsWeekCorrect" : "TrendsWeekSave",
-                    body,
-                  );
+                  const payload = correct ? { ...body, allowClosed: true } : body;
+                  const r = await client.executeCommand("WeekCaptureAccept", payload);
                   if (!r.ok) {
                     setActionMessage(`Trends save failed: ${r.errorCode ?? "error"}`);
                     return;

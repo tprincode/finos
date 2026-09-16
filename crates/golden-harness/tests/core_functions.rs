@@ -173,6 +173,8 @@ fn core_functions_catalog_sentinels_still_exist() {
     for name in [
         "CashDistributionPost",
         "SsaConfirm",
+        "CashAdjustPost",
+        "WeekCaptureAccept",
         "CashManagementWeekGet",
         "CashManagementRemindersGet",
         "CashManagementMonthGet",
