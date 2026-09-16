@@ -12,6 +12,14 @@ Copy this folder into the finos repo as `docs/authority/`.
 
 If code conflicts with a locked domain doc or BR-X, the document wins until an ADR is approved.
 
+## Owner facts (ROC / collector interview) — global
+
+Standing per-symbol owner answers: [`owner-facts/`](owner-facts/README.md) (`owner-facts/<SYMBOL>.md` for every income-fleet collector; see [`owner-facts/INDEX.md`](owner-facts/INDEX.md)).
+
+**Before asking the owner about ROC, issuer, frequency, scope, or amounts for any symbol, read that file if present. If it covers the question, do not re-interview.**
+
+**Recreate / first-enable:** create or complete `owner-facts/<SYMBOL>.md` when missing or incomplete (scaffold + `PENDING_OWNER`; never fake-fill %). Markdown does not auto-write live SQLite plan %.
+
 ## Domains
 
 | File | Feature area |

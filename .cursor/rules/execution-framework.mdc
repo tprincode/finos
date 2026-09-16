@@ -33,6 +33,12 @@ Read [docs/architecture/execution.md](docs/architecture/execution.md) at the sta
 - The next milestone is M6+ AI, Postgres, OIDC, or signed installers and the user has not unlocked it.
 - The user named a different item.
 
+## Owner facts — global (all collectors; no re-interview)
+
+**Before asking the owner about ROC, issuer, frequency, scope, or amount facts for any symbol**, read `docs/Authority/owner-facts/<SYMBOL>.md` if present (see `docs/Authority/owner-facts/README.md`). If the file covers the question → **do not re-ask**. Chat / Project-store copies do not replace the tip file. Do not invent plan % into live SQLite from chat; seed / Accept / `roc_pct_change` ticket paths only.
+
+**Recreate / first-enable:** if `owner-facts/<SYMBOL>.md` is missing or incomplete → create/complete it (scaffold from seed/book + `PENDING_OWNER` for unknowns). Do not fake-fill. See `TEMPLATE.md`. Gate: `scripts/owner-facts-anti-reask.sh`.
+
 ## After a gate is green
 
 Update the **Now / Next** lines in `docs/architecture/execution.md`, then begin Next (thin first slice, itemized). Do not end the turn with only “say proceed.”
