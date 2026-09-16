@@ -1,12 +1,16 @@
 //! Auto last-price fetch window: weekdays 09:00–16:00 America/New_York,
 //! skipped when the last successful price run is under four hours old.
 
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, TimeZone, Timelike, Weekday};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timelike, Weekday};
 use chrono_tz::America::New_York;
 use chrono_tz::Tz;
 
 pub const LAST_PRICE_AUTO_WINDOW: &str = "weekday 9-4 Eastern";
 pub const LAST_PRICE_FRESH_HOURS: i64 = 4;
+
+/// `code` on the one `price` run each auto sweep records for itself, so the 4-hour gate
+/// can see that a sweep happened even when it had nothing to fetch or missed everywhere.
+pub const LAST_PRICE_RUN_CODE: &str = "last_price_run";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LastPriceAutoSkip {
@@ -28,6 +32,12 @@ pub fn now_eastern() -> DateTime<Tz> {
     chrono::Utc::now().with_timezone(&New_York)
 }
 
+/// Resolve a stored run stamp to an instant in Eastern.
+///
+/// Retrieve-run stamps are written by `run_stamp_local()` as machine-local wall clock
+/// with no offset. Resolving an offset-less stamp in Eastern instead of the machine
+/// zone shortens the 4-hour window by the machine's offset from Eastern, which reopens
+/// the auto gate — and the UI wait — early on any machine that is not set to Eastern.
 pub fn parse_run_stamp_et(stamp: &str) -> Option<DateTime<Tz>> {
     let trimmed = stamp.trim();
     if trimmed.is_empty() {
@@ -39,7 +49,12 @@ pub fn parse_run_stamp_et(stamp: &str) -> Option<DateTime<Tz>> {
     let naive = NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S")
         .or_else(|_| NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S"))
         .ok()?;
-    New_York.from_local_datetime(&naive).single()
+    let local = Local
+        .from_local_datetime(&naive)
+        .single()
+        // Spring-forward gap / fall-back overlap: take the first valid reading.
+        .or_else(|| Local.from_local_datetime(&naive).earliest())?;
+    Some(local.with_timezone(&New_York))
 }
 
 /// Clock-only window (weekend / hours). Prefer [`auto_last_price_allowed`] with the
@@ -156,6 +171,22 @@ mod tests {
             auto_last_price_allowed(now, Some(et(2026, 9, 16, 6, 30))),
             Ok(())
         );
+    }
+
+    /// Pass check: a stamp written by `run_stamp_local()` reads back as that many
+    /// minutes ago on any machine timezone, so the 4-hour window is not cut short.
+    #[test]
+    fn local_run_stamp_reads_back_as_minutes_ago() {
+        let thirty_ago = Local::now() - Duration::minutes(30);
+        let stamp = thirty_ago.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let parsed = parse_run_stamp_et(&stamp).expect("local stamp parses");
+        let elapsed = now_eastern().signed_duration_since(parsed);
+        assert!(
+            elapsed >= Duration::minutes(29) && elapsed <= Duration::minutes(31),
+            "stamp {stamp} read back as {} minutes ago",
+            elapsed.num_minutes()
+        );
+        assert!(elapsed < Duration::hours(LAST_PRICE_FRESH_HOURS));
     }
 
     #[test]
