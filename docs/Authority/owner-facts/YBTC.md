@@ -1,9 +1,11 @@
 # YBTC — owner facts (binding)
 
+**Status:** `FILLED` (global owner-facts example)  
 Owner-provided. **Do not re-ask ROC.** **Do not re-research as if unknown.**
 
 Locked: 2026-09-16  
-Source: owner statements + Project store `docs/Authority/ybtc-owner-facts-2026-09-16.md`
+Source: owner statements + Project store `docs/Authority/ybtc-owner-facts-2026-09-16.md`  
+Policy: [`README.md`](README.md) (all collectors)
 
 ## Identity
 
