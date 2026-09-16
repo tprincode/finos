@@ -305,7 +305,11 @@ fn updater_check_body() -> UpdaterCheckBody {
 }
 
 fn last_price_auto_window_body() -> LastPriceAutoWindowBody {
-    match crate::last_price_window::last_price_auto_window_now() {
+    last_price_auto_window_body_for(None)
+}
+
+fn last_price_auto_window_body_for(last_ok_stamp: Option<&str>) -> LastPriceAutoWindowBody {
+    match crate::last_price_window::last_price_auto_window_now_with_last(last_ok_stamp) {
         Ok(()) => LastPriceAutoWindowBody {
             allowed: true,
             skip_reason: None,
@@ -315,6 +319,13 @@ fn last_price_auto_window_body() -> LastPriceAutoWindowBody {
             skip_reason: Some(skip.reason().to_string()),
         },
     }
+}
+
+async fn latest_ok_price_run_stamp(canonical: &dyn Canonical) -> Option<String> {
+    let runs = canonical.retrieve_run_list(None, 200).await.ok()?;
+    runs.into_iter()
+        .find(|run| run.kind == "price" && run.ok)
+        .map(|run| run.requested_at)
 }
 
 fn query_ok(request: &QueryRequest, body_json: String) -> QueryResult {
@@ -8244,10 +8255,15 @@ pub async fn execute_query_on(
             &request,
             Ok::<UpdaterCheckBody, PlatformError>(updater_check_body()),
         ),
-        "LastPriceAutoWindowGet" => map_q(
-            &request,
-            Ok::<LastPriceAutoWindowBody, PlatformError>(last_price_auto_window_body()),
-        ),
+        "LastPriceAutoWindowGet" => {
+            let last = latest_ok_price_run_stamp(canonical).await;
+            map_q(
+                &request,
+                Ok::<LastPriceAutoWindowBody, PlatformError>(last_price_auto_window_body_for(
+                    last.as_deref(),
+                )),
+            )
+        }
         "CoreFunctionsGet" => map_q(
             &request,
             crate::core_functions::core_functions_catalog().map_err(|e| PlatformError {

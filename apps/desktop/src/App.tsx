@@ -2750,6 +2750,9 @@ export default function App() {
   runDataSnapshotRef.current = runDataSnapshot;
 
   const refreshLastPrices = useCallback(async (force = false) => {
+    // Auto path: LastPriceAutoWindowGet includes weekday 9–4 Eastern and the
+    // 4-hour freshness gate. Within 4h of a successful run, use cached last
+    // price — do not set busy / wait for another refresh. Manual Refresh forces.
     if (!force) {
       let allowed = false;
       try {

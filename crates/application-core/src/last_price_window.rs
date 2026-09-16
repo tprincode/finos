@@ -42,13 +42,23 @@ pub fn parse_run_stamp_et(stamp: &str) -> Option<DateTime<Tz>> {
     New_York.from_local_datetime(&naive).single()
 }
 
-/// Clock-only window (weekend / hours). Freshness is checked later by the host.
+/// Clock-only window (weekend / hours). Prefer [`auto_last_price_allowed`] with the
+/// last successful price-run stamp so a refresh minutes ago does not wait again.
 pub fn last_price_auto_window(now: DateTime<Tz>) -> Result<(), LastPriceAutoSkip> {
     auto_last_price_allowed(now, None)
 }
 
 pub fn last_price_auto_window_now() -> Result<(), LastPriceAutoSkip> {
     last_price_auto_window(now_eastern())
+}
+
+/// Owner auto path: weekday 9–4 Eastern **and** last successful price run older than
+/// [`LAST_PRICE_FRESH_HOURS`]. Within the fresh window, cached last price is used —
+/// do not force another wait.
+pub fn last_price_auto_window_now_with_last(
+    last_ok_stamp: Option<&str>,
+) -> Result<(), LastPriceAutoSkip> {
+    auto_last_price_allowed(now_eastern(), last_ok_stamp.and_then(parse_run_stamp_et))
 }
 
 pub fn auto_last_price_allowed(
@@ -120,6 +130,31 @@ mod tests {
         assert_eq!(
             auto_last_price_allowed(et(2026, 9, 14, 10, 0), Some(et(2026, 9, 14, 7, 0))),
             Err(LastPriceAutoSkip::FreshUnderFourHours)
+        );
+    }
+
+    /// Pass check: refreshed N minutes ago → no wait for next refresh (use cache).
+    #[test]
+    fn refreshed_minutes_ago_skips_no_wait_for_next_refresh() {
+        let now = et(2026, 9, 16, 10, 30);
+        let fifteen_minutes_ago = et(2026, 9, 16, 10, 15);
+        assert_eq!(
+            auto_last_price_allowed(now, Some(fifteen_minutes_ago)),
+            Err(LastPriceAutoSkip::FreshUnderFourHours)
+        );
+        assert_eq!(
+            LastPriceAutoSkip::FreshUnderFourHours.reason(),
+            "last refresh under 4 hours"
+        );
+        // Just under the 4h edge still skips (no forced wait).
+        assert_eq!(
+            auto_last_price_allowed(now, Some(et(2026, 9, 16, 6, 31))),
+            Err(LastPriceAutoSkip::FreshUnderFourHours)
+        );
+        // At/after 4h the auto path may run again.
+        assert_eq!(
+            auto_last_price_allowed(now, Some(et(2026, 9, 16, 6, 30))),
+            Ok(())
         );
     }
 
