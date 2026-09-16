@@ -8,9 +8,10 @@ if not exist "%EXE%" (
   echo That is the no-console installed release launch. It is a frozen cut, not the daily coding start.
   echo When you want the Desktop icon to catch up:
   echo   1. Fully quit any running finos window and this console.
-  echo   2. From the repo root: npm run desktop:build
-  echo   3. Run apps\desktop\src-tauri\target\release\bundle\nsis\finos_0.1.0_x64-setup.exe
-  echo   4. Pin Start Menu / Desktop to %%LOCALAPPDATA%%\finos\finos-desktop.exe
+  echo   2. From the repo root: npm run doctor   ^(names anything missing before the long compile^)
+  echo   3. From the repo root: npm run desktop:build
+  echo   4. Run apps\desktop\src-tauri\target\release\bundle\nsis\finos_0.1.0_x64-setup.exe
+  echo   5. Pin Start Menu / Desktop to %%LOCALAPPDATA%%\finos\finos-desktop.exe
   echo.
   echo Keep start-finos-dev.bat / Desktop finos.bat for the next host change.
   echo Do not run the installed exe and the dev app at the same time.
