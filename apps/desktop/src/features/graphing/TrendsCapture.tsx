@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { formatUsd, formatWeekChooserLabel } from "@finos/ui-components";
 
+export type TrendsCashReference = {
+  accountId: string;
+  accountName: string;
+  displayName: string;
+  cashSymbol: string;
+  referenceMinor: number | null;
+};
+
 export type TrendsWeekCapture = {
   periodStart: string;
   periodEnd: string;
@@ -46,6 +54,7 @@ export type TrendsWeekCapture = {
   populatedPeriodEnds?: string[];
   missingRequired: string[];
   scale: number;
+  cashReferences?: TrendsCashReference[];
 };
 
 type Draft = {
@@ -82,6 +91,7 @@ const ACCOUNT_STEPS: Array<{
   cashKey: keyof Draft;
   totalLabel: string;
   cashLabel: string;
+  accountName: string;
 }> = [
   {
     step: "Income",
@@ -89,6 +99,7 @@ const ACCOUNT_STEPS: Array<{
     cashKey: "incomeCashMinor",
     totalLabel: "Income Total Balance",
     cashLabel: "Income Cash Balance",
+    accountName: "Income",
   },
   {
     step: "FI Roth",
@@ -96,6 +107,7 @@ const ACCOUNT_STEPS: Array<{
     cashKey: "rothCashMinor",
     totalLabel: "FI Roth Total Balance",
     cashLabel: "FI Roth Cash Balance",
+    accountName: "FI Roth",
   },
   {
     step: "Speculation",
@@ -103,6 +115,7 @@ const ACCOUNT_STEPS: Array<{
     cashKey: "speculationCashMinor",
     totalLabel: "Speculation Total Balance",
     cashLabel: "Speculation Cash Balance",
+    accountName: "Speculation",
   },
   {
     step: "Health",
@@ -110,6 +123,7 @@ const ACCOUNT_STEPS: Array<{
     cashKey: "healthCashMinor",
     totalLabel: "Health Total Balance",
     cashLabel: "Health Cash Balance",
+    accountName: "Health",
   },
   {
     step: "Car",
@@ -117,6 +131,7 @@ const ACCOUNT_STEPS: Array<{
     cashKey: "carCashMinor",
     totalLabel: "Car Total Balance",
     cashLabel: "Car Cash Balance",
+    accountName: "Car",
   },
   {
     step: "Account 9",
@@ -124,8 +139,11 @@ const ACCOUNT_STEPS: Array<{
     cashKey: "acct9CashMinor",
     totalLabel: "Account 9 Total Balance",
     cashLabel: "Account 9 Cash Balance",
+    accountName: "9",
   },
 ];
+
+const REASON_KINDS = ["fee", "split", "other"] as const;
 
 function minorToInput(v: number | null | undefined, scale: number): string {
   if (v == null) return "";
@@ -172,6 +190,11 @@ function prevStep(step: Step): Step {
   return STEPS[Math.max(i - 1, 0)] ?? "Week";
 }
 
+function formatRef(ref: number | null, scale: number): string {
+  if (ref == null) return "—";
+  return formatUsd(ref, scale);
+}
+
 export function TrendsCapturePanel({
   capture,
   busy,
@@ -191,6 +214,7 @@ export function TrendsCapturePanel({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [dirty, setDirty] = useState(false);
   const [weekPicked, setWeekPicked] = useState(false);
+  const [reasons, setReasons] = useState<Record<string, { kind: string; detail: string }>>({});
   const openedGap = useRef(false);
 
   useEffect(() => {
@@ -269,38 +293,78 @@ export function TrendsCapturePanel({
   const weekIncome = capture.suggestedMonthlyDivsMinor;
   const profit = capture.suggestedProfitMinor;
 
+  const typedByAccount: Record<string, number> = {
+    Income: incomeCash,
+    "FI Roth": rothCash,
+    Speculation: specCash,
+    Health: healthCash,
+    Car: carCash,
+    "9": acct9Cash,
+  };
+
+  const reconRows = (capture.cashReferences ?? []).map((ref) => {
+    const typed = typedByAccount[ref.accountName] ?? 0;
+    const gap =
+      ref.referenceMinor == null ? null : typed - ref.referenceMinor;
+    const material = gap != null && Math.abs(gap) >= 1;
+    return { ref, typed, gap, material };
+  });
+
+  const materialGaps = reconRows.filter((r) => r.material);
+  const reasonsReady = materialGaps.every((r) => {
+    const row = reasons[r.ref.accountId];
+    return row && REASON_KINDS.includes(row.kind as (typeof REASON_KINDS)[number]);
+  });
+
   const accountFilled = (s: Step) => {
     const row = ACCOUNT_STEPS.find((a) => a.step === s);
     if (!row) return true;
     return draft[row.totalKey].trim() !== "" && draft[row.cashKey].trim() !== "";
   };
 
-  const buildBody = () => ({
-    periodStart: capture.periodStart,
-    periodEnd: capture.periodEnd,
-    capturedAt: new Date().toISOString(),
-    profitMinor: profit,
-    monthlyDivsMinor: weekIncome,
-    fidelityTotalMinor: fid,
-    schwabTotalMinor: schwab,
-    incomeCashMinor: incomeCash,
-    acct9CashMinor: acct9Cash,
-    acct9EtfValueMinor: etf ?? 0,
-    carBalanceMinor: inputToMinor(draft.carBalanceMinor, scale),
-    incomeBalanceMinor: inputToMinor(draft.incomeBalanceMinor, scale),
-    healthBalanceMinor: inputToMinor(draft.healthBalanceMinor, scale),
-    rothBalanceMinor: inputToMinor(draft.rothBalanceMinor, scale),
-    speculationBalanceMinor: inputToMinor(draft.speculationBalanceMinor, scale),
-    acct9BalanceMinor: inputToMinor(draft.acct9BalanceMinor, scale),
-    carCashMinor: inputToMinor(draft.carCashMinor, scale),
-    healthCashMinor: inputToMinor(draft.healthCashMinor, scale),
-    rothCashMinor: inputToMinor(draft.rothCashMinor, scale),
-    speculationCashMinor: inputToMinor(draft.speculationCashMinor, scale),
-    scale,
-    closed: capture.closed,
-  });
+  const buildBody = () => {
+    const adjusts = materialGaps.map((r) => {
+      const row = reasons[r.ref.accountId] ?? { kind: "fee", detail: "" };
+      const reason =
+        row.detail.trim() !== "" ? `${row.kind}: ${row.detail.trim()}` : row.kind;
+      return {
+        accountId: r.ref.accountId,
+        amountMinor: r.gap as number,
+        reason,
+      };
+    });
+    return {
+      periodStart: capture.periodStart,
+      periodEnd: capture.periodEnd,
+      capturedAt: new Date().toISOString(),
+      profitMinor: profit,
+      monthlyDivsMinor: weekIncome,
+      fidelityTotalMinor: fid,
+      schwabTotalMinor: schwab,
+      incomeCashMinor: incomeCash,
+      acct9CashMinor: acct9Cash,
+      acct9EtfValueMinor: etf ?? 0,
+      carBalanceMinor: inputToMinor(draft.carBalanceMinor, scale),
+      incomeBalanceMinor: inputToMinor(draft.incomeBalanceMinor, scale),
+      healthBalanceMinor: inputToMinor(draft.healthBalanceMinor, scale),
+      rothBalanceMinor: inputToMinor(draft.rothBalanceMinor, scale),
+      speculationBalanceMinor: inputToMinor(draft.speculationBalanceMinor, scale),
+      acct9BalanceMinor: inputToMinor(draft.acct9BalanceMinor, scale),
+      carCashMinor: inputToMinor(draft.carCashMinor, scale),
+      healthCashMinor: inputToMinor(draft.healthCashMinor, scale),
+      rothCashMinor: inputToMinor(draft.rothCashMinor, scale),
+      speculationCashMinor: inputToMinor(draft.speculationCashMinor, scale),
+      scale,
+      closed: capture.closed,
+      adjusts,
+    };
+  };
 
   const currentAccount = ACCOUNT_STEPS.find((a) => a.step === step);
+  const acceptBlocked =
+    busy ||
+    capture.closed ||
+    (materialGaps.length > 0 && !reasonsReady);
 
   return (
     <div className="trends-capture" aria-label="Trends weekly capture">
@@ -375,36 +439,110 @@ export function TrendsCapturePanel({
         </div>
       ) : null}
       {step === "Review" ? (
-        <dl className="trends-capture-review" aria-label="Trends week review">
-          <div>
-            <dt>Week income</dt>
-            <dd>{formatUsd(weekIncome, scale)}</dd>
+        <>
+          <dl className="trends-capture-review" aria-label="Trends week review">
+            <div>
+              <dt>Week income</dt>
+              <dd>{formatUsd(weekIncome, scale)}</dd>
+            </div>
+            <div>
+              <dt>Profit</dt>
+              <dd>{formatUsd(profit, scale)}</dd>
+            </div>
+            <div>
+              <dt>Total cash</dt>
+              <dd>{formatUsd(totalCash, scale)}</dd>
+            </div>
+            <div>
+              <dt>Total Fidelity</dt>
+              <dd>{formatUsd(fid, scale)}</dd>
+            </div>
+            <div>
+              <dt>Total Schwab</dt>
+              <dd>{formatUsd(schwab, scale)}</dd>
+            </div>
+            <div>
+              <dt>Fidelity week-to-week</dt>
+              <dd>{formatUsd(fidChange, scale)}</dd>
+            </div>
+            <div>
+              <dt>Schwab week-to-week</dt>
+              <dd>{formatUsd(schChange, scale)}</dd>
+            </div>
+          </dl>
+          <div className="trends-cash-recon" aria-label="Week cash recon">
+            <table>
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Typed</th>
+                  <th>Reference</th>
+                  <th>Gap</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reconRows.map(({ ref, typed, gap, material }) => (
+                  <tr key={ref.accountId}>
+                    <td>{ref.displayName}</td>
+                    <td>{formatUsd(typed, scale)}</td>
+                    <td>{formatRef(ref.referenceMinor, scale)}</td>
+                    <td>
+                      {gap == null ? "—" : formatUsd(gap, scale)}
+                    </td>
+                    <td>
+                      {material ? (
+                        <span className="trends-cash-recon-reason">
+                          <select
+                            aria-label={`${ref.displayName} cash adjust reason`}
+                            value={reasons[ref.accountId]?.kind ?? ""}
+                            disabled={busy}
+                            onChange={(e) => {
+                              const kind = e.target.value;
+                              setReasons((prev) => ({
+                                ...prev,
+                                [ref.accountId]: {
+                                  kind,
+                                  detail: prev[ref.accountId]?.detail ?? "",
+                                },
+                              }));
+                              setDirty(true);
+                            }}
+                          >
+                            <option value="">Select</option>
+                            {REASON_KINDS.map((k) => (
+                              <option key={k} value={k}>
+                                {k}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            aria-label={`${ref.displayName} cash adjust detail`}
+                            placeholder="optional detail"
+                            value={reasons[ref.accountId]?.detail ?? ""}
+                            disabled={busy}
+                            onChange={(e) => {
+                              setReasons((prev) => ({
+                                ...prev,
+                                [ref.accountId]: {
+                                  kind: prev[ref.accountId]?.kind ?? "fee",
+                                  detail: e.target.value,
+                                },
+                              }));
+                              setDirty(true);
+                            }}
+                          />
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <div>
-            <dt>Profit</dt>
-            <dd>{formatUsd(profit, scale)}</dd>
-          </div>
-          <div>
-            <dt>Total cash</dt>
-            <dd>{formatUsd(totalCash, scale)}</dd>
-          </div>
-          <div>
-            <dt>Total Fidelity</dt>
-            <dd>{formatUsd(fid, scale)}</dd>
-          </div>
-          <div>
-            <dt>Total Schwab</dt>
-            <dd>{formatUsd(schwab, scale)}</dd>
-          </div>
-          <div>
-            <dt>Fidelity week-to-week</dt>
-            <dd>{formatUsd(fidChange, scale)}</dd>
-          </div>
-          <div>
-            <dt>Schwab week-to-week</dt>
-            <dd>{formatUsd(schChange, scale)}</dd>
-          </div>
-        </dl>
+        </>
       ) : null}
       <div className="buttons">
         {step !== "Week" ? (
@@ -436,7 +574,7 @@ export function TrendsCapturePanel({
               type="button"
               aria-label="Save Trends week"
               className={dirty ? "is-unsaved" : undefined}
-              disabled={busy || capture.closed}
+              disabled={acceptBlocked}
               onClick={() => {
                 void onSave(buildBody(), false).then(() => setStep("Week"));
               }}
@@ -454,7 +592,7 @@ export function TrendsCapturePanel({
             <button
               type="button"
               aria-label="Correct Trends week"
-              disabled={busy || !capture.exists}
+              disabled={busy || !capture.exists || (materialGaps.length > 0 && !reasonsReady)}
               onClick={() => void onSave(buildBody(), true)}
             >
               Correct week
@@ -476,6 +614,7 @@ export function TrendsCapturePanel({
           onClick={() => {
             setDraft(draftFromCapture(capture));
             setDirty(false);
+            setReasons({});
           }}
         >
           Cancel

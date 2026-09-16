@@ -42,8 +42,10 @@ pub trait Canonical: Send + Sync {
         account_id: Uuid,
         name: Option<String>,
         kind: Option<String>,
+        cash_symbol: Option<String>,
         expected_version: Option<i64>,
     ) -> Result<AccountRecord, PlatformError> {
+        let _ = cash_symbol;
         ni()
     }
     async fn snapshot_import_sqlite(
@@ -920,6 +922,15 @@ pub trait Canonical: Send + Sync {
         let _ = (record, balances);
         ni()
     }
+    async fn week_capture_accept_with_balances(
+        &self,
+        record: TrendsWeekSourceRecord,
+        balances: Vec<(Uuid, i64, Option<i64>)>,
+        adjusts: Vec<ActivityRecord>,
+    ) -> Result<(), PlatformError> {
+        let _ = (record, balances, adjusts);
+        ni()
+    }
     async fn account_balance_snapshot_list(
         &self,
     ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> {
@@ -955,6 +966,7 @@ impl Canonical for UnimplementedCanonical {
         _account_id: Uuid,
         _name: Option<String>,
         _kind: Option<String>,
+        _cash_symbol: Option<String>,
         _expected_version: Option<i64>,
     ) -> Result<AccountRecord, PlatformError> {
         ni()

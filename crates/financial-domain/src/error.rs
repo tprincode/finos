@@ -40,4 +40,12 @@ pub enum DomainError {
     RothWithholdingNotAllowed,
     #[error("this cash type is not allowed on that account")]
     CashAccountKind,
+    #[error("Cash_Adjust cannot carry withholding")]
+    CashAdjustWithholdingNotAllowed,
+    #[error("Cash_Adjust reason is required")]
+    CashAdjustReasonRequired,
+    #[error("Cash_Adjust is not allowed on that account")]
+    CashAdjustAccount,
+    #[error("Cash_Adjust amount is invalid")]
+    CashAdjustAmount,
 }

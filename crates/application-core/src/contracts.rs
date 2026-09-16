@@ -382,6 +382,8 @@ pub struct AccountRecord {
     pub account_id: Uuid,
     pub name: String,
     pub kind: String,
+    #[serde(default)]
+    pub cash_symbol: Option<String>,
     #[serde(default = "default_row_version")]
     pub row_version: i64,
 }
@@ -467,6 +469,9 @@ pub struct ActivityRecord {
     pub federal_withholding_minor: i64,
     #[serde(default)]
     pub state_withholding_minor: i64,
+    /// Cash_Adjust reason note (`fee` or `fee: text`). Empty for other types.
+    #[serde(default)]
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -704,6 +709,19 @@ pub struct TrendsWeekCaptureBody {
     pub populated_period_ends: Vec<String>,
     pub missing_required: Vec<String>,
     pub scale: u8,
+    /// Per capture-account reference cash for week recon (null = no Adjust for that account).
+    #[serde(default)]
+    pub cash_references: Vec<TrendsCashReference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendsCashReference {
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub display_name: String,
+    pub cash_symbol: String,
+    pub reference_minor: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
