@@ -574,3 +574,43 @@ async fn t6_cash_adjust_post_refuses_withholding() {
     );
     assert_eq!(count_cash_adjust(&platform, "2026-08-28").await, 0);
 }
+
+#[tokio::test]
+async fn t9_blank_etf_total_stays_zero_no_proxy_invent() {
+    let root = repo_root();
+    let production = root.join("database/seed/production");
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    load_production_seed_via_commands(&platform, &production)
+        .await
+        .expect("seed");
+
+    let view = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    // Seeded Account 9 has last prices → suggested proxy may be > 0, but blank typed ETF must stay 0.
+    let suggested = view["suggestedAcct9EtfProxyMinor"].as_i64().unwrap_or(0);
+    assert!(
+        suggested > 0 || view["suggestedAcct9EtfProxyMinor"].is_null(),
+        "fixture should expose a real suggested proxy or null, not invented 0 alone when lots exist"
+    );
+    let cash = cash_from_references(&view, |_, ref_minor| ref_minor.unwrap_or(1_000));
+    let mut body = capture_body("2026-08-22", "2026-08-28", &cash, serde_json::json!([]));
+    body["acct9EtfValueMinor"] = serde_json::json!(0);
+    must_cmd(&platform, "WeekCaptureAccept", body).await;
+    let capture = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    assert_eq!(
+        capture["current"]["acct9EtfValueMinor"],
+        0,
+        "blank ETF total must not be replaced by suggested 70% proxy on Accept"
+    );
+    assert_eq!(count_cash_adjust(&platform, "2026-08-28").await, 0);
+}

@@ -70,76 +70,70 @@ type Draft = {
   carCashMinor: string;
   acct9BalanceMinor: string;
   acct9CashMinor: string;
+  /** Typed Account 9 ETF total; blank means 70% is — and excluded from totals. */
+  acct9EtfTotalMinor: string;
 };
 
-const STEPS = [
-  "Week",
-  "Income",
-  "FI Roth",
-  "Speculation",
-  "Health",
-  "Car",
-  "Account 9",
-  "Review",
-] as const;
+/** Slice 1b: Week → one capture grid → Review (+ recon). Speculation is a grid row. */
+const STEPS = ["Week", "Capture", "Review"] as const;
 
 type Step = (typeof STEPS)[number];
 
-const ACCOUNT_STEPS: Array<{
-  step: Step;
+const ACCOUNT_ROWS: Array<{
+  label: string;
   totalKey: keyof Draft;
   cashKey: keyof Draft;
+  accountName: string;
   totalLabel: string;
   cashLabel: string;
-  accountName: string;
 }> = [
   {
-    step: "Income",
+    label: "Income",
     totalKey: "incomeBalanceMinor",
     cashKey: "incomeCashMinor",
+    accountName: "Income",
     totalLabel: "Income Total Balance",
     cashLabel: "Income Cash Balance",
-    accountName: "Income",
   },
   {
-    step: "FI Roth",
+    label: "FI Roth",
     totalKey: "rothBalanceMinor",
     cashKey: "rothCashMinor",
+    accountName: "FI Roth",
     totalLabel: "FI Roth Total Balance",
     cashLabel: "FI Roth Cash Balance",
-    accountName: "FI Roth",
   },
   {
-    step: "Speculation",
+    label: "Speculation",
     totalKey: "speculationBalanceMinor",
     cashKey: "speculationCashMinor",
+    accountName: "Speculation",
     totalLabel: "Speculation Total Balance",
     cashLabel: "Speculation Cash Balance",
-    accountName: "Speculation",
   },
   {
-    step: "Health",
+    label: "Health",
     totalKey: "healthBalanceMinor",
     cashKey: "healthCashMinor",
+    accountName: "Health",
     totalLabel: "Health Total Balance",
     cashLabel: "Health Cash Balance",
-    accountName: "Health",
   },
   {
-    step: "Car",
+    label: "Car",
     totalKey: "carBalanceMinor",
     cashKey: "carCashMinor",
+    accountName: "Car",
     totalLabel: "Car Total Balance",
     cashLabel: "Car Cash Balance",
-    accountName: "Car",
   },
   {
-    step: "Account 9",
+    label: "Account 9",
     totalKey: "acct9BalanceMinor",
     cashKey: "acct9CashMinor",
+    accountName: "9",
     totalLabel: "Account 9 Total Balance",
     cashLabel: "Account 9 Cash Balance",
-    accountName: "9",
   },
 ];
 
@@ -158,12 +152,27 @@ function inputToMinor(raw: string, scale: number): number | null {
   return Math.round(n * 10 ** scale);
 }
 
+/** Stored value is already the 70% amount; invert for the typed ETF total field. */
+function etfTotalFromStoredSeventy(seventyMinor: number | null | undefined, scale: number): string {
+  if (seventyMinor == null || seventyMinor === 0) return "";
+  const total = Math.round((seventyMinor * 100) / 70);
+  return minorToInput(total, scale);
+}
+
+/** Owner types ETF total → system 70% (integer cents). Blank → null (UI —). */
+function seventyFromEtfTotal(raw: string, scale: number): number | null {
+  const total = inputToMinor(raw, scale);
+  if (total == null) return null;
+  return Math.round((total * 70) / 100);
+}
+
 function draftFromCapture(c: TrendsWeekCapture): Draft {
   const cur = c.current;
   const scale = c.scale ?? 2;
+  const savedSeventy = cur?.acct9EtfValueMinor;
   return {
     incomeBalanceMinor: minorToInput(c.incomeBalanceMinor, scale),
-    incomeCashMinor: minorToInput(cur?.incomeCashMinor, scale),
+    incomeCashMinor: minorToInput(cur?.incomeCashMinor ?? null, scale),
     rothBalanceMinor: minorToInput(c.rothBalanceMinor, scale),
     rothCashMinor: minorToInput(c.rothCashMinor, scale),
     speculationBalanceMinor: minorToInput(c.speculationBalanceMinor, scale),
@@ -177,6 +186,7 @@ function draftFromCapture(c: TrendsWeekCapture): Draft {
       scale,
     ),
     acct9CashMinor: minorToInput(cur?.acct9CashMinor, scale),
+    acct9EtfTotalMinor: etfTotalFromStoredSeventy(savedSeventy, scale),
   };
 }
 
@@ -193,6 +203,21 @@ function prevStep(step: Step): Step {
 function formatRef(ref: number | null, scale: number): string {
   if (ref == null) return "—";
   return formatUsd(ref, scale);
+}
+
+function weekHydrateKey(c: TrendsWeekCapture): string {
+  return [
+    c.periodStart,
+    c.periodEnd,
+    String(c.exists),
+    String(c.closed),
+    String(c.current?.incomeCashMinor ?? ""),
+    String(c.current?.acct9CashMinor ?? ""),
+    String(c.current?.acct9EtfValueMinor ?? ""),
+    String(c.incomeBalanceMinor ?? ""),
+    String(c.rothCashMinor ?? ""),
+    String(c.carCashMinor ?? ""),
+  ].join("|");
 }
 
 export function TrendsCapturePanel({
@@ -216,12 +241,24 @@ export function TrendsCapturePanel({
   const [weekPicked, setWeekPicked] = useState(false);
   const [reasons, setReasons] = useState<Record<string, { kind: string; detail: string }>>({});
   const openedGap = useRef(false);
+  const lastHydrateKey = useRef<string>("");
+  /** Keeps last typed draft for the week so Edit never blanks an in-progress form. */
+  const typedDraftRef = useRef<Draft | null>(null);
 
   useEffect(() => {
-    if (capture) {
-      setDraft(draftFromCapture(capture));
-      setDirty(false);
+    if (!capture) return;
+    const key = weekHydrateKey(capture);
+    if (key === lastHydrateKey.current && typedDraftRef.current) {
+      // Same week payload — keep what the owner typed (Edit / re-render safe).
+      setDraft(typedDraftRef.current);
+      return;
     }
+    lastHydrateKey.current = key;
+    const next = draftFromCapture(capture);
+    typedDraftRef.current = next;
+    setDraft(next);
+    setDirty(false);
+    setReasons({});
   }, [capture]);
 
   useEffect(() => {
@@ -267,7 +304,12 @@ export function TrendsCapturePanel({
     "";
 
   const setField = (key: keyof Draft, value: string) => {
-    setDraft((d) => (d ? { ...d, [key]: value } : d));
+    setDraft((d) => {
+      if (!d) return d;
+      const next = { ...d, [key]: value };
+      typedDraftRef.current = next;
+      return next;
+    });
     setDirty(true);
   };
 
@@ -283,11 +325,18 @@ export function TrendsCapturePanel({
   const healthCash = inputToMinor(draft.healthCashMinor, scale) ?? 0;
   const carCash = inputToMinor(draft.carCashMinor, scale) ?? 0;
   const acct9Cash = inputToMinor(draft.acct9CashMinor, scale) ?? 0;
-  const etf = capture.suggestedAcct9EtfProxyMinor;
-  const etfValue = etf ?? 0;
+  const etfSeventy = seventyFromEtfTotal(draft.acct9EtfTotalMinor, scale);
+  const etfValueForTotals = etfSeventy ?? 0;
   const fid = incomeBal + rothBal + specBal + healthBal + carBal;
   const schwab = acct9Bal;
-  const totalCash = incomeCash + rothCash + specCash + healthCash + carCash + acct9Cash + etfValue;
+  const totalCash =
+    incomeCash +
+    rothCash +
+    specCash +
+    healthCash +
+    carCash +
+    acct9Cash +
+    etfValueForTotals;
   const fidChange = fid - (capture.prior?.fidelityTotalMinor ?? 0);
   const schChange = schwab - (capture.prior?.schwabTotalMinor ?? 0);
   const weekIncome = capture.suggestedMonthlyDivsMinor;
@@ -316,11 +365,9 @@ export function TrendsCapturePanel({
     return row && REASON_KINDS.includes(row.kind as (typeof REASON_KINDS)[number]);
   });
 
-  const accountFilled = (s: Step) => {
-    const row = ACCOUNT_STEPS.find((a) => a.step === s);
-    if (!row) return true;
-    return draft[row.totalKey].trim() !== "" && draft[row.cashKey].trim() !== "";
-  };
+  const gridFilled = ACCOUNT_ROWS.every(
+    (row) => draft[row.totalKey].trim() !== "" && draft[row.cashKey].trim() !== "",
+  );
 
   const buildBody = () => {
     const adjusts = materialGaps.map((r) => {
@@ -343,7 +390,8 @@ export function TrendsCapturePanel({
       schwabTotalMinor: schwab,
       incomeCashMinor: incomeCash,
       acct9CashMinor: acct9Cash,
-      acct9EtfValueMinor: etf ?? 0,
+      // Blank ETF total → store 0 (not suggested proxy); UI shows — and excludes from totals.
+      acct9EtfValueMinor: etfSeventy ?? 0,
       carBalanceMinor: inputToMinor(draft.carBalanceMinor, scale),
       incomeBalanceMinor: inputToMinor(draft.incomeBalanceMinor, scale),
       healthBalanceMinor: inputToMinor(draft.healthBalanceMinor, scale),
@@ -360,11 +408,19 @@ export function TrendsCapturePanel({
     };
   };
 
-  const currentAccount = ACCOUNT_STEPS.find((a) => a.step === step);
   const acceptBlocked =
     busy ||
     capture.closed ||
     (materialGaps.length > 0 && !reasonsReady);
+
+  const reloadWeekDraft = (from: TrendsWeekCapture) => {
+    const next = draftFromCapture(from);
+    typedDraftRef.current = next;
+    lastHydrateKey.current = weekHydrateKey(from);
+    setDraft(next);
+    setDirty(false);
+    setReasons({});
+  };
 
   return (
     <div className="trends-capture" aria-label="Trends weekly capture">
@@ -392,6 +448,8 @@ export function TrendsCapturePanel({
               onChange={(e) => {
                 setWeekPicked(true);
                 setStep("Week");
+                typedDraftRef.current = null;
+                lastHydrateKey.current = "";
                 onReload(e.target.value);
               }}
             >
@@ -408,34 +466,64 @@ export function TrendsCapturePanel({
           </span>
         </div>
       ) : null}
-      {currentAccount ? (
-        <div className="trends-capture-grid">
-          <label>
-            {currentAccount.totalLabel}
-            <input
-              aria-label={currentAccount.totalLabel}
-              inputMode="decimal"
-              value={draft[currentAccount.totalKey]}
-              disabled={busy || (capture.closed && !dirty)}
-              onChange={(e) => setField(currentAccount.totalKey, e.target.value)}
-            />
-          </label>
-          <label>
-            {currentAccount.cashLabel}
-            <input
-              aria-label={currentAccount.cashLabel}
-              inputMode="decimal"
-              value={draft[currentAccount.cashKey]}
-              disabled={busy || (capture.closed && !dirty)}
-              onChange={(e) => setField(currentAccount.cashKey, e.target.value)}
-            />
-          </label>
-          {step === "Account 9" ? (
-            <p aria-label="Account 9 70% ETF">
-              70% ETF{" "}
-              {etf == null ? "unknown" : formatUsd(etf, scale)}
-            </p>
-          ) : null}
+      {step === "Capture" ? (
+        <div className="trends-capture-entry" aria-label="Week capture grid">
+          <table className="trends-capture-table">
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Total Balance</th>
+                <th>Cash Balance</th>
+                <th>ETF total → 70%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ACCOUNT_ROWS.map((row) => {
+                const isAcct9 = row.accountName === "9";
+                return (
+                  <tr key={row.accountName}>
+                    <td>{row.label}</td>
+                    <td>
+                      <input
+                        aria-label={row.totalLabel}
+                        inputMode="decimal"
+                        value={draft[row.totalKey]}
+                        disabled={busy || (capture.closed && !dirty)}
+                        onChange={(e) => setField(row.totalKey, e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={row.cashLabel}
+                        inputMode="decimal"
+                        value={draft[row.cashKey]}
+                        disabled={busy || (capture.closed && !dirty)}
+                        onChange={(e) => setField(row.cashKey, e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      {isAcct9 ? (
+                        <span className="trends-capture-etf">
+                          <input
+                            aria-label="Account 9 ETF total"
+                            inputMode="decimal"
+                            value={draft.acct9EtfTotalMinor}
+                            disabled={busy || (capture.closed && !dirty)}
+                            onChange={(e) => setField("acct9EtfTotalMinor", e.target.value)}
+                          />
+                          <span aria-label="Account 9 70% ETF">
+                            {etfSeventy == null ? "—" : formatUsd(etfSeventy, scale)}
+                          </span>
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       ) : null}
       {step === "Review" ? (
@@ -468,6 +556,12 @@ export function TrendsCapturePanel({
             <div>
               <dt>Schwab week-to-week</dt>
               <dd>{formatUsd(schChange, scale)}</dd>
+            </div>
+            <div>
+              <dt>Account 9 70% ETF</dt>
+              <dd aria-label="Account 9 70% ETF review">
+                {etfSeventy == null ? "—" : formatUsd(etfSeventy, scale)}
+              </dd>
             </div>
           </dl>
           <div className="trends-cash-recon" aria-label="Week cash recon">
@@ -559,10 +653,7 @@ export function TrendsCapturePanel({
           <button
             type="button"
             aria-label="Next Trends step"
-            disabled={
-              busy ||
-              (step !== "Week" && !accountFilled(step))
-            }
+            disabled={busy || (step === "Capture" && !gridFilled)}
             onClick={() => setStep(nextStep(step))}
           >
             Next
@@ -576,7 +667,11 @@ export function TrendsCapturePanel({
               className={dirty ? "is-unsaved" : undefined}
               disabled={acceptBlocked}
               onClick={() => {
-                void onSave(buildBody(), false).then(() => setStep("Week"));
+                void onSave(buildBody(), false).then(() => {
+                  typedDraftRef.current = null;
+                  lastHydrateKey.current = "";
+                  setStep("Week");
+                });
               }}
             >
               Accept
@@ -585,7 +680,13 @@ export function TrendsCapturePanel({
               type="button"
               aria-label="Edit Trends week"
               disabled={busy}
-              onClick={() => setStep("Income")}
+              onClick={() => {
+                // Never blank restart: restore last typed draft for this week.
+                if (typedDraftRef.current) {
+                  setDraft(typedDraftRef.current);
+                }
+                setStep("Capture");
+              }}
             >
               Edit
             </button>
@@ -610,11 +711,15 @@ export function TrendsCapturePanel({
         <button
           type="button"
           aria-label="Cancel Trends edits"
-          disabled={!dirty}
+          disabled={busy || (step === "Week" && !dirty)}
           onClick={() => {
-            setDraft(draftFromCapture(capture));
-            setDirty(false);
+            // Abort capture completely: no WeekCaptureAccept / Cash_Adjust,
+            // clear draft + recon reasons, return to clean Week (last committed).
             setReasons({});
+            setDirty(false);
+            setStep("Week");
+            reloadWeekDraft(capture);
+            onWizardActive?.(false);
           }}
         >
           Cancel
