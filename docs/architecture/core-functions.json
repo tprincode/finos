@@ -609,9 +609,9 @@
     {
       "id": "file-restart-graceful",
       "menuArea": "File",
-      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts the supervisor if missing, and exits. The supervisor Start-Process-es start-finos-dev.bat. Installed release uses app.restart() and must not destroy windows first.",
+      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts the supervisor if missing, and exits. The supervisor Start-Process-es start-finos-dev.bat. Installed release uses app.restart() and must not destroy windows first. Owner Windows installed relaunch requires restart-owner-gate attestation.",
       "lastChanged": "2026-09-16",
-      "lastVerified": "2026-09-16",
+      "lastVerified": "UNVERIFIED-owner-windows-installed",
       "alsoVerify": ["desktop_menu", "accessibility", "account_value"],
       "sentinels": [
         {
@@ -676,6 +676,18 @@
         },
         {
           "path": "crates/golden-harness/tests/desktop_menu.rs",
+          "mustContain": "installed_release_restart_must_not_destroy_windows_before_app_restart"
+        },
+        {
+          "path": "docs/architecture/restart-owner-gate.md",
+          "mustContain": "must not mark File → Restart Application as fixed"
+        },
+        {
+          "path": "docs/architecture/restart-owner-attestation.md",
+          "mustContain": "OWNER_CONFIRMED_INSTALLED_RESTART:"
+        },
+        {
+          "path": "scripts/restart-owner-gate.sh",
           "mustContain": "installed_release_restart_must_not_destroy_windows_before_app_restart"
         }
       ]

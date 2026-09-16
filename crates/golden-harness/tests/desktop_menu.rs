@@ -393,6 +393,7 @@ fn native_and_in_app_menus_list_screens() {
 /// Hard gate: installed-release Restart must call `app.restart()` without
 /// destroying windows first. Destroy-all on the async command thread races
 /// Tauri Exit so restart_on_exit never runs (app quits and stays down).
+/// This is source-shape only — not owner Windows NSIS relaunch proof.
 #[test]
 fn installed_release_restart_must_not_destroy_windows_before_app_restart() {
     let root = repo_root();
@@ -415,6 +416,15 @@ fn installed_release_restart_must_not_destroy_windows_before_app_restart() {
         fn_src.contains("Installed release: never destroy windows before app.restart()"),
         "lib.rs must keep the installed-release destroy/restart race comment"
     );
+    let debug_if = fn_src
+        .find("if cfg!(debug_assertions)")
+        .expect("app_restart must branch on debug_assertions");
+    let before_debug = &fn_src[..debug_if];
+    assert!(
+        !before_debug.contains("window.destroy()")
+            && !before_debug.contains("webview_windows()"),
+        "must not destroy or enumerate webview windows before the coding/release branch; that races installed app.restart()"
+    );
     let restart_at = fn_src
         .rfind("app.restart()")
         .expect("installed release path must call app.restart()");
@@ -424,12 +434,18 @@ fn installed_release_restart_must_not_destroy_windows_before_app_restart() {
         .next()
         .expect("coding branch must return Ok after exit");
     assert!(
-        !after_debug_return.contains("window.destroy()"),
+        !after_debug_return.contains("window.destroy()")
+            && !after_debug_return.contains("webview_windows()"),
         "installed release must not destroy windows between coding return and app.restart(); that no-ops relaunch"
     );
     assert!(
         before_restart.contains("window.destroy()"),
         "coding path must still destroy windows before exit"
+    );
+    let destroy_count = fn_src.matches("window.destroy()").count();
+    assert_eq!(
+        destroy_count, 1,
+        "window.destroy() must appear exactly once in app_restart (coding path only); found {destroy_count}"
     );
     assert!(
         !fn_src.to_ascii_lowercase().contains("household release"),

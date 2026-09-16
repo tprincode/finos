@@ -91,9 +91,12 @@ fn core_functions_catalog_sentinels_still_exist() {
             item.id,
             item.last_changed
         );
+        let verified_ok = iso_day(&item.last_verified)
+            || (item.id == "file-restart-graceful"
+                && item.last_verified == "UNVERIFIED-owner-windows-installed");
         assert!(
-            iso_day(&item.last_verified),
-            "{}: lastVerified must be YYYY-MM-DD, got {}",
+            verified_ok,
+            "{}: lastVerified must be YYYY-MM-DD (or UNVERIFIED-owner-windows-installed for file-restart-graceful), got {}",
             item.id,
             item.last_verified
         );
@@ -139,6 +142,22 @@ fn core_functions_catalog_sentinels_still_exist() {
         restart.function.contains("Installed release")
             && restart.function.contains("must not destroy windows first"),
         "file-restart-graceful must lock the installed-release destroy/restart contract"
+    );
+    assert!(
+        restart.function.contains("restart-owner-gate"),
+        "file-restart-graceful must name the restart-owner-gate attestation contract"
+    );
+    assert!(
+        restart.last_verified == "UNVERIFIED-owner-windows-installed"
+            || {
+                let attest = std::fs::read_to_string(
+                    root.join("docs/architecture/restart-owner-attestation.md"),
+                )
+                .unwrap_or_default();
+                let status = attest.split("## STATUS").nth(1).unwrap_or("");
+                status.contains("OWNER_CONFIRMED_INSTALLED_RESTART: true")
+            },
+        "lastVerified must stay UNVERIFIED-owner-windows-installed until owner STATUS attestation confirms installed Restart"
     );
     assert!(
         !restart.function.to_ascii_lowercase().contains("household"),

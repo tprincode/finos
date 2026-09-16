@@ -30,4 +30,6 @@ fi
 
 echo "components-anti-erasure: cargo test -p golden-harness --test ui_modules --test core_functions"
 cargo test -p golden-harness --test ui_modules --test core_functions
+echo "components-anti-erasure: restart owner / destroy-pattern honesty gate"
+bash "$ROOT/scripts/restart-owner-gate.sh"
 echo "components-anti-erasure: ok"
