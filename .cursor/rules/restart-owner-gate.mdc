@@ -1,0 +1,21 @@
+---
+description: Installed-release Restart cannot be marked done without owner Windows proof
+alwaysApply: true
+---
+
+# Restart Application — owner gate
+
+**Installed-release Restart is UNVERIFIED until the owner confirms** on Windows NSIS / `%LOCALAPPDATA%\finos\finos-desktop.exe` (see `docs/architecture/restart-owner-gate.md`).
+
+## Forbidden
+
+- Saying Restart is fixed / done / verified after PR merge, Linux CI green, or coding-path supervisor success alone.
+- Setting `file-restart-graceful.lastVerified` to a calendar date without `docs/architecture/restart-owner-attestation.md` containing `OWNER_CONFIRMED_INSTALLED_RESTART: true`.
+- Regenerating MAGI oracles (ADR-0013).
+
+## Required
+
+- Keep destroy-before-`app.restart()` out of the release path (`installed_release_restart_must_not_destroy_windows_before_app_restart`).
+- Until owner attestation: `lastVerified` = `UNVERIFIED-owner-windows-installed`.
+- Run `bash scripts/restart-owner-gate.sh` when touching Restart.
+- Status language: **UNVERIFIED on owner machine** — never “fixed.”
