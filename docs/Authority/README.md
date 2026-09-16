@@ -12,6 +12,12 @@ Copy this folder into the finos repo as `docs/authority/`.
 
 If code conflicts with a locked domain doc or BR-X, the document wins until an ADR is approved.
 
+## Owner facts (ROC / collector interview)
+
+Standing per-symbol owner answers live in [`owner-facts/`](owner-facts/README.md) (`owner-facts/<SYMBOL>.md`).
+
+**Before asking the owner about ROC or collector establish facts for a symbol, read that file if present. If present and the field is locked, do not re-interview.** Chat and Project-store copies are not a substitute for the tip file. Markdown does not auto-write live SQLite plan %.
+
 ## Domains
 
 | File | Feature area |
