@@ -2302,15 +2302,6 @@ export function IncomePlanWeekPanel({
       }
     },
   );
-  const positionPctTotal = (() => {
-    const actualOpen =
-      weekOpen && positionRows.every((row) => row.actualMinor === 0);
-    if (actualOpen || positionRows.length === 0) return null;
-    if (positionRows.some((row) => !row.planKnown)) return null;
-    const planned = positionRows.reduce((sum, row) => sum + (row.plannedMinor ?? 0), 0);
-    const actual = positionRows.reduce((sum, row) => sum + row.actualMinor, 0);
-    return pctOfPlanMinor(true, planned, actual, false);
-  })();
   const accountPctTotal = (() => {
     const actualOpen = weekOpen && totalActual === 0;
     if (actualOpen) return null;
