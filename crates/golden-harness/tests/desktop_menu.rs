@@ -361,8 +361,8 @@ fn native_and_in_app_menus_list_screens() {
         lib.contains("restart.token")
             && lib.contains("close_for_shutdown")
             && lib.contains("ensure_coding_supervisor")
-            && lib.contains("app.restart()"),
-        "coding Restart writes restart.token, starts the supervisor if missing, then exits; installed release uses app.restart()"
+            && lib.contains("spawn_installed_release_relaunch"),
+        "coding Restart writes restart.token, starts the supervisor if missing, then exits; installed release spawn_installed_release_relaunch-es the current exe"
     );
     for banned in [
         "schtasks",
@@ -390,15 +390,27 @@ fn native_and_in_app_menus_list_screens() {
     );
 }
 
-/// Hard gate: installed-release Restart must call `app.restart()` without
-/// destroying windows first. Destroy-all on the async command thread races
-/// Tauri Exit so restart_on_exit never runs (app quits and stays down).
-/// This is source-shape only — not owner Windows NSIS relaunch proof.
+/// Hard gate: installed-release Restart must Start-Process / spawn the current
+/// exe **before** any window destroy or `app.exit`, and must not rely on
+/// `app.restart()` / `restart_on_exit` alone (off-thread Exit can quit with no
+/// child). Source-shape only — not owner Windows NSIS relaunch proof.
 #[test]
-fn installed_release_restart_must_not_destroy_windows_before_app_restart() {
+fn installed_release_restart_must_spawn_exe_before_exit() {
     let root = repo_root();
     let lib = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs"))
         .expect("lib.rs");
+    assert!(
+        lib.contains("fn spawn_installed_release_relaunch"),
+        "installed relaunch helper must exist"
+    );
+    assert!(
+        lib.contains("Start-Process -FilePath"),
+        "Windows installed relaunch must use PowerShell Start-Process (coding-supervisor style)"
+    );
+    assert!(
+        lib.contains("current_exe()"),
+        "installed relaunch must resolve the running exe path"
+    );
     let start = lib
         .find("async fn app_restart")
         .expect("app_restart command must exist");
@@ -413,8 +425,12 @@ fn installed_release_restart_must_not_destroy_windows_before_app_restart() {
         "coding vs installed release must branch on debug_assertions"
     );
     assert!(
-        fn_src.contains("Installed release: never destroy windows before app.restart()"),
-        "lib.rs must keep the installed-release destroy/restart race comment"
+        fn_src.contains("Do not call app.restart()"),
+        "lib.rs must keep the installed-release spawn-before-exit comment"
+    );
+    assert!(
+        !fn_src.contains("app.restart();"),
+        "installed release must not call app.restart(); spawn then exit instead"
     );
     let debug_if = fn_src
         .find("if cfg!(debug_assertions)")
@@ -422,30 +438,37 @@ fn installed_release_restart_must_not_destroy_windows_before_app_restart() {
     let before_debug = &fn_src[..debug_if];
     assert!(
         !before_debug.contains("window.destroy()")
-            && !before_debug.contains("webview_windows()"),
-        "must not destroy or enumerate webview windows before the coding/release branch; that races installed app.restart()"
+            && !before_debug.contains("webview_windows()")
+            && !before_debug.contains("spawn_installed_release_relaunch"),
+        "must not destroy windows or spawn relaunch before the coding/release branch"
     );
-    let restart_at = fn_src
-        .rfind("app.restart()")
-        .expect("installed release path must call app.restart()");
-    let before_restart = &fn_src[..restart_at];
-    let after_debug_return = before_restart
+    let after_debug_return = fn_src[debug_if..]
         .rsplit("return Ok(());")
         .next()
         .expect("coding branch must return Ok after exit");
+    let spawn_at = after_debug_return
+        .find("spawn_installed_release_relaunch()?")
+        .expect("installed release must call spawn_installed_release_relaunch before exit");
+    let after_spawn = &after_debug_return[spawn_at..];
     assert!(
-        !after_debug_return.contains("window.destroy()")
-            && !after_debug_return.contains("webview_windows()"),
-        "installed release must not destroy windows between coding return and app.restart(); that no-ops relaunch"
+        after_spawn.contains("window.destroy()"),
+        "installed release may destroy windows only after spawn succeeds"
     );
     assert!(
-        before_restart.contains("window.destroy()"),
-        "coding path must still destroy windows before exit"
+        after_spawn.contains("app.exit(0)"),
+        "installed release must exit after spawn"
+    );
+    let destroy_before_spawn = &after_debug_return[..spawn_at];
+    assert!(
+        !destroy_before_spawn.contains("window.destroy()")
+            && !destroy_before_spawn.contains("webview_windows()")
+            && !destroy_before_spawn.contains("app.exit"),
+        "must not destroy windows or exit before spawn_installed_release_relaunch"
     );
     let destroy_count = fn_src.matches("window.destroy()").count();
     assert_eq!(
-        destroy_count, 1,
-        "window.destroy() must appear exactly once in app_restart (coding path only); found {destroy_count}"
+        destroy_count, 2,
+        "window.destroy() once in coding path and once after installed spawn; found {destroy_count}"
     );
     assert!(
         !fn_src.to_ascii_lowercase().contains("household release"),

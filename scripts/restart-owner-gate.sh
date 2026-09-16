@@ -5,9 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-echo "restart-owner-gate: static destroy-before-app.restart contract"
+echo "restart-owner-gate: static spawn-before-exit installed relaunch contract"
 cargo test -p golden-harness --test desktop_menu \
-  installed_release_restart_must_not_destroy_windows_before_app_restart \
+  installed_release_restart_must_spawn_exe_before_exit \
   -- --exact
 
 python3 - <<'PY'

@@ -140,8 +140,9 @@ fn core_functions_catalog_sentinels_still_exist() {
     );
     assert!(
         restart.function.contains("Installed release")
-            && restart.function.contains("must not destroy windows first"),
-        "file-restart-graceful must lock the installed-release destroy/restart contract"
+            && restart.function.contains("current_exe")
+            && restart.function.contains("does not rely on app.restart() alone"),
+        "file-restart-graceful must lock the installed-release spawn-before-exit contract"
     );
     assert!(
         restart.function.contains("restart-owner-gate"),
@@ -168,7 +169,7 @@ fn core_functions_catalog_sentinels_still_exist() {
             .sentinels
             .iter()
             .any(|s| s.must_contain.contains(
-                "installed_release_restart_must_not_destroy_windows_before_app_restart"
+                "installed_release_restart_must_spawn_exe_before_exit"
             )),
         "file-restart-graceful must sentinel the desktop_menu hard gate"
     );

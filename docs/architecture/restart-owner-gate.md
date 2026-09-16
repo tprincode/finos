@@ -11,11 +11,11 @@ Linux CI green, coding-path supervisor relaunch, string sentinels, and PR merge 
 | Path | How Restart works | What proves it |
 |------|-------------------|----------------|
 | Coding | `restart.token` + `start-finos-supervisor.bat` → `start-finos-dev.bat` | Windows coding stack with supervisor |
-| Installed release | release `app_restart` → `close_for_shutdown` → `app.restart()` **without** destroy-first | Owner on `%LOCALAPPDATA%\finos\finos-desktop.exe` after NSIS install |
+| Installed release | release `app_restart` → `close_for_shutdown` → `spawn_installed_release_relaunch` (Start-Process current exe) → destroy → `app.exit(0)` — **not** `app.restart()` alone | Owner on `%LOCALAPPDATA%\finos\finos-desktop.exe` after NSIS install |
 
 ## Static anti-regression (not owner proof)
 
-`installed_release_restart_must_not_destroy_windows_before_app_restart` in `crates/golden-harness/tests/desktop_menu.rs` must stay green. It only proves the destroy-before-`app.restart()` pattern is absent from `lib.rs` text.
+`installed_release_restart_must_spawn_exe_before_exit` in `crates/golden-harness/tests/desktop_menu.rs` must stay green. It only proves the spawn-before-exit / no-`app.restart()` pattern is present in `lib.rs` text.
 
 ## Owner proof (required for Done)
 
@@ -39,5 +39,5 @@ bash scripts/restart-owner-gate.sh
 
 Fails if:
 
-- destroy-before-restart static test fails, or
+- spawn-before-exit static test fails, or
 - catalog `lastVerified` is a calendar date without `OWNER_CONFIRMED_INSTALLED_RESTART: true` in the attestation file.
