@@ -122,7 +122,7 @@ async fn finance_command(
         {
             let security_id = body.get("securityId").and_then(|v| v.as_str());
             let last =
-                latest_ok_price_requested_at(platform.inner().as_ref(), security_id).await;
+                latest_price_requested_at(platform.inner().as_ref(), security_id).await;
             if let Some(skip) = last_price_auto_skip(last.as_deref()) {
                 body["quote"] = serde_json::Value::Null;
                 body["skipReason"] = serde_json::Value::String(skip.reason().to_string());
@@ -669,7 +669,7 @@ async fn stored_last_price(platform: &LocalPlatform, security_id: &str, today: &
     }
 }
 
-async fn latest_ok_price_requested_at(
+async fn latest_price_requested_at(
     platform: &LocalPlatform,
     security_id: Option<&str>,
 ) -> Option<String> {
@@ -685,8 +685,7 @@ async fn latest_ok_price_requested_at(
         serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).ok()?;
     for run in val.get("runs")?.as_array()? {
         let kind = run.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        let ok = run.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if kind == "price" && ok {
+        if kind == "price" {
             return run
                 .get("requestedAt")
                 .and_then(|v| v.as_str())
@@ -708,6 +707,7 @@ fn last_price_auto_skip(
 /// Fill LastPriceRefresh quotes from the open-lot set. Injected quotes win (tests).
 /// Misses stay unknown — never write $0. Today's current quote is not fetched again.
 /// Auto last-price runs weekday 9-4 Eastern only; last refresh under 4 hours is skipped unless force.
+/// Any price retrieve_run (ok, fail, or started) counts for the 4-hour skip so Restart does not re-fetch.
 async fn fill_last_price_refresh(
     app: &AppHandle,
     platform: &LocalPlatform,
@@ -718,6 +718,9 @@ async fn fill_last_price_refresh(
         .as_deref()
         .and_then(|raw| serde_json::from_str(raw).ok())
         .unwrap_or_else(|| serde_json::json!({}));
+    if body.get("started").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return;
+    }
     if body
         .get("quotes")
         .and_then(|q| q.as_array())
@@ -727,7 +730,7 @@ async fn fill_last_price_refresh(
     }
     let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     if !force {
-        let last = latest_ok_price_requested_at(platform, None).await;
+        let last = latest_price_requested_at(platform, None).await;
         if let Some(skip) = last_price_auto_skip(last.as_deref()) {
             body["quotes"] = serde_json::json!([]);
             body["misses"] = serde_json::json!([]);
@@ -737,6 +740,7 @@ async fn fill_last_price_refresh(
         }
     }
     let _ = application_core::production_seed::ensure_btc_usd_split(platform).await;
+    let _ = application_core::production_seed::ensure_holding_qty_history(platform).await;
     let set = execute_query_on(platform, platform, qry("PriceRetrievalSetGet", serde_json::json!({}))).await;
     let secs = execute_query_on(platform, platform, qry("SecurityList", serde_json::json!({}))).await;
     if !set.ok || !secs.ok {
@@ -859,6 +863,21 @@ async fn fill_last_price_refresh(
         }
     }
     let total = targets.len() as u32;
+    let started_ids: Vec<String> = targets.iter().map(|t| t.security_id.clone()).collect();
+    if !started_ids.is_empty() {
+        let _ = execute_command_on(
+            platform,
+            platform,
+            cmd(
+                "LastPriceRefresh",
+                serde_json::json!({
+                    "started": true,
+                    "securityIds": started_ids,
+                }),
+            ),
+        )
+        .await;
+    }
     emit_last_price_refresh_progress(app, 0, total, "");
     let fetch_targets = targets.clone();
     let app_progress = app.clone();
@@ -1202,8 +1221,35 @@ async fn fill_collector_retrieve(platform: &LocalPlatform, body: &mut serde_json
         known_payment_periods,
         known_declaration_amounts,
     };
+    let progressive = body
+        .get("progressiveRetry")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let attempt = body
+        .get("timeoutAttempt")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        import_engine::collect_declarations_for(vec![target])
+        if progressive {
+            let mut last = import_engine::DeclarationCollectOutcome::default();
+            for secs in import_engine::DECL_GET_TIMEOUT_SECS {
+                last = import_engine::with_decl_get_timeout(secs, || {
+                    import_engine::collect_declarations_for(vec![target.clone()])
+                });
+                if !last.misses.iter().any(import_engine::miss_is_timeout) {
+                    break;
+                }
+            }
+            last
+        } else {
+            let secs = import_engine::DECL_GET_TIMEOUT_SECS
+                .get(attempt)
+                .copied()
+                .unwrap_or(import_engine::DECL_GET_TIMEOUT_SECS[0]);
+            import_engine::with_decl_get_timeout(secs, || {
+                import_engine::collect_declarations_for(vec![target])
+            })
+        }
     })
     .await
     .unwrap_or_default();
@@ -1329,10 +1375,11 @@ async fn fill_declaration_refresh(
         let registered = import_engine::is_registered_declaration_source(source);
 
         if registered && item.collector_enabled {
-            if financial_domain::collector::declaration_daily_retrieve_current(
+            if financial_domain::collector::same_day_retrieve_skip_allowed(
                 item.last_run_ok,
                 &item.last_run_at,
                 &today,
+                &item.declaration_weekday,
             ) {
                 already_current.push(serde_json::json!({
                     "securityId": id,
@@ -1415,26 +1462,51 @@ async fn fill_declaration_refresh(
         emit_declaration_refresh_progress(app, done, total, symbol);
     }
     let mut outcome = import_engine::DeclarationCollectOutcome::default();
-    for target in targets {
-        done = done.saturating_add(1);
-        emit_declaration_refresh_progress(app, done, total, &target.symbol);
-        let stamp_id = target.security_id.clone();
-        let stamp_symbol = target.symbol.clone();
-        let stamp_hash = target.last_content_hash.clone();
-        let mut one = tauri::async_runtime::spawn_blocking(move || {
-            import_engine::collect_declarations_for(vec![target])
-        })
-        .await
-        .unwrap_or_default();
-        let quiet = one.misses.is_empty() && one.unchanged.is_empty();
-        if quiet {
-            one.unchanged.push(serde_json::json!({
-                "securityId": stamp_id,
-                "symbol": stamp_symbol,
-                "contentHash": stamp_hash,
-            }));
+    let mut pending = targets;
+    for (pass, secs) in import_engine::DECL_GET_TIMEOUT_SECS.iter().copied().enumerate() {
+        if pending.is_empty() {
+            break;
         }
-        merge_declaration_collect(&mut outcome, one);
+        let batch = std::mem::take(&mut pending);
+        for target in batch {
+            if pass == 0 {
+                done = done.saturating_add(1);
+                emit_declaration_refresh_progress(app, done, total, &target.symbol);
+            } else {
+                emit_declaration_refresh_progress(
+                    app,
+                    done,
+                    total,
+                    &format!("{} retry {}s", target.symbol, secs),
+                );
+            }
+            let stamp_id = target.security_id.clone();
+            let stamp_symbol = target.symbol.clone();
+            let stamp_hash = target.last_content_hash.clone();
+            let one_target = target.clone();
+            let mut one = tauri::async_runtime::spawn_blocking(move || {
+                import_engine::with_decl_get_timeout(secs, || {
+                    import_engine::collect_declarations_for(vec![one_target])
+                })
+            })
+            .await
+            .unwrap_or_default();
+            if one.misses.iter().any(import_engine::miss_is_timeout)
+                && pass + 1 < import_engine::DECL_GET_TIMEOUT_SECS.len()
+            {
+                pending.push(target);
+                continue;
+            }
+            let quiet = one.misses.is_empty() && one.unchanged.is_empty();
+            if quiet {
+                one.unchanged.push(serde_json::json!({
+                    "securityId": stamp_id,
+                    "symbol": stamp_symbol,
+                    "contentHash": stamp_hash,
+                }));
+            }
+            merge_declaration_collect(&mut outcome, one);
+        }
     }
     outcome.misses.extend(disabled_misses);
     outcome.unchanged.extend(already_current);
@@ -1578,9 +1650,17 @@ fn supervisor_lock_dir() -> PathBuf {
     local.join("com.finos.desktop").join("supervisor.lock")
 }
 
-fn coding_supervisor_running() -> bool {
+fn supervisor_pid_file() -> PathBuf {
+    supervisor_lock_dir().join("supervisor.pid")
+}
+
+fn pid_is_live_cmd(pid: &str) -> bool {
+    let pid = pid.trim();
+    if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
     let Ok(out) = std::process::Command::new("tasklist")
-        .args(["/FI", "WINDOWTITLE eq finos supervisor*", "/NH"])
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
         .output()
     else {
         return false;
@@ -1589,28 +1669,51 @@ fn coding_supervisor_running() -> bool {
     text.contains("cmd.exe") || text.contains("powershell")
 }
 
+fn coding_supervisor_running() -> bool {
+    let Ok(raw) = std::fs::read_to_string(supervisor_pid_file()) else {
+        return false;
+    };
+    pid_is_live_cmd(&raw)
+}
+
 /// Coding File → Restart must not depend on a leftover supervisor window.
+/// `cmd /c start` must finish before `app.exit` so the new console is not in the dying Tauri job.
+/// A stale supervisor.lock / window-title check is not "already running."
 fn ensure_coding_supervisor() -> Result<(), String> {
     if coding_supervisor_running() {
         return Ok(());
     }
     let lock = supervisor_lock_dir();
-    if lock.is_dir() && !coding_supervisor_running() {
+    if lock.is_dir() {
         let _ = std::fs::remove_dir_all(&lock);
     }
-    let bat = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("start-finos-supervisor.bat");
+    let bat = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("start-finos-supervisor.bat");
     if !bat.is_file() {
         return Err(format!("start-finos-supervisor.bat missing: {}", bat.display()));
     }
-    let path = bat.display().to_string().replace('\'', "''");
-    std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!("Start-Process -FilePath '{path}' -WindowStyle Normal"),
-        ])
-        .spawn()
+    let desktop = bat
+        .parent()
+        .ok_or_else(|| "supervisor bat has no parent".to_string())?;
+    let bat_s = bat.to_string_lossy().replace(r"\\?\", "");
+    let dir_s = desktop.to_string_lossy().replace(r"\\?\", "");
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/C", "start", "", "/D", &dir_s, &bat_s]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        cmd.creation_flags(CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+    }
+    let status = cmd
+        .status()
         .map_err(|e| format!("start supervisor: {e}"))?;
+    if !status.success() {
+        return Err(format!("start supervisor: {status}"));
+    }
     Ok(())
 }
 

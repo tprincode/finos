@@ -1,6 +1,8 @@
 //! Weekly Trends account balances and entered week metrics.
 
-use application_core::contracts::{AccountBalanceSnapshotRecord, TrendsWeekSourceRecord};
+use application_core::contracts::{
+    AccountBalanceSnapshotRecord, ActivityRecord, TrendsWeekSourceRecord,
+};
 use application_core::ports::platform::PlatformError;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
@@ -319,7 +321,104 @@ pub async fn trends_week_save_atomic(
         .bind(balance_minor)
         .bind(record.scale as i64)
         .bind(&record.captured_at)
-        .bind(cash_minor)
+        .bind(*cash_minor)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+    }
+    tx.commit().await.map_err(|e| map_err(e.into()))?;
+    Ok(())
+}
+
+/// Cash_Adjust rows + week snapshots in one SQLite transaction (all-or-nothing).
+pub async fn week_capture_accept_atomic(
+    pool: &SqlitePool,
+    record: TrendsWeekSourceRecord,
+    balances: &[(Uuid, i64, Option<i64>)],
+    adjusts: &[ActivityRecord],
+) -> Result<(), PlatformError> {
+    let mut tx = pool.begin().await.map_err(|e| map_err(e.into()))?;
+    for adj in adjusts {
+        let result = sqlx::query(
+            "INSERT INTO activity_event (
+                activity_id, account_id, security_id, activity_type, amount_minor, scale,
+                occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
+                federal_withholding_minor, state_withholding_minor, note
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(adj.activity_id.to_string())
+        .bind(adj.account_id.to_string())
+        .bind(adj.security_id.map(|id| id.to_string()))
+        .bind(&adj.activity_type)
+        .bind(adj.amount_minor)
+        .bind(adj.scale as i64)
+        .bind(&adj.occurred_on)
+        .bind(adj.corrects_activity_id.map(|id| id.to_string()))
+        .bind(adj.import_batch_id.map(|id| id.to_string()))
+        .bind(&adj.idempotency_key)
+        .bind(adj.federal_withholding_minor)
+        .bind(adj.state_withholding_minor)
+        .bind(&adj.note)
+        .execute(&mut *tx)
+        .await;
+        match result {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {}
+            Err(e) => return Err(map_err(e.into())),
+        }
+    }
+    sqlx::query(
+        "INSERT INTO trends_week_source (
+            period_end, period_start, profit_minor, monthly_divs_minor, fidelity_total_minor, schwab_total_minor,
+            income_cash_minor, acct9_cash_minor, acct9_etf_value_minor, scale, captured_at, closed
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(period_end) DO UPDATE SET
+            period_start = excluded.period_start,
+            profit_minor = excluded.profit_minor,
+            monthly_divs_minor = excluded.monthly_divs_minor,
+            fidelity_total_minor = excluded.fidelity_total_minor,
+            schwab_total_minor = excluded.schwab_total_minor,
+            income_cash_minor = excluded.income_cash_minor,
+            acct9_cash_minor = excluded.acct9_cash_minor,
+            acct9_etf_value_minor = excluded.acct9_etf_value_minor,
+            scale = excluded.scale,
+            captured_at = excluded.captured_at,
+            closed = excluded.closed",
+    )
+    .bind(&record.period_end)
+    .bind(&record.period_start)
+    .bind(record.profit_minor)
+    .bind(record.monthly_divs_minor)
+    .bind(record.fidelity_total_minor)
+    .bind(record.schwab_total_minor)
+    .bind(record.income_cash_minor)
+    .bind(record.acct9_cash_minor)
+    .bind(record.acct9_etf_value_minor)
+    .bind(record.scale as i64)
+    .bind(&record.captured_at)
+    .bind(if record.closed { 1 } else { 0 })
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    for (account_id, balance_minor, cash_minor) in balances {
+        let snapshot_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO account_balance_snapshot (
+                snapshot_id, account_id, period_end, balance_minor, scale, captured_at, cash_minor
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(account_id, period_end) DO UPDATE SET
+                balance_minor = excluded.balance_minor,
+                scale = excluded.scale,
+                captured_at = excluded.captured_at,
+                cash_minor = COALESCE(excluded.cash_minor, account_balance_snapshot.cash_minor)",
+        )
+        .bind(snapshot_id.to_string())
+        .bind(account_id.to_string())
+        .bind(&record.period_end)
+        .bind(balance_minor)
+        .bind(record.scale as i64)
+        .bind(&record.captured_at)
+        .bind(*cash_minor)
         .execute(&mut *tx)
         .await
         .map_err(|e| map_err(e.into()))?;

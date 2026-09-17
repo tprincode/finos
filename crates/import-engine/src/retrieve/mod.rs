@@ -140,9 +140,53 @@ fn http_origin(url: &str) -> String {
     }
 }
 
+/// Fleet GET is 20s so one slow issuer does not stall the book. Post-run / Retry
+/// uses 45s then 90s on the same stored Template Dividend (ORC PowerShell hit 20s;
+/// curl of the same page returned in under 1s).
+pub const DECL_GET_TIMEOUT_SECS: [u64; 3] = [20, 45, 90];
+
+thread_local! {
+    static DECL_GET_WAIT: std::cell::Cell<u64> =
+        std::cell::Cell::new(DECL_GET_TIMEOUT_SECS[0]);
+}
+
+pub fn decl_get_wait_secs() -> u64 {
+    DECL_GET_WAIT.with(|c| c.get())
+}
+
+pub fn with_decl_get_timeout<F, R>(secs: u64, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    DECL_GET_WAIT.with(|c| {
+        let prev = c.replace(secs);
+        let out = f();
+        c.set(prev);
+        out
+    })
+}
+
+pub fn is_declaration_timeout(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("timed out")
+        || e.contains("timeout")
+        || e.contains("time out")
+        || e.contains("declaration_retrieve_timeout")
+}
+
+pub fn miss_is_timeout(miss: &Value) -> bool {
+    miss.get("code")
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| c == financial_domain::work_ticket::CODE_DECLARATION_RETRIEVE_TIMEOUT)
+        || miss
+            .get("reason")
+            .and_then(|r| r.as_str())
+            .is_some_and(is_declaration_timeout)
+}
+
 fn http_agent() -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(decl_get_wait_secs()))
         .user_agent(HTTP_UA);
     if let Ok(tls) = native_tls::TlsConnector::new() {
         builder = builder.tls_connector(std::sync::Arc::new(tls));
@@ -150,12 +194,15 @@ fn http_agent() -> ureq::Agent {
     builder.build()
 }
 
+/// 3s per symbol. Miss keeps the stored last price — never $0 — and the fleet continues.
+pub const LAST_PRICE_QUOTE_SECS: u64 = 3;
+
 /// Reused TLS session for last-price JSON. Issuer HTML keep using `http_agent`.
 fn quote_agent() -> &'static ureq::Agent {
     static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
     AGENT.get_or_init(|| {
         let mut builder = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(LAST_PRICE_QUOTE_SECS))
             .user_agent(HTTP_UA);
         if let Ok(tls) = native_tls::TlsConnector::new() {
             builder = builder.tls_connector(std::sync::Arc::new(tls));
@@ -183,7 +230,7 @@ fn http_get_quote(url: &str) -> Result<String, String> {
             if status == Some(403) {
                 #[cfg(windows)]
                 {
-                    return http_get_via_os_curl_timed(url, "8");
+                    return http_get_via_os_curl_timed(url, &LAST_PRICE_QUOTE_SECS.to_string());
                 }
             }
             Err(classify_http_error(url, status, &msg))
@@ -377,7 +424,7 @@ fn https_url_safe_for_os_curl(url: &str) -> bool {
 
 #[cfg(windows)]
 fn http_get_via_os_curl(url: &str) -> Result<String, String> {
-    http_get_via_os_curl_timed(url, "25")
+    http_get_via_os_curl_timed(url, &decl_get_wait_secs().to_string())
 }
 
 #[cfg(windows)]
@@ -1997,7 +2044,7 @@ fn last_price_quote_json(security_id: &str, quote: Value) -> Option<Value> {
     }))
 }
 
-/// Best-effort last prices for the daily set. Fail closed: skip misses, never write $0.
+/// Best-effort last prices for the daily set. 3s per symbol; miss keeps last price, never $0.
 pub fn collect_last_price_quotes(pairs: Vec<(String, String)>) -> Vec<Value> {
     collect_last_price_quotes_for(
         pairs
@@ -2987,7 +3034,18 @@ fn fetch_adapter_page_status(
         tries += 1;
         match http_get(&url) {
             Ok(html) => {
-                let cands = parse_page_distributions(source, &html, symbol);
+                let mut html = html;
+                let mut cands = parse_page_distributions(source, &html, symbol);
+                if !declaration_candidates_useful(&cands, &as_of) {
+                    #[cfg(windows)]
+                    if let Ok(via_curl) = http_get_via_os_curl(&url) {
+                        let curl_cands = parse_page_distributions(source, &via_curl, symbol);
+                        if declaration_candidates_useful(&curl_cands, &as_of) {
+                            html = via_curl;
+                            cands = curl_cands;
+                        }
+                    }
+                }
                 if declaration_candidates_useful(&cands, &as_of) {
                     let (u, h, c) = pack_adapter_fetch(url, html, None);
                     return AdapterFetch::Page(u, h, c);
@@ -3003,10 +3061,30 @@ fn fetch_adapter_page_status(
                     blocked = Some((url.clone(), format!("blocked: js_empty {url}")));
                 } else if body_is_waf_deny(&html) {
                     blocked = Some((url.clone(), format!("blocked: waf_deny {url}")));
+                } else {
+                    let lower = html.to_ascii_lowercase();
+                    blocked = Some((
+                        url.clone(),
+                        format!(
+                            "Issuer page empty. get_len={} payable={} td={}",
+                            html.len(),
+                            lower.contains("payable"),
+                            lower.matches("<td").count()
+                        ),
+                    ));
                 }
             }
             Err(e) if e.contains("blocked: cloudflare_403") => {
                 blocked = Some((url, e));
+            }
+            Err(e) if is_declaration_timeout(&e) => {
+                blocked = Some((
+                    url,
+                    format!(
+                        "declaration_retrieve_timeout wait={}s {e}",
+                        decl_get_wait_secs()
+                    ),
+                ));
             }
             Err(_) => {}
         }
@@ -3023,7 +3101,9 @@ fn url_host_key(url: &str) -> String {
         .trim_start_matches("https://")
         .trim_start_matches("http://");
     let host = rest.split('/').next().unwrap_or("").trim().to_ascii_lowercase();
-    host.trim_start_matches("www.").to_string()
+    host.trim_start_matches("www.")
+        .trim_start_matches("ir.")
+        .to_string()
 }
 
 fn two_same_host_declaration_urls(
@@ -3605,6 +3685,13 @@ fn apply_fetched_page_inner(
             "declarationSource": source,
             "reason": MISS_EMPTY,
             "code": "declaration_retrieve_miss",
+            "pageEvidence": json!({
+                "url": fetched_url,
+                "htmlLen": 0,
+                "hasPayable": false,
+                "tdCount": 0,
+                "jsEmpty": false,
+            }),
         }));
         return;
     };
@@ -3797,6 +3884,7 @@ fn apply_fetched_page_inner(
         } else {
             miss_reason(&target.last_content_hash, &hash).to_string()
         };
+        let lower = html.to_ascii_lowercase();
         out.misses.push(json!({
             "securityId": target.security_id,
             "symbol": target.symbol,
@@ -3804,6 +3892,13 @@ fn apply_fetched_page_inner(
             "reason": reason,
             "contentHash": hash,
             "code": "declaration_retrieve_miss",
+            "pageEvidence": json!({
+                "url": fetched_url,
+                "htmlLen": html.len(),
+                "hasPayable": lower.contains("payable"),
+                "tdCount": lower.matches("<td").count(),
+                "jsEmpty": page_is_js_empty(html),
+            }),
         }));
         return;
     }
@@ -4004,6 +4099,8 @@ pub fn collect_declarations_for(targets: Vec<DeclarationTarget>) -> DeclarationC
             AdapterFetch::Blocked { url, reason } => {
                 let code = if reason.contains("sec_403") {
                     financial_domain::mlp_sec::CODE_SEC_403
+                } else if is_declaration_timeout(&reason) {
+                    financial_domain::work_ticket::CODE_DECLARATION_RETRIEVE_TIMEOUT
                 } else {
                     "declaration_retrieve_miss"
                 };
@@ -4494,6 +4591,28 @@ mod tests {
         let out = collect_last_price_quotes_for_with_progress(Vec::new(), |_, _, _| n += 1);
         assert!(out.is_empty());
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn last_price_quote_timeout_is_three_seconds() {
+        assert_eq!(LAST_PRICE_QUOTE_SECS, 3);
+        let src = include_str!("mod.rs");
+        assert!(src.contains("timeout(Duration::from_secs(LAST_PRICE_QUOTE_SECS))"));
+        assert!(src.contains("3s per symbol"));
+    }
+
+    #[test]
+    fn declaration_get_timeouts_are_progressive() {
+        assert_eq!(DECL_GET_TIMEOUT_SECS, [20, 45, 90]);
+        assert!(is_declaration_timeout("http: timeout: timed out"));
+        assert!(is_declaration_timeout(
+            "declaration_retrieve_timeout wait=20s https://ir.example/div"
+        ));
+        assert!(!is_declaration_timeout("Issuer page empty."));
+        assert!(miss_is_timeout(&serde_json::json!({
+            "code": "declaration_retrieve_timeout",
+            "reason": "declaration_retrieve_timeout wait=45s"
+        })));
     }
 
     #[test]
@@ -5330,6 +5449,15 @@ Amplify HACK Cybersecurity Covered Call ETF HAKY
         assert!(
             ir.iter().any(|u| u.contains("sec.gov") && u.contains("0001276187")),
             "{ir:?}"
+        );
+        let orchid = two_same_host_declaration_urls(
+            "orchidisland",
+            "ORC",
+            Some("https://ir.orchidislandcapital.com/stock-information/dividends-splits"),
+        );
+        assert!(
+            orchid.iter().any(|u| u.contains("www.orchidislandcapital.com/stock-information/dividends-splits")),
+            "www and ir dividend pages are the same host family: {orchid:?}"
         );
     }
 

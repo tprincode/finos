@@ -25,6 +25,7 @@ pub use retrieve::{
     enrich_collector_quote_only, enrich_retrieve_body, is_registered_declaration_source, live_market_snapshot, live_price_quote,
     live_research_identity, live_roc_candidates, live_roc_candidates_for, looks_like_roc_notice_url,
     page_content_hash, parse_19a1_notice, parse_amplify_distribution_pack, parse_amplify_distributions,
+    roc_from_notice_bytes,
     pdf_notice_text, should_invent_dated_19a1_filenames,
     offering_keep_stored, parse_search_result_urls, rank_roc_search_urls, roc_19a1_search_query, roc_estimate_from_search_hits,
     inception_search_query, inception_on_from_search_hits, uses_offering_price,
@@ -38,7 +39,8 @@ pub use retrieve::{
     parse_yahoo_daily_closes, parse_yahoo_spark,
     parse_yieldmax_distributions,
     price_quote_candidates, profile_from_vendor_htmls, registered_declaration_sources,
-    retrieve_result, roundhill_fund_page, DeclarationCollectOutcome, DeclarationTarget,
+    retrieve_result, roundhill_fund_page, with_decl_get_timeout, miss_is_timeout,
+    DECL_GET_TIMEOUT_SECS, DeclarationCollectOutcome, DeclarationTarget,
     LastPriceTarget, LiveRocFill,
 };
 pub use financial_domain::div1::{div1_adapter_missing, is_div1};

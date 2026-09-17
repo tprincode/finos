@@ -1,5 +1,6 @@
 //! Auto last-price fetch window: weekdays 09:00–16:00 America/New_York,
-//! skipped when the last successful price run is under four hours old.
+//! skipped when the last price retrieve_run is under four hours old
+//! (ok, fail, or started — Restart must not start another auto fetch).
 
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, TimeZone, Timelike, Weekday};
 use chrono_tz::America::New_York;
@@ -42,13 +43,18 @@ pub fn parse_run_stamp_et(stamp: &str) -> Option<DateTime<Tz>> {
     New_York.from_local_datetime(&naive).single()
 }
 
-/// Clock-only window (weekend / hours). Freshness is checked later by the host.
+/// Clock-only window (weekend / hours). Pass a retrieve_run stamp for the 4-hour cooldown.
 pub fn last_price_auto_window(now: DateTime<Tz>) -> Result<(), LastPriceAutoSkip> {
     auto_last_price_allowed(now, None)
 }
 
 pub fn last_price_auto_window_now() -> Result<(), LastPriceAutoSkip> {
     last_price_auto_window(now_eastern())
+}
+
+/// Weekday 9–4 Eastern plus 4-hour cooldown from any price retrieve_run stamp.
+pub fn last_price_auto_window_with_last(last: Option<&str>) -> Result<(), LastPriceAutoSkip> {
+    auto_last_price_allowed(now_eastern(), last.and_then(parse_run_stamp_et))
 }
 
 pub fn auto_last_price_allowed(
@@ -119,6 +125,17 @@ mod tests {
     fn monday_ten_and_three_hours_ago_skips() {
         assert_eq!(
             auto_last_price_allowed(et(2026, 9, 14, 10, 0), Some(et(2026, 9, 14, 7, 0))),
+            Err(LastPriceAutoSkip::FreshUnderFourHours)
+        );
+    }
+
+    #[test]
+    fn four_hour_cooldown_uses_stamp_not_ok_flag() {
+        let stamp = "2026-09-14T10:00:00";
+        let then = parse_run_stamp_et(stamp);
+        assert!(then.is_some());
+        assert_eq!(
+            auto_last_price_allowed(et(2026, 9, 14, 11, 0), then),
             Err(LastPriceAutoSkip::FreshUnderFourHours)
         );
     }

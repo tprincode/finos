@@ -96,7 +96,6 @@ export function CashWeekDesk({
         <div className="trends-overview" aria-label="Cash week overview">
           <span>FID+SCH {formatUsd(overview.fidSchCombinedMinor ?? 0, scale)}</span>
           <span>WkΔ {formatUsd(overview.wkToWkChangeMinor ?? 0, scale)}</span>
-          <span>Profit {formatUsd(overview.profitMinor ?? 0, scale)}</span>
           <span>
             DIVS {formatUsd(overview.monthlyDivsMinor ?? 0, scale)} (Δ{" "}
             {formatUsd(overview.divDeltaMinor ?? 0, scale)})
@@ -111,7 +110,6 @@ export function CashWeekDesk({
               <tr>
                 <th>Week</th>
                 <th className="numeric">Week income</th>
-                <th className="numeric">Profit</th>
                 <th className="numeric">Cash</th>
                 <th className="numeric">Fidelity</th>
                 <th className="numeric">Schwab</th>
@@ -136,9 +134,6 @@ export function CashWeekDesk({
                       {formatFridayEnding(id.end)}
                     </td>
                     <td className="numeric">{moneyOrBlank(income, rowScale)}</td>
-                    <td className="numeric">
-                      {saved ? formatUsd(saved.profitMinor, rowScale) : ""}
-                    </td>
                     <td className="numeric">
                       {saved ? formatUsd(saved.totalCashMinor, rowScale) : ""}
                     </td>

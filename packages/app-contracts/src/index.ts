@@ -428,6 +428,12 @@ export type DataSummaryGet = {
   declarationAsOf: string;
   /** Open work tickets. Owner queue — not today's miss count. */
   openTicketCount: number;
+  /** Enabled collectors not current today. */
+  declarationFailCount?: number;
+  /** Open retrieve-failure tickets on those failed names. */
+  declarationFailTicketCount?: number;
+  /** Fail count must equal miss-ticket count after the fleet run. */
+  declarationFailTicketParity?: boolean;
   marketValueMinor: number | null;
   marketValueComplete: boolean;
   /** Lifetime paid dividends (all yield actuals). */
@@ -626,6 +632,28 @@ export type CashManagementMonthRow = {
   federalWithholdingMinor: number;
   stateWithholdingMinor: number;
   netMinor: number;
+  scale: number;
+};
+
+export type CarRocPlanGet = {
+  accountName: string;
+  taxYear: string;
+  asOfDate: string;
+  remainingTotalMinor: number;
+  remainingOrdinaryMinor: number | null;
+  remainingRocMinor: number | null;
+  ytdPaidMinor: number;
+  ytdOrdinaryMinor: number | null;
+  ytdRocMinor: number | null;
+  ytdLongTermGainMinor: number | null;
+  ytdShortTermGainMinor: number | null;
+  lotSalePlMinor: number | null;
+  lotSaleCount: number;
+  namesWithEstimate: number;
+  namesMissingEstimate: number;
+  estimateNote: string;
+  taxNote: string;
+  lotSaleNote: string;
   scale: number;
 };
 

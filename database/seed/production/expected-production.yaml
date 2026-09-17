@@ -18,6 +18,8 @@ totals:
   yield_amount_minor: 16768338
   disbursement_gross_minor: 14982155
   disbursement_net_minor: 13905294
+  disbursement_federal_withholding_minor: 767218
+  disbursement_state_withholding_minor: 309643
   open_performance_minor: 46694666
   open_tax_minor: 46135629
   scale: 2
@@ -28,5 +30,6 @@ notes:
   - "Unknown/blank amounts must remain unknown — never coerce to zero."
   - "CRF zero-cost DRIP: legitimate on CRF DRIP lots; automatic capture only FI Roth."
   - "Money totals are owner-approved from the locked templates (scale 2 USD cents). Do not auto-write from code under test."
+  - "The 129 production-disb-* parents must keep template gross, federal WH, state WH, and net. data-seed fails if those four do not match. Later owner posts are not part of that identity."
   - "open_performance_minor / open_tax_minor are USD-cent sums of open lots in Template_Lots.xlsx (per-lot half-up). production_seed compares template, yaml, and posted BasisGet."
   - "counts.positions is distinct open-lot symbols from PositionDetailsGet (BTC Grayscale and BTC-USD crypto are separate)."

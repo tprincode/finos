@@ -585,7 +585,7 @@ pub fn audit_yield_template(production_dir: &Path) -> Result<YieldTemplateAudit,
 /// Template money from the xlsx source facts (not from posted ledger).
 pub fn production_template_totals(
     production_dir: &Path,
-) -> Result<(i64, i64, i64), String> {
+) -> Result<(i64, i64, i64, i64, i64), String> {
     let yield_rows = read_data_rows(&production_dir.join("Template_Transactions_Yield.xlsx"))?;
     let disbursements =
         read_data_rows(&production_dir.join("Template_Transactions_Disbursement.xlsx"))?;
@@ -598,24 +598,30 @@ pub fn production_template_totals(
         yield_amount_minor += to_minor(amount, 2)?;
     }
     let mut disbursement_gross_minor: i64 = 0;
-    let mut withheld_minor: i64 = 0;
+    let mut federal_withholding_minor: i64 = 0;
+    let mut state_withholding_minor: i64 = 0;
     for row in &disbursements {
         let gross = get(row, "amount_gross");
         if gross.is_empty() {
             return Err("disbursement blank amount_gross (must stay unknown)".into());
         }
         disbursement_gross_minor += to_minor(gross, 2)?;
-        if !get(row, "fed_tax_withheld").is_empty() {
-            withheld_minor += to_minor(get(row, "fed_tax_withheld"), 2)?;
-        }
-        if !get(row, "state_tax_withheld").is_empty() {
-            withheld_minor += to_minor(get(row, "state_tax_withheld"), 2)?;
+        let txn_type = get(row, "txn_type");
+        if txn_type != "Roth_Distribution" {
+            if !get(row, "fed_tax_withheld").is_empty() {
+                federal_withholding_minor += to_minor(get(row, "fed_tax_withheld"), 2)?;
+            }
+            if !get(row, "state_tax_withheld").is_empty() {
+                state_withholding_minor += to_minor(get(row, "state_tax_withheld"), 2)?;
+            }
         }
     }
     Ok((
         yield_amount_minor,
         disbursement_gross_minor,
-        disbursement_gross_minor - withheld_minor,
+        disbursement_gross_minor - federal_withholding_minor - state_withholding_minor,
+        federal_withholding_minor,
+        state_withholding_minor,
     ))
 }
 

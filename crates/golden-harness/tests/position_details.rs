@@ -928,11 +928,31 @@ fn last_price_auto_refresh_uses_weekday_eastern_window() {
     );
     assert!(host.contains("last_price_auto_skip"));
     assert!(host.contains("autoPrice"));
+    assert!(
+        host.contains("latest_price_requested_at"),
+        "4-hour skip must use any price retrieve_run, including fail/started"
+    );
+    assert!(
+        !host.contains("latest_ok_price_requested_at"),
+        "ok-only cooldown lets a failed/started run Restart-loop"
+    );
+    assert!(
+        host.contains("\"started\": true"),
+        "host must persist retrieve_run at start so Restart inside 4 hours skips"
+    );
     assert!(app.contains("refreshLastPrices(true)"));
     assert!(app.contains("LastPriceAutoWindowGet"));
     assert!(
         app.contains("allowed = body.allowed === true"),
         "auto last-price must run only when LastPriceAutoWindowGet allowed is true"
+    );
+    assert!(
+        app.contains("if (!allowed)"),
+        "auto skip must return before setLastPriceBusy"
+    );
+    assert!(
+        app.contains("Do not set the bar on a skip"),
+        "auto skip must not start the last-price busy bar"
     );
     assert!(app.contains("autoPrice: true"));
     assert!(
@@ -941,6 +961,12 @@ fn last_price_auto_refresh_uses_weekday_eastern_window() {
     );
     assert!(helper.contains("weekday 9-4 Eastern"));
     assert!(helper.contains("fn auto_last_price_allowed"));
+    assert!(helper.contains("fn last_price_auto_window_with_last"));
+    let retrieve = std::fs::read_to_string(root.join("crates/import-engine/src/retrieve/mod.rs")).unwrap();
+    assert!(
+        retrieve.contains("LAST_PRICE_QUOTE_SECS: u64 = 3"),
+        "last-price fetch must cap at 3s per symbol"
+    );
 }
 
 #[tokio::test]

@@ -1,6 +1,7 @@
 import { formatUsd } from "@finos/ui-components";
 import type {
   AccountListItem,
+  CarRocPlanGet,
   CashManagementMonthGet,
   CashManagementRemindersGet,
   CashManagementWeekGet,
@@ -71,6 +72,14 @@ const DIST_STEPS = ["Type", "Account", "Amounts", "Review"] as const;
 const SSA_STEPS = ["Payee", "Account", "Received", "Review"] as const;
 const WITHDRAW_STEPS = ["Account", "Amount", "Review"] as const;
 
+function formatPlanUsd(
+  minor: number | null | undefined,
+  scale: number,
+): string {
+  if (minor == null) return "unknown";
+  return formatUsd(minor, scale);
+}
+
 function dollarsToMinor(raw: string, scale: number): number | null {
   const t = raw.trim();
   if (!t) return null;
@@ -128,6 +137,7 @@ export function CashManagementPanel({
   busy,
   distributions,
   taxMonitor,
+  carRocPlan,
   children,
   weekDesk,
   weekJustSavedAt,
@@ -144,6 +154,7 @@ export function CashManagementPanel({
   busy?: boolean;
   distributions?: CashDistributionYtd | null;
   taxMonitor?: CashTaxAcaMonitor | null;
+  carRocPlan?: CarRocPlanGet | null;
   children?: ReactNode;
   weekDesk?: {
     weeks?: TrendsWeekPoint[] | null;
@@ -1049,18 +1060,61 @@ export function CashManagementPanel({
           </table>
         </div>
       ) : null}
+      {carRocPlan ? (
+        <section aria-label="Cash Management Car ROC plan">
+          <h3>Car ROC plan</h3>
+          <dl>
+            <div>
+              <dt>Remaining ordinary</dt>
+              <dd>
+                {formatPlanUsd(
+                  carRocPlan.remainingOrdinaryMinor,
+                  carRocPlan.scale,
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Remaining ROC</dt>
+              <dd>
+                {formatPlanUsd(carRocPlan.remainingRocMinor, carRocPlan.scale)}
+              </dd>
+            </div>
+            <div>
+              <dt>YTD ordinary (estimate)</dt>
+              <dd>
+                {formatPlanUsd(carRocPlan.ytdOrdinaryMinor, carRocPlan.scale)}
+              </dd>
+            </div>
+            <div>
+              <dt>YTD ROC (estimate)</dt>
+              <dd>
+                {formatPlanUsd(carRocPlan.ytdRocMinor, carRocPlan.scale)}
+              </dd>
+            </div>
+            <div>
+              <dt>Long-term capital gain/loss</dt>
+              <dd>
+                {formatPlanUsd(
+                  carRocPlan.ytdLongTermGainMinor,
+                  carRocPlan.scale,
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Short-term capital gain/loss</dt>
+              <dd>
+                {formatPlanUsd(
+                  carRocPlan.ytdShortTermGainMinor,
+                  carRocPlan.scale,
+                )}
+              </dd>
+            </div>
+          </dl>
+        </section>
+      ) : null}
       {distributions ? (
         <section aria-label="Cash Management distributions YTD">
           <h3>Distributions (YTD)</h3>
-          <p>
-            Read-only Cash Management summary. Gross{" "}
-            {formatUsd(distributions.grossMinor, distributions.scale)}
-            {distributions.netMinor != null
-              ? `; net ${formatUsd(distributions.netMinor, distributions.scale)}`
-              : ""}
-            . Non-ROI ledger only. IRA ordinary groups Income and Speculation;
-            Roth and taxable brokerage stay in their own sections.
-          </p>
           <div
             className="cm-dist-bar"
             aria-label="Distribution account totals"
@@ -1101,7 +1155,6 @@ export function CashManagementPanel({
                     <strong>{section.label}</strong>{" "}
                     {formatUsd(section.grossMinor, distributions.scale)}
                   </p>
-                  <p>{section.taxNote}</p>
                 </div>
               ))}
             </div>
@@ -1157,7 +1210,6 @@ export function CashManagementPanel({
       {taxMonitor ? (
         <section aria-label="Cash Management tax and ACA monitor">
           <h3>Tax / ACA monitor</h3>
-          <p>{taxMonitor.note}</p>
           <p>
             Federal withholding{" "}
             {formatUsd(taxMonitor.federalWithholdingMinor, taxMonitor.scale)}. YTD

@@ -169,7 +169,6 @@ pub fn saturday_draft_open(income_ira_posted_this_week: bool) -> bool {
 pub enum CashTaxSection {
     IraOrdinary,
     Roth,
-    TaxableBrokerage,
     Ssa,
 }
 
@@ -178,7 +177,6 @@ impl CashTaxSection {
         match self {
             Self::IraOrdinary => "ira",
             Self::Roth => "roth",
-            Self::TaxableBrokerage => "taxable",
             Self::Ssa => "ssa",
         }
     }
@@ -187,7 +185,6 @@ impl CashTaxSection {
         match self {
             Self::IraOrdinary => "IRA ordinary",
             Self::Roth => "Roth",
-            Self::TaxableBrokerage => "Taxable brokerage",
             Self::Ssa => "Social Security retirement",
         }
     }
@@ -198,26 +195,28 @@ impl CashTaxSection {
                 "Income and Speculation IRA withdrawals are one ordinary income type."
             }
             Self::Roth => "Roth is not Marketplace MAGI.",
-            Self::TaxableBrokerage => {
-                "Tax unknown until the 1099 is in or ROC versus ordinary is known."
-            }
             Self::Ssa => "Social Security retirement. MAGI treatment stays unknown.",
         }
     }
 }
 
-pub fn cash_tax_section(activity_type: &str, account_kind: &str) -> CashTaxSection {
+/// Current-year cash-out groups only. Prior-year 1099 and Car withdrawals have no card —
+/// Car character is ROC / ordinary / long-short on the Car ROC plan.
+pub fn cash_tax_section(activity_type: &str, account_kind: &str) -> Option<CashTaxSection> {
+    if crate::trends::is_prior_year_1099(activity_type) {
+        return None;
+    }
     let kind = account_kind.trim().to_ascii_lowercase();
-    if activity_type == "SSA" || kind == "external" {
-        return CashTaxSection::Ssa;
+    if activity_type == "SSA" {
+        return Some(CashTaxSection::Ssa);
     }
     if activity_type == "Roth_Distribution" || kind == "roth" || kind == "fi_roth" {
-        return CashTaxSection::Roth;
+        return Some(CashTaxSection::Roth);
     }
     if activity_type == "IRA_Distribution" || kind == "ira" {
-        return CashTaxSection::IraOrdinary;
+        return Some(CashTaxSection::IraOrdinary);
     }
-    CashTaxSection::TaxableBrokerage
+    None
 }
 
 pub fn magi_add_minor(activity_type: &str, gross_minor: Option<i64>) -> Option<i64> {
@@ -298,6 +297,97 @@ pub fn validate_cash_distribution(
         return Err(DomainError::CashDistributionIdentity);
     }
     Ok(net)
+}
+
+/// Capture accounts that may post `Cash_Adjust` (UI shows Account 9 for name `"9"`).
+pub const CASH_ADJUST_ACCOUNT_NAMES: &[&str] =
+    &["Income", "FI Roth", "Speculation", "Health", "Car", "9"];
+
+pub fn is_cash_adjust_type(activity_type: &str) -> bool {
+    activity_type == "Cash_Adjust"
+}
+
+pub fn is_cash_adjust_account(account_name: &str) -> bool {
+    CASH_ADJUST_ACCOUNT_NAMES
+        .iter()
+        .any(|n| account_name.trim().eq_ignore_ascii_case(n))
+}
+
+/// Default money-market symbol when `account.cash_symbol` is empty.
+pub fn default_cash_symbol(account_name: &str) -> Option<&'static str> {
+    match account_name.trim() {
+        "Income" | "FI Roth" | "Speculation" | "Car" => Some("SPAXX"),
+        "Health" => Some("FDRXX"),
+        "9" => Some("SWVXX"),
+        _ => None,
+    }
+}
+
+pub fn resolve_cash_symbol(account_name: &str, column: Option<&str>) -> Option<String> {
+    if let Some(raw) = column.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(raw.to_string());
+    }
+    default_cash_symbol(account_name).map(str::to_string)
+}
+
+pub fn cash_adjust_gap(typed_minor: i64, reference_minor: i64) -> i64 {
+    typed_minor - reference_minor
+}
+
+pub fn cash_gap_is_material(gap_minor: i64) -> bool {
+    gap_minor.abs() >= 1
+}
+
+pub fn cash_adjust_idempotency_key(account_id: uuid::Uuid, period_end: &str) -> String {
+    format!("cash-adjust-{account_id}-{period_end}")
+}
+
+/// Reason note: `fee` | `split` | `other`, or `fee: detail`.
+pub fn format_cash_adjust_note(reason_raw: &str) -> Result<String, DomainError> {
+    let raw = reason_raw.trim();
+    if raw.is_empty() {
+        return Err(DomainError::CashAdjustReasonRequired);
+    }
+    let (kind, detail) = match raw.split_once(':') {
+        Some((k, rest)) => (k.trim(), Some(rest.trim())),
+        None => (raw, None),
+    };
+    let kind_l = kind.to_ascii_lowercase();
+    if !matches!(kind_l.as_str(), "fee" | "split" | "other") {
+        return Err(DomainError::CashAdjustReasonRequired);
+    }
+    match detail {
+        Some(d) if !d.is_empty() => Ok(format!("{kind_l}: {d}")),
+        _ => Ok(kind_l),
+    }
+}
+
+/// Validate a Cash_Adjust post. Negatives allowed; withholding refused; not distribution rules.
+pub fn validate_cash_adjust(
+    activity_type: &str,
+    account_name: &str,
+    amount_minor: Option<i64>,
+    federal_withholding_minor: i64,
+    state_withholding_minor: i64,
+    reason_raw: &str,
+) -> Result<(i64, String), DomainError> {
+    if !is_cash_adjust_type(activity_type) {
+        return Err(DomainError::CashDistributionType);
+    }
+    if !is_cash_adjust_account(account_name) {
+        return Err(DomainError::CashAdjustAccount);
+    }
+    if federal_withholding_minor != 0 || state_withholding_minor != 0 {
+        return Err(DomainError::CashAdjustWithholdingNotAllowed);
+    }
+    let Some(amount) = amount_minor else {
+        return Err(DomainError::UnknownAmount);
+    };
+    if amount == 0 {
+        return Err(DomainError::CashAdjustAmount);
+    }
+    let note = format_cash_adjust_note(reason_raw)?;
+    Ok((amount, note))
 }
 
 #[cfg(test)]
@@ -411,7 +501,7 @@ mod tests {
     fn cash_tax_sections_follow_owner_account_types() {
         assert_eq!(
             cash_tax_section("IRA_Distribution", "ira"),
-            CashTaxSection::IraOrdinary
+            Some(CashTaxSection::IraOrdinary)
         );
         assert_eq!(
             cash_tax_section("IRA_Distribution", "ira"),
@@ -419,18 +509,18 @@ mod tests {
         );
         assert_eq!(
             cash_tax_section("Roth_Distribution", "roth"),
-            CashTaxSection::Roth
+            Some(CashTaxSection::Roth)
         );
         assert_eq!(
             cash_tax_section("Roth_Distribution", "fi_roth"),
-            CashTaxSection::Roth
+            Some(CashTaxSection::Roth)
         );
+        assert_eq!(cash_tax_section("Withdrawal", "taxable"), None);
+        assert_eq!(cash_tax_section("Form_1099", "taxable"), None);
         assert_eq!(
-            cash_tax_section("Withdrawal", "taxable"),
-            CashTaxSection::TaxableBrokerage
+            cash_tax_section("SSA", "external"),
+            Some(CashTaxSection::Ssa)
         );
-        assert_eq!(cash_tax_section("SSA", "external"), CashTaxSection::Ssa);
-        assert!(CashTaxSection::TaxableBrokerage.tax_note().contains("1099"));
         assert!(CashTaxSection::IraOrdinary.tax_note().contains("Speculation"));
     }
 
@@ -484,5 +574,21 @@ mod tests {
     fn july_third_is_july_not_june_week_sum() {
         assert!(occurred_in_calendar_month("2026-07-03", 2026, 7));
         assert!(!occurred_in_calendar_month("2026-07-03", 2026, 6));
+    }
+
+    #[test]
+    fn cash_adjust_allows_negative_refuses_withholding() {
+        let (amt, note) =
+            validate_cash_adjust("Cash_Adjust", "Car", Some(-825), 0, 0, "fee").unwrap();
+        assert_eq!(amt, -825);
+        assert_eq!(note, "fee");
+        assert_eq!(
+            validate_cash_adjust("Cash_Adjust", "Car", Some(-825), 1, 0, "fee").unwrap_err(),
+            DomainError::CashAdjustWithholdingNotAllowed
+        );
+        assert_eq!(
+            validate_cash_adjust("Cash_Adjust", "Car", Some(-825), 0, 0, "").unwrap_err(),
+            DomainError::CashAdjustReasonRequired
+        );
     }
 }

@@ -877,6 +877,39 @@ td.cell-future {
   font-size: 0.9rem;
 }
 
+.trends-capture-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.trends-capture-table th,
+.trends-capture-table td {
+  padding: 0.35rem 0.45rem;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.trends-capture-table input {
+  width: 8rem;
+}
+
+.trends-capture-etf {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.trends-cash-recon {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+}
+
+.trends-cash-recon-reason {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
@@ -1257,6 +1290,20 @@ th.numeric,
 td.numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+table[aria-label="Last declarations"] td.numeric,
+input.per-share-input {
+  min-width: 8.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.process-a-plan-diff {
+  margin: 0.5rem 0;
+}
+
+.process-a-plan-diff p {
+  margin: 0.25rem 0;
 }
 
 .health {
@@ -1652,6 +1699,15 @@ table[aria-label="Remaining-year payment dates"] input {
   min-width: 0;
 }
 
+.home-av-card-head h3,
+.home-av-card-head .home-av-custodian {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .home-av-card h3 {
   margin: 0;
   font-size: 1rem;
@@ -1666,11 +1722,13 @@ table[aria-label="Remaining-year payment dates"] input {
 }
 
 .home-av-value {
+  flex: 0 0 auto;
   margin: 0 0 0 auto;
-  font-size: 1.55rem;
+  font-size: clamp(1.05rem, 1.6vw, 1.55rem);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: #1a2b3c;
+  white-space: nowrap;
 }
 
 .home-av-card.is-featured .home-av-value {

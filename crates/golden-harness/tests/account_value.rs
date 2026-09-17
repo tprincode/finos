@@ -150,6 +150,128 @@ async fn home_charts_combine_live_last_price_and_stored_trends() {
     );
 }
 
+#[tokio::test]
+async fn home_schwab_graph_keeps_live_positions_and_typed_week() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .expect("open sqlite");
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let nine = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "9", "kind": "ira"}),
+    )
+    .await;
+    let income_id = income["accountId"].as_str().unwrap();
+    let nine_id = nine["accountId"].as_str().unwrap();
+    open_priced_lot(
+        &platform,
+        income_id,
+        "HAKY",
+        "Core",
+        10,
+        2000,
+        "2026-01-15",
+    )
+    .await;
+    open_priced_lot(
+        &platform,
+        nine_id,
+        "SWVXX",
+        "Foundation",
+        10_000,
+        100,
+        "2026-09-14",
+    )
+    .await;
+    open_priced_lot(
+        &platform,
+        nine_id,
+        "QDVO",
+        "Core",
+        10,
+        2934,
+        "2026-09-14",
+    )
+    .await;
+    must_ok(
+        &platform,
+        "TrendsWeekSave",
+        serde_json::json!({
+            "periodStart": "2026-08-15",
+            "periodEnd": "2026-08-21",
+            "capturedAt": "2026-08-21T18:00:00Z",
+            "profitMinor": 1,
+            "monthlyDivsMinor": 1,
+            "fidelityTotalMinor": 1,
+            "schwabTotalMinor": 3_348_165,
+            "incomeCashMinor": 1,
+            "acct9CashMinor": 1,
+            "acct9EtfValueMinor": 1,
+            "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "AccountValueSnapshotRecord",
+        serde_json::json!({"asOfDate": "2026-09-14"}),
+    )
+    .await;
+
+    let home = query(
+        &platform,
+        "AccountValueHomeGet",
+        serde_json::json!({"asOfDate": "2026-09-14"}),
+    )
+    .await;
+    let live_minor = 10_000 * 100 + 10 * 2934;
+    assert_eq!(home["schwab"]["currentMinor"], live_minor);
+    assert_eq!(home["schwab"]["currentComplete"], true);
+    let trends = home["schwab"]["trendsPoints"].as_array().unwrap();
+    assert!(
+        trends
+            .iter()
+            .any(|p| p["asOf"] == "2026-08-21" && p["marketValueMinor"] == 3_348_165),
+        "typed Schwab week must plot: {trends:?}"
+    );
+    let live = home["schwab"]["points"].as_array().unwrap();
+    assert!(
+        live.iter()
+            .any(|p| p["asOf"] == "2026-09-14" && p["marketValueMinor"] == live_minor),
+        "live qty × last price must plot today: {live:?}"
+    );
+    assert!(
+        live.iter().all(|p| {
+            p["asOf"] == "2026-09-14"
+                || p["marketValueMinor"].is_null()
+                || p["marketValueMinor"] != 1_000_000
+        }),
+        "cash-only SWVXX is not the Schwab live total: {live:?}"
+    );
+    let nine_row = home["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountName"] == "9")
+        .unwrap();
+    assert_eq!(nine_row["currentMinor"], live_minor);
+    assert!(
+        nine_row["trendsPoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["asOf"] == "2026-08-21" && p["marketValueMinor"] == 3_348_165),
+        "{nine_row}"
+    );
+}
+
 async fn open_priced_lot(
     platform: &LocalPlatform,
     account_id: &str,
@@ -405,6 +527,27 @@ fn home_graphing_period_includes_one_and_two_months() {
     assert!(
         period.contains(r#"{ asOf: "2026-09-11", period: "2m" as const, startOn: "2026-07-11" }"#),
         "2m window must stay calendar month"
+    );
+    assert!(
+        period.contains(r#"export const DEFAULT_GRAPH_PERIOD: GraphPeriod = "6m""#)
+            && period.contains(r#"{ asOf: "2026-09-11", period: "6m" as const, startOn: "2026-03-11" }"#),
+        "Home and Trends default graphing period is 6 months"
+    );
+    let home = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/graphing/HomeAccountCharts.tsx"),
+    )
+    .unwrap();
+    let trends = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/graphing/TrendsCharts.tsx"),
+    )
+    .unwrap();
+    let app = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.tsx"))
+        .unwrap();
+    assert!(
+        home.contains("useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD)")
+            && trends.contains("useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD)")
+            && app.contains("useRef<GraphPeriod>(DEFAULT_GRAPH_PERIOD)"),
+        "Home and Trends must open on DEFAULT_GRAPH_PERIOD"
     );
 }
 

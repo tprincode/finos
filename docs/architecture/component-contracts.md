@@ -53,7 +53,9 @@ Week entry, SSA (Barbara $1,331 and Tom $2,865), IRA/Roth distributions, and Wit
 
 | Commands | Queries |
 |----------|---------|
-| `CashDistributionPost`, `SsaConfirm` | `CashManagementWeekGet`, `CashManagementRemindersGet`, `CashManagementMonthGet` |
+| `CashDistributionPost`, `SsaConfirm` | `CashManagementWeekGet`, `CashManagementRemindersGet`, `CashManagementMonthGet`, `CarRocPlanGet` |
+
+`CarRocPlanGet` is the Car **planning** report: remaining ordinary vs ROC, YTD paid split by `roc_pct_2026_estimate`, and long/short tax-lot gain or loss. Seed `Form_1099` is tax-year 2025 ROC guidance and never appears on current-year YTD cards. Car 2026 tax stays unknown until April 2027. Planning writes stay on `RocPlanConfirm`.
 
 Withdrawal is cash leaving a taxable / non-IRA brokerage (Car, Robinhood, ENERGYX). `CashDistributionPost` / `SsaConfirm` refuse a type that does not match the account: IRA_Distribution only on `ira`; Roth_Distribution on `roth` / `fi_roth`; Withdrawal on taxable and not External; SSA only on External (by name — live seed stores External as `taxable`). SSA is two household payees, separate confirms.
 
@@ -82,7 +84,7 @@ Does not write Ledger facts (reads via queries). MAGI oracles are locked (ADR-00
 |-----------|----------|---------|--------|
 | Position Details | — | `PositionDetailsGet` | — |
 | ROI | — | `RoiGet` | — |
-| Trends (charts) | `TrendsWeekSave`, `TrendsWeekCorrect`, `TrendsWeekClose` | `TrendsGet`, `TrendsWeekGet` | — |
+| Trends (charts) | `TrendsWeekSave`, `TrendsWeekCorrect`, `TrendsWeekClose`, `WeekCaptureAccept` | `TrendsGet`, `TrendsWeekGet` | — |
 | Dashboard | — | `DashboardBurndownGet`, `DashboardGet` | — |
 | Account values (Home) | — | `AccountValueHomeGet` (`points`, `trendsPoints`, `incomePoints`) | — |
 | Dividend plan (Home) | — | `DividendPlanHomeGet` | — |

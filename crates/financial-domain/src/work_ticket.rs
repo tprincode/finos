@@ -20,12 +20,14 @@ pub const CODE_ROC_PCT_CHANGE: &str = "roc_pct_change";
 
 pub const CODE_ADAPTER_URL_MISMATCH: &str = "adapter_url_mismatch";
 pub const CODE_MISSING_SEED_URL: &str = "missing_seed_url";
+pub const CODE_DECLARATION_RETRIEVE_TIMEOUT: &str = "declaration_retrieve_timeout";
 pub const TOOL_ESTABLISH_RECERTIFY: &str = "establish_recertify";
 pub const CODE_COLLECTOR_ESTABLISH_INCOMPLETE: &str = "collector_establish_incomplete";
 
 /// Codes this slice can raise. Every entry must have a tool (`tool_for_code`).
 pub const RAISEABLE_CODES: &[&str] = &[
     "declaration_retrieve_miss",
+    CODE_DECLARATION_RETRIEVE_TIMEOUT,
     "declaration_parse_unstable",
     "parse_miss",
     "declaration_stored_mismatch",
@@ -54,6 +56,7 @@ pub const RAISEABLE_CODES: &[&str] = &[
 pub fn tool_for_code(code: &str) -> Option<&'static str> {
     Some(match code.trim() {
         "declaration_retrieve_miss"
+        | CODE_DECLARATION_RETRIEVE_TIMEOUT
         | "declaration_parse_unstable"
         | "parse_miss"
         | "declaration_stored_mismatch"
@@ -83,6 +86,7 @@ pub fn tool_for_code(code: &str) -> Option<&'static str> {
 pub fn field_for_code(code: &str) -> &'static str {
     match code.trim() {
         "declaration_retrieve_miss"
+        | CODE_DECLARATION_RETRIEVE_TIMEOUT
         | "declaration_parse_unstable"
         | "parse_miss"
         | "declaration_stored_mismatch"
@@ -166,6 +170,7 @@ pub fn is_history_parse_fail(code: &str) -> bool {
     matches!(
         code.trim(),
         "declaration_retrieve_miss"
+            | CODE_DECLARATION_RETRIEVE_TIMEOUT
             | "declaration_parse_unstable"
             | "parse_miss"
             | "declaration_stored_mismatch"
@@ -180,6 +185,7 @@ pub fn is_retrieve_failure_code(code: &str) -> bool {
     matches!(
         code.trim(),
         "declaration_retrieve_miss"
+            | CODE_DECLARATION_RETRIEVE_TIMEOUT
             | "declaration_parse_unstable"
             | "parse_miss"
             | "declaration_stored_mismatch"
@@ -203,6 +209,7 @@ pub fn is_declaration_ticket_code(code: &str) -> bool {
     matches!(
         code.trim(),
         "declaration_retrieve_miss"
+            | CODE_DECLARATION_RETRIEVE_TIMEOUT
             | "declaration_parse_unstable"
             | "parse_miss"
             | "declaration_stored_mismatch"

@@ -5,7 +5,8 @@ use std::fs;
 use application_core::contracts::{
     AccountRecord, ActivityRecord, AuditRecord, BasisGetBody, BrokerLotReconcileBody,
     CanonicalWeekBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
-    ExceptionRecord, ImportBatchRecord, ImportCandidate, IncomePlanBody, LotAssignmentRecord,
+    ExceptionRecord, HoldingQtyEventRecord, ImportBatchRecord, ImportCandidate, IncomePlanBody,
+    LotAssignmentRecord,
     LotRecommendBody, LotRecord, MagiProjection, MagiTaxPaymentBody, ReconcileCounts, RoiBody,
     SecurityRecord, AllocationGetBody, AiRunListBody, AiRunRecord, BacktestGetBody, BurndownBody,
     CalculatorPlanBody, CartGetBody, ClassificationReviewGetBody, DistributionGetBody,
@@ -62,6 +63,10 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::CashDistributionIdentity => "cash_distribution_identity",
         DomainError::RothWithholdingNotAllowed => "roth_withholding_not_allowed",
         DomainError::CashAccountKind => "cash_account_kind",
+        DomainError::CashAdjustReasonRequired => "cash_adjust_reason_required",
+        DomainError::CashAdjustAccount => "cash_adjust_account",
+        DomainError::CashAdjustWithholdingNotAllowed => "cash_adjust_withholding_not_allowed",
+        DomainError::CashAdjustAmount => "cash_adjust_amount",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -168,6 +173,7 @@ fn activity_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ActivityRecord, Pl
         state_withholding_minor: row
             .try_get::<i64, _>("state_withholding_minor")
             .unwrap_or(0),
+        note: row.try_get::<String, _>("note").unwrap_or_default(),
     })
 }
 
@@ -259,6 +265,27 @@ fn lot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<LotRecord, PlatformErro
         scale: row.try_get::<i64, _>("scale").map_err(|e| map_err(e.into()))? as u8,
         crf_zero_cost: crf != 0,
         opening_activity_id: opt_uuid("opening_activity_id")?,
+    })
+}
+
+fn holding_qty_event_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<HoldingQtyEventRecord, PlatformError> {
+    let parse = |col: &str| -> Result<Uuid, PlatformError> {
+        Uuid::parse_str(&row.try_get::<String, _>(col).map_err(|e| map_err(e.into()))?)
+            .map_err(|e| PlatformError::new("parse_error", e.to_string()))
+    };
+    Ok(HoldingQtyEventRecord {
+        event_id: parse("event_id")?,
+        security_id: parse("security_id")?,
+        occurred_on: row.try_get("occurred_on").map_err(|e| map_err(e.into()))?,
+        remaining_quantity_minor: row
+            .try_get("remaining_quantity_minor")
+            .map_err(|e| map_err(e.into()))?,
+        quantity_scale: row
+            .try_get::<i64, _>("quantity_scale")
+            .map_err(|e| map_err(e.into()))? as u8,
+        kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
     })
 }
 
@@ -1134,6 +1161,7 @@ impl Canonical for LocalPlatform {
             idempotency_key: key,
             federal_withholding_minor: 0,
             state_withholding_minor: 0,
+            note: String::new(),
         };
         let pool = self.pool.read().await;
         match insert_activity(&pool, &record).await {
@@ -1194,7 +1222,8 @@ impl Canonical for LocalPlatform {
             "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
                     occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
                     COALESCE(federal_withholding_minor, 0) AS federal_withholding_minor,
-                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor
+                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor,
+                    COALESCE(note, '') AS note
              FROM activity_event WHERE activity_id = ?",
         )
         .bind(activity_id.to_string())
@@ -1211,7 +1240,8 @@ impl Canonical for LocalPlatform {
             "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
                     occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
                     COALESCE(federal_withholding_minor, 0) AS federal_withholding_minor,
-                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor
+                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor,
+                    COALESCE(note, '') AS note
              FROM activity_event ORDER BY occurred_on, activity_id",
         )
         .fetch_all(&*pool)
@@ -1829,6 +1859,114 @@ impl Canonical for LocalPlatform {
         .map_err(|e| map_err(e.into()))?;
         audit(&pool, "LotAssign", "lot_assignment", &record.assignment_id.to_string()).await?;
         Ok(record)
+    }
+
+    async fn lot_assignment_list(&self) -> Result<Vec<LotAssignmentRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        let rows = sqlx::query(
+            "SELECT assignment_id, lot_id, activity_id, quantity_minor, quantity_scale,
+                    proceeds_minor, performance_cost_minor, tax_cost_minor, scale
+             FROM lot_assignment",
+        )
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        rows.iter().map(assignment_from_row).collect()
+    }
+
+    async fn holding_qty_event_upsert(
+        &self,
+        security_id: Uuid,
+        occurred_on: String,
+        remaining_quantity_minor: i64,
+        quantity_scale: u8,
+        kind: String,
+    ) -> Result<HoldingQtyEventRecord, PlatformError> {
+        let _ = self.security_get(security_id).await?;
+        let pool = self.pool.read().await;
+        if let Some(row) = sqlx::query(
+            "SELECT event_id, security_id, occurred_on, remaining_quantity_minor,
+                    quantity_scale, kind
+             FROM holding_qty_event
+             WHERE security_id = ? AND occurred_on = ? AND kind = ?",
+        )
+        .bind(security_id.to_string())
+        .bind(&occurred_on)
+        .bind(&kind)
+        .fetch_optional(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?
+        {
+            let existing = holding_qty_event_from_row(&row)?;
+            if existing.remaining_quantity_minor == remaining_quantity_minor
+                && existing.quantity_scale == quantity_scale
+            {
+                return Ok(existing);
+            }
+            sqlx::query(
+                "UPDATE holding_qty_event
+                 SET remaining_quantity_minor = ?, quantity_scale = ?
+                 WHERE event_id = ?",
+            )
+            .bind(remaining_quantity_minor)
+            .bind(quantity_scale as i64)
+            .bind(existing.event_id.to_string())
+            .execute(&*pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+            audit(&pool, "HoldingQtyEvent", "holding_qty_event", &existing.event_id.to_string())
+                .await?;
+            return Ok(HoldingQtyEventRecord {
+                remaining_quantity_minor,
+                quantity_scale,
+                ..existing
+            });
+        }
+        let record = HoldingQtyEventRecord {
+            event_id: Uuid::new_v4(),
+            security_id,
+            occurred_on,
+            remaining_quantity_minor,
+            quantity_scale,
+            kind,
+        };
+        sqlx::query(
+            "INSERT INTO holding_qty_event (
+                event_id, security_id, occurred_on, remaining_quantity_minor,
+                quantity_scale, kind
+             ) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(record.event_id.to_string())
+        .bind(record.security_id.to_string())
+        .bind(&record.occurred_on)
+        .bind(record.remaining_quantity_minor)
+        .bind(record.quantity_scale as i64)
+        .bind(&record.kind)
+        .execute(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        audit(
+            &pool,
+            "HoldingQtyEvent",
+            "holding_qty_event",
+            &record.event_id.to_string(),
+        )
+        .await?;
+        Ok(record)
+    }
+
+    async fn holding_qty_event_list(&self) -> Result<Vec<HoldingQtyEventRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        let rows = sqlx::query(
+            "SELECT event_id, security_id, occurred_on, remaining_quantity_minor,
+                    quantity_scale, kind
+             FROM holding_qty_event
+             ORDER BY occurred_on, event_id",
+        )
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        rows.iter().map(holding_qty_event_from_row).collect()
     }
 
     async fn lot_qty_add(
@@ -2897,6 +3035,16 @@ impl Canonical for LocalPlatform {
     ) -> Result<(), PlatformError> {
         let pool = self.pool.read().await;
         crate::trends::trends_week_save_atomic(&*pool, record, &balances).await
+    }
+
+    async fn week_capture_accept_with_balances(
+        &self,
+        record: TrendsWeekSourceRecord,
+        balances: Vec<(Uuid, i64, Option<i64>)>,
+        adjusts: Vec<ActivityRecord>,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::trends::week_capture_accept_atomic(&*pool, record, &balances, &adjusts).await
     }
 
     async fn account_balance_snapshot_list(

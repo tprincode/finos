@@ -65,6 +65,10 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::CashDistributionIdentity => "cash_distribution_identity",
         DomainError::RothWithholdingNotAllowed => "roth_withholding_not_allowed",
         DomainError::CashAccountKind => "cash_account_kind",
+        DomainError::CashAdjustReasonRequired => "cash_adjust_reason_required",
+        DomainError::CashAdjustAccount => "cash_adjust_account",
+        DomainError::CashAdjustWithholdingNotAllowed => "cash_adjust_withholding_not_allowed",
+        DomainError::CashAdjustAmount => "cash_adjust_amount",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -466,6 +470,7 @@ impl Canonical for PostgresPlatform {
             idempotency_key: key,
             federal_withholding_minor: 0,
             state_withholding_minor: 0,
+            note: String::new(),
         };
         match insert_activity(&self.pool, &record).await {
             Ok(()) => {
@@ -504,6 +509,7 @@ impl Canonical for PostgresPlatform {
                         .map_err(|e| map_err(e.into()))?,
                     federal_withholding_minor: 0,
                     state_withholding_minor: 0,
+                    note: String::new(),
                 };
                 remember_dividend_actual(&self.pool, &existing).await?;
                 Ok(existing)

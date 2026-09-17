@@ -467,6 +467,9 @@ pub struct ActivityRecord {
     pub federal_withholding_minor: i64,
     #[serde(default)]
     pub state_withholding_minor: i64,
+    /// Cash_Adjust reason note (`fee` or `fee: text`). Empty for other types.
+    #[serde(default)]
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -704,6 +707,18 @@ pub struct TrendsWeekCaptureBody {
     pub populated_period_ends: Vec<String>,
     pub missing_required: Vec<String>,
     pub scale: u8,
+    #[serde(default)]
+    pub cash_references: Vec<TrendsCashReference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendsCashReference {
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub display_name: String,
+    pub cash_symbol: String,
+    pub reference_minor: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -877,6 +892,17 @@ pub struct LotRecord {
     pub scale: u8,
     pub crf_zero_cost: bool,
     pub opening_activity_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HoldingQtyEventRecord {
+    pub event_id: Uuid,
+    pub security_id: Uuid,
+    pub occurred_on: String,
+    pub remaining_quantity_minor: i64,
+    pub quantity_scale: u8,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

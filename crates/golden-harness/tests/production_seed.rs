@@ -1,6 +1,7 @@
 use golden_harness::{
     load_production_expected, load_production_seed_via_commands, production_seed_actual_counts,
-    production_seed_actual_totals, production_template_totals, repo_root,
+    production_seed_actual_totals, production_seed_parent_totals, production_template_totals,
+    repo_root,
 };
 use application_core::contracts::{
     CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
@@ -118,6 +119,27 @@ async fn production_seed_counts_reconcile() {
     assert_eq!(
         actual_totals.disbursement_net_minor, expected.totals.disbursement_net_minor,
         "posted disbursement net must match template gross minus withheld"
+    );
+    assert_eq!(
+        actual_totals.disbursement_federal_withholding_minor,
+        expected.totals.disbursement_federal_withholding_minor,
+        "posted federal withholding must match the locked disbursement template"
+    );
+    assert_eq!(
+        actual_totals.disbursement_state_withholding_minor,
+        expected.totals.disbursement_state_withholding_minor,
+        "posted state withholding must match the locked disbursement template"
+    );
+    let parent_totals = production_seed_parent_totals(&platform)
+        .await
+        .expect("seed parent money");
+    assert_eq!(
+        parent_totals.disbursement_federal_withholding_minor,
+        expected.totals.disbursement_federal_withholding_minor
+    );
+    assert_eq!(
+        parent_totals.disbursement_state_withholding_minor,
+        expected.totals.disbursement_state_withholding_minor
     );
     assert_eq!(
         actual_totals.open_performance_minor, expected.totals.open_performance_minor,
@@ -649,4 +671,130 @@ async fn imported_calculator_plans_match_seed_catalog() {
             plan.amount_scale
         );
     }
+}
+
+#[tokio::test]
+async fn already_loaded_zero_withholding_is_backfilled() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .expect("open sqlite");
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "ira"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "activityType": "IRA_Distribution",
+            "amountMinor": 100000,
+            "scale": 2,
+            "occurredOn": "2026-09-12",
+            "idempotencyKey": "production-disb-audit-wh"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ProductionSeedLoad",
+        serde_json::json!({
+            "accounts": [{"name": "Income", "kind": "ira"}],
+            "securities": [],
+            "lots": [],
+            "yieldBatches": [],
+            "disbursements": [{
+                "accountName": "Income",
+                "activityType": "IRA_Distribution",
+                "amountMinor": 100000,
+                "scale": 2,
+                "occurredOn": "2026-09-12",
+                "idempotencyKey": "production-disb-audit-wh",
+                "federalWithholdingMinor": 18000,
+                "stateWithholdingMinor": 4500
+            }]
+        }),
+    )
+    .await;
+    let activities = execute_query_on(
+        &platform,
+        &platform,
+        QueryRequest {
+            contract_version: FINANCE_CLIENT_CONTRACT_VERSION.to_string(),
+            query_name: "ActivityList".into(),
+            correlation_id: Uuid::new_v4(),
+            body_json: None,
+        },
+    )
+    .await;
+    assert!(activities.ok, "{:?}", activities.error_code);
+    let val: serde_json::Value =
+        serde_json::from_str(activities.body_json.as_deref().unwrap_or("[]")).unwrap();
+    let row = val
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["idempotencyKey"] == "production-disb-audit-wh")
+        .expect("parent");
+    assert_eq!(row["federalWithholdingMinor"].as_i64(), Some(18000));
+    assert_eq!(row["stateWithholdingMinor"].as_i64(), Some(4500));
+}
+
+#[tokio::test]
+async fn seed_audit_fails_when_parent_gross_does_not_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .expect("open sqlite");
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "ira"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "activityType": "IRA_Distribution",
+            "amountMinor": 100000,
+            "scale": 2,
+            "occurredOn": "2026-09-12",
+            "idempotencyKey": "production-disb-audit-amt"
+        }),
+    )
+    .await;
+    let result = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "ProductionSeedLoad",
+            serde_json::json!({
+                "accounts": [{"name": "Income", "kind": "ira"}],
+                "securities": [],
+                "lots": [],
+                "yieldBatches": [],
+                "disbursements": [{
+                    "accountName": "Income",
+                    "activityType": "IRA_Distribution",
+                    "amountMinor": 99999,
+                    "scale": 2,
+                    "occurredOn": "2026-09-12",
+                    "idempotencyKey": "production-disb-audit-amt",
+                    "federalWithholdingMinor": 18000,
+                    "stateWithholdingMinor": 4500
+                }]
+            }),
+        ),
+    )
+    .await;
+    assert!(!result.ok, "amount mismatch must fail the seed audit");
+    assert_eq!(
+        result.error_code.as_deref(),
+        Some("seed_disbursement_identity")
+    );
 }

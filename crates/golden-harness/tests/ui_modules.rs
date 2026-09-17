@@ -142,6 +142,13 @@ fn owner_facing_calculated_fields_still_on_the_screens() {
         ("Cash Management Barbara amount", "133100"),
         ("Distributions account totals", "aria-label=\"Distribution account totals\""),
         ("Distribution tax sections", "aria-label=\"Distribution tax sections\""),
+        ("Car ROC plan", "aria-label=\"Cash Management Car ROC plan\""),
+        ("Car remaining ordinary", "<dt>Remaining ordinary</dt>"),
+        ("Car remaining ROC", "<dt>Remaining ROC</dt>"),
+        ("Car YTD ordinary estimate", "<dt>YTD ordinary (estimate)</dt>"),
+        ("Car YTD ROC estimate", "<dt>YTD ROC (estimate)</dt>"),
+        ("Car long-term gain/loss", "<dt>Long-term capital gain/loss</dt>"),
+        ("Car short-term gain/loss", "<dt>Short-term capital gain/loss</dt>"),
         ("Trends stays charts", "Enter the week on Cash"),
         ("Trends does not own capture", "Finish this week on Cash Management"),
         ("Dashboard", "<h2>Dashboard</h2>"),
@@ -247,6 +254,41 @@ async fn live_screens_return_the_numbers_an_owner_would_check() {
     assert_eq!(kind_of("Income"), "ira", "Income must stay IRA so Withdrawal is refused: {acct_body}");
     assert_eq!(kind_of("Speculation"), "ira");
     assert_eq!(kind_of("Car"), "taxable", "Car must stay taxable brokerage");
+    let car_roc = execute_query_on(
+        &platform,
+        &platform,
+        qry("CarRocPlanGet", serde_json::json!({"asOfDate": "2026-09-13"})),
+    )
+    .await;
+    assert!(car_roc.ok, "CarRocPlanGet {}", car_roc.error_code.unwrap_or_default());
+    let car_roc_body: serde_json::Value =
+        serde_json::from_str(car_roc.body_json.as_deref().unwrap_or("{}")).unwrap();
+    assert_eq!(car_roc_body["accountName"], "Car", "{car_roc_body}");
+    assert!(
+        car_roc_body["taxNote"]
+            .as_str()
+            .unwrap_or("")
+            .contains("April 2027"),
+        "Car tax stays unknown until 1099: {car_roc_body}"
+    );
+    assert!(
+        car_roc_body["estimateNote"]
+            .as_str()
+            .unwrap_or("")
+            .contains("prior-year ROC guidance"),
+        "{car_roc_body}"
+    );
+    if let (Some(ord), Some(roc), Some(total)) = (
+        car_roc_body["remainingOrdinaryMinor"].as_i64(),
+        car_roc_body["remainingRocMinor"].as_i64(),
+        car_roc_body["remainingTotalMinor"].as_i64(),
+    ) {
+        assert_eq!(ord + roc, total, "Car remaining split must use the plan estimate: {car_roc_body}");
+    }
+    assert!(
+        car_roc_body["namesWithEstimate"].as_u64().unwrap_or(0) >= 1,
+        "Car ROC estimates must be on the plan: {car_roc_body}"
+    );
     assert_eq!(kind_of("Robinhood"), "taxable");
     assert_eq!(kind_of("FI Roth"), "fi_roth");
     assert!(

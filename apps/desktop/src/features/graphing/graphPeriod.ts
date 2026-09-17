@@ -1,5 +1,8 @@
 export type GraphPeriod = "1m" | "2m" | "3m" | "6m" | "12m" | "ytd" | "all";
 
+/** Home and Trends open on this window. Owner can still pick any option. */
+export const DEFAULT_GRAPH_PERIOD: GraphPeriod = "6m";
+
 export const GRAPH_PERIOD_OPTIONS: Array<{ value: GraphPeriod; label: string }> = [
   { value: "1m", label: "1 month" },
   { value: "2m", label: "2 months" },
@@ -14,6 +17,7 @@ export const GRAPH_PERIOD_OPTIONS: Array<{ value: GraphPeriod; label: string }> 
 export const GRAPH_PERIOD_START_EXAMPLES = [
   { asOf: "2026-09-11", period: "1m" as const, startOn: "2026-08-11" },
   { asOf: "2026-09-11", period: "2m" as const, startOn: "2026-07-11" },
+  { asOf: "2026-09-11", period: "6m" as const, startOn: "2026-03-11" },
 ] as const;
 
 function parseIsoDate(iso: string): Date | null {

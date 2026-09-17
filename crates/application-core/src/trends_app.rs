@@ -190,6 +190,7 @@ pub async fn trends_week_capture_view(
             financial_domain::trends::first_unpopulated_saturday(&saved, today),
             today,
         );
+    let cash_references = crate::cash_management::cash_references_for_week(canonical, &period_end).await?;
     Ok(TrendsWeekCaptureBody {
         period_start: period_start.clone(),
         period_end: period_end.clone(),
@@ -218,6 +219,7 @@ pub async fn trends_week_capture_view(
         populated_period_ends: saved,
         missing_required: missing,
         scale: 2,
+        cash_references,
     })
 }
 
@@ -306,7 +308,7 @@ pub async fn distributions_ytd(
     let mut state = 0i64;
     let mut net = 0i64;
     for a in &activities {
-        if !financial_domain::trends::is_non_roi_distribution(&a.activity_type) {
+        if !financial_domain::trends::is_current_year_cash_distribution(&a.activity_type) {
             continue;
         }
         if !a.occurred_on.starts_with(year) {
@@ -339,7 +341,7 @@ pub async fn distributions_ytd(
             state_withholding_minor: a.state_withholding_minor,
             net_minor: line_net,
             account_kind: kind,
-            tax_section: section.id().into(),
+            tax_section: section.map(|s| s.id().to_string()).unwrap_or_default(),
         });
     }
     lines.sort_by(|a, b| a.occurred_on.cmp(&b.occurred_on));
@@ -361,15 +363,17 @@ pub async fn distributions_ytd(
             .or_insert(TrendsDistributionAccountTotal {
                 account_name: line.account_name.clone(),
                 account_kind: line.account_kind.clone(),
-                tax_section: section.id().into(),
+                tax_section: section.map(|s| s.id().to_string()).unwrap_or_default(),
                 gross_minor: 0,
                 net_minor: 0,
             });
         entry.gross_minor += line.amount_minor;
         entry.net_minor += line.net_minor;
-        let slot = section_map.entry(section).or_insert((0, 0));
-        slot.0 += line.amount_minor;
-        slot.1 += line.net_minor;
+        if let Some(section) = section {
+            let slot = section_map.entry(section).or_insert((0, 0));
+            slot.0 += line.amount_minor;
+            slot.1 += line.net_minor;
+        }
     }
     let account_totals = account_map.into_values().collect();
     let sections = section_map
@@ -411,7 +415,7 @@ pub async fn tax_monitor(
     let activities = canonical.activity_list().await?;
     let federal_withholding_minor = activities
         .iter()
-        .filter(|a| financial_domain::trends::is_non_roi_distribution(&a.activity_type))
+        .filter(|a| financial_domain::trends::is_current_year_cash_distribution(&a.activity_type))
         .filter(|a| a.occurred_on.starts_with(year))
         .map(|a| a.federal_withholding_minor)
         .sum();

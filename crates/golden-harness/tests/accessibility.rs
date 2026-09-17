@@ -94,6 +94,9 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Work tickets\"",
         "aria-label=\"Work ticket summary\"",
         "aria-label={`Recreate adapter ${symbol}`}",
+        "aria-label={`Accept ${symbol} ROC change`}",
+        "aria-label={`Reject ${symbol} ROC change`}",
+        "aria-label={`ROC change action ${symbol}`}",
         "aria-label=\"Open exception log\"",
         "aria-label=\"Open process log\"",
         "aria-label=\"Capture process\"",
@@ -269,7 +272,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Saved cash weeks\"",
         "aria-label=\"Cash week overview\"",
         "aria-label=\"Trends weekly capture\"",
-        "aria-label=\"Trends capture steps\"",
+        "aria-label=\"Week capture grid\"",
         "aria-label=\"Income Total Balance\"",
         "aria-label=\"FI Roth Total Balance\"",
         "aria-label=\"Speculation Total Balance\"",
@@ -301,6 +304,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"All distribution accounts\"",
         "aria-label=\"Distribution tax sections\"",
         "aria-label=\"Cash Management tax and ACA monitor\"",
+        "aria-label=\"Cash Management Car ROC plan\"",
         "aria-label=\"Portfolio summary\"",
         "aria-label={`Sort by ${label}`}",
     ] {
@@ -395,8 +399,21 @@ fn dividend_weeks_lives_on_income_plan_not_trends_middle() {
         "Week income must be paid/declared that week, not stored monthly DIVS"
     );
     assert!(
+        !cash_desk.contains("<th className=\"numeric\">Profit</th>")
+            && !cash_desk.contains("Profit {"),
+        "Cash week desk keeps one Week income column; seed Profit is not shown"
+    );
+    assert!(
         charts.contains("Weekly Decl vs Plan"),
         "Trends must keep the weekly Plan vs Declaration chart"
+    );
+    assert!(
+        charts.contains("weekIncomeMinor") && charts.contains("aria-label=\"Week income\""),
+        "Weekly Gross must plot Week income, not stored seed Profit"
+    );
+    assert!(
+        !charts.contains("key: \"profitMinor\""),
+        "Trends metric charts must not use seed profitMinor"
     );
     assert!(
         charts.contains("filterPerfByPeriod") && charts.contains("onGraphPeriodChange"),
@@ -421,6 +438,10 @@ fn dividend_weeks_lives_on_income_plan_not_trends_middle() {
         repo_root().join("apps/desktop/src/features/graphing/TrendsCapture.tsx"),
     )
     .unwrap();
+    assert!(
+        !capture.contains("<dt>Profit</dt>"),
+        "week review shows Week income only, not seed Profit"
+    );
     assert!(
         capture.contains("onWizardActive"),
         "Trends wizard must tell App when it is in progress"
@@ -473,5 +494,77 @@ fn dividend_weeks_newest_first_empty_not_na() {
     assert!(
         !src.contains("ReactECharts") && !src.contains("dividend-weeks-chart"),
         "Plan vs Decl chart stays on Trends, not under the Income Plan table"
+    );
+}
+
+#[test]
+fn g1_g6_slice1b_capture_grid_one_table() {
+    let capture = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/TrendsCapture.tsx"),
+    )
+    .unwrap();
+    // G1: six rows visible at once after the week dropdown.
+    assert!(
+        capture.contains("aria-label=\"Week capture grid\"")
+            && capture.contains("label: \"Income\"")
+            && capture.contains("label: \"FI Roth\"")
+            && capture.contains("label: \"Speculation\"")
+            && capture.contains("label: \"Health\"")
+            && capture.contains("label: \"Car\"")
+            && capture.contains("label: \"Account 9\""),
+        "G1: one table lists Income, FI Roth, Speculation, Health, Car, Account 9"
+    );
+    assert!(
+        !capture.contains("const STEPS")
+            && !capture.contains("Next Trends step")
+            && !capture.contains("setStep("),
+        "G1: no Week → account → Review rail and no Next between accounts"
+    );
+    // G2: typed ETF 10000 → read-only 70% is 7000.
+    assert!(
+        capture.contains("G2: 10000 → 7000")
+            && capture.contains("Math.round((total * 70) / 100)"),
+        "G2: Account 9 70% is typed ETF total × 0.70"
+    );
+    // G3: blank ETF is — not $0.
+    assert!(
+        capture.contains("etfSeventy == null ? \"—\"")
+            && capture.contains("seventyFromEtfTotal"),
+        "G3: blank ETF total is not $0"
+    );
+    // G4: Edit refills the same table.
+    assert!(
+        capture.contains("typedDraftRef")
+            && capture.contains("Edit Trends week")
+            && !capture.contains("setStep(\"Income\")")
+            && !capture.contains("setStep(\"Capture\")"),
+        "G4: Edit keeps values on the same table"
+    );
+    // G5: no Adjust reason when cash matches.
+    assert!(
+        capture.contains("aria-label=\"Week cash recon\"")
+            && capture.contains("material ?")
+            && capture.contains("cash adjust reason"),
+        "G5: Adjust reason only when the cash gap is material"
+    );
+    // G6
+    assert!(
+        capture.contains("accountName: \"Speculation\""),
+        "G6: Speculation is a row"
+    );
+    assert!(
+        capture.contains("placeholder=\"skip\"")
+            && capture.contains("Blank cash = skip this week")
+            && capture.contains("draft[row.totalKey].trim() !== \"\""),
+        "blank cash is allowed on input and Accept; only totals are required"
+    );
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    assert!(
+        app.contains("WeekCaptureAccept"),
+        "Accept uses WeekCaptureAccept from PR #10"
+    );
+    assert!(
+        app.contains("declarationRefreshedOn === summary.declarationAsOf"),
+        "DeclarationRefresh on open runs once per local date"
     );
 }

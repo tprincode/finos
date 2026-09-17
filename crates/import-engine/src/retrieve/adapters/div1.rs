@@ -287,7 +287,7 @@ pub const DIV1_ISSUERS: &[Div1Issuer] = &[
         urls: |_| {
             vec![
                 "https://ir.orchidislandcapital.com/stock-information/dividends-splits".into(),
-                "https://www.orchidislandcapital.com/".into(),
+                "https://www.orchidislandcapital.com/stock-information/dividends-splits".into(),
             ]
         },
     },

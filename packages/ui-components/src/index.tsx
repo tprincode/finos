@@ -46,6 +46,17 @@ export function formatCount(n: number): string {
   return sign + groupInt(Math.abs(Math.trunc(n)).toString());
 }
 
+/** Per-share Plan / declaration dollars. Always `places` digits after the point so 0.13000 ≠ 0.13300. */
+export function formatPerShare(minor: number, scale = 4, places = 5): string {
+  const s = Number.isFinite(scale) ? Math.max(0, Math.trunc(scale)) : 0;
+  const p = Number.isFinite(places) ? Math.max(0, Math.trunc(places)) : 5;
+  const n = minor / 10 ** s;
+  if (!Number.isFinite(n)) {
+    return "—";
+  }
+  return n.toFixed(p);
+}
+
 /** Fixed-scale quantity or other non-money amount (ADR-0004), with grouping. */
 export function formatScaled(minor: number, scale = 0): string {
   const places = Number.isFinite(scale) ? Math.max(0, Math.trunc(scale)) : 0;
@@ -1209,6 +1220,8 @@ export function WorkTicketQueue({
   filterSymbol,
   retryingTicketId,
   retryingSymbol,
+  pendingTicketId,
+  pendingAction,
 }: {
   tickets: WorkTicketView[];
   onRetry?: (ticket: WorkTicketView) => void;
@@ -1220,6 +1233,8 @@ export function WorkTicketQueue({
   filterSymbol?: string;
   retryingTicketId?: string;
   retryingSymbol?: string;
+  pendingTicketId?: string;
+  pendingAction?: "accept" | "reject" | "except";
 }) {
   const open = tickets.filter((t) => t.status === "open");
   const scoped = filterSymbol
@@ -1270,7 +1285,9 @@ export function WorkTicketQueue({
                   <p>
                     {t.code}: {t.reason}
                   </p>
-                  {t.tool === "retry_retrieve" && onRecreateAdapter ? (
+                  {(t.tool === "retry_retrieve" ||
+                    t.tool === "establish_recertify") &&
+                  onRecreateAdapter ? (
                     <button
                       type="button"
                       aria-label={`Recreate adapter ${symbol}`}
@@ -1297,24 +1314,71 @@ export function WorkTicketQueue({
                       stored amount.
                     </p>
                   ) : null}
+                  {t.tool === "roc_confirm" ? (
+                    <p aria-label={`ROC change action ${symbol}`}>
+                      Accept changes this year's ROC projection to the new %.
+                      Reject leaves the previous %. Last year 1099 is
+                      informational only and is not written on Accept or Reject.
+                    </p>
+                  ) : null}
                   {t.tool === "amount_confirm" && onExcept ? (
                     <button
                       type="button"
                       aria-label={`Except ${symbol} amount variation`}
+                      className={
+                        pendingTicketId === t.ticketId && pendingAction === "except"
+                          ? "is-unsaved"
+                          : undefined
+                      }
                       disabled={Boolean(retryingTicketId)}
                       onClick={() => onExcept(t)}
                     >
                       Except — keep issuer amount
                     </button>
                   ) : null}
+                  {t.tool === "roc_confirm" && onExcept ? (
+                    <button
+                      type="button"
+                      aria-label={`Accept ${symbol} ROC change`}
+                      className={
+                        pendingTicketId === t.ticketId && pendingAction === "accept"
+                          ? "is-unsaved"
+                          : undefined
+                      }
+                      disabled={Boolean(retryingTicketId)}
+                      onClick={() => onExcept(t)}
+                    >
+                      Accept — use new ROC %
+                    </button>
+                  ) : null}
                   {t.tool === "amount_confirm" && onReject ? (
                     <button
                       type="button"
                       aria-label={`Reject ${symbol} amount variation`}
+                      className={
+                        pendingTicketId === t.ticketId && pendingAction === "reject"
+                          ? "is-unsaved"
+                          : undefined
+                      }
                       disabled={Boolean(retryingTicketId)}
                       onClick={() => onReject(t)}
                     >
                       Reject — keep stored amount
+                    </button>
+                  ) : null}
+                  {t.tool === "roc_confirm" && onReject ? (
+                    <button
+                      type="button"
+                      aria-label={`Reject ${symbol} ROC change`}
+                      className={
+                        pendingTicketId === t.ticketId && pendingAction === "reject"
+                          ? "is-unsaved"
+                          : undefined
+                      }
+                      disabled={Boolean(retryingTicketId)}
+                      onClick={() => onReject(t)}
+                    >
+                      Reject — keep previous ROC %
                     </button>
                   ) : null}
                   {t.tool === "enter_declared_amount" && onEnterAmount ? (
@@ -1343,7 +1407,10 @@ export function WorkTicketQueue({
                       </button>
                     </form>
                   ) : null}
-                  {onFile && t.tool !== "amount_confirm" && t.tool !== "enter_declared_amount" ? (
+                  {onFile
+                  && t.tool !== "amount_confirm"
+                  && t.tool !== "roc_confirm"
+                  && t.tool !== "enter_declared_amount" ? (
                     <button
                       type="button"
                       aria-label={`File ticket ${symbol} ${t.code}`}
@@ -1743,7 +1810,7 @@ function formatUsdWhole(minor: number, scale: number): string {
   return `${sign}$${formatCount(Math.abs(dollars))}`;
 }
 
-function formatPerShare(
+function formatDeclPerShare(
   minor: number | null | undefined,
   scale: number | undefined,
 ): string {
@@ -2016,7 +2083,7 @@ export function IncomePlanGridPanel({
                             : undefined
                         }
                       >
-                        {formatPerShare(
+                        {formatDeclPerShare(
                           row.declarationPerShareMinor,
                           row.declarationPerShareScale,
                         )}
@@ -2539,7 +2606,7 @@ export function IncomePlanWeekPanel({
                               : undefined
                           }
                         >
-                          {formatPerShare(
+                          {formatDeclPerShare(
                             row.declarationPerShareMinor,
                             row.declarationPerShareScale,
                           )}

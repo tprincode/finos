@@ -693,6 +693,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_orchid_nir_declared_payable_amount_table() {
+        let html = r#"<table class="nirtable views-table views-view-table cols-7">
+<thead><tr>
+<th>Declared</th><th>Ex-Date</th><th>Record</th><th>Payable</th><th>Amount</th><th>Split</th><th>Type</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><time datetime="2026-09-14T12:00:00Z">9/14/2026</time></td>
+<td><time datetime="2026-09-30T12:00:00Z">9/30/2026</time></td>
+<td><time datetime="2026-09-30T12:00:00Z">9/30/2026</time></td>
+<td><time datetime="2026-10-29T12:00:00Z">10/29/2026</time></td>
+<td>0.10</td><td>-</td><td>U.S. Currency</td>
+</tr>
+<tr><td>Total dividends in 2026:</td><td></td><td></td><td></td><td>0.96</td></tr>
+</tbody>
+</table>"#;
+        let rows = parse_distribution_tables("orchidisland", html);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["paymentPeriod"], "2026-10-29");
+        assert_eq!(rows[0]["amountPerShareMinor"], 10);
+        assert_eq!(rows[0]["amountScale"], 2);
+    }
+
+    #[test]
     fn parse_uses_pay_date_column_not_last_date() {
         // Amount first, pay second, ex third, declaration last — last date is NOT pay date.
         let html = r#"<table>

@@ -888,6 +888,112 @@ async fn last_price_stale_still_shows_on_calculator() {
 }
 
 #[tokio::test]
+async fn last_price_started_or_failed_run_trips_four_hour_auto_skip() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let (account_id, security_id) = seed_identity(&platform, "LP2").await;
+    ready_first_lot(&platform, &security_id, "LP2").await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": security_id,
+            "openedOn": "2026-08-01",
+            "origin": "purchase",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 100_000,
+            "taxBasisMinor": 100_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+
+    let started = must_ok(
+        &platform,
+        "LastPriceRefresh",
+        serde_json::json!({
+            "started": true,
+            "securityIds": [security_id]
+        }),
+    )
+    .await;
+    assert_eq!(started["recorded"].as_u64(), Some(0));
+    assert_eq!(started["attempted"].as_u64(), Some(1));
+
+    let runs = query_json(
+        &platform,
+        "RetrieveRunList",
+        serde_json::json!({ "securityId": security_id, "limit": 20 }),
+    )
+    .await;
+    let start_run = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["kind"] == "price" && r["code"] == "price_refresh_started")
+        .expect("start retrieve_run");
+    assert_eq!(start_run["ok"], false);
+
+    let window = query_json(&platform, "LastPriceAutoWindowGet", serde_json::json!({})).await;
+    match application_core::last_price_window::last_price_auto_window_now() {
+        Ok(()) => {
+            assert_eq!(window["allowed"], false);
+            assert_eq!(window["skipReason"], "last refresh under 4 hours");
+        }
+        Err(_) => {
+            assert_eq!(window["allowed"], false);
+        }
+    }
+
+    let missed = must_ok(
+        &platform,
+        "LastPriceRefresh",
+        serde_json::json!({
+            "quotes": [],
+            "misses": [{
+                "securityId": security_id,
+                "symbol": "LP2",
+                "code": "price_retrieve_miss",
+                "reason": "Last price miss for LP2. Stored price still displays; never $0."
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(missed["recorded"].as_u64(), Some(0));
+    assert_eq!(missed["skipped"].as_u64(), Some(1));
+
+    let after_fail = query_json(&platform, "CurrentPriceGet", serde_json::json!({
+        "securityId": security_id,
+        "asOfDate": "2026-08-21"
+    }))
+    .await;
+    assert!(
+        after_fail["priceMinor"].is_null(),
+        "miss must keep unknown, never $0: {after_fail}"
+    );
+
+    let force = must_ok(
+        &platform,
+        "LastPriceRefresh",
+        serde_json::json!({
+            "force": true,
+            "quotes": [{
+                "securityId": security_id,
+                "priceMinor": 1250,
+                "scale": 2,
+                "asOfAt": "2026-08-21",
+                "source": "fixture"
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(force["recorded"].as_u64(), Some(1));
+}
+
+#[tokio::test]
 async fn wz_cadence_required_to_add_and_is_one_value() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();

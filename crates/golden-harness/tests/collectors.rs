@@ -2296,7 +2296,7 @@ fn work_ticket_recreate_adapter_opens_add_position() {
     let fn_start = app
         .find("const openRecreateAdapter")
         .expect("openRecreateAdapter");
-    let fn_body = &app[fn_start..fn_start + 1800];
+    let fn_body = &app[fn_start..fn_start + 3600];
     assert!(
         fn_body.contains("setScreen(\"new-investment\")"),
         "openRecreateAdapter must switch to Add Position: {fn_body}"
@@ -2306,8 +2306,38 @@ fn work_ticket_recreate_adapter_opens_add_position() {
         "openRecreateAdapter must prefill Symbol: {fn_body}"
     );
     assert!(
-        fn_body.contains("setWizSourceUrl(\"\")"),
-        "openRecreateAdapter must leave Template Dividend empty so the owner pastes the seed URL: {fn_body}"
+        !fn_body.contains("setWizSourceUrl(\"\")"),
+        "openRecreateAdapter must not blank a stored Template Dividend: {fn_body}"
+    );
+    assert!(
+        fn_body.contains("using stored Template Dividend")
+            && fn_body.contains("validateRecreateFromStored")
+            && fn_body.contains("no stored Template Dividend. Paste"),
+        "Recreate must validate stored facts and ask to paste only when E1 is empty: {fn_body}"
+    );
+    assert!(
+        app.contains("CollectorRecertify")
+            && app.contains("stored facts kept")
+            && app.contains("does not re-import"),
+        "Recreate must recertify stored facts and must not re-import successful data"
+    );
+    assert!(
+        ui.contains("export function formatPerShare")
+            && app.contains("formatPerShare")
+            && app.contains("This will change the stored Plan from"),
+        "Recreate / Add Position must show five-decimal per-share and warn when stored Plan would change"
+    );
+    assert!(
+        app.contains("Confirm Plan writes Plan / share only")
+            && app.contains("Update Plan / share")
+            && app.contains("Proposed writes: Plan / share only"),
+        "Confirm Plan must report that it writes Plan / share only, not the whole sheet"
+    );
+    assert!(
+        app.contains("progressiveRetry")
+            && app.contains("timeoutAttempt")
+            && app.contains("Timeout retry"),
+        "fleet timeout must skip then retry the stored URL; ticket Retry is progressive"
     );
     assert!(
         ui.contains("aria-label={`Retry ${symbol}`}"),

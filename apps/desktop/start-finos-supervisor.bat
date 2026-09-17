@@ -9,20 +9,28 @@ if not exist "package.json" (
 )
 
 set "LOCK=%LOCALAPPDATA%\com.finos.desktop\supervisor.lock"
-if exist "%LOCK%" (
-  tasklist /FI "WINDOWTITLE eq finos supervisor*" 2>nul | find /I "cmd.exe" >nul
+set "PIDFILE=%LOCK%\supervisor.pid"
+set "DEVLOCK=%LOCALAPPDATA%\com.finos.desktop\dev-start.lock"
+set "DEVPID=%DEVLOCK%\start.pid"
+if exist "%PIDFILE%" (
+  set /p OLDPID=<"%PIDFILE%"
+)
+if defined OLDPID (
+  tasklist /FI "PID eq %OLDPID%" /NH 2>nul | find /I "cmd.exe" >nul
   if not errorlevel 1 (
     echo Supervisor already running.
     exit /b 0
   )
-  rd /S /Q "%LOCK%" >nul 2>&1
 )
+if exist "%LOCK%" rd /S /Q "%LOCK%" >nul 2>&1
 mkdir "%LOCK%" >nul 2>&1
 if errorlevel 1 (
-  echo Supervisor already running.
-  exit /b 0
+  echo Could not take supervisor.lock
+  pause
+  exit /b 1
 )
 title finos supervisor
+powershell -NoProfile -Command "[IO.File]::WriteAllText('%PIDFILE%', [string](Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId)"
 
 set "TOKEN=%LOCALAPPDATA%\com.finos.desktop\restart.token"
 set "DEVBAT=%~dp0start-finos-dev.bat"
@@ -52,12 +60,24 @@ if errorlevel 1 (
   del /F /Q "%TOKEN%" >nul 2>&1
   goto sleep
 )
+call :wait_port_free 1420
 del /F /Q "%TOKEN%" >nul 2>&1
 echo Consumed restart.token. Starting a new finos ^(dev^) console.
 call :start_dev
 goto sleep
 
 :start_dev
+set "LIVEDEV="
+if exist "%DEVPID%" (
+  set /p LIVEDEV=<"%DEVPID%"
+)
+if defined LIVEDEV (
+  tasklist /FI "PID eq %LIVEDEV%" /NH 2>nul | find /I "cmd.exe" >nul
+  if not errorlevel 1 (
+    echo A finos ^(dev^) start is already running. Not starting a second copy.
+    exit /b 0
+  )
+)
 powershell -NoProfile -Command "Start-Process -FilePath '%~dp0start-finos-dev.bat' -WindowStyle Normal"
 exit /b 0
 
@@ -70,6 +90,16 @@ set /a _gone+=1
 if %_gone% GEQ 30 exit /b 1
 ping -n 3 127.0.0.1 >nul
 goto wait_exe_gone_loop
+
+:wait_port_free
+set /a _wait=0
+:wait_port_free_loop
+netstat -ano 2>nul | findstr /R /C:":%~1" | findstr LISTENING >nul
+if errorlevel 1 exit /b 0
+set /a _wait+=1
+if %_wait% GEQ 20 exit /b 0
+ping -n 2 127.0.0.1 >nul
+goto wait_port_free_loop
 
 :sleep
 ping -n 3 127.0.0.1 >nul

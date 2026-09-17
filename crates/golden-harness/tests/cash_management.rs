@@ -97,6 +97,14 @@ async fn cash_distribution_proves_net_and_week_total() {
         .expect("ira tax section");
     assert!(ira_section["taxNote"].as_str().unwrap_or("").contains("Speculation"));
     assert!(
+        trends["distributions"]["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["id"] != "taxable" && s["label"] != "Taxable brokerage"),
+        "prior-year 1099 must not create a taxable brokerage bucket: {trends}"
+    );
+    assert!(
         trends["distributions"]["accountTotals"]
             .as_array()
             .unwrap()
@@ -825,6 +833,167 @@ async fn imported_disbursement_matches_manual_post_identity() {
     assert_eq!(trends["distributions"]["netMinor"].as_i64(), Some(155000));
 }
 
+#[tokio::test]
+async fn prior_year_1099_is_not_current_year_ytd_and_car_splits_holding_term() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let external = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "External", "kind": "taxable"}),
+    )
+    .await;
+    let car = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Car", "kind": "taxable"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": external["accountId"],
+            "activityType": "Form_1099",
+            "amountMinor": 262500,
+            "scale": 2,
+            "occurredOn": "2026-05-08",
+            "idempotencyKey": "ty2025-1099"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CashDistributionPost",
+        serde_json::json!({
+            "accountId": car["accountId"],
+            "activityType": "Withdrawal",
+            "occurredOn": "2026-05-15",
+            "grossMinor": 85000,
+            "federalWithholdingMinor": 0,
+            "stateWithholdingMinor": 0,
+            "scale": 2,
+            "idempotencyKey": "car-wd"
+        }),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "HAKY", "name": "HAKY"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "sourceSymbol": "HAKY",
+            "declarationSource": "amplify",
+            "sourceUrl": "https://amplifyetfs.com/haky/#distributions",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot(&platform, security_id, "HAKY")
+        .await
+        .expect("complete");
+    let lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": car["accountId"],
+            "securityId": security_id,
+            "openedOn": "2025-03-01",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 100000,
+            "taxBasisMinor": 80000,
+            "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "divType": "DIV-1",
+            "rocPct2026EstimateMinor": 7000,
+            "rocScale": 2,
+            "isActive": true
+        }),
+    )
+    .await;
+    let sell = must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": car["accountId"],
+            "securityId": security_id,
+            "activityType": "sell",
+            "amountMinor": 60000,
+            "scale": 2,
+            "occurredOn": "2026-03-02"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotAssign",
+        serde_json::json!({
+            "lotId": lot["lotId"],
+            "activityId": sell["activityId"],
+            "quantityMinor": 10,
+            "quantityScale": 0
+        }),
+    )
+    .await;
+
+    let trends = query_json(
+        &platform,
+        "TrendsGet",
+        serde_json::json!({"asOfDate": "2026-09-13"}),
+    )
+    .await;
+    let lines = trends["distributions"]["lines"].as_array().unwrap();
+    assert!(
+        lines.iter().all(|l| l["activityType"] != "Form_1099"),
+        "2025 1099 never applies to current-year YTD: {trends}"
+    );
+    assert!(
+        trends["distributions"]["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["id"] != "taxable"),
+        "{trends}"
+    );
+    assert!(
+        lines.iter().any(|l| l["activityType"] == "Withdrawal" && l["accountName"] == "Car"),
+        "{trends}"
+    );
+
+    let car_plan = query_json(
+        &platform,
+        "CarRocPlanGet",
+        serde_json::json!({ "asOfDate": "2026-09-13" }),
+    )
+    .await;
+    assert_eq!(
+        car_plan["ytdLongTermGainMinor"].as_i64(),
+        Some(-20_000),
+        "sold after one-year anniversary is long-term tax lot: {car_plan}"
+    );
+    assert_eq!(car_plan["ytdShortTermGainMinor"].as_i64(), Some(0), "{car_plan}");
+}
+
 #[test]
 fn cash_management_ui_never_says_ssi() {
     let ui = std::fs::read_to_string(
@@ -850,15 +1019,30 @@ fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
     .unwrap();
     assert!(cm.contains("Distributions (YTD)"));
     assert!(cm.contains("Tax / ACA monitor"));
-    assert!(cm.contains("Read-only Cash Management summary"));
+    assert!(!cm.contains("Read-only Cash Management summary"));
     assert!(cm.contains("Fed WH"));
     assert!(cm.contains("State WH"));
     assert!(cm.contains("Federal withholding"));
     assert!(cm.contains("aria-label=\"Cash Management distributions YTD\""));
     assert!(cm.contains("aria-label=\"Distribution account totals\""));
     assert!(cm.contains("aria-label=\"Distribution tax sections\""));
-    assert!(cm.contains("IRA ordinary groups Income and Speculation"));
     assert!(cm.contains("aria-label=\"Cash Management tax and ACA monitor\""));
+    assert!(cm.contains("aria-label=\"Cash Management Car ROC plan\""));
+    assert!(cm.contains("<h3>Car ROC plan</h3>"));
+    assert!(cm.contains("<dt>Remaining ordinary</dt>"));
+    assert!(cm.contains("<dt>Remaining ROC</dt>"));
+    assert!(cm.contains("<dt>YTD ordinary (estimate)</dt>"));
+    assert!(cm.contains("<dt>YTD ROC (estimate)</dt>"));
+    assert!(cm.contains("<dt>Long-term capital gain/loss</dt>"));
+    assert!(cm.contains("<dt>Short-term capital gain/loss</dt>"));
+    assert!(!cm.contains("taxable brokerage stay"));
+    assert!(!cm.contains("rocPct2026Actual"));
+    assert!(!cm.contains("Prior-year 1099 is ROC guidance"));
+    assert!(!cm.contains("carRocPlan.estimateNote"));
+    assert!(!cm.contains("carRocPlan.taxNote"));
+    assert!(!cm.contains("carRocPlan.lotSaleNote"));
+    assert!(!cm.contains("section.taxNote"));
+    assert!(!cm.contains("taxMonitor.note"));
     assert!(!trends.contains("Distributions (YTD)"));
     assert!(!trends.contains("Tax / ACA monitor"));
     assert!(!trends.contains("Read-only Cash Management summary"));

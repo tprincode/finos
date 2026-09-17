@@ -69,6 +69,28 @@ pub struct LotCostView {
     pub remaining_performance_minor: i64,
 }
 
+/// Remaining shares on `day` for last-price charts.
+/// Latest dated remaining on or before `day`; before first open is 0; no events
+/// keeps today's remaining (unchanged names).
+pub fn remaining_qty_on_day(
+    day: &str,
+    first_opened_on: Option<&str>,
+    remaining_now: i64,
+    events: &[(String, i64)],
+) -> i64 {
+    if let Some(open) = first_opened_on {
+        if !open.is_empty() && day < open {
+            return 0;
+        }
+    }
+    events
+        .iter()
+        .filter(|(on, _)| on.as_str() <= day)
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, qty)| *qty)
+        .unwrap_or(remaining_now)
+}
+
 /// Sale/option close must name a lot. Missing id is FIFO and is refused.
 pub fn require_explicit_lot(lot_id: Option<Uuid>) -> Result<Uuid, DomainError> {
     lot_id.ok_or(DomainError::FifoNotAssumed)
@@ -242,6 +264,28 @@ pub fn lifetime_gains(proceeds_minor: i64, performance_cost_minor: i64, tax_cost
     )
 }
 
+/// IRS: long-term if held more than one year (sold after the one-year anniversary).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldingTerm {
+    Short,
+    Long,
+}
+
+pub fn holding_term(opened_on: &str, sold_on: &str) -> Option<HoldingTerm> {
+    let opened = chrono::NaiveDate::parse_from_str(&opened_on[..10.min(opened_on.len())], "%Y-%m-%d")
+        .ok()?;
+    let sold = chrono::NaiveDate::parse_from_str(&sold_on[..10.min(sold_on.len())], "%Y-%m-%d").ok()?;
+    if sold <= opened {
+        return None;
+    }
+    let anniversary = opened.checked_add_months(chrono::Months::new(12))?;
+    Some(if sold > anniversary {
+        HoldingTerm::Long
+    } else {
+        HoldingTerm::Short
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +317,37 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, DomainError::ZeroCostDripNotCrf);
+    }
+
+    #[test]
+    fn remaining_qty_on_day_uses_dated_remaining() {
+        let events = vec![
+            ("2025-10-10".into(), 100),
+            ("2025-11-14".into(), 200),
+            ("2025-12-03".into(), 20),
+            ("2026-08-24".into(), 2),
+        ];
+        assert_eq!(
+            remaining_qty_on_day("2025-10-01", Some("2025-10-10"), 2, &events),
+            0
+        );
+        assert_eq!(
+            remaining_qty_on_day("2025-11-01", Some("2025-10-10"), 2, &events),
+            100
+        );
+        assert_eq!(
+            remaining_qty_on_day("2025-12-02", Some("2025-10-10"), 2, &events),
+            200
+        );
+        assert_eq!(
+            remaining_qty_on_day("2026-04-01", Some("2025-10-10"), 2, &events),
+            20
+        );
+        assert_eq!(
+            remaining_qty_on_day("2026-09-17", Some("2025-10-10"), 2, &events),
+            2
+        );
+        assert_eq!(remaining_qty_on_day("2026-01-01", None, 14, &[]), 14);
     }
 
     #[test]
@@ -368,5 +443,18 @@ mod tests {
     fn proportional_basis_is_named_qty_not_fifo() {
         assert_eq!(proportional_basis(10_000, 10, 4), 4_000);
         assert_eq!(proportional_basis(10_000, 0, 4), 0);
+    }
+
+    #[test]
+    fn holding_term_is_long_only_after_one_year() {
+        assert_eq!(
+            holding_term("2025-03-01", "2026-03-01"),
+            Some(HoldingTerm::Short)
+        );
+        assert_eq!(
+            holding_term("2025-03-01", "2026-03-02"),
+            Some(HoldingTerm::Long)
+        );
+        assert_eq!(holding_term("2026-01-15", "2026-06-01"), Some(HoldingTerm::Short));
     }
 }

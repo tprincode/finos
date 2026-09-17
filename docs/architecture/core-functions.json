@@ -100,6 +100,14 @@
         {
           "path": "crates/financial-domain/src/collector.rs",
           "mustContain": "last_run_ok == Some(true)"
+        },
+        {
+          "path": "crates/financial-domain/src/collector.rs",
+          "mustContain": "declaration_fail_ticket_parity"
+        },
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "declarationFailTicketParity"
         }
       ]
     },
@@ -387,6 +395,18 @@
         {
           "path": "apps/desktop/src/App.tsx",
           "mustContain": "executeQuery(\"CollectorSetGet\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CollectorRecertify\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "async fn collector_recertify"
+        },
+        {
+          "path": "crates/financial-domain/src/work_ticket.rs",
+          "mustContain": "CODE_COLLECTOR_ESTABLISH_INCOMPLETE"
         }
       ]
     },
@@ -503,6 +523,10 @@
         {
           "path": "crates/application-core/src/queries.rs",
           "mustContain": "\"CashDistributionPost\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"WeekCaptureAccept\""
         }
       ]
     },
@@ -525,6 +549,28 @@
         {
           "path": "crates/financial-domain/src/cash_management.rs",
           "mustContain": "BARBARA_SSA_EXPECTED_MINOR"
+        }
+      ]
+    },
+    {
+      "id": "cash-management-car-roc-plan",
+      "menuArea": "Plan",
+      "function": "Cash Management: Car ROC plan — remaining ordinary/ROC, YTD estimate split, lot P/L. Not 1099.",
+      "lastChanged": "2026-09-13",
+      "lastVerified": "2026-09-13",
+      "alsoVerify": ["cash_management", "ui_modules", "roc_plan"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/CashManagement.tsx",
+          "mustContain": "aria-label=\"Cash Management Car ROC plan\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CarRocPlanGet\""
+        },
+        {
+          "path": "crates/financial-domain/src/roc.rs",
+          "mustContain": "CAR_TAX_UNKNOWN_NOTE"
         }
       ]
     },
@@ -571,9 +617,9 @@
     {
       "id": "cash-management-import",
       "menuArea": "Plan",
-      "function": "Cash Management: import writes the same parent + withholding as a manual post",
-      "lastChanged": "2026-09-11",
-      "lastVerified": "2026-09-11",
+      "function": "Cash Management: import writes the same parent + withholding as a manual post. data-seed fails if the 129 production-disb parents do not match template gross/fed/state/net.",
+      "lastChanged": "2026-09-13",
+      "lastVerified": "2026-09-13",
       "alsoVerify": ["cash_management", "production_seed"],
       "sentinels": [
         {
@@ -591,15 +637,23 @@
         {
           "path": "crates/golden-harness/tests/cash_management.rs",
           "mustContain": "imported_disbursement_matches_manual_post_identity"
+        },
+        {
+          "path": "crates/application-core/src/production_seed.rs",
+          "mustContain": "audit_seed_disbursements"
+        },
+        {
+          "path": "crates/golden-harness/src/bin/data_seed.rs",
+          "mustContain": "seed parent identity failed"
         }
       ]
     },
     {
       "id": "file-restart-graceful",
       "menuArea": "File",
-      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts the supervisor if missing, and exits. The supervisor Start-Process-es start-finos-dev.bat. Household release uses app.restart().",
-      "lastChanged": "2026-09-11",
-      "lastVerified": "2026-09-11",
+      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts the supervisor if missing, and exits. The supervisor Start-Process-es start-finos-dev.bat. Household release uses app.restart(). A stale supervisor.lock is not a live supervisor; File → Restart waits for cmd /c start so the new console is not in the dying Tauri job.",
+      "lastChanged": "2026-09-16",
+      "lastVerified": "2026-09-16",
       "alsoVerify": ["desktop_menu", "accessibility", "account_value"],
       "sentinels": [
         {
@@ -873,9 +927,9 @@
     {
       "id": "last-price-auto-window",
       "menuArea": "Home",
-      "function": "Auto LastPriceRefresh and hub autoPrice MarketRetrieve run weekdays 9–4 Eastern only and skip when the last successful price run is under 4 hours. Manual Refresh last prices sends force. Stored last price still displays. Unknown stays unknown.",
-      "lastChanged": "2026-09-11",
-      "lastVerified": "2026-09-11",
+      "function": "Auto LastPriceRefresh and hub autoPrice MarketRetrieve run weekdays 9–4 Eastern only and skip when the last price retrieve_run (ok, fail, or started) is under 4 hours. Manual Refresh last prices sends force. Stored last price still displays. Unknown stays unknown. 3s per symbol; miss keeps last price.",
+      "lastChanged": "2026-09-16",
+      "lastVerified": "2026-09-16",
       "alsoVerify": ["position_details", "accessibility"],
       "sentinels": [
         {

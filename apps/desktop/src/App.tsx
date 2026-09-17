@@ -39,6 +39,7 @@ import {
   type RocResearchGet,
   type SecurityListItem,
   type TrendsGet,
+  type CarRocPlanGet,
   type CashManagementWeekGet,
   type CashManagementRemindersGet,
   type CashManagementMonthGet,
@@ -51,7 +52,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import { LocalTauriFinanceClient } from "./financeClient";
 import { TrendsChartsPanel } from "./features/graphing/TrendsCharts";
-import { type GraphPeriod } from "./features/graphing/graphPeriod";
+import { DEFAULT_GRAPH_PERIOD, type GraphPeriod } from "./features/graphing/graphPeriod";
 import { DividendWeeksPanel } from "./features/graphing/DividendWeeks";
 import { DeclarationPaymentsChart } from "./features/graphing/DeclarationPaymentsChart";
 import { TrendsCapturePanel, type TrendsWeekCapture } from "./features/graphing/TrendsCapture";
@@ -89,6 +90,7 @@ import {
   PositionMasterTable,
   SymbolLotsTable,
   formatCount,
+  formatPerShare,
   formatScaled,
   formatUsd,
   formatPercentScaled,
@@ -792,6 +794,7 @@ type CollectorSetItem = {
   rocTaxYear?: string;
   openLotCount?: number;
   lastPayableOn?: string;
+  declarationWeekday?: string;
 };
 
 type Div1ComplianceRow = {
@@ -855,9 +858,36 @@ function proofsFromFleet(
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
+function isDeclarationWeekdayToday(asOfDate: string, weekday?: string): boolean {
+  const raw = (weekday ?? "").trim();
+  if (!raw || asOfDate.trim().length < 10) {
+    return false;
+  }
+  const d = new Date(`${asOfDate.trim().slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(d.getTime())) {
+    return false;
+  }
+  const names = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ];
+  const full = names[d.getDay()] ?? "";
+  const short = full.slice(0, 3);
+  return raw.localeCompare(full, undefined, { sensitivity: "accent" }) === 0
+    || raw.localeCompare(short, undefined, { sensitivity: "accent" }) === 0;
+}
+
 function collectorRetrieveNeedsRun(row: CollectorSetItem, asOfDate: string): boolean {
   if (!row.openLots || !row.collectorEnabled || !row.declarationSource.trim()) {
     return false;
+  }
+  if (isDeclarationWeekdayToday(asOfDate, row.declarationWeekday)) {
+    return true;
   }
   if (row.lastRunOk !== true) {
     return true;
@@ -869,10 +899,20 @@ function collectorRetrieveNeedsRun(row: CollectorSetItem, asOfDate: string): boo
   return !ran.startsWith(asOfDate);
 }
 
+function collectorMissIsTimeout(message: string, code?: string) {
+  const t = `${code ?? ""} ${message}`.toLowerCase();
+  return (
+    t.includes("declaration_retrieve_timeout") ||
+    t.includes("timed out") ||
+    t.includes("timeout")
+  );
+}
+
 function collectorCommandBody(
   row: CollectorSetItem,
   forceRefresh: boolean,
   establish = false,
+  extra?: { timeoutAttempt?: number; progressiveRetry?: boolean },
 ) {
   return {
     securityId: row.securityId,
@@ -887,6 +927,8 @@ function collectorCommandBody(
     inceptionOn: row.inceptionOn ?? "",
     forceRefresh,
     establish,
+    timeoutAttempt: extra?.timeoutAttempt ?? 0,
+    progressiveRetry: extra?.progressiveRetry === true,
   };
 }
 
@@ -952,6 +994,9 @@ type CollectorStats = {
   openExceptions: number;
   ranOutsideFleet?: string[];
   asOfDate: string;
+  failCount?: number;
+  failTicketCount?: number;
+  failTicketParity?: boolean;
 };
 
 type RetrieveRunRow = {
@@ -1100,6 +1145,7 @@ export default function App() {
   const [cashReminders, setCashReminders] =
     useState<CashManagementRemindersGet | null>(null);
   const [cashMonth, setCashMonth] = useState<CashManagementMonthGet | null>(null);
+  const [carRocPlan, setCarRocPlan] = useState<CarRocPlanGet | null>(null);
   const [cashDirty, setCashDirty] = useState(false);
   const [cartDirty, setCartDirty] = useState(false);
   const [holdingsLotSort, setHoldingsLotSort] = useState<LotSortMode>("lowest-cost");
@@ -1113,7 +1159,7 @@ export default function App() {
     useState<DividendPerformanceGet | null>(null);
   const perfRangeRef = useRef(perfRange);
   perfRangeRef.current = perfRange;
-  const trendsGraphPeriodRef = useRef<GraphPeriod>("12m");
+  const trendsGraphPeriodRef = useRef<GraphPeriod>(DEFAULT_GRAPH_PERIOD);
   const [holdings, setHoldings] = useState<HoldingsGet | null>(null);
   const [calculator, setCalculator] = useState<CalculatorGet | null>(null);
   const [declHistory, setDeclHistory] = useState<DeclarationHistoryGet | null>(null);
@@ -1234,6 +1280,10 @@ export default function App() {
   const [investment, setInvestment] = useState<InvestmentGet | null>(null);
   const [, setWizPart1Stored] = useState(false);
   const [wizPlanStored, setWizPlanStored] = useState(false);
+  const [wizStoredPlan, setWizStoredPlan] = useState<{
+    minor: number;
+    scale: number;
+  } | null>(null);
   const [, setWizLotStored] = useState(false);
   const [, setWizStep] = useState(1);
   const [wizRocPct, setWizRocPct] = useState("");
@@ -1352,6 +1402,10 @@ export default function App() {
   const [retryingTicket, setRetryingTicket] = useState<{
     ticketId: string;
     symbol: string;
+  } | null>(null);
+  const [ticketDecision, setTicketDecision] = useState<{
+    ticketId: string;
+    action: "accept" | "reject" | "except";
   } | null>(null);
   const [, setDiv1Compliance] = useState<Div1ComplianceRow[]>([]);
   const [, setCollectorProofs] = useState<CollectorCompletionProof[]>([]);
@@ -1645,6 +1699,7 @@ export default function App() {
     let ok = 0;
     let miss = 0;
     const lines: string[] = [];
+    const timeoutRows: CollectorSetItem[] = [];
     try {
       const { flushSync } = await import("react-dom");
       for (let i = 0; i < targets.length; i++) {
@@ -1669,10 +1724,17 @@ export default function App() {
         try {
           const result = await client.executeCommand(
             "CollectorRetrieve",
-            collectorCommandBody(row, forceRefresh),
+            collectorCommandBody(
+              row,
+              forceRefresh
+                || isDeclarationWeekdayToday(asOfDate, row.declarationWeekday),
+            ),
           );
           if (!result.ok) {
             miss += 1;
+            if (collectorMissIsTimeout(result.errorCode ?? "", result.errorCode)) {
+              timeoutRows.push(row);
+            }
             lines.push(
               `${row.symbol}: fail ${result.errorCode ?? "error"}`,
             );
@@ -1682,6 +1744,7 @@ export default function App() {
             let unchanged = 0;
             let runOk = true;
             let message = "";
+            let code = "";
             if (result.bodyJson) {
               try {
                 const body = JSON.parse(result.bodyJson) as {
@@ -1690,12 +1753,14 @@ export default function App() {
                   unchanged?: number;
                   ok?: boolean;
                   message?: string;
+                  code?: string;
                 };
                 recorded = body.recorded ?? 0;
                 skipped = body.skipped ?? 0;
                 unchanged = body.unchanged ?? 0;
                 runOk = body.ok !== false;
                 message = body.message ?? "";
+                code = body.code ?? "";
               } catch {
                 /* ignore */
               }
@@ -1710,6 +1775,9 @@ export default function App() {
               );
             } else {
               miss += 1;
+              if (collectorMissIsTimeout(message, code)) {
+                timeoutRows.push(row);
+              }
               lines.push(
                 `${row.symbol}: miss${message ? ` — ${message}` : ""}`,
               );
@@ -1734,9 +1802,79 @@ export default function App() {
           });
         });
       }
+      let retryRows = timeoutRows;
+      for (let attempt = 1; attempt < 3 && retryRows.length > 0; attempt++) {
+        const wait = [20, 45, 90][attempt];
+        lines.push(
+          `Timeout retry ${formatCount(attempt + 1)} of 3 (${formatCount(wait)}s) on stored Template Dividend…`,
+        );
+        const next: CollectorSetItem[] = [];
+        for (const row of retryRows) {
+          flushSync(() => {
+            setCollectorAction(
+              `${row.symbol}: timeout retry wait ${formatCount(wait)}s…`,
+            );
+          });
+          const result = await client.executeCommand(
+            "CollectorRetrieve",
+            collectorCommandBody(row, true, false, { timeoutAttempt: attempt }),
+          );
+          let runOk = result.ok;
+          let message = "";
+          let code = "";
+          if (result.bodyJson) {
+            try {
+              const body = JSON.parse(result.bodyJson) as {
+                ok?: boolean;
+                message?: string;
+                code?: string;
+                recorded?: number;
+              };
+              runOk = result.ok && body.ok !== false;
+              message = body.message ?? "";
+              code = body.code ?? "";
+              if (runOk) {
+                await recordCollectorProof(row, result.bodyJson);
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          if (runOk) {
+            miss = Math.max(0, miss - 1);
+            ok += 1;
+            lines.push(`${row.symbol}: ok after ${formatCount(wait)}s retry`);
+          } else if (collectorMissIsTimeout(message, code || result.errorCode)) {
+            next.push(row);
+            lines.push(`${row.symbol}: still timeout at ${formatCount(wait)}s`);
+          } else {
+            lines.push(
+              `${row.symbol}: miss${message ? ` — ${message}` : ""}`,
+            );
+          }
+        }
+        retryRows = next;
+      }
       const summary = `${label} finished: ${formatCount(ok)} ok, ${formatCount(miss)} miss of ${formatCount(targets.length)}. Reloading fleet…`;
       setCollectorAction(summary);
       setActionMessage(summary);
+      const synced = await client.executeCommand("WorkTicketSyncMisses", {});
+      if (synced.ok && synced.bodyJson) {
+        try {
+          const gate = JSON.parse(synced.bodyJson) as {
+            failCount?: number;
+            failTicketCount?: number;
+            failTicketParity?: boolean;
+          };
+          if (gate.failTicketParity === false) {
+            lines.push(
+              `Gate broken: ${formatCount(gate.failCount ?? 0)} fail / ${formatCount(gate.failTicketCount ?? 0)} miss tickets`,
+            );
+          }
+        } catch {
+          /* stats still reload */
+        }
+      }
       await refreshCollectors(asOfDate);
       const done = `${label} finished: ${formatCount(ok)} ok, ${formatCount(miss)} miss of ${formatCount(targets.length)}.`;
       setCollectorAction(done);
@@ -2075,7 +2213,7 @@ export default function App() {
         setCollectorAction(`${ticket.symbol}: retrieving ${row.declarationSource}…`);
       });
       const result = await client.executeCommand("CollectorRetrieve", {
-        ...collectorCommandBody(row, true),
+        ...collectorCommandBody(row, true, false, { progressiveRetry: true }),
         sourceUrl: row.sourceUrl || "",
         declarationSource: row.declarationSource,
       });
@@ -2199,8 +2337,61 @@ export default function App() {
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
+      setTicketDecision(null);
       setBusy(false);
     }
+  };
+
+  const resolveRocPctChange = async (
+    ticket: WorkTicketRecord,
+    action: "accept" | "reject",
+  ) => {
+    setBusy(true);
+    try {
+      const result = await client.executeCommand("WorkTicketResolve", {
+        ticketId: ticket.ticketId,
+        tool: ticket.tool,
+        action,
+      });
+      setActionMessage(
+        result.ok
+          ? `${ticket.symbol}: ${
+              action === "accept"
+                ? "accepted — current-year ROC projection updated."
+                : "rejected — previous ROC % kept."
+            }`
+          : `${action} failed: ${result.errorCode ?? "error"}`,
+      );
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setTicketDecision(null);
+      setBusy(false);
+    }
+  };
+
+  const resolveConfirmTicket = (
+    ticket: WorkTicketRecord,
+    kind: "positive" | "reject",
+  ) => {
+    if (ticketDecision) {
+      return;
+    }
+    const action =
+      ticket.tool === "roc_confirm"
+        ? kind === "positive"
+          ? "accept"
+          : "reject"
+        : kind === "positive"
+          ? "except"
+          : "reject";
+    setTicketDecision({ ticketId: ticket.ticketId, action });
+    if (ticket.tool === "roc_confirm") {
+      void resolveRocPctChange(ticket, action === "accept" ? "accept" : "reject");
+      return;
+    }
+    void resolveAmountConfirm(ticket, action === "except" ? "except" : "reject");
   };
 
   const applyMissingCollectorUrls = async () => {
@@ -2449,6 +2640,14 @@ export default function App() {
     }
     if (cashMonthResult.ok) {
       setCashMonth(parse<CashManagementMonthGet>(cashMonthResult.bodyJson));
+    }
+    const carRocResult = await client.executeQuery("CarRocPlanGet", {
+      asOfDate: asOf,
+    });
+    if (carRocResult.ok) {
+      setCarRocPlan(parse<CarRocPlanGet>(carRocResult.bodyJson));
+    } else {
+      setCarRocPlan(null);
     }
     if (cashMagiResult.ok) {
       setCashMagi(parse<MagiProjection>(cashMagiResult.bodyJson));
@@ -2735,6 +2934,7 @@ export default function App() {
         return;
       }
     }
+    // Window already said run. Do not set the bar on a skip (weekend / hours / 4-hour).
     setLastPriceBusy(true);
     setLastPriceProgress({ current: 0, total: 0, symbol: "" });
     try {
@@ -3229,7 +3429,12 @@ export default function App() {
     void (async () => {
       if (summary.openLotCount > 0) {
         await refreshLastPrices();
-        await refreshDeclarations();
+        const alreadyToday =
+          Boolean(summary.declarationRefreshedOn) &&
+          summary.declarationRefreshedOn === summary.declarationAsOf;
+        if (!alreadyToday) {
+          await refreshDeclarations();
+        }
         return;
       }
       await client.executeCommand("AccountValueSnapshotRecord", {});
@@ -3950,8 +4155,9 @@ export default function App() {
       }
       setWizPlanStored(true);
       snapshotWiz();
+      setWizStoredPlan({ minor: planMinor, scale: planScale });
       setActionMessage(
-        `Stored Plan ${wizPlan}/share (${wizPlanReason}). Add lots from Add Lot when ready — not on this screen.`,
+        `Stored Plan ${formatPerShare(planMinor, planScale)}/share (${wizPlanReason}). Confirm Plan wrote Plan / share only. Add lots from Add Lot when ready — not on this screen.`,
       );
       await refreshData(asOfDate);
     } catch (err: unknown) {
@@ -3997,9 +4203,12 @@ export default function App() {
   };
 
   /** Process A: symbol + distribution URL → seed + retrieve; no lot / questionnaire. */
-  const runProcessAResearch = async () => {
-    const symbol = wizSymbol.trim().toUpperCase();
-    const sourceUrl = wizSourceUrl.trim();
+  const runProcessAResearch = async (overrides?: {
+    symbol?: string;
+    sourceUrl?: string;
+  }) => {
+    const symbol = (overrides?.symbol ?? wizSymbol).trim().toUpperCase();
+    const sourceUrl = (overrides?.sourceUrl ?? wizSourceUrl).trim();
     if (!symbol || !sourceUrl) {
       setActionMessage("Enter symbol and distribution URL, then Research.");
       return;
@@ -4094,6 +4303,9 @@ export default function App() {
         inceptionCandidate?: string;
         expectedPaidSinceInception?: number | null;
         inceptionSearchMiss?: boolean;
+        recertified?: boolean;
+        collectorComplete?: boolean;
+        collectorGaps?: string[];
       };
       setResearchActivity({
         running: true,
@@ -4152,11 +4364,20 @@ export default function App() {
         setWizCalendarPolicy(inv.template.calendarPolicy);
       }
       if (inv.planKnown) {
-        setWizPlan(scaledDollars(inv.planPerShareMinor, inv.planScale));
+        setWizStoredPlan({
+          minor: inv.planPerShareMinor,
+          scale: inv.planScale,
+        });
+        setWizPlan(formatPerShare(inv.planPerShareMinor, inv.planScale));
         if (inv.planReason) setWizPlanReason(inv.planReason);
       } else if (inv.review?.mostCurrentMinor != null) {
-        setWizPlan(scaledDollars(inv.review.mostCurrentMinor, inv.review.amountScale));
+        setWizStoredPlan(null);
+        setWizPlan(
+          formatPerShare(inv.review.mostCurrentMinor, inv.review.amountScale),
+        );
         if (!wizPlanReason) setWizPlanReason("Match Most Current");
+      } else {
+        setWizStoredPlan(null);
       }
       if (inv.suggestion?.suggestedTier) {
         setWizTierSuggestion(inv.suggestion);
@@ -4284,8 +4505,16 @@ export default function App() {
         setWizRoc(null);
         setWizRocPct("");
       }
-      setWizCollectorComplete(Boolean(inv.collectorComplete));
-      setWizCollectorGaps(inv.collectorGaps ?? []);
+      setWizCollectorComplete(
+        seed.recertified
+          ? Boolean(seed.collectorComplete)
+          : Boolean(inv.collectorComplete),
+      );
+      setWizCollectorGaps(
+        seed.recertified
+          ? (seed.collectorGaps ?? [])
+          : (inv.collectorGaps ?? []),
+      );
       setWizAskSecondUrl(Boolean(seed.needsSecondUrl) && !seed.secondUrlTried);
       setWizSecondUrlTried(Boolean(seed.secondUrlTried || seed.adapterFailed));
       setWizAskInception(Boolean(seed.needsInceptionConfirm || seed.inceptionSearchMiss));
@@ -4305,9 +4534,9 @@ export default function App() {
         declSource: seed.declarationSource || "",
         calendarPolicy: seed.calendarPolicy || "",
         plan: inv.planKnown
-          ? scaledDollars(inv.planPerShareMinor, inv.planScale)
+          ? formatPerShare(inv.planPerShareMinor, inv.planScale)
           : inv.review?.mostCurrentMinor != null
-            ? scaledDollars(inv.review.mostCurrentMinor, inv.review.amountScale)
+            ? formatPerShare(inv.review.mostCurrentMinor, inv.review.amountScale)
             : "",
       });
       const filledBits = [
@@ -4329,7 +4558,16 @@ export default function App() {
       const retrieveNote = seed.retrieveOk
         ? "Retrieve finished."
         : `Retrieve miss${seed.retrieveCode ? ` (${seed.retrieveCode})` : ""}${seed.retrieveMessage ? `: ${seed.retrieveMessage}` : ""}. Unknown stays unknown — never $0.`;
-      const resultLine = `Filled: ${filledBits.join(", ") || "none"}. Unknown: ${unknownBits.join(", ") || "none"}. ${retrieveNote}`;
+      const recertNote = seed.recertified
+        ? seed.collectorComplete
+          ? " Recertify after recreate: complete."
+          : ` Recertify after recreate failed${
+              seed.collectorGaps?.length
+                ? ` (gaps: ${seed.collectorGaps.join(", ")})`
+                : ""
+            }. Existing lots kept.`
+        : "";
+      const resultLine = `Filled: ${filledBits.join(", ") || "none"}. Unknown: ${unknownBits.join(", ") || "none"}. ${retrieveNote}${recertNote}`;
       setWizRetrieveNote(resultLine);
       setActionMessage(`Researched ${seed.symbol}. ${resultLine}`);
       setResearchActivity({
@@ -6276,11 +6514,15 @@ export default function App() {
     snapshotWiz();
     setWizProcessASaved(true);
     setActionMessage(
-      wizCollectorComplete || processALotCount > 0
+      wizCollectorComplete
         ? `Saved ${wizSymbol.trim().toUpperCase()}. Collector is complete — Add lots when ready.`
-        : `Saved ${wizSymbol.trim().toUpperCase()}. Identity saved. Add lots stays blocked until the collector is complete${
-            wizCollectorGaps.length ? ` (gaps: ${wizCollectorGaps.join(", ")})` : ""
-          }.`,
+        : processALotCount > 0
+          ? `Saved ${wizSymbol.trim().toUpperCase()}. Existing lots kept. Collector incomplete${
+              wizCollectorGaps.length ? ` (gaps: ${wizCollectorGaps.join(", ")})` : ""
+            } — Recreate Research recertifies the same Establish gate.`
+          : `Saved ${wizSymbol.trim().toUpperCase()}. Identity saved. Add lots stays blocked until the collector is complete${
+              wizCollectorGaps.length ? ` (gaps: ${wizCollectorGaps.join(", ")})` : ""
+            }.`,
     );
     void refreshData(asOfDate || new Date().toISOString().slice(0, 10));
   };
@@ -6310,6 +6552,7 @@ export default function App() {
     setWizRetrieveNote("");
     setWizTierSuggestion(null);
     setWizPlanStored(false);
+    setWizStoredPlan(null);
     setWizRisk("");
     setWizDeclSource("");
   };
@@ -6323,15 +6566,59 @@ export default function App() {
 
   const openRecreateAdapter = (ticket: WorkTicketRecord) => {
     leaveWithoutSaving(() => {
-      const symbol = ticket.symbol.trim().toUpperCase();
-      resetProcessAForm();
-      setWizSymbol(symbol);
-      setWizSourceUrl("");
-      setWizBaseline(JSON.stringify({ ...emptyWizEdit(), symbol, sourceUrl: "" }));
-      setScreen("new-investment");
-      setActionMessage(
-        `${symbol}: paste the issuer distribution URL, then Research.`,
-      );
+      void (async () => {
+        const symbol = ticket.symbol.trim().toUpperCase();
+        const row =
+          collectorItems.find(
+            (r) => r.securityId && r.securityId === ticket.securityId,
+          ) ||
+          collectorItems.find((r) => r.symbol.trim().toUpperCase() === symbol);
+        let storedUrl = (row?.sourceUrl || "").trim();
+        let storedRoc = (row?.rocSourceUrl || "").trim();
+        const securityId = ticket.securityId || row?.securityId || "";
+        if (!storedUrl && securityId) {
+          const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+          const invResult = await client.executeQuery("InvestmentGet", {
+            securityId,
+            asOfDate: asOf,
+          });
+          if (invResult.ok && invResult.bodyJson) {
+            const inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+            storedUrl = (inv.template?.sourceUrl || "").trim();
+            storedRoc = storedRoc || (inv.template?.rocSourceUrl || "").trim();
+          }
+        }
+        resetProcessAForm();
+        setWizSymbol(symbol);
+        setWizSourceUrl(storedUrl);
+        if (securityId) setWizSecurityId(securityId);
+        if (storedRoc) setWizRocUrl(storedRoc);
+        if (row?.declarationSource) setWizDeclSource(row.declarationSource);
+        setWizBaseline(
+          JSON.stringify({ ...emptyWizEdit(), symbol, sourceUrl: storedUrl }),
+        );
+        setScreen("new-investment");
+        if (securityId) {
+          setActionMessage(
+            `${symbol}: using stored Template Dividend. Validating stored facts…`,
+          );
+          await validateRecreateFromStored({
+            symbol,
+            securityId,
+            sourceUrl: storedUrl,
+            declarationSource: row?.declarationSource || "",
+          });
+        } else if (storedUrl) {
+          setActionMessage(
+            `${symbol}: using stored Template Dividend. Researching to self-heal…`,
+          );
+          await runProcessAResearch({ symbol, sourceUrl: storedUrl });
+        } else {
+          setActionMessage(
+            `${symbol}: no stored Template Dividend. Paste the issuer distribution URL, then Research.`,
+          );
+        }
+      })();
     });
   };
 
@@ -6375,6 +6662,194 @@ export default function App() {
       setWizRocPct((inv.rocPct2026EstimateMinor / 100).toFixed(2));
     }
     await refreshData(asOf);
+  };
+
+  const hydrateProcessAStoredFacts = async (securityId: string, symbol: string) => {
+    const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+    const invResult = await client.executeQuery("InvestmentGet", {
+      securityId,
+      asOfDate: asOf,
+    });
+    if (!invResult.ok || !invResult.bodyJson) {
+      return null;
+    }
+    const inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+    setWizSecurityId(securityId);
+    setWizSymbol(inv.symbol || symbol);
+    setWizName(inv.name || symbol);
+    setWizProvider(inv.provider || "");
+    setWizUnderlying(inv.underlying || "");
+    setWizFreq(inv.paymentFrequency || "");
+    setWizRisk(inv.riskTier || "");
+    setWizLookthrough(mergeLookthrough(inv.lookthrough));
+    setWizReview(inv.review);
+    setWizPriceState(inv.price);
+    if (inv.price.priceMinor != null && inv.price.priceMinor > 0) {
+      setWizPrice(scaledDollars(inv.price.priceMinor, inv.price.scale));
+    }
+    if (inv.template?.sourceUrl) setWizSourceUrl(inv.template.sourceUrl);
+    if (inv.template?.rocSourceUrl) setWizRocUrl(inv.template.rocSourceUrl);
+    if (inv.template?.declarationSource) setWizDeclSource(inv.template.declarationSource);
+    if (inv.template?.calendarPolicy) setWizCalendarPolicy(inv.template.calendarPolicy);
+    if (inv.template?.inceptionOn) setWizInceptionOn(inv.template.inceptionOn);
+    const decls = (inv.declarations ?? [])
+      .filter((d) => d.amountPerShareMinor != null && (d.amountPerShareMinor as number) > 0)
+      .slice(0, 12)
+      .map((d) => ({
+        amountPerShareMinor: d.amountPerShareMinor as number,
+        amountScale: d.amountScale,
+        paymentPeriod: d.paymentPeriod,
+        source: d.source,
+      }));
+    setWizDecls(decls);
+    if (inv.planKnown) {
+      setWizStoredPlan({
+        minor: inv.planPerShareMinor,
+        scale: inv.planScale,
+      });
+      setWizPlan(formatPerShare(inv.planPerShareMinor, inv.planScale));
+      if (inv.planReason) setWizPlanReason(inv.planReason);
+    }
+    setWizPlanStored(Boolean(inv.planKnown));
+    setWizCollectorComplete(Boolean(inv.collectorComplete));
+    setWizCollectorGaps(inv.collectorGaps ?? []);
+    if (inv.rocPct2026EstimateMinor != null) {
+      setWizRocPct((inv.rocPct2026EstimateMinor / 100).toFixed(2));
+    }
+    const rem = await client.executeQuery("RemainingYearIncomeGet", {
+      securityId,
+      asOfDate: asOf,
+    });
+    if (rem.ok && rem.bodyJson) {
+      const body = JSON.parse(rem.bodyJson) as RemainingYearIncomeGet;
+      setWizRemaining(body);
+    }
+    setWizResearchDone(true);
+    setWizPart1Stored(true);
+    snapshotWiz({
+      symbol: inv.symbol || symbol,
+      name: inv.name || symbol,
+      provider: inv.provider || "",
+      underlying: inv.underlying || "",
+      freq: inv.paymentFrequency || "",
+      risk: inv.riskTier || "",
+      sourceUrl: inv.template?.sourceUrl || "",
+      declSource: inv.template?.declarationSource || "",
+      calendarPolicy: inv.template?.calendarPolicy || "",
+      plan: inv.planKnown
+        ? formatPerShare(inv.planPerShareMinor, inv.planScale)
+        : "",
+    });
+    return inv;
+  };
+
+  const validateRecreateFromStored = async (opts: {
+    symbol: string;
+    securityId: string;
+    sourceUrl: string;
+    declarationSource: string;
+  }) => {
+    const PROCESS_A_TOTAL = 2;
+    setBusy(true);
+    setWizResearchDone(false);
+    setResearchActivity({
+      running: true,
+      step: 1,
+      total: PROCESS_A_TOTAL,
+      label: "validating stored facts",
+      resultLine: null,
+    });
+    try {
+      const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+      const recert = await client.executeCommand("CollectorRecertify", {
+        securityId: opts.securityId,
+        asOfDate: asOf,
+        trigger: "recreate",
+      });
+      let recertComplete = false;
+      let recertGaps: string[] = [];
+      if (recert.ok && recert.bodyJson) {
+        const body = JSON.parse(recert.bodyJson) as {
+          complete?: boolean;
+          gaps?: string[];
+        };
+        recertComplete = Boolean(body.complete);
+        recertGaps = body.gaps ?? [];
+      }
+      let retrieveNote = "Retrieve skipped (no stored Template Dividend).";
+      if (opts.sourceUrl) {
+        setResearchActivity({
+          running: true,
+          step: 2,
+          total: PROCESS_A_TOTAL,
+          label: "retrieving with stored Template Dividend",
+          resultLine: null,
+        });
+        const row =
+          collectorItems.find((r) => r.securityId === opts.securityId) ||
+          collectorItems.find((r) => r.symbol.trim().toUpperCase() === opts.symbol);
+        const retrieve = await client.executeCommand("CollectorRetrieve", {
+          ...(row
+            ? collectorCommandBody(row, true)
+            : {
+                securityId: opts.securityId,
+                symbol: opts.symbol,
+                declarationSource: opts.declarationSource,
+                sourceUrl: opts.sourceUrl,
+                forceRefresh: true,
+              }),
+          sourceUrl: opts.sourceUrl,
+        });
+        let runOk = retrieve.ok;
+        let message = "";
+        if (retrieve.bodyJson) {
+          try {
+            const body = JSON.parse(retrieve.bodyJson) as {
+              ok?: boolean;
+              message?: string;
+              code?: string;
+            };
+            runOk = retrieve.ok && body.ok !== false;
+            message = body.message || body.code || "";
+          } catch {
+            /* ignore */
+          }
+        }
+        retrieveNote = runOk
+          ? `Retrieve ok${message ? ` (${message})` : ""}. New pays only; stored pays kept.`
+          : `Retrieve miss${message ? ` — ${message}` : retrieve.errorCode ? ` ${retrieve.errorCode}` : ""}. Stored pays kept.`;
+      }
+      const inv = await hydrateProcessAStoredFacts(opts.securityId, opts.symbol);
+      const gaps = recertGaps.length ? recertGaps.join(", ") : "none";
+      const resultLine = `${opts.symbol}: stored facts kept. Validation ${
+        recertComplete ? "complete" : `gaps: ${gaps}`
+      }. ${retrieveNote} Confirm Plan is not required unless you change Plan.`;
+      setWizRetrieveNote(resultLine);
+      setActionMessage(resultLine);
+      setResearchActivity({
+        running: false,
+        step: PROCESS_A_TOTAL,
+        total: PROCESS_A_TOTAL,
+        label: "",
+        resultLine,
+      });
+      if (inv) {
+        setWizCollectorComplete(recertComplete || Boolean(inv.collectorComplete));
+        if (recertGaps.length) setWizCollectorGaps(recertGaps);
+      }
+      await refreshData(asOf);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+      setResearchActivity({
+        running: false,
+        step: 0,
+        total: PROCESS_A_TOTAL,
+        label: "",
+        resultLine: String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const retryProcessASecondUrl = async () => {
@@ -6860,7 +7335,13 @@ export default function App() {
               </dd>
               <p className="ps-note">
                 Last retrieve today OK {summary.declarationAsOf?.trim() || "—"}.
-                One issuer retrieve per enabled collector
+                One issuer retrieve per enabled collector. Fail{" "}
+                {formatCount(summary.declarationFailCount ?? 0)} / miss
+                tickets{" "}
+                {formatCount(summary.declarationFailTicketCount ?? 0)}
+                {summary.declarationFailTicketParity === false
+                  ? " — gate broken"
+                  : ""}
               </p>
               <button
                 type="button"
@@ -7908,15 +8389,17 @@ export default function App() {
                 filterSymbol={investment.symbol}
                 retryingTicketId={retryingTicket?.ticketId}
                 retryingSymbol={retryingTicket?.symbol}
+                pendingTicketId={ticketDecision?.ticketId}
+                pendingAction={ticketDecision?.action}
                 onRetry={(t) => void resolveTicketRetry(t as WorkTicketRecord)}
                 onRecreateAdapter={(t) =>
                   openRecreateAdapter(t as WorkTicketRecord)
                 }
                 onExcept={(t) =>
-                  void resolveAmountConfirm(t as WorkTicketRecord, "except")
+                  resolveConfirmTicket(t as WorkTicketRecord, "positive")
                 }
                 onReject={(t) =>
-                  void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+                  resolveConfirmTicket(t as WorkTicketRecord, "reject")
                 }
                 onEnterAmount={(t, amount) =>
                   void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
@@ -9068,14 +9551,14 @@ export default function App() {
                             investment.template?.calendarPolicy,
                           )}
                         </p>
-                        <p>
-                          Source URL:{" "}
+                        <p aria-label="Template Dividend">
+                          Template Dividend:{" "}
                           {investment.template?.sourceUrl?.trim()
                             ? investment.template.sourceUrl
                             : "—"}
                         </p>
-                        <p aria-label="ROC source URL">
-                          ROC URL:{" "}
+                        <p aria-label="Template ROC">
+                          Template ROC:{" "}
                           {investment.template?.rocSourceUrl?.trim()
                             ? investment.template.rocSourceUrl
                             : "—"}
@@ -9841,6 +10324,7 @@ export default function App() {
           ) : null}
           <TrendsChartsPanel
             weeks={trends?.weeks}
+            points={trends?.points}
             dividendPerf={trendsDividendPerf}
             onGraphPeriodChange={(period) => {
               trendsGraphPeriodRef.current = period;
@@ -9927,7 +10411,7 @@ export default function App() {
           <h2>Cash Management</h2>
           <p>
             Enter this Sat–Fri week, then declare SSA, distributions, or
-            withdrawals. Trends only graphs saved weeks.
+            withdrawals.
           </p>
           <CashManagementPanel
             week={cashWeek}
@@ -9938,6 +10422,7 @@ export default function App() {
             busy={busy}
             distributions={trends?.distributions as never}
             taxMonitor={trends?.taxMonitor as never}
+            carRocPlan={carRocPlan}
             weekJustSavedAt={cashWeekSavedAt}
             weekDesk={{
               weeks: trends?.weeks,
@@ -9948,7 +10433,7 @@ export default function App() {
             onDirtyChange={setCashDirty}
             onReload={(d) => {
               void (async () => {
-                const [r, rem, mo] = await Promise.all([
+                const [r, rem, mo, roc] = await Promise.all([
                   client.executeQuery("CashManagementWeekGet", {
                     asOfDate: d,
                   }),
@@ -9958,6 +10443,7 @@ export default function App() {
                   client.executeQuery("CashManagementMonthGet", {
                     asOfDate: d,
                   }),
+                  client.executeQuery("CarRocPlanGet", { asOfDate: d }),
                 ]);
                 if (r.ok && r.bodyJson) {
                   setCashWeek(JSON.parse(r.bodyJson) as CashManagementWeekGet);
@@ -9971,6 +10457,9 @@ export default function App() {
                   setCashMonth(
                     JSON.parse(mo.bodyJson) as CashManagementMonthGet,
                   );
+                }
+                if (roc.ok && roc.bodyJson) {
+                  setCarRocPlan(JSON.parse(roc.bodyJson) as CarRocPlanGet);
                 }
               })();
             }}
@@ -10065,10 +10554,11 @@ export default function App() {
               onSave={async (body, correct) => {
                 setBusy(true);
                 try {
-                  const r = await client.executeCommand(
-                    correct ? "TrendsWeekCorrect" : "TrendsWeekSave",
-                    body,
-                  );
+                  const r = await client.executeCommand("WeekCaptureAccept", {
+                    ...body,
+                    correct,
+                    allowClosed: correct,
+                  });
                   if (!r.ok) {
                     setActionMessage(`Trends save failed: ${r.errorCode ?? "error"}`);
                     return;
@@ -10329,9 +10819,9 @@ export default function App() {
               />
             </label>
             <label>
-              Distribution URL
+              Template Dividend
               <input
-                aria-label="Distribution URL"
+                aria-label="Template Dividend"
                 value={wizSourceUrl}
                 onChange={(e) => {
                   setWizSourceUrl(e.target.value);
@@ -10558,10 +11048,10 @@ export default function App() {
                     <th scope="row">Suggested Plan</th>
                     <td>
                       {wizReview?.mostCurrentMinor != null
-                        ? `${scaledDollars(wizReview.mostCurrentMinor, wizReview.amountScale)}/share (Most Current)`
+                        ? `${formatPerShare(wizReview.mostCurrentMinor, wizReview.amountScale)}/share (Most Current)`
                         : "—"}
                       {wizReview?.avg6Minor != null
-                        ? `; Avg 6 ${scaledDollars(wizReview.avg6Minor, wizReview.amountScale)}`
+                        ? `; Avg 6 ${formatPerShare(wizReview.avg6Minor, wizReview.amountScale)}`
                         : ""}
                     </td>
                     <td>
@@ -10668,9 +11158,9 @@ export default function App() {
                 </p>
                 {!(wizRoc && wizRoc.rocPctMinor != null) ? (
                   <label>
-                    19a-1 / ROC notice URL
+                    Template ROC
                     <input
-                      aria-label="ROC notice URL"
+                      aria-label="Template ROC"
                       value={wizRocUrl}
                       onChange={(e) => setWizRocUrl(e.target.value)}
                       disabled={busy || writesBlocked}
@@ -10738,7 +11228,7 @@ export default function App() {
                         <tr key={`${d.paymentPeriod ?? i}`}>
                           <td>{d.paymentPeriod ?? "—"}</td>
                           <td className="numeric">
-                            {formatScaled(d.amountPerShareMinor, d.amountScale ?? 4)}
+                            {formatPerShare(d.amountPerShareMinor, d.amountScale ?? 4)}
                           </td>
                           <td>{d.source ?? "—"}</td>
                         </tr>
@@ -10773,15 +11263,58 @@ export default function App() {
               <section aria-label="Owner plan and tier actions">
                 <h4>Owner actions</h4>
                 <p>
-                  Confirm Plan needs declaration research
-                  {parseCadence(wizFreq) ? "" : " and retrieved frequency"}.
-                  Apply tier needs a suggested tier. Neither runs automatically.
+                  {processALotCount > 0
+                    ? "Recreate validates stored facts. It does not re-import pays, identity, ROC, or Plan. Confirm Plan is not required unless you change Plan."
+                    : "Confirm Plan writes Plan / share only. It does not replace stored paid history, lots, or remaining-year dates."}
+                  {parseCadence(wizFreq) ? "" : " Frequency research is still required."}
                 </p>
+                {(() => {
+                  const planScale = 4;
+                  const proposedMinor = Number(wizPlan);
+                  const proposedOk = Number.isFinite(proposedMinor);
+                  const proposedLabel = proposedOk
+                    ? formatPerShare(Math.round(proposedMinor * 10 ** planScale), planScale)
+                    : "—";
+                  const storedLabel = wizStoredPlan
+                    ? formatPerShare(wizStoredPlan.minor, wizStoredPlan.scale)
+                    : "none";
+                  const planChanges =
+                    wizStoredPlan != null &&
+                    proposedOk &&
+                    storedLabel !== proposedLabel;
+                  return (
+                    <div
+                      className="process-a-plan-diff"
+                      aria-label="Proposed plan changes"
+                    >
+                      <p>
+                        Stored Plan {storedLabel} → this button {proposedLabel}
+                        {planChanges
+                          ? `. This will change the stored Plan from ${storedLabel} to ${proposedLabel}.`
+                          : ". No Plan amount change."}
+                      </p>
+                      <p>
+                        {processALotCount > 0 && !planChanges
+                          ? "Proposed writes: none. Stored facts stay. Validation only."
+                          : "Proposed writes: Plan / share only. Not written: stored paid history, lots, remaining-year dates, last price, ROC, or tier (Apply tier is a separate button)."}
+                      </p>
+                      {processALotCount > 0 ? (
+                        <p>
+                          Recreate lists stored pays at five decimal places so
+                          0.13000 is not shown as 0.13. It does not re-import
+                          them.
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })()}
                 <div className="form-grid">
                   <label>
                     Plan / share
                     <input
                       aria-label="Plan per share"
+                      className="per-share-input"
+                      inputMode="decimal"
                       value={wizPlan}
                       onChange={(e) => setWizPlan(e.target.value)}
                       disabled={busy || writesBlocked}
@@ -10828,7 +11361,7 @@ export default function App() {
                       const minor = wizReview?.mostCurrentMinor ?? wizDecls[0]?.amountPerShareMinor;
                       const scale = wizReview?.amountScale ?? wizDecls[0]?.amountScale ?? 4;
                       if (minor == null) return;
-                      setWizPlan(scaledDollars(minor, scale));
+                      setWizPlan(formatPerShare(minor, scale));
                       setWizPlanReason("Match Most Current");
                     }}
                   >
@@ -10840,7 +11373,7 @@ export default function App() {
                     disabled={busy || writesBlocked || wizReview?.avg6Minor == null}
                     onClick={() => {
                       if (wizReview?.avg6Minor == null) return;
-                      setWizPlan(scaledDollars(wizReview.avg6Minor, wizReview.amountScale));
+                      setWizPlan(formatPerShare(wizReview.avg6Minor, wizReview.amountScale));
                       setWizPlanReason("Match Avg 6 (owner typed)");
                     }}
                   >
@@ -10859,11 +11392,20 @@ export default function App() {
                       !parseCadence(wizFreq) ||
                       Boolean(wizReview?.confirmBlocked) ||
                       (wizReview?.observationCount ?? 0) < 1 ||
-                      (Boolean(wizReview?.incompleteReasonRequired) && !wizIncomplete.trim())
+                      (Boolean(wizReview?.incompleteReasonRequired) && !wizIncomplete.trim()) ||
+                      (processALotCount > 0 &&
+                        wizPlanStored &&
+                        wizStoredPlan != null &&
+                        formatPerShare(wizStoredPlan.minor, wizStoredPlan.scale) ===
+                          (Number.isFinite(Number(wizPlan))
+                            ? formatPerShare(Math.round(Number(wizPlan) * 10 ** 4), 4)
+                            : ""))
                     }
                     onClick={() => void confirmPlan()}
                   >
-                    Confirm Plan
+                    {processALotCount > 0
+                      ? "Update Plan / share"
+                      : "Confirm Plan"}
                   </button>
                   <button
                     type="button"
@@ -11284,10 +11826,13 @@ export default function App() {
             {ticketFocusSymbol
               ? `Open work tickets for ${ticketFocusSymbol}. `
               : "All open work tickets, every symbol. "}
-            Recreate adapter opens Add Position and asks for the issuer
-            distribution URL. Retry runs the stored adapter URL again. Amount
-            variation stays open until Except (keep the vendor amount) or
-            Reject (discard it).
+            Recreate adapter opens Add Position with the stored Template
+            Dividend and researches that URL (self-heal). Paste only when no
+            seed URL is stored. A GET timeout skips that name, continues the
+            fleet, then retries the same stored URL at 20s / 45s / 90s — Retry
+            does that too. Recreate is not the timeout path. Amount variation
+            stays open until Except (keep the vendor amount) or Reject
+            (discard it).
           </p>
           {ticketFocusSymbol ? (
             <button
@@ -11303,15 +11848,17 @@ export default function App() {
             filterSymbol={ticketFocusSymbol || undefined}
             retryingTicketId={retryingTicket?.ticketId}
             retryingSymbol={retryingTicket?.symbol}
+            pendingTicketId={ticketDecision?.ticketId}
+            pendingAction={ticketDecision?.action}
             onRetry={(t) => void resolveTicketRetry(t as WorkTicketRecord)}
             onRecreateAdapter={(t) =>
               openRecreateAdapter(t as WorkTicketRecord)
             }
             onExcept={(t) =>
-              void resolveAmountConfirm(t as WorkTicketRecord, "except")
+              resolveConfirmTicket(t as WorkTicketRecord, "positive")
             }
             onReject={(t) =>
-              void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+              resolveConfirmTicket(t as WorkTicketRecord, "reject")
             }
             onEnterAmount={(t, amount) =>
               void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
@@ -11487,7 +12034,14 @@ export default function App() {
                 ? ` (also retrieved ${(collectorStats.ranOutsideFleet ?? []).join(", ")} — not income fleet)`
                 : ""}
               . Still miss {formatCount(collectorStats.stillMiss ?? collectorStats.missToday)}
-              — last ask today is not OK. Had a miss today{" "}
+              — last ask today is not OK. Fail{" "}
+              {formatCount(collectorStats.failCount ?? collectorStats.stillMiss ?? 0)}{" "}
+              must equal miss tickets{" "}
+              {formatCount(collectorStats.failTicketCount ?? 0)}
+              {collectorStats.failTicketParity === false
+                ? " — gate broken"
+                : ""}
+              . Had a miss today{" "}
               {formatCount(collectorStats.hadMissToday ?? 0)} — failed at least
               once today; a later retry may have worked. Unchanged{" "}
               {formatCount(collectorStats.unchangedToday)} — issuer page matched
@@ -11570,9 +12124,9 @@ export default function App() {
               <section aria-label="Missing collector URLs">
                 <h3>Missing issuer URLs</h3>
                 <p>
-                  Paste a declaration / seed URL for each failing DIV-1 or CASH
-                  collector that has none. Apply before collect will succeed.
-                  CASH does not take an ROC URL. Empty cells stay empty.
+                  Paste Template Dividend (seed URL) for each failing DIV-1 or
+                  CASH collector that has none. Apply before collect will succeed.
+                  CASH does not take Template ROC. Empty cells stay empty.
                 </p>
                 <div className="table-wrap">
                   <table aria-label="Missing collector URLs">
@@ -11580,8 +12134,8 @@ export default function App() {
                       <tr>
                         <th scope="col">Symbol</th>
                         <th scope="col">Adapter</th>
-                        <th scope="col">Declaration / seed URL</th>
-                        <th scope="col">ROC URL</th>
+                        <th scope="col">Template Dividend</th>
+                        <th scope="col">Template ROC</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -11597,7 +12151,7 @@ export default function App() {
                             <td>{row.declarationSource || "unassigned"}</td>
                             <td>
                               <input
-                                aria-label={`Declaration URL for ${row.symbol}`}
+                                aria-label={`Template Dividend for ${row.symbol}`}
                                 value={draft.sourceUrl}
                                 onChange={(e) =>
                                   setMissingUrlDrafts((prev) => ({
@@ -11613,7 +12167,7 @@ export default function App() {
                             </td>
                             <td>
                               <input
-                                aria-label={`ROC URL for ${row.symbol}`}
+                                aria-label={`Template ROC for ${row.symbol}`}
                                 value={cash ? "" : draft.rocSourceUrl}
                                 onChange={(e) =>
                                   setMissingUrlDrafts((prev) => ({
@@ -11668,8 +12222,8 @@ export default function App() {
                   <th scope="col">Inception</th>
                   <th scope="col">Last run</th>
                   <th scope="col">Runs ok / fail</th>
-                  <th scope="col">Declaration URL</th>
-                  <th scope="col">ROC URL</th>
+                  <th scope="col">Template Dividend</th>
+                  <th scope="col">Template ROC</th>
                   <th scope="col">Tickets</th>
                   <th scope="col">Last price</th>
                   <th scope="col">Actions</th>
@@ -11840,15 +12394,17 @@ export default function App() {
               tickets={workTickets}
               retryingTicketId={retryingTicket?.ticketId}
               retryingSymbol={retryingTicket?.symbol}
+              pendingTicketId={ticketDecision?.ticketId}
+              pendingAction={ticketDecision?.action}
               onRetry={(t) => void resolveTicketRetry(t as WorkTicketRecord)}
               onRecreateAdapter={(t) =>
                 openRecreateAdapter(t as WorkTicketRecord)
               }
               onExcept={(t) =>
-                void resolveAmountConfirm(t as WorkTicketRecord, "except")
+                resolveConfirmTicket(t as WorkTicketRecord, "positive")
               }
               onReject={(t) =>
-                void resolveAmountConfirm(t as WorkTicketRecord, "reject")
+                resolveConfirmTicket(t as WorkTicketRecord, "reject")
               }
               onEnterAmount={(t, amount) =>
                 void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
@@ -12131,7 +12687,7 @@ export default function App() {
           </div>
           <h3>Retrieval templates</h3>
           <p>
-            Standing template: adapter name, declaration URL, ROC URL, and
+            Standing templates: adapter name, Template Dividend, Template ROC, and
             content hash. Inception is optional — rare exception for names too
             new for 12 paid points. Collectors retrieve first; if 12+ paid decls
             land, inception is N/A. Under 12, inception (when set) confirms the
@@ -12143,8 +12699,8 @@ export default function App() {
                 <tr>
                   <th scope="col">Symbol</th>
                   <th scope="col">Adapter</th>
-                  <th scope="col">Declaration URL</th>
-                  <th scope="col">ROC URL</th>
+                  <th scope="col">Template Dividend</th>
+                  <th scope="col">Template ROC</th>
                   <th scope="col">Content hash</th>
                   <th scope="col">Schedule</th>
                   <th scope="col">Inception</th>
@@ -12203,7 +12759,7 @@ export default function App() {
                         </td>
                         <td>
                           <input
-                            aria-label={`ROC URL for ${row.symbol}`}
+                            aria-label={`Template ROC for ${row.symbol}`}
                             value={draft.rocSourceUrl ?? ""}
                             onChange={(e) =>
                               patch({ rocSourceUrl: e.target.value })

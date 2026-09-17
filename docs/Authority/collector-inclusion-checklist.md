@@ -35,7 +35,7 @@ Gate: `collector_is_complete` in `crates/financial-domain/src/collector.rs`. Fir
 | # | Rule | Fail → ticket? | Stored past pays? |
 |---|---|---|---|
 | R1 | Enabled + open lots. Add lot does not re-run history/ROC/dates. | — | Untouched |
-| R2 | Collect uses **Template Dividend** only. New/changed dates + amounts. Do not clone stored months. | Miss / parse miss → `declaration_retrieve_miss`. `last_run_ok` = this run. Owner-filed or auto-resolved does **not** suppress a later failed retrieve (Home 39/40 with no ticket is a break). | Keep. Owner/import/manual paid rows are not overwritten. Issuer same-period change may supersede after complete; 30% → amount ticket, not a wipe. |
+| R2 | Collect uses **Template Dividend** only. New/changed dates + amounts. Do not clone stored months. GET timeout (`declaration_retrieve_timeout`) skips that name and continues the fleet; post-run and ticket Retry use the stored URL at 20s / 45s / 90s (three tries). Recreate is not the timeout path. | Miss / parse miss → `declaration_retrieve_miss`. Timeout → `declaration_retrieve_timeout` (Retry tool). `last_run_ok` = this run. Owner-filed or auto-resolved does **not** suppress a later failed retrieve (Home 39/40 with no ticket is a break). Miss payload keeps GET evidence (`htmlLen`, payable, td count) — not a screenshot, not a wipe of stored pays. | Keep. Owner/import/manual paid rows are not overwritten. Issuer same-period change may supersede after complete; 30% → amount ticket, not a wipe. |
 | R3 | Future (unoccurred) dates move when vendor payable date changes. Plan $ unchanged. | Wrong count vs 4/12/52 → ticket | Occurred pays stay |
 | R4 | Declaration run does not rewrite identity, frequency, Plan $, lots, or ROC. | — | — |
 | R5 | Unchanged today + same hash → no fetch, **except** on the locked declaration weekday (must fetch again). | — | — |
@@ -51,8 +51,8 @@ Owner Accept/Reject is not Establish or Runtime success.
 ## How often
 
 - **Establish gate:** Collectors / Tools / LotOpen (`CollectorSetGet`).
-- **Establish recertify:** `CollectorRecertify` after first `LotOpen` (`first_create`) and after `PositionResearchSeed` / `PositionResearchRefresh` when lots already exist (`recreate`). Same E gaps. Ticket `collector_establish_incomplete` if it fails. Does not wipe pays. Does not flip `last_run_ok`. Does not replace the first-lot block or extra-lot grandfather.
-- **Runtime collect:** desktop open `DeclarationRefresh`; Run misses; Run enabled; Force refresh (one symbol, declarations only).
+- **Establish recertify:** `CollectorRecertify` after first `LotOpen` (`first_create`) and after `PositionResearchSeed` / `PositionResearchRefresh` when lots already exist (`recreate`). Same E gaps. Ticket `collector_establish_incomplete` if it fails. Does not wipe pays. Does not flip `last_run_ok`. Does not replace the first-lot block or extra-lot grandfather. Recreate loads stored Template Dividend (E1) and Template ROC (E2). It validates with `CollectorRecertify` and may retrieve with the stored URL. It does not re-run `PositionResearchSeed` and does not re-import pays, identity, ROC, or Plan. Owner pastes only when E1 is empty. Confirm Plan is not required when Plan is unchanged.
+- **Runtime collect:** desktop open `DeclarationRefresh`; Run misses; Run enabled; Force refresh (one symbol, declarations only). GET timeout skips that name and continues; post-run and ticket Retry use the stored Template Dividend at 20s / 45s / 90s. Recreate is not the timeout path.
 - **`cargo test`:** predicate and fixtures. Does not re-certify the live book. `recertify_runs_after_first_create_and_after_recreate` locks the product command path.
 
 ---

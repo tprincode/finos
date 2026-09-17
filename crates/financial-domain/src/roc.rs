@@ -4,6 +4,23 @@ use crate::schedule::{remaining_year_payments, DateOverride};
 
 pub const ROC_PCT_SCALE: u8 = 2;
 
+/// Convert a stored ROC minor between decimal scales (800 @1 = 8000 @2 = 80%).
+pub fn rescale_roc_pct(minor: i64, from_scale: u8, to_scale: u8) -> i64 {
+    if from_scale == to_scale {
+        return minor;
+    }
+    if from_scale < to_scale {
+        minor.saturating_mul(10i64.pow(u32::from(to_scale - from_scale)))
+    } else {
+        minor / 10i64.pow(u32::from(from_scale - to_scale))
+    }
+}
+
+pub fn roc_pcts_equal(left: i64, left_scale: u8, right: i64, right_scale: u8) -> bool {
+    rescale_roc_pct(left, left_scale, ROC_PCT_SCALE)
+        == rescale_roc_pct(right, right_scale, ROC_PCT_SCALE)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RocSuggestion {
     pub roc_pct_minor: Option<i64>,
@@ -149,6 +166,24 @@ pub fn account_is_car_magi(account_name: &str) -> bool {
     account_name.trim().eq_ignore_ascii_case("car")
 }
 
+/// Planning copy for Cash Management. 2025 1099 is prior-year ROC guidance only.
+pub const CAR_ROC_PLAN_NOTE: &str =
+    "Planning estimate. A 2025 1099 is prior-year ROC guidance for the ETF — it is not current-year tax.";
+
+pub const CAR_TAX_UNKNOWN_NOTE: &str =
+    "Car 2026 tax stays unknown until the 1099 process (April 2027).";
+
+pub const NO_ASSIGNED_LOT_SALES_NOTE: &str =
+    "No assigned lot sales. Long-term and short-term stay unknown.";
+
+/// Any unknown operand keeps the sum unknown (unknown ≠ 0).
+pub fn sum_known(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(a), Some(b)) => Some(a.saturating_add(b)),
+        _ => None,
+    }
+}
+
 /// After an actual, remaining planned ordinary is reduced by that period's ordinary slice.
 pub fn remaining_after_actual(
     planned_ordinary_remaining: i64,
@@ -230,5 +265,19 @@ mod tests {
     fn car_is_magi_eligible() {
         assert!(account_is_car_magi("Car"));
         assert!(!account_is_car_magi("Income"));
+    }
+
+    #[test]
+    fn sum_known_stays_unknown_when_either_side_is() {
+        assert_eq!(sum_known(Some(100), Some(40)), Some(140));
+        assert_eq!(sum_known(Some(100), None), None);
+        assert_eq!(sum_known(None, Some(40)), None);
+    }
+
+    #[test]
+    fn rescale_treats_one_decimal_80_as_two_decimal_80() {
+        assert_eq!(rescale_roc_pct(800, 1, 2), 8_000);
+        assert!(roc_pcts_equal(800, 1, 8_000, 2));
+        assert!(!roc_pcts_equal(8_000, 2, 7_500, 2));
     }
 }

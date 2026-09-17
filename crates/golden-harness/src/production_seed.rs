@@ -36,6 +36,10 @@ pub struct ProductionTotals {
     pub disbursement_gross_minor: i64,
     pub disbursement_net_minor: i64,
     #[serde(default)]
+    pub disbursement_federal_withholding_minor: i64,
+    #[serde(default)]
+    pub disbursement_state_withholding_minor: i64,
+    #[serde(default)]
     pub open_performance_minor: i64,
     #[serde(default)]
     pub open_tax_minor: i64,
@@ -244,15 +248,27 @@ pub async fn production_seed_actual_totals(
             )
         })
         .sum();
-    let disbursement_net_minor = disbursements
+    let disbursement_federal_withholding_minor = disbursements
         .iter()
         .map(|a| {
-            let scale = a["scale"].as_u64().unwrap_or(2) as u8;
-            to_scale_2(a["amountMinor"].as_i64().unwrap_or(0), scale)
-                - to_scale_2(a["federalWithholdingMinor"].as_i64().unwrap_or(0), scale)
-                - to_scale_2(a["stateWithholdingMinor"].as_i64().unwrap_or(0), scale)
+            to_scale_2(
+                a["federalWithholdingMinor"].as_i64().unwrap_or(0),
+                a["scale"].as_u64().unwrap_or(2) as u8,
+            )
         })
         .sum();
+    let disbursement_state_withholding_minor = disbursements
+        .iter()
+        .map(|a| {
+            to_scale_2(
+                a["stateWithholdingMinor"].as_i64().unwrap_or(0),
+                a["scale"].as_u64().unwrap_or(2) as u8,
+            )
+        })
+        .sum();
+    let disbursement_net_minor = disbursement_gross_minor
+        - disbursement_federal_withholding_minor
+        - disbursement_state_withholding_minor;
     let basis = execute_query_on(platform, platform, qry("BasisGet")).await;
     if !basis.ok {
         return Err("BasisGet failed".into());
@@ -263,8 +279,71 @@ pub async fn production_seed_actual_totals(
         yield_amount_minor,
         disbursement_gross_minor,
         disbursement_net_minor,
+        disbursement_federal_withholding_minor,
+        disbursement_state_withholding_minor,
         open_performance_minor: basis_val["openPerformanceMinor"].as_i64().unwrap_or(0),
         open_tax_minor: basis_val["openTaxMinor"].as_i64().unwrap_or(0),
+        scale: 2,
+    })
+}
+
+/// Only the 129 `production-disb-*` parents. Later owner posts are excluded.
+pub async fn production_seed_parent_totals(
+    platform: &LocalPlatform,
+) -> Result<ProductionTotals, String> {
+    let activities = execute_query_on(platform, platform, qry("ActivityList")).await;
+    if !activities.ok {
+        return Err("ActivityList failed".into());
+    }
+    let activity_val: Value =
+        serde_json::from_str(activities.body_json.as_deref().unwrap_or("[]")).map_err(|e| e.to_string())?;
+    let acts = activity_val.as_array().cloned().unwrap_or_default();
+    let parents: Vec<&Value> = acts
+        .iter()
+        .filter(|a| {
+            a["idempotencyKey"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("production-disb-")
+        })
+        .collect();
+    let disbursement_gross_minor = parents
+        .iter()
+        .map(|a| {
+            to_scale_2(
+                a["amountMinor"].as_i64().unwrap_or(0),
+                a["scale"].as_u64().unwrap_or(2) as u8,
+            )
+        })
+        .sum();
+    let disbursement_federal_withholding_minor = parents
+        .iter()
+        .map(|a| {
+            to_scale_2(
+                a["federalWithholdingMinor"].as_i64().unwrap_or(0),
+                a["scale"].as_u64().unwrap_or(2) as u8,
+            )
+        })
+        .sum();
+    let disbursement_state_withholding_minor = parents
+        .iter()
+        .map(|a| {
+            to_scale_2(
+                a["stateWithholdingMinor"].as_i64().unwrap_or(0),
+                a["scale"].as_u64().unwrap_or(2) as u8,
+            )
+        })
+        .sum();
+    Ok(ProductionTotals {
+        yield_amount_minor: 0,
+        disbursement_gross_minor,
+        disbursement_net_minor: disbursement_gross_minor
+            - disbursement_federal_withholding_minor
+            - disbursement_state_withholding_minor,
+        disbursement_federal_withholding_minor,
+        disbursement_state_withholding_minor,
+        open_performance_minor: 0,
+        open_tax_minor: 0,
         scale: 2,
     })
 }
@@ -281,14 +360,21 @@ pub async fn production_seed_plan_count(platform: &LocalPlatform) -> Result<u64,
 
 /// Template money from the xlsx source facts (not from posted ledger).
 pub fn production_template_totals(production_dir: &Path) -> Result<ProductionTotals, String> {
-    let (yield_amount_minor, disbursement_gross_minor, disbursement_net_minor) =
-        import_engine::production_template_totals(production_dir)?;
+    let (
+        yield_amount_minor,
+        disbursement_gross_minor,
+        disbursement_net_minor,
+        disbursement_federal_withholding_minor,
+        disbursement_state_withholding_minor,
+    ) = import_engine::production_template_totals(production_dir)?;
     let (open_performance_minor, open_tax_minor) =
         import_engine::production_template_basis_totals(production_dir)?;
     Ok(ProductionTotals {
         yield_amount_minor,
         disbursement_gross_minor,
         disbursement_net_minor,
+        disbursement_federal_withholding_minor,
+        disbursement_state_withholding_minor,
         open_performance_minor,
         open_tax_minor,
         scale: 2,

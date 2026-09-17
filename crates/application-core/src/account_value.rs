@@ -198,9 +198,22 @@ struct QuoteLine {
     symbol: String,
     qty: i64,
     qty_scale: u8,
+    first_opened_on: Option<String>,
+    qty_events: Vec<(String, i64)>,
     risk_idx: usize,
     cash_par: bool,
     quotes: Vec<financial_domain::current_price::QuoteObservation>,
+}
+
+impl QuoteLine {
+    fn qty_on(&self, day: &str) -> i64 {
+        financial_domain::lot::remaining_qty_on_day(
+            day,
+            self.first_opened_on.as_deref(),
+            self.qty,
+            &self.qty_events,
+        )
+    }
 }
 
 fn risk_idx_for(tier: &str) -> usize {
@@ -222,7 +235,7 @@ fn mark_line_on_day(line: &QuoteLine, day: &str) -> Option<i64> {
         financial_domain::current_price::select_price_on_or_before(&line.quotes, day)?
     };
     Some(financial_domain::calculator::plan_payment_cents(
-        line.qty,
+        line.qty_on(day),
         line.qty_scale,
         px,
         scale,
@@ -239,7 +252,7 @@ fn mark_line_on_exact_day(line: &QuoteLine, day: &str) -> Option<i64> {
         financial_domain::current_price::select_price_on_day(&line.quotes, day)?
     };
     Some(financial_domain::calculator::plan_payment_cents(
-        line.qty,
+        line.qty_on(day),
         line.qty_scale,
         px,
         scale,
@@ -253,6 +266,18 @@ async fn live_quote_lines(
 ) -> Result<Vec<QuoteLine>, crate::ports::platform::PlatformError> {
     let ch_by_sec: std::collections::HashMap<_, _> =
         characteristics.iter().map(|c| (c.security_id, c)).collect();
+    let mut events_by_sec: std::collections::HashMap<
+        uuid::Uuid,
+        Vec<(String, i64)>,
+    > = std::collections::HashMap::new();
+    if let Ok(events) = canonical.holding_qty_event_list().await {
+        for ev in events {
+            events_by_sec
+                .entry(ev.security_id)
+                .or_default()
+                .push((ev.occurred_on, ev.remaining_quantity_minor));
+        }
+    }
     let mut lines = Vec::new();
     for line in &details.positions {
         if !is_data_account(&line.account_name) {
@@ -274,12 +299,22 @@ async fn live_quote_lines(
                 },
             )
             .collect();
+        let qty_events = events_by_sec
+            .get(&line.security_id)
+            .cloned()
+            .unwrap_or_default();
+        let first_opened_on = qty_events
+            .iter()
+            .map(|(on, _)| on.clone())
+            .min();
         lines.push(QuoteLine {
             account_id: line.account_id.to_string(),
             account_name: line.account_name.clone(),
             symbol: line.symbol.clone(),
             qty: line.remaining_quantity_minor,
             qty_scale: line.quantity_scale,
+            first_opened_on,
+            qty_events,
             risk_idx: risk_idx_for(ch.map(|c| c.risk_tier.as_str()).unwrap_or("")),
             cash_par: financial_domain::current_price::uses_cash_par(
                 ch.map(|c| c.div_type.as_str()).unwrap_or(""),
@@ -336,6 +371,10 @@ fn points_from_quote_marks(
             continue;
         }
         let (mv, ok) = financial_domain::account_value::risk_bucket_total(&values);
+        // Incomplete historical marks are cash/known names only — not the account total.
+        if !ok && day.as_str() != as_of {
+            continue;
+        }
         points.push(AccountValuePointBody {
             as_of: day.clone(),
             market_value_minor: mv,
@@ -707,6 +746,7 @@ pub(crate) async fn account_value_home_view(
     canonical: &dyn crate::ports::canonical::Canonical,
     as_of: &str,
 ) -> Result<AccountValueHomeBody, crate::ports::platform::PlatformError> {
+    let _ = crate::production_seed::ensure_holding_qty_history(canonical).await;
     let details =
         position_details_summary(canonical, &serde_json::json!({ "asOfDate": as_of })).await?;
     let accounts = canonical.account_list().await?;

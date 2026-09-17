@@ -29,6 +29,16 @@ pub fn is_non_roi_distribution(activity_type: &str) -> bool {
     )
 }
 
+/// Seed `Form_1099` rows are tax-year 2025 ROC guidance. They never apply to the current year.
+pub fn is_prior_year_1099(activity_type: &str) -> bool {
+    activity_type.eq_ignore_ascii_case("Form_1099")
+}
+
+/// Current-year Cash Management cash-out types. Prior-year 1099 is excluded.
+pub fn is_current_year_cash_distribution(activity_type: &str) -> bool {
+    is_non_roi_distribution(activity_type) && !is_prior_year_1099(activity_type)
+}
+
 /// Account 9 liquid proxy until position liquidity classifications exist (T7 interim):
 /// cash-par symbols at face; all other open Account-9 lot tax basis × 70%.
 pub fn acct9_classified_liquid_minor(
@@ -94,6 +104,11 @@ mod tests {
     fn acct9_proxy_math() {
         assert_eq!(acct9_classified_liquid_minor(10_000, 20_000), 10_000 + 14_000);
         assert_eq!(acct9_etf_last_price_minor(20_000), 14_000);
+        assert_eq!(
+            acct9_etf_last_price_minor(1_000_000),
+            700_000,
+            "G2: typed ETF $10,000 → 70% is $7,000"
+        );
     }
 
     #[test]

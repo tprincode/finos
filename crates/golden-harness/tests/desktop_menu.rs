@@ -320,8 +320,12 @@ fn native_and_in_app_menus_list_screens() {
     );
     let bat = std::fs::read_to_string(root.join("apps/desktop/start-finos-dev.bat")).unwrap();
     assert!(
-        bat.contains("wait_port_free") && bat.contains("1420"),
-        "dev start must wait until Vite port 1420 is free"
+        bat.contains("wait_port_free") && bat.contains("1420") && bat.contains("dev-start.lock"),
+        "dev start must wait until Vite port 1420 is free and take a single-flight lock"
+    );
+    assert!(
+        !bat.contains("set \"ERR=") && !bat.contains("%ERR%"),
+        "dev start must not use ERR as a batch variable; cmd treats if not \"%ERR%\"==\"0\" as a command"
     );
     let supervisor =
         std::fs::read_to_string(root.join("apps/desktop/start-finos-supervisor.bat")).unwrap();
@@ -330,7 +334,10 @@ fn native_and_in_app_menus_list_screens() {
             && supervisor.contains("restart.token")
             && supervisor.contains("stale restart.token")
             && supervisor.contains("Start-Process -FilePath")
-            && supervisor.contains("start-finos-dev.bat"),
+            && supervisor.contains("start-finos-dev.bat")
+            && supervisor.contains("supervisor.pid")
+            && supervisor.contains("dev-start.lock")
+            && supervisor.contains("WriteAllText"),
         "supervisor must Start-Process start-finos-dev.bat on restart.token"
     );
     assert!(

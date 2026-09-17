@@ -69,6 +69,7 @@ pub async fn apply_production_seed(
         apply_disbursement_withholding_backfill(canonical, &doc).await?;
         apply_calculator_seed(canonical, &doc).await?;
         apply_trends_seed(canonical, &doc).await?;
+        audit_seed_disbursements(canonical, &doc).await?;
         return Ok(ProductionSeedLoadBody {
             already_loaded: true,
             account_count: existing.len() as u64,
@@ -212,6 +213,7 @@ pub async fn apply_production_seed(
     }
     apply_calculator_seed(canonical, &doc).await?;
     apply_trends_seed(canonical, &doc).await?;
+    audit_seed_disbursements(canonical, &doc).await?;
     Ok(ProductionSeedLoadBody {
         already_loaded: false,
         account_count: accounts.len() as u64,
@@ -311,6 +313,52 @@ async fn apply_disbursement_withholding_backfill(
             .await?;
     }
     Ok(())
+}
+
+async fn audit_seed_disbursements(
+    canonical: &dyn Canonical,
+    doc: &ProductionSeedDocument,
+) -> Result<(), PlatformError> {
+    if doc.disbursements.is_empty() {
+        return Ok(());
+    }
+    let activities = canonical.activity_list().await?;
+    let expected: Vec<_> = doc
+        .disbursements
+        .iter()
+        .map(|row| financial_domain::seed_audit::SeedDisbursementIdentity {
+            idempotency_key: row.idempotency_key.clone(),
+            amount_minor: row.amount_minor,
+            federal_withholding_minor: row.federal_withholding_minor,
+            state_withholding_minor: row.state_withholding_minor,
+        })
+        .collect();
+    let actual: Vec<_> = activities
+        .into_iter()
+        .filter(|a| a.idempotency_key.starts_with("production-disb-"))
+        .map(|a| financial_domain::seed_audit::SeedDisbursementIdentity {
+            idempotency_key: a.idempotency_key,
+            amount_minor: a.amount_minor,
+            federal_withholding_minor: a.federal_withholding_minor,
+            state_withholding_minor: a.state_withholding_minor,
+        })
+        .collect();
+    let mismatches = financial_domain::seed_audit::seed_disbursement_mismatches(&expected, &actual);
+    if mismatches.is_empty() {
+        return Ok(());
+    }
+    let first = &mismatches[0];
+    Err(PlatformError::new(
+        "seed_disbursement_identity",
+        format!(
+            "{} production-disb parent(s) do not match the template (gross or withholding). First: {} {} expected {} actual {:?}",
+            mismatches.len(),
+            first.idempotency_key,
+            first.field,
+            first.expected,
+            first.actual
+        ),
+    ))
 }
 
 async fn apply_trends_seed(
@@ -558,7 +606,9 @@ fn fill_retrieval_template(
         last_run_message: String::new(),
         last_content_hash: String::new(),
         // Mapped vendor adapters start enabled so daily DeclarationRefresh probes them.
-        collector_enabled: registered,
+        // Parked long-hold names never auto-enable.
+        collector_enabled: registered
+            && !financial_domain::collector::is_not_a_collector(fallback_symbol),
         inception_on: existing.map(|e| e.inception_on.clone()).unwrap_or_default(),
         roc_source_url: existing
             .map(|e| e.roc_source_url.clone())
@@ -577,7 +627,7 @@ async fn apply_provider_retrieval_templates(
             continue;
         };
         let sym = row.symbol.to_ascii_uppercase();
-        if matches!(sym.as_str(), "ENERGYX" | "BTC" | "BTC-USD") {
+        if skip_collector_seed_symbol(&sym) {
             continue;
         }
         let existing = skip_ni(canonical.retrieval_template_get(security_id).await)?.flatten();
@@ -605,19 +655,67 @@ async fn apply_provider_retrieval_templates(
     Ok(())
 }
 
+fn skip_collector_seed_symbol(symbol: &str) -> bool {
+    let sym = symbol.trim().to_ascii_uppercase();
+    matches!(sym.as_str(), "ENERGYX" | "BTC" | "BTC-USD")
+        || financial_domain::collector::is_not_a_collector(&sym)
+}
+
+/// MSTU / TSLL / SOXL are holdings, not collectors. Keep lots/history. Force
+/// collector_enabled=false and file leftover retrieve-miss tickets.
+async fn park_long_hold_collectors(canonical: &dyn Canonical) -> Result<u64, PlatformError> {
+    let securities = canonical.security_list().await?;
+    let mut parked = 0u64;
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    for security in securities {
+        if !financial_domain::collector::is_not_a_collector(&security.symbol) {
+            continue;
+        }
+        let Some(mut rec) = skip_ni(canonical.retrieval_template_get(security.security_id).await)?
+            .flatten()
+        else {
+            continue;
+        };
+        if rec.collector_enabled {
+            rec.collector_enabled = false;
+            canonical.retrieval_template_set(rec).await?;
+            parked += 1;
+        }
+        let tickets = skip_ni(
+            canonical
+                .work_ticket_list(Some(security.security_id), Some("open".into()))
+                .await,
+        )?
+        .unwrap_or_default();
+        for mut ticket in tickets {
+            if ticket.code != "declaration_retrieve_miss" || ticket.status != "open" {
+                continue;
+            }
+            ticket.status = "done".into();
+            ticket.filed_on = today.clone();
+            ticket.completed_how = "owner_filed".into();
+            ticket.owner_note = "filed: not a collector; holding only".into();
+            ticket.last_seen_on = today.clone();
+            let _ = canonical.work_ticket_update(ticket).await;
+        }
+    }
+    Ok(parked)
+}
+
 /// Fill empty/public/unassigned declaration sources from live characteristics.
 /// Never overwrites edgar, sec-edgar, or a registered vendor adapter.
 /// Re-enables a registered vendor that is assigned but collector_enabled=0.
+/// MSTU / TSLL / SOXL are not collectors and stay disabled.
 pub async fn apply_provider_declaration_sources(
     canonical: &dyn Canonical,
 ) -> Result<u64, PlatformError> {
+    let mut updated = park_long_hold_collectors(canonical).await?;
     let securities = canonical.security_list().await?;
     let chars = canonical.position_characteristic_list().await?;
     let char_by: HashMap<_, _> = chars.iter().map(|c| (c.security_id, c)).collect();
-    let mut updated = 0u64;
     for security in securities {
         let sym = security.symbol.to_ascii_uppercase();
-        if matches!(sym.as_str(), "ENERGYX" | "BTC" | "BTC-USD") {
+        if skip_collector_seed_symbol(&sym) {
             continue;
         }
         let Some(ch) = char_by.get(&security.security_id) else {
@@ -694,6 +792,49 @@ fn skip_ni<T>(result: Result<T, PlatformError>) -> Result<Option<T>, PlatformErr
         Err(e) if e.code == "not_implemented" => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// Dated remaining qty for last-price charts. Lot remaining is unchanged.
+/// SOXL: 16 sold December 2025, then the 4/10/26 sale; remaining stays 14.
+/// MSTU: 10:1 on 2025-12-03 (200→20) and 10:1 on 2026-08-24 (20→2).
+pub async fn ensure_holding_qty_history(
+    canonical: &dyn Canonical,
+) -> Result<(), PlatformError> {
+    let securities = match canonical.security_list().await {
+        Ok(rows) => rows,
+        Err(e) if e.code == "not_implemented" => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let id_for = |sym: &str| {
+        securities
+            .iter()
+            .find(|s| s.symbol.eq_ignore_ascii_case(sym))
+            .map(|s| s.security_id)
+    };
+    let rows: &[(&str, &str, i64, &str)] = &[
+        ("SOXL", "2021-12-09", 30, "open"),
+        ("SOXL", "2021-12-10", 40, "open"),
+        ("SOXL", "2025-12-15", 24, "sale"),
+        ("SOXL", "2026-04-10", 14, "sale"),
+        ("MSTU", "2025-10-10", 100, "open"),
+        ("MSTU", "2025-11-14", 200, "open"),
+        ("MSTU", "2025-12-03", 20, "split"),
+        ("MSTU", "2026-08-24", 2, "split"),
+    ];
+    for (sym, on, remaining, kind) in rows {
+        let Some(id) = id_for(sym) else {
+            continue;
+        };
+        match canonical
+            .holding_qty_event_upsert(id, (*on).into(), *remaining, 0, (*kind).into())
+            .await
+        {
+            Ok(_) => {}
+            Err(e) if e.code == "not_implemented" => return Ok(()),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// Grayscale BTC (~$34) and Robinhood crypto BTC-USD are different securities.
@@ -847,6 +988,17 @@ async fn set_public_quote_template(
 #[cfg(test)]
 mod tests {
     use super::{declaration_source_is_fillable, provider_retrieval_defaults};
+
+    #[test]
+    fn holding_qty_history_uses_owner_sale_and_split_dates() {
+        let src = include_str!("production_seed.rs");
+        assert!(src.contains("2025-12-15"));
+        assert!(src.contains("2026-04-10"));
+        assert!(src.contains("2025-12-03"));
+        assert!(src.contains("2026-08-24"));
+        assert!(src.contains("\"SOXL\""));
+        assert!(src.contains("\"MSTU\""));
+    }
 
     #[test]
     fn fillable_skips_registered_and_edgar() {

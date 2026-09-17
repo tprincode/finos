@@ -9,6 +9,7 @@ import type {
 } from "@finos/app-contracts";
 import { formatUsd } from "@finos/ui-components";
 import {
+  DEFAULT_GRAPH_PERIOD,
   GRAPH_PERIOD_OPTIONS,
   graphPeriodStartIso,
   inGraphPeriod,
@@ -144,9 +145,9 @@ export function accountChartOption(
       showSymbol: chrome === "home",
       symbolSize: 5,
       smooth: false,
-      connectNulls: false,
+      connectNulls: true,
       z: 2,
-      lineStyle: { width: 1.8, type: "dashed", color: "#5a6a78" },
+      lineStyle: { width: 2, type: "dashed", color: "#5a6a78" },
       itemStyle: { color: "#5a6a78" },
     });
   }
@@ -626,7 +627,7 @@ export function HomeAccountCharts({
 }: {
   values: AccountValueHomeGet | null;
 }) {
-  const [period, setPeriod] = useState<GraphPeriod>("12m");
+  const [period, setPeriod] = useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD);
   const asOf = values?.asOf ?? "";
   const filtered = useMemo(() => {
     if (!values) return null;

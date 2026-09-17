@@ -8,7 +8,8 @@ use application_core::contracts::{
 use application_core::queries::execute_query_on;
 use golden_harness::{
     load_production_expected, load_production_seed_via_commands, production_seed_actual_counts,
-    production_seed_actual_totals, production_seed_plan_count, profile_a_app_dir, repo_root,
+    production_seed_actual_totals, production_seed_parent_totals, production_seed_plan_count,
+    profile_a_app_dir, repo_root,
 };
 use storage_sqlite::LocalPlatform;
 use uuid::Uuid;
@@ -86,7 +87,7 @@ async fn run() -> Result<String, String> {
     {
         if existing_profile {
             eprintln!(
-                "warning: money totals {:?} != expected yield {} gross {} (existing Profile A DB)",
+                "warning: money totals {:?} != expected yield {} gross {} (existing Profile A DB; later owner posts can raise yield/gross)",
                 totals,
                 expected.totals.yield_amount_minor,
                 expected.totals.disbursement_gross_minor
@@ -99,6 +100,26 @@ async fn run() -> Result<String, String> {
                 expected.totals.disbursement_gross_minor
             ));
         }
+    }
+    let parents = production_seed_parent_totals(&platform).await?;
+    if parents.disbursement_gross_minor != expected.totals.disbursement_gross_minor
+        || parents.disbursement_net_minor != expected.totals.disbursement_net_minor
+        || parents.disbursement_federal_withholding_minor
+            != expected.totals.disbursement_federal_withholding_minor
+        || parents.disbursement_state_withholding_minor
+            != expected.totals.disbursement_state_withholding_minor
+    {
+        return Err(format!(
+            "seed parent identity failed: production-disb gross {} fed {} state {} net {} != expected gross {} fed {} state {} net {}",
+            parents.disbursement_gross_minor,
+            parents.disbursement_federal_withholding_minor,
+            parents.disbursement_state_withholding_minor,
+            parents.disbursement_net_minor,
+            expected.totals.disbursement_gross_minor,
+            expected.totals.disbursement_federal_withholding_minor,
+            expected.totals.disbursement_state_withholding_minor,
+            expected.totals.disbursement_net_minor
+        ));
     }
     let coverage = execute_query_on(
         &platform,

@@ -11,7 +11,8 @@ use crate::contracts::{
     CollectorFieldDecisionRecord, CollectorSetBody, CollectorStatsBody, CurrentPriceBody,
     DistributionGetBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
     ExceptionRecord, ExpectedPaymentPattern, ImportBatchRecord, ImportCandidate, IncomePlanBody,
-    IssuerDeclarationRecord, IssuerPayDateRecord, LotAssignmentRecord, LotRecommendBody, LotRecord,
+    HoldingQtyEventRecord, IssuerDeclarationRecord, IssuerPayDateRecord, LotAssignmentRecord,
+    LotRecommendBody, LotRecord,
     MagiProjection, MagiTaxPaymentBody, PlanHistoryRecord, PositionBacktestResultBody,
     PositionCharacteristicRecord, PositionDetailsBody, PositionTaxProfile, PriceQuoteBody,
     PriceRetrievalSetBody, ReconcileCounts, RemainingPaymentDateOverride, RetrievalTemplateRecord,
@@ -291,6 +292,22 @@ pub trait Canonical: Send + Sync {
         quantity_minor: i64,
         quantity_scale: u8,
     ) -> Result<LotAssignmentRecord, PlatformError> {
+        ni()
+    }
+    async fn lot_assignment_list(&self) -> Result<Vec<LotAssignmentRecord>, PlatformError> {
+        ni()
+    }
+    async fn holding_qty_event_upsert(
+        &self,
+        security_id: Uuid,
+        occurred_on: String,
+        remaining_quantity_minor: i64,
+        quantity_scale: u8,
+        kind: String,
+    ) -> Result<HoldingQtyEventRecord, PlatformError> {
+        ni()
+    }
+    async fn holding_qty_event_list(&self) -> Result<Vec<HoldingQtyEventRecord>, PlatformError> {
         ni()
     }
     async fn lot_get(&self, lot_id: Uuid) -> Result<LotRecord, PlatformError> {
@@ -917,6 +934,15 @@ pub trait Canonical: Send + Sync {
         let _ = (record, balances);
         ni()
     }
+    async fn week_capture_accept_with_balances(
+        &self,
+        record: TrendsWeekSourceRecord,
+        balances: Vec<(Uuid, i64, Option<i64>)>,
+        adjusts: Vec<ActivityRecord>,
+    ) -> Result<(), PlatformError> {
+        let _ = (record, balances, adjusts);
+        ni()
+    }
     async fn account_balance_snapshot_list(
         &self,
     ) -> Result<Vec<AccountBalanceSnapshotRecord>, PlatformError> {
@@ -1122,6 +1148,9 @@ impl Canonical for UnimplementedCanonical {
         _quantity_minor: i64,
         _quantity_scale: u8,
     ) -> Result<LotAssignmentRecord, PlatformError> {
+        ni()
+    }
+    async fn lot_assignment_list(&self) -> Result<Vec<LotAssignmentRecord>, PlatformError> {
         ni()
     }
     async fn lot_get(&self, _lot_id: Uuid) -> Result<LotRecord, PlatformError> {

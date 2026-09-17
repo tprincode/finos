@@ -35,7 +35,9 @@
         "cash-management-magi",
         "cash-management-month",
         "cash-management-import",
-        "TrendsWeekSave"
+        "cash-management-car-roc-plan",
+        "TrendsWeekSave",
+        "WeekCaptureAccept"
       ],
       "host": "cash_management.rs"
     },

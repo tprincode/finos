@@ -6,8 +6,13 @@ import type {
   RiskValueHome,
   TrendsWeekPoint,
 } from "@finos/app-contracts";
-import { formatUsd, formatWeekShort } from "@finos/ui-components";
+import { formatUsd, formatWeekShort, weekIdContaining } from "@finos/ui-components";
 import {
+  weekIncomeMinor,
+  type TrendIncomePoint,
+} from "../cash/CashWeekDesk";
+import {
+  DEFAULT_GRAPH_PERIOD,
   GRAPH_PERIOD_OPTIONS,
   graphPeriodStartIso,
   type GraphPeriod,
@@ -30,7 +35,6 @@ type SeriesSpec = {
 const PERIOD_OPTIONS = GRAPH_PERIOD_OPTIONS;
 
 const METRIC_CHARTS: SeriesSpec[] = [
-  { title: "Weekly Gross", key: "profitMinor", color: "#1b6b4a" },
   { title: "Cash", key: "totalCashMinor", color: "#2a5f8f" },
   { title: "Monthly Dividends", key: "monthlyDivsMinor", color: "#8a5a12" },
   { title: "Total Fidelity & Schwab", key: "fidSchCombinedMinor", color: "#5b3d8a" },
@@ -73,6 +77,19 @@ function filterPerfByPeriod(
   return { ...perf, weeks };
 }
 
+function weekIncomeValues(
+  weeks: TrendsWeekPoint[],
+  points: TrendIncomePoint[] | undefined,
+  perf: DividendPerformanceGet | null | undefined,
+): (number | null)[] {
+  return weeks.map((w) => {
+    const id = weekIdContaining(w.periodStart || w.periodEnd);
+    const minor = weekIncomeMinor(id.start, id.end, points, perf);
+    if (minor == null) return null;
+    return minor / 10 ** (w.scale ?? 2);
+  });
+}
+
 function seriesValues(weeks: TrendsWeekPoint[], key: keyof TrendsWeekPoint): (number | null)[] {
   return weeks.map((w) => {
     const raw = w[key];
@@ -99,9 +116,13 @@ function linearTrend(data: (number | null)[]): (number | null)[] {
   return data.map((_, i) => intercept + slope * i);
 }
 
-function chartOption(title: string, weeks: TrendsWeekPoint[], key: keyof TrendsWeekPoint, color: string) {
+function chartOptionFromValues(
+  title: string,
+  weeks: TrendsWeekPoint[],
+  data: (number | null)[],
+  color: string,
+) {
   const categories = weeks.map((w) => formatWeekShort(w.periodStart || w.periodEnd));
-  const data = seriesValues(weeks, key);
   const trend = linearTrend(data);
   return {
     title: { text: title, left: 0, textStyle: { fontSize: 13, fontWeight: 600 } },
@@ -134,8 +155,13 @@ function chartOption(title: string, weeks: TrendsWeekPoint[], key: keyof TrendsW
   };
 }
 
+function chartOption(title: string, weeks: TrendsWeekPoint[], key: keyof TrendsWeekPoint, color: string) {
+  return chartOptionFromValues(title, weeks, seriesValues(weeks, key), color);
+}
+
 export function TrendsChartsPanel({
   weeks,
+  points,
   dividendPerf,
   note,
   error,
@@ -146,6 +172,7 @@ export function TrendsChartsPanel({
   onGraphPeriodChange,
 }: {
   weeks: TrendsWeekPoint[] | null | undefined;
+  points?: TrendIncomePoint[];
   dividendPerf?: DividendPerformanceGet | null;
   note?: string;
   error?: string | null;
@@ -155,7 +182,7 @@ export function TrendsChartsPanel({
   asOf?: string;
   onGraphPeriodChange?: (period: GraphPeriod) => void;
 }) {
-  const [period, setPeriod] = useState<GraphPeriod>("12m");
+  const [period, setPeriod] = useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD);
   const todayIso = new Date().toISOString().slice(0, 10);
   const setGraphPeriod = (next: GraphPeriod) => {
     setPeriod(next);
@@ -280,6 +307,20 @@ export function TrendsChartsPanel({
             </div>
           ) : null}
           <div className="trends-chart-grid">
+            <div className="trends-chart-card" aria-label="Week income">
+              <ReactECharts
+                option={chartOptionFromValues(
+                  "Week income",
+                  visible,
+                  weekIncomeValues(visible, points, chartPerf),
+                  "#1b6b4a",
+                )}
+                style={{ height: 220, width: "100%" }}
+                opts={{ renderer: "canvas" }}
+                notMerge
+                lazyUpdate
+              />
+            </div>
             {METRIC_CHARTS.map((spec) => (
               <div key={spec.key} className="trends-chart-card" aria-label={spec.title}>
                 <ReactECharts
