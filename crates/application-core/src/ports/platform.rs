@@ -68,4 +68,9 @@ pub trait Platform: Send + Sync {
     fn app_data_dir(&self) -> PathBuf {
         PathBuf::from(".")
     }
+    /// Consistent snapshot of the live household file (`VACUUM INTO`).
+    async fn sqlite_vacuum_into(&self, dest_sqlite: String) -> Result<(), PlatformError> {
+        let _ = dest_sqlite;
+        ni()
+    }
 }

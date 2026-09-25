@@ -2242,6 +2242,7 @@ version = "0.1.0"
 dependencies = [
  "application-core",
  "async-trait",
+ "calamine",
  "chrono",
  "financial-domain",
  "import-engine",

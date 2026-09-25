@@ -1,7 +1,6 @@
 const STEPS = [
   "Account",
   "Plan name",
-  "How funded",
   "Evaluate",
   "Agree",
   "Confirm sell",

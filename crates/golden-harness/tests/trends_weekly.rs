@@ -123,3 +123,28 @@ async fn trends_template_parses_owner_extract_without_coercing_blank_income() {
     assert_eq!(late.roth_balance_minor, Some(879_996));
     assert_eq!(late.speculation_balance_minor, Some(2_980_433));
 }
+
+#[test]
+fn trends_dividend_year_compare_is_grouped_month_bars() {
+    let trends = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/TrendsCharts.tsx"),
+    )
+    .unwrap();
+    assert!(trends.contains("aria-label=\"Dividends paid by month\""));
+    assert!(trends.contains("Dividend only"));
+    assert!(trends.contains("dividendYearMonthCompare"));
+    assert!(trends.contains("type: \"bar\""));
+    assert!(
+        trends.contains("if (minor == null) return null"),
+        "a month with no paid dividend stays blank"
+    );
+    assert!(trends.contains("<DividendYearCompareChart points={points} />"));
+    let risk_at = trends.rfind("<LiveByRiskCharts").expect("risk charts");
+    let compare_at = trends
+        .rfind("<DividendYearCompareChart")
+        .expect("year compare");
+    assert!(
+        compare_at > risk_at,
+        "dividend year compare sits at the bottom of Trends"
+    );
+}

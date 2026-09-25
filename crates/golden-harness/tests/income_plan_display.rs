@@ -555,6 +555,9 @@ async fn g_ip_09_default_accounts_exclude_speculation() {
     let ui = std::fs::read_to_string(repo_root().join("packages/ui-components/src/index.tsx")).unwrap();
     assert!(ui.contains("INCOME_PLAN_DEFAULT_ACCOUNTS"));
     assert!(ui.contains("Speculation"));
+    assert!(ui.contains("allLabel=\"All Dividend accounts\""));
+    assert!(ui.contains("allAccounts={INCOME_PLAN_DEFAULT_ACCOUNTS}"));
+    assert!(ui.contains("mode=\"anyCombination\""));
 }
 
 #[test]

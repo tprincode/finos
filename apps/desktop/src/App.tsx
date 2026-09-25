@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -40,12 +39,20 @@ import {
   type SecurityListItem,
   type TrendsGet,
   type CarRocPlanGet,
+  type TaxPlanningGet,
   type CashManagementWeekGet,
   type CashManagementRemindersGet,
   type CashManagementMonthGet,
+  type WeekAheadGet,
+  type CashRegisterGet,
+  type CashElementListGet,
+  type CashElementRecord,
+  type CashYtdGet,
+  type CashCoverageGet,
   type MagiProjection,
   type AccountValueHomeGet,
   type DividendPlanHomeGet,
+  type HomeOpenGet,
   type DataSnapshotExport,
 } from "@finos/app-contracts";
 import { invoke } from "@tauri-apps/api/core";
@@ -53,12 +60,45 @@ import { check } from "@tauri-apps/plugin-updater";
 import { LocalTauriFinanceClient } from "./financeClient";
 import { TrendsChartsPanel } from "./features/graphing/TrendsCharts";
 import { DEFAULT_GRAPH_PERIOD, type GraphPeriod } from "./features/graphing/graphPeriod";
-import { DividendWeeksPanel } from "./features/graphing/DividendWeeks";
 import { DeclarationPaymentsChart } from "./features/graphing/DeclarationPaymentsChart";
 import { TrendsCapturePanel, type TrendsWeekCapture } from "./features/graphing/TrendsCapture";
 import { CashManagementPanel } from "./CashManagement";
+import { WeekAheadPanel } from "./features/cash/WeekAhead";
+import { CashRegisterPanel } from "./features/cash/CashRegister";
+import { CashElementsCatalog } from "./features/cash/CashElementsCatalog";
+import {
+  fetchCashNav,
+  fetchElementList,
+  magiQualifyingType,
+} from "./features/cash/fetchCashNav";
+import { scheduleIdleWarm } from "./features/shared/idleWarm";
+import {
+  incomeGridMemoryMatches,
+  runBackgroundReads,
+} from "./features/shared/backgroundReads";
+import { CashYtdPanel } from "./features/cash/CashYtd";
+import { CashCoveragePanel, type CoveragePeriod } from "./features/cash/CashCoverage";
+import { ExternalRegister } from "./features/cash/ExternalRegister";
 import { HomeAccountCharts } from "./features/graphing/HomeAccountCharts";
+import { AccountCashFlow } from "./features/cash/AccountCashFlow";
 import { HomeDividendPlan } from "./features/home/HomeDividendPlan";
+import { PlanHorizonPrompt } from "./features/income-plan/PlanHorizonPrompt";
+import { IncomePlanScreen } from "./features/income-plan/IncomePlanScreen";
+import {
+  CollectorEstablishScreen,
+  CollectorsScreen,
+  collectorCommandBody,
+  collectorIsCash,
+  collectorItemPays,
+  collectorMissIsTimeout,
+  collectorNeedsOwnerUrl,
+  collectorRetrieveNeedsRun,
+  isDeclarationWeekdayToday,
+  type CollectorSetItem,
+  type CollectorStats,
+  type Div1ComplianceRow,
+  type RetrieveRunRow,
+} from "./features/collectors";
 import {
   INCOME_TX_PERIOD_OPTIONS,
   incomeTxRange,
@@ -73,19 +113,16 @@ import {
   ResearchedSymbolCombobox,
   type LotSortMode,
 } from "./features/shared/pickers";
+import { PageActivityBar } from "./features/shared/PageActivityBar";
 import { openImportWizardWindow } from "./openImportWizard";
 import {
-  CalculatorPanel,
+  CalculatorReturnSheet,
   type CollectorCompletionProof,
-  DeclarationHistoryPanel,
   DashboardBurndownPanel,
   ExceptionList,
   WorkTicketQueue,
   HoldingsPanel,
-  IncomePlanWeekPanel,
-  IncomePlanGridPanel,
   INCOME_PLAN_DEFAULT_ACCOUNTS,
-  INCOME_PLAN_OPTIONAL_ACCOUNTS,
   PositionDetailsTable,
   PositionMasterTable,
   SymbolLotsTable,
@@ -96,7 +133,6 @@ import {
   formatPercentScaled,
   addUtcDays,
   saturdayOfWeek,
-  formatWeekChooserLabel,
   formatMenuWeek,
 } from "@finos/ui-components";
 import "./App.css";
@@ -148,65 +184,20 @@ type RefreshProgress = {
 
 function lastPriceRefreshLabel(lastPriceProgress: RefreshProgress | null): string {
   if (!lastPriceProgress || lastPriceProgress.total <= 0) {
-    return "Refreshing last prices…";
+    return "…";
   }
-  return `Refreshing last prices ${formatCount(lastPriceProgress.current)} of ${formatCount(lastPriceProgress.total)}${
-    lastPriceProgress.symbol ? `: ${lastPriceProgress.symbol}` : ""
-  }`;
+  const count = `${formatCount(lastPriceProgress.current)} of ${formatCount(lastPriceProgress.total)}`;
+  return lastPriceProgress.symbol ? `${count} ${lastPriceProgress.symbol}` : count;
 }
 
 function declarationRefreshLabel(
   declarationProgress: RefreshProgress | null,
 ): string {
   if (!declarationProgress || declarationProgress.total <= 0) {
-    return "Refreshing declarations…";
+    return "…";
   }
-  return `Refreshing ${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}${
-    declarationProgress.symbol ? `: ${declarationProgress.symbol}` : ""
-  }`;
-}
-
-function RefreshActivityBar({
-  lastPriceBusy,
-  lastPriceProgress,
-  declarationBusy,
-  declarationProgress,
-}: {
-  lastPriceBusy: boolean;
-  lastPriceProgress: RefreshProgress | null;
-  declarationBusy: boolean;
-  declarationProgress: RefreshProgress | null;
-}) {
-  if (!lastPriceBusy && !declarationBusy) {
-    return null;
-  }
-  const progress = lastPriceBusy ? lastPriceProgress : declarationProgress;
-  const label = lastPriceBusy
-    ? lastPriceRefreshLabel(lastPriceProgress)
-    : declarationRefreshLabel(declarationProgress);
-  return (
-    <section
-      className="process-a-research-progress refresh-activity-bar"
-      aria-label={
-        lastPriceBusy
-          ? "Last price refresh progress"
-          : "Declaration refresh progress"
-      }
-      aria-busy="true"
-    >
-      <p role="status" aria-live="polite">
-        {label}
-      </p>
-      {progress && progress.total > 0 ? (
-        <progress
-          max={progress.total}
-          value={Math.min(progress.current, progress.total)}
-        />
-      ) : (
-        <div className="process-a-research-spinner" aria-hidden="true" />
-      )}
-    </section>
-  );
+  const count = `${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}`;
+  return declarationProgress.symbol ? `${count} ${declarationProgress.symbol}` : count;
 }
 
 function isNewOrChangedDeclaration(
@@ -234,19 +225,6 @@ function mergeLookthrough(raw?: LookthroughResearch | null): LookthroughResearch
     topHoldings: raw?.topHoldings ?? [],
     sectorWeights: raw?.sectorWeights ?? [],
   };
-}
-
-function fleetRocText(row: {
-  rocEstimateMinor?: number | null;
-  rocScale?: number;
-  rocTaxYear?: string;
-}): string {
-  if (row.rocEstimateMinor == null) return "unknown";
-  const scale = row.rocScale ?? 2;
-  const pct = (row.rocEstimateMinor / 10 ** scale).toFixed(scale);
-  return row.rocTaxYear?.trim()
-    ? `${pct}% (${row.rocTaxYear})`
-    : `${pct}%`;
 }
 
 function strategyCharacteristics(
@@ -521,29 +499,6 @@ function draftFromInvestment(body: InvestmentGet): PdDraft {
   };
 }
 
-function formatCollectorClock(raw?: string | null): string {
-  const opts: Intl.DateTimeFormatOptions = {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  };
-  const stamp = (raw ?? "").trim();
-  if (stamp.length >= 19) {
-    const parsed = new Date(stamp.includes("T") ? stamp : stamp.replace(" ", "T"));
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toLocaleString("en-US", opts);
-    }
-  }
-  if (stamp.length >= 10) {
-    return `${stamp.slice(0, 10)} (run stored date only) · screen ${new Date().toLocaleString("en-US", opts)}`;
-  }
-  return new Date().toLocaleString("en-US", opts);
-}
-
 function formatBps(bps: number | null | undefined): string {
   if (bps == null) return "unknown";
   return `${(bps / 100).toFixed(2)}%`;
@@ -702,16 +657,14 @@ function receivedByYear(
     .sort((a, b) => b[0].localeCompare(a[0]))
     .map(([year, amountMinor]) => ({ year, amountMinor }));
 }
-
 const client = new LocalTauriFinanceClient();
-
 type HealthView = {
   ok: boolean;
   status: string;
   contractVersion: string;
   error?: string;
 };
-
+type CmDesk = "elements" | "cashflow" | "weekly" | "car" | "coverage" | "external";
 type Screen =
   | "home"
   | "income-plan"
@@ -754,61 +707,6 @@ const SCREENS: readonly Screen[] = [
 function isScreen(id: string): id is Screen {
   return (SCREENS as readonly string[]).includes(id);
 }
-
-type CollectorSetItem = {
-  securityId: string;
-  symbol: string;
-  provider: string;
-  divType: string;
-  paymentFrequency?: string;
-  declarationSource: string;
-  priceSource: string;
-  sourceUrl?: string;
-  calendarPolicy?: string;
-  collectorEnabled: boolean;
-  lastRunAt?: string;
-  lastRunOk?: boolean | null;
-  lastRunMessage?: string;
-  lastContentHash?: string;
-  rocSourceUrl?: string;
-  openLots: boolean;
-  inceptionOn?: string;
-  complete?: boolean;
-  gaps?: string[];
-  fillGapsProviderBlank?: boolean;
-  fillGapsFrequencyBlank?: boolean;
-  fillGapsDivTypeBlank?: boolean;
-  fillGapsRocBlank?: boolean;
-  paidDeclarationCount?: number;
-  remainingPlanned?: number | null;
-  remainingExpected?: number | null;
-  successfulRunCount?: number;
-  failureCount?: number;
-  openTicketCount?: number;
-  latestTicketField?: string;
-  lastPriceAsOf?: string;
-  lastPriceFreshness?: string;
-  underlying?: string;
-  rocEstimateMinor?: number | null;
-  rocScale?: number;
-  rocTaxYear?: string;
-  openLotCount?: number;
-  lastPayableOn?: string;
-  declarationWeekday?: string;
-};
-
-type Div1ComplianceRow = {
-  securityId: string;
-  symbol: string;
-  futurePayDatesQty: number;
-  futurePayDates?: string[];
-  priorDeclarationsQty: number;
-  currentDeclarationAmountMinor: number | null;
-  currentDeclarationAmountScale: number | null;
-  currentDeclarationDate: string;
-  lastRunOk?: boolean | null;
-  requiredPaid: number;
-};
 
 function paidRowsFromDeclarations(
   decls: Array<{
@@ -858,162 +756,6 @@ function proofsFromFleet(
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
-function isDeclarationWeekdayToday(asOfDate: string, weekday?: string): boolean {
-  const raw = (weekday ?? "").trim();
-  if (!raw || asOfDate.trim().length < 10) {
-    return false;
-  }
-  const d = new Date(`${asOfDate.trim().slice(0, 10)}T12:00:00`);
-  if (Number.isNaN(d.getTime())) {
-    return false;
-  }
-  const names = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-  ];
-  const full = names[d.getDay()] ?? "";
-  const short = full.slice(0, 3);
-  return raw.localeCompare(full, undefined, { sensitivity: "accent" }) === 0
-    || raw.localeCompare(short, undefined, { sensitivity: "accent" }) === 0;
-}
-
-function collectorRetrieveNeedsRun(row: CollectorSetItem, asOfDate: string): boolean {
-  if (!row.openLots || !row.collectorEnabled || !row.declarationSource.trim()) {
-    return false;
-  }
-  if (isDeclarationWeekdayToday(asOfDate, row.declarationWeekday)) {
-    return true;
-  }
-  if (row.lastRunOk !== true) {
-    return true;
-  }
-  const ran = (row.lastRunAt ?? "").trim();
-  if (!ran) {
-    return true;
-  }
-  return !ran.startsWith(asOfDate);
-}
-
-function collectorMissIsTimeout(message: string, code?: string) {
-  const t = `${code ?? ""} ${message}`.toLowerCase();
-  return (
-    t.includes("declaration_retrieve_timeout") ||
-    t.includes("timed out") ||
-    t.includes("timeout")
-  );
-}
-
-function collectorCommandBody(
-  row: CollectorSetItem,
-  forceRefresh: boolean,
-  establish = false,
-  extra?: { timeoutAttempt?: number; progressiveRetry?: boolean },
-) {
-  return {
-    securityId: row.securityId,
-    symbol: row.symbol,
-    declarationSource: row.declarationSource,
-    sourceUrl: row.sourceUrl ?? "",
-    divType: row.divType ?? "",
-    lastContentHash: row.lastContentHash ?? "",
-    lastRunOk: row.lastRunOk === true,
-    lastRunAt: row.lastRunAt ?? "",
-    paymentFrequency: row.paymentFrequency ?? "",
-    inceptionOn: row.inceptionOn ?? "",
-    forceRefresh,
-    establish,
-    timeoutAttempt: extra?.timeoutAttempt ?? 0,
-    progressiveRetry: extra?.progressiveRetry === true,
-  };
-}
-
-/** Fleet shows income names only — matches storage collector_symbol_pays. */
-function collectorItemPays(row: CollectorSetItem): boolean {
-  const sym = row.symbol.trim().toUpperCase();
-  const div = (row.divType || "").trim().toUpperCase().replace(/\s+/g, "-");
-  if (div === "CASH" || sym === "SPAXX" || sym === "FDRXX" || sym === "SWVXX") {
-    return true;
-  }
-  if (div === "DIV-1" || div === "DIV1") {
-    return true;
-  }
-  const freq = (row.paymentFrequency || "").trim().toLowerCase();
-  return (
-    freq === "weekly" ||
-    freq === "52" ||
-    freq === "monthly" ||
-    freq === "12" ||
-    freq === "quarterly" ||
-    freq === "4"
-  );
-}
-
-function collectorIsCash(row: CollectorSetItem): boolean {
-  const sym = row.symbol.trim().toUpperCase();
-  const div = (row.divType || "").trim().toUpperCase().replace(/\s+/g, "-");
-  return div === "CASH" || sym === "SPAXX" || sym === "FDRXX" || sym === "SWVXX";
-}
-
-function collectorIsDiv1OrCash(row: CollectorSetItem): boolean {
-  const div = (row.divType || "").trim().toUpperCase().replace(/\s+/g, "-");
-  return collectorIsCash(row) || div === "DIV-1" || div === "DIV1";
-}
-
-/** DIV-1/CASH only. Failing or never-run with empty seed URL, or DIV-1 ROC hole. */
-function collectorNeedsOwnerUrl(row: CollectorSetItem): boolean {
-  if (!collectorIsDiv1OrCash(row)) {
-    return false;
-  }
-  const emptySeed = !(row.sourceUrl ?? "").trim();
-  const failingOrNever = row.lastRunOk !== true;
-  if (emptySeed && failingOrNever) {
-    return true;
-  }
-  if (collectorIsCash(row)) {
-    return false;
-  }
-  return Boolean(row.fillGapsRocBlank) && !(row.rocSourceUrl ?? "").trim();
-}
-
-type CollectorStats = {
-  assigned: number;
-  enabled: number;
-  ranToday: number;
-  stillMiss: number;
-  hadMissToday: number;
-  missToday: number;
-  unchangedToday: number;
-  cashPar: number;
-  priceCurrent: number;
-  priceStale: number;
-  openExceptions: number;
-  ranOutsideFleet?: string[];
-  asOfDate: string;
-  failCount?: number;
-  failTicketCount?: number;
-  failTicketParity?: boolean;
-};
-
-type RetrieveRunRow = {
-  runId: string;
-  securityId: string;
-  kind: string;
-  requestedAt: string;
-  ok: boolean;
-  code?: string;
-  message?: string;
-  attempted: number;
-  recorded: number;
-  skipped: number;
-  unchanged: number;
-  payloadJson?: string;
-};
-
 function parseHandoff(bodyJson?: string): HandoffStatus | null {
   if (!bodyJson) return null;
   try {
@@ -1021,10 +763,6 @@ function parseHandoff(bodyJson?: string): HandoffStatus | null {
   } catch {
     return null;
   }
-}
-
-function shiftIso(date: string, days: number): string {
-  return addUtcDays(date, days);
 }
 
 function historyBounds(
@@ -1050,31 +788,39 @@ function historyBounds(
   }
 }
 
-function incomePlanWeekChoices(asOf: string, latestActualOn?: string | null): string[] {
-  const today = new Date().toISOString().slice(0, 10);
-  const anchor = saturdayOfWeek(asOf || latestActualOn || today);
-  const todaySat = saturdayOfWeek(today);
-  const latestSat = latestActualOn ? saturdayOfWeek(latestActualOn) : anchor;
-  const start = [anchor, todaySat, latestSat].reduce((min, sat) =>
-    sat < min ? sat : min,
-  );
-  const end = [anchor, todaySat, shiftIso(todaySat, 16 * 7)].reduce((max, sat) =>
-    sat > max ? sat : max,
-  );
-  const pastStart = shiftIso(start, -52 * 7);
-  const weeks: string[] = [];
-  for (let sat = pastStart; sat <= end; sat = shiftIso(sat, 7)) {
-    weeks.push(sat);
-  }
-  if (!weeks.includes(anchor)) {
-    weeks.push(anchor);
-    weeks.sort();
-  }
-  return weeks;
+function satFriWeek(iso: string): { start: string; end: string } | null {
+  const day = iso.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const [year, month, date] = day.split("-").map(Number);
+  const cursor = new Date(year, month - 1, date);
+  const sinceSat = (cursor.getDay() + 1) % 7;
+  const start = new Date(year, month - 1, date - sinceSat);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  const fmt = (value: Date) => {
+    const mm = String(value.getMonth() + 1).padStart(2, "0");
+    const dd = String(value.getDate()).padStart(2, "0");
+    return `${value.getFullYear()}-${mm}-${dd}`;
+  };
+  return { start: fmt(start), end: fmt(end) };
 }
 
-function incomePlanWeekOptionLabel(saturday: string, thisWeekSaturday: string): string {
-  return formatWeekChooserLabel(saturday, thisWeekSaturday);
+function usdCents(minor: number, scale: number): number {
+  if (!Number.isFinite(minor)) return 0;
+  const places = Number.isFinite(scale) ? scale : 2;
+  if (places === 2) return minor;
+  if (places < 2) return minor * 10 ** (2 - places);
+  return Math.round(minor / 10 ** (places - 2));
+}
+
+/** Same Plan $ total the Income Plan week screen prints. */
+function incomePlanWeekPlanMinor(week: IncomePlanWeekGet | null | undefined): number | null {
+  const rows = week?.positions ?? [];
+  if (!rows.some((row) => row.planKnown)) return null;
+  return rows.reduce(
+    (sum, row) => sum + (row.planKnown ? (row.plannedMinor ?? 0) : 0),
+    0,
+  );
 }
 
 type ManualDividendRow = {
@@ -1112,6 +858,7 @@ function blankManualDividendRow(): ManualDividendRow {
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
+  const [cmDesk, setCmDesk] = useState<CmDesk>("weekly");
   const screenRef = useRef(screen);
   screenRef.current = screen;
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -1146,6 +893,50 @@ export default function App() {
     useState<CashManagementRemindersGet | null>(null);
   const [cashMonth, setCashMonth] = useState<CashManagementMonthGet | null>(null);
   const [carRocPlan, setCarRocPlan] = useState<CarRocPlanGet | null>(null);
+  const [taxPlanning, setTaxPlanning] = useState<TaxPlanningGet | null>(null);
+  const [weekAhead, setWeekAhead] = useState<WeekAheadGet | null>(null);
+  const [weekAheadPending, setWeekAheadPending] = useState<string | null>(null);
+  const [cashRegister, setCashRegister] = useState<CashRegisterGet | null>(null);
+  const [cashElements, setCashElements] = useState<CashElementListGet | null>(null);
+  const [registerBook, setRegisterBook] = useState("Income");
+  const [registerPeriod, setRegisterPeriod] = useState("1M");
+  const [registerView, setRegisterView] = useState<"calendar" | "trend">("calendar");
+  const [elementEditorOpen, setElementEditorOpen] = useState(false);
+  const [elementDirty, setElementDirty] = useState(false);
+  const [externalDirty, setExternalDirty] = useState(false);
+  const [externalReset, setExternalReset] = useState(0);
+  const [menuWorking, setMenuWorking] = useState<string | null>(null);
+  const [catalogBook, setCatalogBook] = useState("all");
+  const [cashYtd, setCashYtd] = useState<CashYtdGet | null>(null);
+  const [ytdView, setYtdView] = useState<"account" | "tax">("account");
+  const [cashCoverage, setCashCoverage] = useState<CashCoverageGet | null>(null);
+  const [coveragePeriod, setCoveragePeriod] = useState<CoveragePeriod>("week");
+  const coveragePeriodRef = useRef<CoveragePeriod>("week");
+  const [coverageBusy, setCoverageBusy] = useState(false);
+  const [editorElement, setEditorElement] = useState<CashElementRecord | null>(null);
+  const [editorOccurrenceId, setEditorOccurrenceId] = useState<string | null>(null);
+  const registerBookRef = useRef("Income");
+  const registerPeriodRef = useRef("1M");
+  const registerFetchSeq = useRef(0);
+  const catalogFetchSeq = useRef(0);
+  const [registerBusy, setRegisterBusy] = useState(false);
+  const ytdViewRef = useRef<"account" | "tax">("account");
+  const loadRegisterMonth = useCallback(async (monthEnd: string) => {
+    const monthStart = `${monthEnd.slice(0, 8)}01`;
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const result = await client.executeQuery("CashRegisterGet", {
+      asOfDate: today,
+      account: registerBookRef.current,
+      period: "1M",
+      periodStart: monthStart,
+      periodEnd: monthEnd,
+    });
+    if (!result.ok || !result.bodyJson) {
+      return null;
+    }
+    return JSON.parse(result.bodyJson) as CashRegisterGet;
+  }, []);
   const [cashDirty, setCashDirty] = useState(false);
   const [cartDirty, setCartDirty] = useState(false);
   const [holdingsLotSort, setHoldingsLotSort] = useState<LotSortMode>("lowest-cost");
@@ -1160,10 +951,11 @@ export default function App() {
   const perfRangeRef = useRef(perfRange);
   perfRangeRef.current = perfRange;
   const trendsGraphPeriodRef = useRef<GraphPeriod>(DEFAULT_GRAPH_PERIOD);
+  const [trendsChartEpoch, setTrendsChartEpoch] = useState(0);
   const [holdings, setHoldings] = useState<HoldingsGet | null>(null);
   const [calculator, setCalculator] = useState<CalculatorGet | null>(null);
   const [declHistory, setDeclHistory] = useState<DeclarationHistoryGet | null>(null);
-  const [histCadence, setHistCadence] = useState("weekly");
+  const [histCadence, setHistCadence] = useState("all");
   const [histPeriod, setHistPeriod] = useState("60");
   const [histStartOn, setHistStartOn] = useState("");
   const [histEndOn, setHistEndOn] = useState("");
@@ -1359,6 +1151,21 @@ export default function App() {
   const jobsBusyRef = useRef(false);
   const restartingRef = useRef(false);
   const lastPriceKickoff = useRef(false);
+  const loadedIncomeRef = useRef(false);
+  const loadedTrendsRef = useRef(false);
+  const loadedCashRef = useRef(false);
+  const loadedElementsRef = useRef(false);
+  const elementsWarmAsOfRef = useRef("");
+  const incomeGridRef = useRef(incomeGrid);
+  incomeGridRef.current = incomeGrid;
+  const dividendPerfRef = useRef(dividendPerf);
+  dividendPerfRef.current = dividendPerf;
+  const taxPlanningRef = useRef(taxPlanning);
+  taxPlanningRef.current = taxPlanning;
+  const loadedPositionsRef = useRef(false);
+  const loadedCalcRef = useRef(false);
+  const loadedHistoryRef = useRef(false);
+  const loadedDashboardRef = useRef(false);
   const [weekWizardActive, setWeekWizardActive] = useState(false);
   const [cashWeekSavedAt, setCashWeekSavedAt] = useState(0);
   const [collectorItems, setCollectorItems] = useState<CollectorSetItem[]>([]);
@@ -2511,176 +2318,59 @@ export default function App() {
     [],
   );
 
-  const refreshData = useCallback(async (asOf: string) => {
-    await client.executeQuery("CashDividendCoverageGet", { asOfDate: asOf });
-    const [weekResult, gridResult, burnResult, trendsResult, trendsWeekResult, cashWeekResult, cashRemindersResult, cashMonthResult, cashMagiResult, holdingsResult, exceptionResult, summaryResult, dividendResult, calcResult, historyResult, accountResult, securityResult, positionResult, masterResult, coverageResult, perfResult, trendsPerfResult, accountValueResult, dividendPlanResult] =
-      await Promise.all([
-        client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf }),
-        client.executeQuery("IncomePlanGridGet", {
-          asOfDate: asOf,
-          historicalWeeks: incomeHistWeeks,
-          futureWeeks: incomeFutWeeks,
-          accounts: drillAccounts,
-          weekEnding: asOf,
-        }),
-        client.executeQuery("DashboardBurndownGet", { asOfDate: asOf }),
-        client.executeQuery("TrendsGet", { asOfDate: asOf }),
-        client.executeQuery("TrendsWeekGet", {
-          asOfDate: trendsWeekAsOfRef.current || "",
-        }),
-        client.executeQuery("CashManagementWeekGet", { asOfDate: asOf }),
-        client.executeQuery("CashManagementRemindersGet", { asOfDate: asOf }),
-        client.executeQuery("CashManagementMonthGet", { asOfDate: asOf }),
-        client.executeQuery("MagiProjectionGet"),
-        client.executeQuery("HoldingsGet"),
-        client.executeQuery("ExceptionList"),
-        client.executeQuery("DataSummaryGet"),
-        client.executeQuery("DividendGet"),
-        client.executeQuery("CalculatorGet"),
-        client.executeQuery("DeclarationHistoryGet", {
-          asOfDate: asOf,
-          cadence: "all",
-          startOn: historyBounds(
-            histPeriodRef.current,
-            asOf,
-            histStartRef.current,
-            histEndRef.current,
-          ).startOn,
-          endOn: historyBounds(
-            histPeriodRef.current,
-            asOf,
-            histStartRef.current,
-            histEndRef.current,
-          ).endOn,
-        }),
-        client.executeQuery("AccountList"),
-        client.executeQuery("SecurityList"),
-        client.executeQuery("PositionDetailsGet", { asOfDate: asOf }),
-        client.executeQuery("PositionMasterGet"),
-        client.executeQuery("PositionDetailsCoverageGet"),
-        client.executeQuery("DividendPerformanceGet", {
-          asOfDate: asOf,
-          range: perfRangeRef.current,
-        }),
-        client.executeQuery("DividendPerformanceGet", {
-          asOfDate: asOf,
-          range: trendsGraphPeriodRef.current,
-        }),
+  const parseQuery = <T,>(raw?: string): T | null => {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const refreshHomeData = useCallback(async (asOf: string) => {
+    const [
+      homeResult,
+      dividendResult,
+      holdingsResult,
+      exceptionResult,
+      accountResult,
+      securityResult,
+    ] = await Promise.all([
+      client.executeQuery("HomeOpenGet", { asOfDate: asOf }),
+      client.executeQuery("DividendGet"),
+      client.executeQuery("HoldingsGet"),
+      client.executeQuery("ExceptionList"),
+      client.executeQuery("AccountList"),
+      client.executeQuery("SecurityList"),
+    ]);
+    if (homeResult.ok && homeResult.bodyJson) {
+      const bundle = parseQuery<HomeOpenGet>(homeResult.bodyJson);
+      if (bundle) {
+        setSummary(bundle.summary);
+        setAccountValues(bundle.accountValue);
+        setDividendPlan(bundle.dividendPlan);
+      }
+    } else {
+      const [summaryResult, accountValueResult, dividendPlanResult] = await Promise.all([
+        client.executeQuery("DataSummaryGet", { asOfDate: asOf }),
         client.executeQuery("AccountValueHomeGet"),
         client.executeQuery("DividendPlanHomeGet", { asOfDate: asOf }),
       ]);
-    const failed = [
-      weekResult,
-      gridResult,
-      burnResult,
-      trendsResult,
-      trendsWeekResult,
-      cashWeekResult,
-      cashRemindersResult,
-      cashMonthResult,
-      holdingsResult,
-      exceptionResult,
-      summaryResult,
-      dividendResult,
-      calcResult,
-      historyResult,
-      accountResult,
-      securityResult,
-      positionResult,
-      masterResult,
-      coverageResult,
-      perfResult,
-      accountValueResult,
-      dividendPlanResult,
-    ].filter((r) => !r.ok);
-    if (failed.length > 0) {
-      const stale = failed.some((r) => r.errorCode === "unknown_query");
-      const detail = failed
-        .map((r) => `${r.queryName}: ${r.errorCode ?? "error"}`)
-        .join("; ");
-      setActionMessage(
-        stale
-          ? `Desktop host is stale (${detail}). Fully quit finos and run npm run desktop so rust rebuilds.`
-          : detail,
-      );
-    }
-    const parse = <T,>(raw?: string): T | null => {
-      if (!raw) return null;
-      try {
-        return JSON.parse(raw) as T;
-      } catch {
-        return null;
+      if (summaryResult.ok) {
+        setSummary(parseQuery<DataSummaryGet>(summaryResult.bodyJson));
       }
-    };
-    setIncomeWeek(parse<IncomePlanWeekGet>(weekResult.bodyJson));
-    setIncomeGrid(parse<IncomePlanGridGet>(gridResult.bodyJson));
-    setBurndown(parse<DashboardBurndownGet>(burnResult.bodyJson));
-    if (trendsResult.ok) {
-      setTrends(parse<TrendsGet>(trendsResult.bodyJson));
-      setTrendsError(null);
-    } else {
-      setTrends({ points: [], totalMinor: 0, weeks: [], scale: 2 });
-      setTrendsError(trendsResult.errorCode ?? "TrendsGet failed");
-    }
-    if (trendsWeekResult.ok) {
-      const parsed = parse<TrendsWeekCapture>(trendsWeekResult.bodyJson);
-      setTrendsCapture(parsed);
-      if (!trendsWeekAsOfRef.current) {
-        trendsWeekAsOfRef.current =
-          parsed?.firstUnpopulatedStart || parsed?.periodStart || "";
+      if (accountValueResult.ok) {
+        setAccountValues(parseQuery<AccountValueHomeGet>(accountValueResult.bodyJson));
+      }
+      if (dividendPlanResult.ok) {
+        setDividendPlan(parseQuery<DividendPlanHomeGet>(dividendPlanResult.bodyJson));
       }
     }
-    if (cashWeekResult.ok) {
-      setCashWeek(parse<CashManagementWeekGet>(cashWeekResult.bodyJson));
+    if (dividendResult.ok) {
+      setDividendLifetime(parseQuery<DividendGet>(dividendResult.bodyJson));
     }
-    if (cashRemindersResult.ok) {
-      setCashReminders(
-        parse<CashManagementRemindersGet>(cashRemindersResult.bodyJson),
-      );
-    }
-    if (cashMonthResult.ok) {
-      setCashMonth(parse<CashManagementMonthGet>(cashMonthResult.bodyJson));
-    }
-    const carRocResult = await client.executeQuery("CarRocPlanGet", {
-      asOfDate: asOf,
-    });
-    if (carRocResult.ok) {
-      setCarRocPlan(parse<CarRocPlanGet>(carRocResult.bodyJson));
-    } else {
-      setCarRocPlan(null);
-    }
-    if (cashMagiResult.ok) {
-      setCashMagi(parse<MagiProjection>(cashMagiResult.bodyJson));
-    } else {
-      setCashMagi(null);
-    }
-    setHoldings(parse<HoldingsGet>(holdingsResult.bodyJson));
-    setCalculator(parse<CalculatorGet>(calcResult.bodyJson));
-    setDeclHistory(parse<DeclarationHistoryGet>(historyResult.bodyJson));
-    setSummary(parse<DataSummaryGet>(summaryResult.bodyJson));
-    setDividendLifetime(parse<DividendGet>(dividendResult.bodyJson));
-    setPositionDetails(parse<PositionDetailsGet>(positionResult.bodyJson));
-    setPositionMaster(parse<PositionMasterGet>(masterResult.bodyJson));
-    setIssuerCoverage(parse<PositionDetailsCoverageGet>(coverageResult.bodyJson));
-    if (perfResult.ok) {
-      setDividendPerf(parse<DividendPerformanceGet>(perfResult.bodyJson));
-    } else {
-      setDividendPerf(null);
-    }
-    if (trendsPerfResult.ok) {
-      setTrendsDividendPerf(parse<DividendPerformanceGet>(trendsPerfResult.bodyJson));
-    } else {
-      setTrendsDividendPerf(null);
-    }
-    if (accountValueResult.ok) {
-      setAccountValues(parse<AccountValueHomeGet>(accountValueResult.bodyJson));
-    } else {
-      setAccountValues(null);
-    }
-    if (dividendPlanResult.ok) {
-      setDividendPlan(parse<DividendPlanHomeGet>(dividendPlanResult.bodyJson));
-    } else {
-      setDividendPlan(null);
+    if (holdingsResult.ok) {
+      setHoldings(parseQuery<HoldingsGet>(holdingsResult.bodyJson));
     }
     if (accountResult.bodyJson) {
       try {
@@ -2698,6 +2388,11 @@ export default function App() {
         setSecurities([]);
       }
     }
+    void client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf }).then((week) => {
+      if (week.ok && week.bodyJson) {
+        setIncomeWeek(parseQuery<IncomePlanWeekGet>(week.bodyJson));
+      }
+    });
     if (exceptionResult.bodyJson) {
       try {
         setExceptions(JSON.parse(exceptionResult.bodyJson) as ExceptionRecord[]);
@@ -2733,6 +2428,215 @@ export default function App() {
       setWorkTickets([]);
     }
   }, []);
+
+  const loadIncomePack = useCallback(async (asOf: string) => {
+    loadedIncomeRef.current = true;
+    const weekResult = await client.executeQuery("IncomePlanWeekGet", { asOfDate: asOf });
+    if (weekResult.ok) {
+      setIncomeWeek(parseQuery<IncomePlanWeekGet>(weekResult.bodyJson));
+    }
+  }, []);
+
+  const loadTrendsPack = useCallback(async (asOf: string) => {
+    loadedTrendsRef.current = true;
+    const [trendsResult, trendsWeekResult, trendsPerfResult] = await Promise.all([
+      client.executeQuery("TrendsGet", { asOfDate: asOf }),
+      client.executeQuery("TrendsWeekGet", {
+        asOfDate: trendsWeekAsOfRef.current || "",
+      }),
+      client.executeQuery("DividendPerformanceGet", {
+        asOfDate: asOf,
+        range: trendsGraphPeriodRef.current,
+      }),
+    ]);
+    if (trendsResult.ok) {
+      const parsed = parseQuery<TrendsGet>(trendsResult.bodyJson);
+      if (parsed) {
+        setTrends(parsed);
+        setTrendsError(null);
+      } else {
+        setTrends({ points: [], totalMinor: 0, weeks: [], scale: 2 });
+        setTrendsError("TrendsGet returned nothing");
+      }
+    } else {
+      setTrends({ points: [], totalMinor: 0, weeks: [], scale: 2 });
+      setTrendsError(trendsResult.errorCode ?? "TrendsGet failed");
+    }
+    if (trendsWeekResult.ok) {
+      const parsed = parseQuery<TrendsWeekCapture>(trendsWeekResult.bodyJson);
+      setTrendsCapture(parsed);
+      if (!trendsWeekAsOfRef.current) {
+        trendsWeekAsOfRef.current =
+          parsed?.firstUnpopulatedStart || parsed?.periodStart || "";
+      }
+    }
+    if (trendsPerfResult.ok) {
+      setTrendsDividendPerf(parseQuery<DividendPerformanceGet>(trendsPerfResult.bodyJson));
+    }
+  }, []);
+
+  const loadCashPack = useCallback(async (asOf: string) => {
+    loadedCashRef.current = true;
+    const [
+      cashWeekResult,
+      cashRemindersResult,
+      cashMonthResult,
+      cashMagiResult,
+      taxPlanningResult,
+    ] = await Promise.all([
+      client.executeQuery("CashManagementWeekGet", { asOfDate: asOf }),
+      client.executeQuery("CashManagementRemindersGet", { asOfDate: asOf }),
+      client.executeQuery("CashManagementMonthGet", { asOfDate: asOf }),
+      client.executeQuery("MagiProjectionGet"),
+      client.executeQuery("TaxPlanningGet", { asOfDate: asOf }),
+    ]);
+    if (cashWeekResult.ok) {
+      setCashWeek(parseQuery<CashManagementWeekGet>(cashWeekResult.bodyJson));
+    }
+    if (cashRemindersResult.ok) {
+      setCashReminders(
+        parseQuery<CashManagementRemindersGet>(cashRemindersResult.bodyJson),
+      );
+    }
+    if (cashMonthResult.ok) {
+      setCashMonth(parseQuery<CashManagementMonthGet>(cashMonthResult.bodyJson));
+    }
+    if (cashMagiResult.ok) {
+      setCashMagi(parseQuery<MagiProjection>(cashMagiResult.bodyJson));
+    } else {
+      setCashMagi(null);
+    }
+    if (taxPlanningResult.ok) {
+      const plan = parseQuery<TaxPlanningGet>(taxPlanningResult.bodyJson);
+      setTaxPlanning(plan);
+      if (plan?.car) {
+        setCarRocPlan(plan.car);
+      }
+      if (plan?.ytd) {
+        setCashYtd(plan.ytd);
+      }
+    } else {
+      setTaxPlanning(null);
+    }
+    const weekAheadResult = await client.executeQuery("WeekAheadGet", {
+      asOfDate: asOf,
+    });
+    if (weekAheadResult.ok) {
+      setWeekAhead(parseQuery<WeekAheadGet>(weekAheadResult.bodyJson));
+    }
+    const cashRegisterResult = await client.executeQuery("CashRegisterGet", {
+      asOfDate: asOf,
+      account: registerBookRef.current,
+      period: registerPeriodRef.current,
+    });
+    if (cashRegisterResult.ok) {
+      setCashRegister(parseQuery<CashRegisterGet>(cashRegisterResult.bodyJson));
+    }
+    const cashElementsResult = await client.executeQuery("CashElementListGet", {
+      account: "all",
+      asOfDate: asOf,
+    });
+    if (cashElementsResult.ok) {
+      setCashElements(parseQuery<CashElementListGet>(cashElementsResult.bodyJson));
+    }
+    const cashYtdResult = await client.executeQuery("CashYtdGet", {
+      asOfDate: asOf,
+      view: ytdViewRef.current,
+    });
+    if (cashYtdResult.ok) {
+      setCashYtd(parseQuery<CashYtdGet>(cashYtdResult.bodyJson));
+    }
+    const cashCoverageResult = await client.executeQuery("CashCoverageGet", {
+      asOfDate: asOf,
+      period: coveragePeriodRef.current,
+    });
+    if (cashCoverageResult.ok) {
+      setCashCoverage(parseQuery<CashCoverageGet>(cashCoverageResult.bodyJson));
+    }
+  }, []);
+
+  const loadElementsPack = useCallback(async (asOf: string) => {
+    loadedElementsRef.current = true;
+    const els = await fetchElementList(client, asOf);
+    if (els) {
+      setCashElements(els);
+      elementsWarmAsOfRef.current = asOf;
+    }
+  }, []);
+
+  const loadPositionsPack = useCallback(async (asOf: string) => {
+    loadedPositionsRef.current = true;
+    const [positionResult, masterResult, coverageResult] = await Promise.all([
+      client.executeQuery("PositionDetailsGet", { asOfDate: asOf }),
+      client.executeQuery("PositionMasterGet"),
+      client.executeQuery("PositionDetailsCoverageGet"),
+    ]);
+    if (positionResult.ok) {
+      setPositionDetails(parseQuery<PositionDetailsGet>(positionResult.bodyJson));
+    }
+    if (masterResult.ok) {
+      setPositionMaster(parseQuery<PositionMasterGet>(masterResult.bodyJson));
+    }
+    if (coverageResult.ok) {
+      setIssuerCoverage(parseQuery<PositionDetailsCoverageGet>(coverageResult.bodyJson));
+    }
+  }, []);
+
+  const loadCalcPack = useCallback(async () => {
+    loadedCalcRef.current = true;
+    const calcResult = await client.executeQuery("CalculatorGet");
+    if (calcResult.ok) {
+      setCalculator(parseQuery<CalculatorGet>(calcResult.bodyJson));
+    }
+  }, []);
+
+  const loadHistoryPack = useCallback(async (asOf: string) => {
+    loadedHistoryRef.current = true;
+    const historyResult = await client.executeQuery("DeclarationHistoryGet", {
+      asOfDate: asOf,
+      cadence: "all",
+      startOn: historyBounds(
+        histPeriodRef.current,
+        asOf,
+        histStartRef.current,
+        histEndRef.current,
+      ).startOn,
+      endOn: historyBounds(
+        histPeriodRef.current,
+        asOf,
+        histStartRef.current,
+        histEndRef.current,
+      ).endOn,
+    });
+    if (historyResult.ok) {
+      setDeclHistory(parseQuery<DeclarationHistoryGet>(historyResult.bodyJson));
+    }
+  }, []);
+
+  const loadDashboardPack = useCallback(async (asOf: string) => {
+    loadedDashboardRef.current = true;
+    const burnResult = await client.executeQuery("DashboardBurndownGet", {
+      asOfDate: asOf,
+    });
+    if (burnResult.ok) {
+      setBurndown(parseQuery<DashboardBurndownGet>(burnResult.bodyJson));
+    }
+  }, []);
+
+  const refreshData = useCallback(async (asOf: string) => {
+    await refreshHomeData(asOf);
+    const extra: Promise<void>[] = [];
+    if (loadedIncomeRef.current) extra.push(loadIncomePack(asOf));
+    if (loadedTrendsRef.current) extra.push(loadTrendsPack(asOf));
+    if (loadedCashRef.current) extra.push(loadCashPack(asOf));
+    else if (loadedElementsRef.current) extra.push(loadElementsPack(asOf));
+    if (loadedPositionsRef.current) extra.push(loadPositionsPack(asOf));
+    if (loadedCalcRef.current) extra.push(loadCalcPack());
+    if (loadedHistoryRef.current) extra.push(loadHistoryPack(asOf));
+    if (loadedDashboardRef.current) extra.push(loadDashboardPack(asOf));
+    await Promise.all(extra);
+  }, [refreshHomeData, loadIncomePack, loadTrendsPack, loadCashPack, loadElementsPack, loadPositionsPack, loadCalcPack, loadHistoryPack, loadDashboardPack]);
+
 
   const loadIncomeGrid = useCallback(
     async (
@@ -2965,21 +2869,42 @@ export default function App() {
           `Account value snapshot failed: ${snap.errorCode ?? "error"}.`,
         );
       }
-      await refreshData(asOfDate);
+      await refreshHomeData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
       setLastPriceBusy(false);
       setLastPriceProgress(null);
     }
-  }, [asOfDate, refreshData]);
+  }, [asOfDate, refreshHomeData]);
 
-  const refreshDeclarations = useCallback(async () => {
+  const refreshDeclarations = useCallback(async (force = false) => {
+    if (!force) {
+      let inSchedule = false;
+      try {
+        const window = await client.executeQuery("LastPriceAutoWindowGet", {});
+        if (window.ok && window.bodyJson) {
+          const body = JSON.parse(window.bodyJson) as {
+            inSchedule?: boolean;
+            allowed?: boolean;
+          };
+          inSchedule = body.inSchedule === true;
+        }
+      } catch {
+        inSchedule = false;
+      }
+      if (!inSchedule) {
+        return;
+      }
+    }
     setDeclarationBusy(true);
     setDeclarationProgress({ current: 0, total: 0, symbol: "" });
     try {
       await client.executeCommand("ProviderDeclarationSourcesApply", {});
-      const result = await client.executeCommand("DeclarationRefresh", {});
+      const result = await client.executeCommand(
+        "DeclarationRefresh",
+        force ? { force: true } : {},
+      );
       if (!result.ok) {
         setActionMessage(
           `Declaration refresh failed: ${result.errorCode ?? "error"}.`,
@@ -3291,32 +3216,6 @@ export default function App() {
   }, [refreshHandoff]);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [summaryResult, dividendResult] = await Promise.all([
-          client.executeQuery("DataSummaryGet"),
-          client.executeQuery("DividendGet"),
-        ]);
-        if (cancelled) return;
-        if (!summaryResult.ok || !summaryResult.bodyJson) {
-          return;
-        }
-        const body = JSON.parse(summaryResult.bodyJson) as DataSummaryGet;
-        setSummary(body);
-        if (dividendResult.ok && dividendResult.bodyJson) {
-          setDividendLifetime(JSON.parse(dividendResult.bodyJson) as DividendGet);
-        }
-      } catch {
-        /* keep calendar this week */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
     if (skipFullRefreshOnAsOfRef.current) {
       skipFullRefreshOnAsOfRef.current = false;
       prevIncomeAsOfRef.current = asOfDate;
@@ -3343,6 +3242,122 @@ export default function App() {
         }
       });
   }, [asOfDate, refreshData]);
+
+  useEffect(() => {
+    if (screen === "income-plan") {
+      void loadIncomePack(asOfDate);
+    } else if (screen === "trends") {
+      void loadTrendsPack(asOfDate).catch((err: unknown) => {
+        setTrends({ points: [], totalMinor: 0, weeks: [], scale: 2 });
+        setTrendsError(err instanceof Error ? err.message : String(err));
+      });
+    } else if (screen === "cash-management") {
+      if (cmDesk === "elements") {
+        void loadElementsPack(asOfDate);
+      } else if (cmDesk !== "external") {
+        void loadCashPack(asOfDate);
+      }
+    } else if (screen === "position-details" || screen === "holdings") {
+      void loadPositionsPack(asOfDate);
+    } else if (screen === "calculator") {
+      void loadCalcPack();
+      void loadHistoryPack(asOfDate);
+      void loadPositionsPack(asOfDate);
+    } else if (screen === "dashboard") {
+      void loadDashboardPack(asOfDate);
+    }
+    if (screen === "position-details") {
+      void loadHistoryPack(asOfDate);
+    }
+  }, [
+    screen,
+    cmDesk,
+    asOfDate,
+    loadIncomePack,
+    loadTrendsPack,
+    loadCashPack,
+    loadElementsPack,
+    loadPositionsPack,
+    loadCalcPack,
+    loadDashboardPack,
+    loadHistoryPack,
+  ]);
+
+  useEffect(() => {
+    if (screen !== "home" && screen !== "income-plan") {
+      return;
+    }
+    if (busy || elementDirty || lastPriceBusy || declarationBusy) {
+      return;
+    }
+    if (screen === "home" && !accountValues) {
+      return;
+    }
+    if (screen === "income-plan" && (incomeWeekLoading || !incomeWeek)) {
+      return;
+    }
+    let cancelled = false;
+    const stop = scheduleIdleWarm(() => {
+      if (cancelled) return;
+      void runBackgroundReads(
+        client,
+        {
+          asOf: asOfDate,
+          hist: incomeHistWeeks,
+          fut: incomeFutWeeks,
+          accounts: drillAccounts,
+          range: perfRangeRef.current,
+          haveGrid:
+            screen === "home"
+            || incomeGridMemoryMatches(
+              incomeGridRef.current,
+              asOfDate,
+              incomeHistWeeks,
+              incomeFutWeeks,
+              drillAccounts,
+            ),
+          havePerf:
+            screen === "home"
+            || (dividendPerfRef.current?.asOfDate === asOfDate
+              && dividendPerfRef.current.range === perfRangeRef.current),
+          haveElements: elementsWarmAsOfRef.current === asOfDate,
+          haveTax: taxPlanningRef.current?.asOfDate === asOfDate,
+        },
+        () => cancelled,
+      ).then((memory) => {
+        if (cancelled) return;
+        if (memory.grid) setIncomeGrid(memory.grid);
+        if (memory.perf) setDividendPerf(memory.perf);
+        if (memory.elements) {
+          setCashElements(memory.elements);
+          elementsWarmAsOfRef.current = asOfDate;
+          loadedElementsRef.current = true;
+        }
+        if (memory.tax) {
+          setTaxPlanning(memory.tax);
+          if (memory.tax.car) setCarRocPlan(memory.tax.car);
+          if (memory.tax.ytd) setCashYtd(memory.tax.ytd);
+        }
+      });
+    });
+    return () => {
+      cancelled = true;
+      stop();
+    };
+  }, [
+    screen,
+    asOfDate,
+    busy,
+    elementDirty,
+    lastPriceBusy,
+    declarationBusy,
+    accountValues,
+    incomeWeek,
+    incomeWeekLoading,
+    incomeHistWeeks,
+    incomeFutWeeks,
+    drillAccounts,
+  ]);
 
   useEffect(() => {
     if (screen !== "import") {
@@ -3429,12 +3444,14 @@ export default function App() {
     void (async () => {
       if (summary.openLotCount > 0) {
         await refreshLastPrices();
-        const alreadyToday =
-          Boolean(summary.declarationRefreshedOn) &&
-          summary.declarationRefreshedOn === summary.declarationAsOf;
-        if (!alreadyToday) {
-          await refreshDeclarations();
-        }
+      }
+      const alreadyToday =
+        Boolean(summary.declarationRefreshedOn) &&
+        summary.declarationRefreshedOn === summary.declarationAsOf;
+      if (!alreadyToday) {
+        await refreshDeclarations();
+      }
+      if (summary.openLotCount > 0) {
         return;
       }
       await client.executeCommand("AccountValueSnapshotRecord", {});
@@ -5116,14 +5133,14 @@ export default function App() {
     ...(pdDirty ? (["position-details"] as const) : []),
     ...(wizDirty ? (["new-investment"] as const) : []),
     ...(addLotDirty ? (["add-lot"] as const) : []),
-    ...(cashDirty ? (["cash-management"] as const) : []),
+    ...(cashDirty || elementDirty || externalDirty ? (["cash-management"] as const) : []),
     ...(cartDirty ? (["shopping-cart"] as const) : []),
   ];
   const dirtyScreenNames = [
     pdDirty ? "Position Details" : null,
     wizDirty ? "Add Position" : null,
     addLotDirty ? "Add Lot" : null,
-    cashDirty ? "Cash Management" : null,
+    cashDirty || elementDirty || externalDirty ? "Cash Management" : null,
     cartDirty ? "Shopping Cart" : null,
   ]
     .filter((name): name is string => name != null)
@@ -5158,6 +5175,14 @@ export default function App() {
     if (wizDirty) cancelWizEdits();
     if (addLotDirty) cancelAddLotEdits();
     if (cashDirty) setCashDirty(false);
+    if (elementDirty) {
+      setElementDirty(false);
+      setElementEditorOpen(false);
+    }
+    if (externalDirty) {
+      setExternalDirty(false);
+      setExternalReset((n) => n + 1);
+    }
   };
 
   const saveOwnerPeriod = async () => {
@@ -5295,17 +5320,46 @@ export default function App() {
 
   jobsBusyRef.current = busy || lastPriceBusy || declarationBusy;
 
-  const leaveWithoutSaving = (next: () => void, target?: Screen) => {
-    if (weekWizardActive && (target == null || target !== "cash-management")) {
+  const leaveWithoutSaving = (
+    next: () => void,
+    target?: Screen,
+    destDesk?: CmDesk,
+  ) => {
+    const ontoCm = target === "cash-management";
+    const dest = destDesk ?? (ontoCm ? cmDesk : undefined);
+    if (weekWizardActive && !(ontoCm && dest === "weekly")) {
+      setMenuWorking(null);
       setActionMessage(
         "Finish the week on Review → Accept before leaving.",
       );
       return;
     }
+    if (elementDirty && !(ontoCm && dest === "elements")) {
+      setMenuWorking(null);
+      setActionMessage(
+        "Save or Cancel before leaving. Navigation stays blocked while edits are unsaved.",
+      );
+      return;
+    }
+    if (externalDirty && !(ontoCm && dest === "external")) {
+      setMenuWorking(null);
+      setActionMessage(
+        "Save or Cancel before leaving. Navigation stays blocked while edits are unsaved.",
+      );
+      return;
+    }
+    if (cashDirty && !(ontoCm && dest === "weekly")) {
+      setMenuWorking(null);
+      setActionMessage(
+        "Save or Cancel before leaving. Navigation stays blocked while edits are unsaved.",
+      );
+      return;
+    }
     if (
-      (pdDirty || wizDirty || addLotDirty || cashDirty) &&
+      (pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty) &&
       (target == null || !dirtyTargets.includes(target))
     ) {
+      setMenuWorking(null);
       setActionMessage(
         "Save or Cancel before leaving. Navigation stays blocked while edits are unsaved.",
       );
@@ -5321,7 +5375,7 @@ export default function App() {
     if (restartingRef.current) {
       return;
     }
-    if (pdDirty || wizDirty || addLotDirty || cashDirty || weekWizardActive) {
+    if (pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty || weekWizardActive) {
       setActionMessage(
         weekWizardActive
           ? "Finish the week on Review → Accept before restarting."
@@ -5332,7 +5386,7 @@ export default function App() {
     restartingRef.current = true;
     setRestarting(true);
     setActionMessage(
-      "Restarting coding launch. Waiting for in-flight work, then closing the data file. A new finos (dev) console opens if the supervisor is running.",
+      "Restarting coding launch. Waiting for in-flight work, then closing the data file. Coding start is finos.bat; a new finos (dev) console opens.",
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     const deadline = Date.now() + 30_000;
@@ -5353,7 +5407,7 @@ export default function App() {
       setRestarting(false);
       setActionMessage(`Restart failed: ${String(err)}`);
     }
-  }, [pdDirty, wizDirty, addLotDirty, cashDirty, weekWizardActive]);
+  }, [pdDirty, wizDirty, addLotDirty, cashDirty, elementDirty, externalDirty, weekWizardActive]);
   const runAppRestartRef = useRef(runAppRestart);
   runAppRestartRef.current = runAppRestart;
 
@@ -5367,6 +5421,72 @@ export default function App() {
           const id = event.payload;
           if (id === "home") {
             goHomeRef.current();
+            return;
+          }
+          if (id === "cash-elements") {
+            leaveWithoutSavingRef.current(
+              () => {
+                setCmDesk("elements");
+                setScreen("cash-management");
+              },
+              "cash-management",
+              "elements",
+            );
+            return;
+          }
+          if (id === "cash-cashflow") {
+            leaveWithoutSavingRef.current(
+              () => {
+                setCmDesk("cashflow");
+                setScreen("cash-management");
+              },
+              "cash-management",
+              "cashflow",
+            );
+            return;
+          }
+          if (id === "cash-weekly" || id === "cash-management") {
+            leaveWithoutSavingRef.current(
+              () => {
+                setCmDesk("weekly");
+                setScreen("cash-management");
+              },
+              "cash-management",
+              "weekly",
+            );
+            return;
+          }
+          if (id === "cash-car-tax") {
+            leaveWithoutSavingRef.current(
+              () => {
+                setCmDesk("car");
+                setScreen("cash-management");
+              },
+              "cash-management",
+              "car",
+            );
+            return;
+          }
+          if (id === "cash-coverage") {
+            leaveWithoutSavingRef.current(
+              () => {
+                setCmDesk("coverage");
+                setScreen("cash-management");
+              },
+              "cash-management",
+              "coverage",
+            );
+            return;
+          }
+          if (id === "cash-external") {
+            leaveWithoutSavingRef.current(
+              () => {
+                setCmDesk("external");
+                setScreen("cash-management");
+              },
+              "cash-management",
+              "external",
+            );
             return;
           }
           if (!isScreen(id)) return;
@@ -6385,6 +6505,23 @@ export default function App() {
   }, [positionSymbolOptions, positionSymbolQuery]);
 
   const incomeThroughOn = summary?.latestYieldOn?.trim() ?? "";
+  const incomeWeekDeclared = (() => {
+    const rows = incomeWeek?.positions ?? [];
+    const declared = rows.filter((row) => row.declarationKnown);
+    if (declared.length === 0) return null;
+    return declared.reduce((sum, row) => sum + (row.declarationMinor ?? 0), 0);
+  })();
+  const incomeWeekImported = (() => {
+    const bounds = satFriWeek(incomeThroughOn);
+    if (!bounds || !dividendLifetime) return null;
+    const cents = dividendLifetime.actuals.reduce((sum, row) => {
+      const day = row.occurredOn.slice(0, 10);
+      if (day < bounds.start || day > bounds.end) return sum;
+      return sum + usdCents(row.amountMinor, row.scale);
+    }, 0);
+    return cents;
+  })();
+  const incomeWeekTotal = incomeWeekDeclared ?? incomeWeekImported;
   const incomeTxToday = localIsoDate();
   const incomeTxWindow = useMemo(
     () =>
@@ -7016,6 +7153,54 @@ export default function App() {
   const goHomeRef = useRef(goHome);
   goHomeRef.current = goHome;
 
+  useEffect(() => {
+    if (menuWorking) {
+      setMenuWorking(null);
+    }
+  }, [screen, cmDesk]);
+
+  const goCmDesk = (desk: CmDesk, label: string) => {
+    setOpenMenu(null);
+    setMenuWorking(label);
+    leaveWithoutSaving(
+      () => {
+        setCmDesk(desk);
+        setScreen("cash-management");
+        if (screen === "cash-management" && cmDesk === desk) {
+          setMenuWorking(null);
+        }
+      },
+      "cash-management",
+      desk,
+    );
+  };
+
+  const cmDeskButton = (desk: CmDesk, label: string) => (
+    <button
+      type="button"
+      role="menuitem"
+      className="menubar-item"
+      aria-label={label}
+      aria-current={
+        screen === "cash-management" && cmDesk === desk ? "page" : undefined
+      }
+      aria-busy={menuWorking === label || undefined}
+      disabled={
+        busy ||
+        (!(screen === "cash-management" && cmDesk === desk) &&
+          ((weekWizardActive && desk !== "weekly") ||
+            (elementDirty && desk !== "elements") ||
+            (externalDirty && desk !== "external") ||
+            (cashDirty && desk !== "weekly") ||
+            ((pdDirty || wizDirty || addLotDirty) &&
+              !dirtyTargets.includes("cash-management"))))
+      }
+      onClick={() => goCmDesk(desk, label)}
+    >
+      {label}
+    </button>
+  );
+
   const navButton = (id: Screen, label: string) => (
     <button
       type="button"
@@ -7023,16 +7208,33 @@ export default function App() {
       className="menubar-item"
       aria-label={label}
       aria-current={screen === id ? "page" : undefined}
+      aria-busy={menuWorking === label || undefined}
       disabled={
         busy ||
         (screen !== id &&
           ((weekWizardActive && id !== "cash-management") ||
-            ((pdDirty || wizDirty || addLotDirty || cashDirty) &&
+            ((pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty) &&
               !dirtyTargets.includes(id))))
       }
       onClick={() => {
         setOpenMenu(null);
-        leaveWithoutSaving(() => setScreen(id), id);
+        setMenuWorking(label);
+        leaveWithoutSaving(
+          () => {
+            if (id === "cash-management") {
+              setCmDesk("weekly");
+            }
+            setScreen(id);
+            if (
+              screen === id &&
+              (id !== "cash-management" || cmDesk === "weekly")
+            ) {
+              setMenuWorking(null);
+            }
+          },
+          id,
+          id === "cash-management" ? "weekly" : undefined,
+        );
       }}
     >
       {label}
@@ -7059,6 +7261,43 @@ export default function App() {
         </div>
       ) : null}
     </div>
+  );
+
+  const accountCashRows = [
+    ["Income", "SPAXX"],
+    ["FI Roth", "SPAXX"],
+    ["Speculation", "SPAXX"],
+    ["Health", "FDRXX"],
+    ["Car", "SPAXX"],
+    ["9", "SWVXX"],
+  ].map(([account, symbol]) => {
+    const cents = (holdings?.lots ?? [])
+      .filter(
+        (lot) =>
+          lot.accountName === account &&
+          lot.symbol.toUpperCase() === symbol &&
+          lot.remainingQuantityMinor > 0,
+      )
+      .reduce((sum, lot) => {
+        const denom = 10 ** lot.quantityScale;
+        return sum + (denom ? Math.round((lot.remainingQuantityMinor * 100) / denom) : 0);
+      }, 0);
+    const found = (holdings?.lots ?? []).some(
+      (lot) =>
+        lot.accountName === account &&
+        lot.symbol.toUpperCase() === symbol &&
+        lot.remainingQuantityMinor > 0,
+    );
+    return {
+      name: account === "9" ? "Account 9" : account,
+      symbol,
+      cents,
+      found,
+    };
+  });
+  const cashTotalCents = accountCashRows.reduce(
+    (sum, row) => sum + (row.found ? row.cents : 0),
+    0,
   );
 
   return (
@@ -7099,46 +7338,15 @@ export default function App() {
             Trends
           </button>
           {menuGroup(
-            "file",
-            "File",
+            "cash",
+            "Cash Management",
             <>
-              <button
-                type="button"
-                role="menuitem"
-                className="menubar-item"
-                aria-label="Save data snapshot"
-                onClick={() => {
-                  setOpenMenu(null);
-                  requestDataSnapshot();
-                }}
-              >
-                Save data snapshot
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="menubar-item"
-                aria-label="Restart Application"
-                disabled={restarting}
-                onClick={() => {
-                  setOpenMenu(null);
-                  void runAppRestart();
-                }}
-              >
-                Restart Application
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="menubar-item"
-                aria-label="Exit"
-                onClick={() => {
-                  setOpenMenu(null);
-                  void invoke("app_exit");
-                }}
-              >
-                Exit
-              </button>
+              {cmDeskButton("elements", "Element Management")}
+              {cmDeskButton("cashflow", "Cashflow Manager")}
+              {cmDeskButton("weekly", "System update tasks and confirmations")}
+              {cmDeskButton("car", "Tax Planning")}
+              {cmDeskButton("coverage", "Coverage")}
+              {cmDeskButton("external", "External accounts")}
             </>,
           )}
           {menuGroup(
@@ -7180,10 +7388,23 @@ export default function App() {
             </>,
           )}
         </div>
-        <p className="menubar-week" aria-label="Current week">
-          {formatMenuWeek(incomeWeek?.start ?? asOfDate)}
-        </p>
+        <div className="menubar-status">
+          <PageActivityBar />
+          <p className="menubar-week" aria-label="Current week">
+            {formatMenuWeek(incomeWeek?.start ?? asOfDate)}
+          </p>
+        </div>
       </nav>
+      {menuWorking ? (
+        <div
+          className="menu-working"
+          role="status"
+          aria-busy="true"
+          aria-label="Menu working"
+        >
+          Working…
+        </div>
+      ) : null}
       {restarting ? (
         <div
           className="blocked unsaved-bar restart-bar"
@@ -7197,12 +7418,6 @@ export default function App() {
           </p>
         </div>
       ) : null}
-      <RefreshActivityBar
-        lastPriceBusy={lastPriceBusy}
-        lastPriceProgress={lastPriceProgress}
-        declarationBusy={declarationBusy}
-        declarationProgress={declarationProgress}
-      />
       <main className="container" aria-label="finos">
       {screen === "home" ? (
         <>
@@ -7247,6 +7462,25 @@ export default function App() {
                     )}
               </dd>
             </div>
+            <div className="ps-cell ps-cash" aria-label="Account cash balances">
+              <dt>
+                Cash
+                <span className="ps-cash-total">{formatUsd(cashTotalCents, 2)}</span>
+              </dt>
+              <dd>
+                <ul>
+                  {accountCashRows.map((row) => (
+                    <li key={row.name}>
+                      <span className="ps-cash-name">{row.name}</span>
+                      <span className="ps-cash-amt">
+                        {row.found ? formatUsd(row.cents, 2) : "none"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </dd>
+              <p className="ps-note">Stored cash lot quantity</p>
+            </div>
             <div className="ps-cell ps-income">
               <dt>Income earned</dt>
               <dd>
@@ -7259,9 +7493,40 @@ export default function App() {
               </dd>
               <p className="ps-note">Lifetime paid dividends (cash)</p>
             </div>
-            <div className="ps-cell ps-count">
-              <dt>Symbols</dt>
-              <dd>{formatCount(summary.symbolCount ?? 0)}</dd>
+            <div className="ps-cell ps-coverage">
+              <dt>Last Price all symbols</dt>
+              <dd>
+                {formatCount(summary.lastPriceCount ?? 0)} of{" "}
+                {formatCount(summary.symbolCount ?? 0)}
+              </dd>
+              <p className="ps-note">
+                Last refresh{" "}
+                {lastPriceBusy
+                  ? "…"
+                  : summary.lastPriceRefreshedOn?.trim().slice(0, 10) || "none"}
+              </p>
+              <button
+                type="button"
+                aria-label="Refresh last prices"
+                aria-busy={lastPriceBusy}
+                disabled={lastPriceBusy || busy}
+                onClick={() => {
+                  void refreshLastPrices(true);
+                }}
+              >
+                {lastPriceBusy ? (
+                  <span
+                    className="ps-refresh-count"
+                    role="status"
+                    aria-live="polite"
+                    aria-label="Last price refresh progress"
+                  >
+                    {lastPriceRefreshLabel(lastPriceProgress)}
+                  </span>
+                ) : (
+                  "Refresh last prices"
+                )}
+              </button>
             </div>
             <div className="ps-pair" aria-label="Average monthly income">
               <div className="ps-cell ps-income">
@@ -7302,46 +7567,17 @@ export default function App() {
               </div>
             </div>
             <div className="ps-cell ps-coverage">
-              <dt>Last prices</dt>
-              <dd>
-                {formatCount(summary.lastPriceCount ?? 0)} of{" "}
-                {formatCount(summary.symbolCount ?? 0)}
-              </dd>
-              <p className="ps-note">
-                Last refresh{" "}
-                {lastPriceBusy
-                  ? "…"
-                  : summary.lastPriceRefreshedOn?.trim().slice(0, 10) || "none"}
-              </p>
-              <button
-                type="button"
-                aria-label="Refresh last prices"
-                aria-busy={lastPriceBusy}
-                disabled={lastPriceBusy || busy}
-                onClick={() => {
-                  void refreshLastPrices(true);
-                }}
-              >
-                {lastPriceBusy
-                  ? lastPriceRefreshLabel(lastPriceProgress)
-                  : "Refresh last prices"}
-              </button>
-            </div>
-            <div className="ps-cell ps-coverage">
-              <dt>Declarations</dt>
+              <dt>Dividend Managed positions</dt>
               <dd>
                 {formatCount(summary.declarationCount ?? 0)} of{" "}
                 {formatCount(summary.declarationCollectorCount ?? 0)}
               </dd>
               <p className="ps-note">
-                Last retrieve today OK {summary.declarationAsOf?.trim() || "—"}.
-                One issuer retrieve per enabled collector. Fail{" "}
-                {formatCount(summary.declarationFailCount ?? 0)} / miss
-                tickets{" "}
-                {formatCount(summary.declarationFailTicketCount ?? 0)}
-                {summary.declarationFailTicketParity === false
-                  ? " — gate broken"
-                  : ""}
+                Last update{" "}
+                {declarationBusy
+                  ? "…"
+                  : summary.declarationRefreshedOn?.trim().slice(0, 10) ||
+                    "none"}
               </p>
               <button
                 type="button"
@@ -7349,12 +7585,21 @@ export default function App() {
                 aria-busy={declarationBusy}
                 disabled={declarationBusy || busy}
                 onClick={() => {
-                  void refreshDeclarations();
+                  void refreshDeclarations(true);
                 }}
               >
-                {declarationBusy
-                  ? declarationRefreshLabel(declarationProgress)
-                  : "Refresh declarations"}
+                {declarationBusy ? (
+                  <span
+                    className="ps-refresh-count"
+                    role="status"
+                    aria-live="polite"
+                    aria-label="Declaration refresh progress"
+                  >
+                    {declarationRefreshLabel(declarationProgress)}
+                  </span>
+                ) : (
+                  "Refresh declarations"
+                )}
               </button>
             </div>
             <div className="ps-cell ps-coverage">
@@ -7374,11 +7619,6 @@ export default function App() {
                 Work Tickets
               </button>
             </div>
-            <div className="ps-cell ps-count">
-              <dt>Calculator plans</dt>
-              <dd>{formatCount(summary.planCount)}</dd>
-              <p className="ps-note">DIV-1 and CASH collector plans</p>
-            </div>
             <div className="ps-cell ps-date">
               <dt>Income through</dt>
               <dd>
@@ -7394,15 +7634,28 @@ export default function App() {
                 ) : (
                   "none"
                 )}
+                {incomeWeekTotal == null ? null : (
+                  <span className="ps-week-declared">
+                    {formatUsd(incomeWeekTotal, 2)}
+                  </span>
+                )}
               </dd>
-              <p className="ps-note">Last imported paid dividend date</p>
+              <p className="ps-note">
+                {incomeWeekDeclared == null ? "This week imported" : "This week declared"}
+              </p>
             </div>
           </dl>
         </section>
         ) : (
           <p role="status">Loading portfolio summary…</p>
         )}
+        <div className="home-top-right">
         <HomeDividendPlan plan={dividendPlan} />
+        <AccountCashFlow
+          weeks={accountValues?.weeks ?? trends?.weeks}
+          asOf={asOfDate}
+        />
+        </div>
         </div>
         {incomeTxOpen ? (
           <div
@@ -7601,39 +7854,61 @@ export default function App() {
       ) : null}
       {snapshotConfirm ? (
         <div
-          className="blocked unsaved-bar"
-          role="alertdialog"
-          aria-label="Confirm save data snapshot"
-          aria-modal="true"
+          className="home-av-dialog-backdrop"
+          onClick={() => {
+            if (!busy) {
+              setSnapshotConfirm(false);
+            }
+          }}
         >
-          <p>
-            Save a data snapshot under raw-data for today? Workbooks are written from
-            the live database. Today’s folder is replaced if it already exists.
-          </p>
-          <div className="buttons">
-            <button
-              type="button"
-              aria-label="Confirm save data snapshot"
-              disabled={busy}
-              onClick={() => {
-                setSnapshotConfirm(false);
-                void runDataSnapshot();
-              }}
-            >
-              Save snapshot
-            </button>
-            <button
-              type="button"
-              aria-label="Cancel save data snapshot"
-              disabled={busy}
-              onClick={() => setSnapshotConfirm(false)}
-            >
-              Cancel
-            </button>
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-label="Confirm save data snapshot"
+            className="home-av-dialog snapshot-confirm-dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <h3>Save data snapshot</h3>
+              <button
+                type="button"
+                aria-label="Cancel save data snapshot"
+                disabled={busy}
+                onClick={() => setSnapshotConfirm(false)}
+              >
+                Cancel
+              </button>
+            </header>
+            <p>
+              Save a data snapshot under raw-data for today? Workbooks and a copy of
+              local.sqlite are written from the live database. Today’s folder is
+              replaced if it already exists.
+            </p>
+            <div className="buttons">
+              <button
+                type="button"
+                aria-label="Confirm save data snapshot"
+                disabled={busy}
+                onClick={() => {
+                  setSnapshotConfirm(false);
+                  void runDataSnapshot();
+                }}
+              >
+                Save snapshot
+              </button>
+              <button
+                type="button"
+                aria-label="Cancel save data snapshot"
+                disabled={busy}
+                onClick={() => setSnapshotConfirm(false)}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
-      {pdDirty || wizDirty || addLotDirty || cashDirty ? (
+      {pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty ? (
         <div className="blocked unsaved-bar" role="alert">
           <p>
             Unsaved edits on {dirtyScreenNames}. Save or Cancel. Other screens stay
@@ -7647,7 +7922,14 @@ export default function App() {
                   key={id}
                   type="button"
                   aria-label="Open screen with unsaved edits"
-                  onClick={() => setScreen(id)}
+                  onClick={() => {
+                    if (id === "cash-management") {
+                      setCmDesk(
+                        externalDirty ? "external" : elementDirty ? "elements" : "weekly",
+                      );
+                    }
+                    setScreen(id);
+                  }}
                 >
                   Open{" "}
                   {id === "position-details"
@@ -7681,291 +7963,65 @@ export default function App() {
       ) : null}
 
       {screen === "income-plan" ? (
-        <section
-          className="income-plan-page"
-          aria-label="Income Plan"
-          aria-busy={incomeWeekLoading}
-        >
-          {incomeWeekLoading ? (
-            <div
-              className="income-plan-loading"
-              role="status"
-              aria-live="polite"
-              aria-label="Loading Data"
-            >
-              <div className="process-a-research-spinner" aria-hidden="true" />
-              <p>Loading Data</p>
-            </div>
-          ) : null}
-          <header className="income-plan-appbar">
-            <div>
-              <h2>Income Plan</h2>
-              <p className="income-plan-sub">Sat–Fri week labeled by Friday ending</p>
-            </div>
-            <div className="income-plan-report-tabs" role="tablist" aria-label="Report type">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={incomePattern === "A"}
-                className={incomePattern === "A" ? "is-active" : undefined}
-                onClick={() => {
-                  setIncomePattern("A");
-                  void withIncomeLoading(() =>
-                    loadIncomeGrid(
-                      asOfDate,
-                      incomeHistWeeks,
-                      incomeFutWeeks,
-                      drillAccounts,
-                      incomeGrid?.selectedWeekEnd || incomeWeek?.end,
-                    ),
-                  );
-                }}
-              >
-                Weekly grid
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={incomePattern === "B"}
-                className={incomePattern === "B" ? "is-active" : undefined}
-                onClick={() => {
-                  setIncomePattern("B");
-                  const weekEnd = incomeGrid?.selectedWeekEnd ?? incomeWeek?.end;
-                  if (weekEnd) {
-                    void loadIncomeWeek(saturdayOfWeek(weekEnd));
-                  }
-                }}
-              >
-                Weekly report
-              </button>
-            </div>
-          </header>
-          {incomePattern === "A" ? (
-            <IncomePlanGridPanel
-              grid={incomeGrid}
-              selectedAccounts={drillAccounts}
-              onToggleAccount={(name) => {
-                setDrillAccounts((current) => {
-                  const next = current.includes(name)
-                    ? current.filter((item) => item !== name)
-                    : [...current, name];
-                  void loadIncomeGrid(
-                    asOfDate,
-                    incomeHistWeeks,
-                    incomeFutWeeks,
-                    next,
-                    incomeGrid?.selectedWeekEnd,
-                  );
-                  return next;
-                });
-              }}
-              historicalWeeks={incomeHistWeeks}
-              futureWeeks={incomeFutWeeks}
-              onHistoricalWeeks={(n) => {
-                setIncomeHistWeeks(n);
-                void withIncomeLoading(() =>
-                  loadIncomeGrid(
-                    asOfDate,
-                    n,
-                    incomeFutWeeks,
-                    drillAccounts,
-                    incomeGrid?.selectedWeekEnd,
-                  ),
-                );
-              }}
-              onFutureWeeks={(n) => {
-                setIncomeFutWeeks(n);
-                void withIncomeLoading(() =>
-                  loadIncomeGrid(
-                    asOfDate,
-                    incomeHistWeeks,
-                    n,
-                    drillAccounts,
-                    incomeGrid?.selectedWeekEnd,
-                  ),
-                );
-              }}
-              onOpenWeek={(weekEnd) => {
-                setIncomePattern("B");
-                void loadIncomeWeek(saturdayOfWeek(weekEnd));
-              }}
-              onPrintExport={() => void requestIncomeExport()}
-              exportLoading={incomeExportLoading}
-            />
-          ) : (
-            <>
-              {(() => {
-                const todaySat = saturdayOfWeek(new Date().toISOString().slice(0, 10));
-                const selectedSat = saturdayOfWeek(
-                  incomeWeek?.start || asOfDate || todaySat,
-                );
-                const selectedFri = incomeWeek?.end || shiftIso(selectedSat, 6);
-                const weekChoices = incomePlanWeekChoices(
-                  selectedSat,
-                  incomeWeek?.latestActualOn,
-                );
-                const chips = [
-                  ...INCOME_PLAN_DEFAULT_ACCOUNTS,
-                  ...INCOME_PLAN_OPTIONAL_ACCOUNTS,
-                ];
-                return (
-                  <>
-                    <div className="income-week-bar">
-                      <label className="income-week-label">
-                        Week
-                        <select
-                          aria-label="Select week"
-                          value={selectedSat}
-                          disabled={incomeWeekLoading}
-                          onChange={(e) => void loadIncomeWeek(e.target.value)}
-                        >
-                          {weekChoices.map((sat) => (
-                            <option key={sat} value={sat}>
-                              {incomePlanWeekOptionLabel(sat, todaySat)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        aria-label="Previous week"
-                        aria-busy={incomeWeekNav === "prev" && incomeWeekLoading}
-                        className={
-                          incomeWeekNav === "prev" && incomeWeekLoading
-                            ? "is-loading"
-                            : undefined
-                        }
-                        disabled={!selectedSat || incomeWeekLoading}
-                        onClick={() => {
-                          setIncomeWeekNav("prev");
-                          void loadIncomeWeek(shiftIso(selectedSat, -7));
-                        }}
-                      >
-                        Previous week
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Next week"
-                        aria-busy={incomeWeekNav === "next" && incomeWeekLoading}
-                        className={
-                          incomeWeekNav === "next" && incomeWeekLoading
-                            ? "is-loading"
-                            : undefined
-                        }
-                        disabled={!selectedSat || incomeWeekLoading}
-                        onClick={() => {
-                          setIncomeWeekNav("next");
-                          void loadIncomeWeek(shiftIso(selectedSat, 7));
-                        }}
-                      >
-                        Next week
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Back to Weekly grid"
-                        onClick={() => {
-                          setIncomePattern("A");
-                          void withIncomeLoading(() =>
-                            loadIncomeGrid(
-                              asOfDate,
-                              incomeHistWeeks,
-                              incomeFutWeeks,
-                              drillAccounts,
-                              incomeWeek?.end,
-                            ),
-                          );
-                        }}
-                      >
-                        Back to Weekly grid
-                      </button>
-                      <div className="income-print-export">
-                        <button
-                          type="button"
-                          aria-label="Print Export"
-                          aria-busy={incomeExportLoading}
-                          className={incomeExportLoading ? "is-loading" : undefined}
-                          disabled={incomeWeekLoading || incomeExportLoading}
-                          onClick={() => void requestIncomeExport()}
-                        >
-                          Print Export
-                        </button>
-                      </div>
-                    </div>
-                    <p className="income-current-week" aria-label="Current week">
-                      Current week: Saturday {selectedSat} through Friday {selectedFri}
-                      {selectedSat === todaySat ? (
-                        <span className="this-week-mark"> · this week</span>
-                      ) : null}
-                    </p>
-                    <fieldset className="income-account-picker">
-                      <legend className="income-week-label">Accounts</legend>
-                      <div className="income-account-ticks">
-                        {chips.map((name) => (
-                          <label
-                            key={name}
-                            className={`income-account-tick${drillAccounts.includes(name) ? "" : " off"}`}
-                          >
-                            <input
-                              type="checkbox"
-                              aria-label={`Filter ${name}`}
-                              checked={drillAccounts.includes(name)}
-                              onChange={() => {
-                                setDrillAccounts((current) =>
-                                  current.includes(name)
-                                    ? current.filter((item) => item !== name)
-                                    : [...current, name],
-                                );
-                              }}
-                            />
-                            {name}
-                          </label>
-                        ))}
-                      </div>
-                    </fieldset>
-                  </>
-                );
-              })()}
-              <IncomePlanWeekPanel
-                week={incomeWeek}
-                selectedAccounts={drillAccounts}
-                onOpenSymbol={(symbol) => openPositionHub(symbol, "income")}
-              />
-            </>
-          )}
-          <DividendWeeksPanel
-            perf={dividendPerf}
-            range={perfRange}
-            onRangeChange={(next) => {
-              setPerfRange(next);
-              void (async () => {
-                const r = await client.executeQuery("DividendPerformanceGet", {
-                  asOfDate,
-                  range: next,
-                });
-                if (r.ok && r.bodyJson) {
-                  try {
-                    setDividendPerf(JSON.parse(r.bodyJson) as DividendPerformanceGet);
-                  } catch {
-                    setDividendPerf(null);
-                  }
+        <IncomePlanScreen
+          incomeWeekLoading={incomeWeekLoading}
+          incomeWeek={incomeWeek}
+          incomePattern={incomePattern}
+          setIncomePattern={setIncomePattern}
+          incomeGrid={incomeGrid}
+          asOfDate={asOfDate}
+          incomeHistWeeks={incomeHistWeeks}
+          setIncomeHistWeeks={setIncomeHistWeeks}
+          incomeFutWeeks={incomeFutWeeks}
+          setIncomeFutWeeks={setIncomeFutWeeks}
+          drillAccounts={drillAccounts}
+          setDrillAccounts={setDrillAccounts}
+          withIncomeLoading={withIncomeLoading}
+          loadIncomeGrid={loadIncomeGrid}
+          loadIncomeWeek={loadIncomeWeek}
+          requestIncomeExport={requestIncomeExport}
+          incomeExportLoading={incomeExportLoading}
+          incomeWeekNav={incomeWeekNav}
+          setIncomeWeekNav={setIncomeWeekNav}
+          openPositionHub={openPositionHub}
+          dividendPerf={dividendPerf}
+          perfRange={perfRange}
+          onPerfRangeChange={(next) => {
+            setPerfRange(next);
+            void (async () => {
+              const r = await client.executeQuery("DividendPerformanceGet", {
+                asOfDate,
+                range: next,
+              });
+              if (r.ok && r.bodyJson) {
+                try {
+                  setDividendPerf(JSON.parse(r.bodyJson) as DividendPerformanceGet);
+                } catch {
+                  setDividendPerf(null);
                 }
-              })();
-            }}
-          />
-        </section>
+              }
+            })();
+          }}
+        />
       ) : null}
 
       {screen === "calculator" ? (
-        <section aria-label="Calculator">
+        <section aria-label="Calculator" className="calculator-page">
           <h2>Calculator</h2>
-          <p>
-            Distribution history for DIV-1 and CASH collector positions, Friday columns.
-            Default period is the last 60 days; change From/To or pick This month, 90 days,
-            or year to date. Names removed from collectors stay stored and stay off this
-            view. Empty is unknown, not $0.00.
-          </p>
-          <DeclarationHistoryPanel
+          <CalculatorReturnSheet
+            rows={positionMaster?.rows ?? null}
             history={declHistory}
+            accountsBySymbol={Object.fromEntries(
+              (positionDetails?.positions ?? []).reduce((map, line) => {
+                const prior = map.get(line.symbol);
+                if (!prior) {
+                  map.set(line.symbol, line.accountName);
+                } else if (!prior.split(", ").includes(line.accountName)) {
+                  map.set(line.symbol, `${prior}, ${line.accountName}`);
+                }
+                return map;
+              }, new Map<string, string>()),
+            )}
             cadence={histCadence}
             onCadenceChange={setHistCadence}
             period={histPeriod}
@@ -8008,11 +8064,6 @@ export default function App() {
               setHistEndOn(iso);
               void loadDeclHistory(asOfDate, "custom", start, iso);
             }}
-            onOpenSymbol={(symbol) => openPositionHub(symbol)}
-          />
-          <h3>Plan × quantity</h3>
-          <CalculatorPanel
-            rows={calculator?.rows ?? null}
             onOpenSymbol={(symbol) => openPositionHub(symbol)}
           />
         </section>
@@ -10313,8 +10364,12 @@ export default function App() {
                 aria-label="Finish this week on Cash Management"
                 onClick={() =>
                   leaveWithoutSaving(
-                    () => setScreen("cash-management"),
+                    () => {
+                      setCmDesk("weekly");
+                      setScreen("cash-management");
+                    },
                     "cash-management",
+                    "weekly",
                   )
                 }
               >
@@ -10323,6 +10378,7 @@ export default function App() {
             </p>
           ) : null}
           <TrendsChartsPanel
+            key={trendsChartEpoch}
             weeks={trends?.weeks}
             points={trends?.points}
             dividendPerf={trendsDividendPerf}
@@ -10408,12 +10464,80 @@ export default function App() {
 
       {screen === "cash-management" ? (
         <section aria-label="Cash Management">
-          <h2>Cash Management</h2>
+          {cmDesk === "elements" ? (
+            <h2 aria-label="Element Management">Element Management</h2>
+          ) : cmDesk === "cashflow" ? (
+            <h2 aria-label="Cashflow Manager">Cashflow Manager</h2>
+          ) : cmDesk === "car" ? (
+            <h2 aria-label="Tax Planning">Tax Planning</h2>
+          ) : cmDesk === "external" ? (
+            <h2 aria-label="External accounts">External accounts</h2>
+          ) : cmDesk === "coverage" ? (
+            <h2 aria-label="Coverage">
+              {coveragePeriod === "month"
+                ? "Monthly comparison"
+                : coveragePeriod === "year"
+                  ? "Annual comparison"
+                  : "Weekly comparison"}
+            </h2>
+          ) : (
+            <h2 aria-label="System update tasks and confirmations">System update tasks and confirmations</h2>
+          )}
+          {cmDesk === "weekly" ? (
+            <PlanHorizonPrompt
+              asOfDate={asOfDate}
+              disabled={busy || writesBlocked}
+            />
+          ) : null}
+          {cmDesk === "cashflow" || cmDesk === "external" ? null : (
           <p>
-            Enter this Sat–Fri week, then declare SSA, distributions, or
-            withdrawals.
+            {cmDesk === "elements"
+              ? "Deposits and Withdrawals for the selected managed account."
+              : cmDesk === "car"
+                ? "Household YTD and projected income by tax type, MAGI threshold, the Car table, and Cash YTD."
+                : cmDesk === "coverage"
+                  ? "Planned dividend income versus planned withdrawals for the next 12 months. Week is that year ÷ 52. Month is that year ÷ 12. The tables under the comparison list each amount × periods."
+                  : "Enter this Sat–Fri week, then declare SSA, distributions, or withdrawals."}
           </p>
+          )}
+          {cmDesk === "coverage" ? (
+            <CashCoveragePanel
+              coverage={cashCoverage}
+              period={coveragePeriod}
+              busy={coverageBusy}
+              onPeriod={(next) => {
+                coveragePeriodRef.current = next;
+                setCoveragePeriod(next);
+                setCoverageBusy(true);
+                void (async () => {
+                  try {
+                    const result = await client.executeQuery("CashCoverageGet", {
+                      asOfDate: asOfDate,
+                      period: next,
+                    });
+                    if (result.ok && result.bodyJson) {
+                      try {
+                        setCashCoverage(JSON.parse(result.bodyJson) as CashCoverageGet);
+                      } catch {
+                        setCashCoverage(null);
+                      }
+                    }
+                  } finally {
+                    setCoverageBusy(false);
+                  }
+                })();
+              }}
+            />
+          ) : null}
+          {cmDesk === "external" ? (
+            <ExternalRegister
+              resetToken={externalReset}
+              onDirtyChange={setExternalDirty}
+            />
+          ) : null}
+          {cmDesk === "coverage" || cmDesk === "external" ? null : (
           <CashManagementPanel
+            desk={cmDesk}
             week={cashWeek}
             month={cashMonth}
             reminders={cashReminders}
@@ -10423,17 +10547,427 @@ export default function App() {
             distributions={trends?.distributions as never}
             taxMonitor={trends?.taxMonitor as never}
             carRocPlan={carRocPlan}
+            taxPlanning={taxPlanning}
             weekJustSavedAt={cashWeekSavedAt}
             weekDesk={{
               weeks: trends?.weeks,
               points: trends?.points,
               dividendPerf: dividendPerf ?? trendsDividendPerf,
               overview: trends?.overview as never,
+              incomePlanWeek: incomeWeek
+                ? {
+                    start: incomeWeek.start,
+                    end: incomeWeek.end,
+                    plannedMinor: incomePlanWeekPlanMinor(incomeWeek),
+                    reportedMinor: null,
+                  }
+                : null,
+              openWeek: trendsCapture
+                ? {
+                    start: trendsCapture.periodStart,
+                    end: trendsCapture.periodEnd,
+                    plannedMinor:
+                      incomeWeek &&
+                      (incomeWeek.start === trendsCapture.periodStart ||
+                        incomeWeek.end === trendsCapture.periodEnd)
+                        ? incomePlanWeekPlanMinor(incomeWeek)
+                        : (trendsCapture.plannedWeeklyIncomeMinor ?? null),
+                    reportedMinor: trendsCapture.reportedWeeklyIncomeMinor || null,
+                  }
+                : null,
             }}
+            weekAhead={
+              <WeekAheadPanel
+                week={weekAhead}
+                busy={busy}
+                pendingId={weekAheadPending}
+                onConfirm={(occurrenceId) => {
+                  void (async () => {
+                    setWeekAheadPending(occurrenceId);
+                    setBusy(true);
+                    try {
+                      const r = await client.executeCommand("WeekAheadConfirm", {
+                        occurrenceId,
+                      });
+                      if (!r.ok) {
+                        setActionMessage(
+                          `Week ahead confirm failed: ${r.errorCode ?? "error"}`,
+                        );
+                        return;
+                      }
+                      const asOf = cashWeek?.periodEnd || asOfDate;
+                      const posted = r.bodyJson
+                        ? (JSON.parse(r.bodyJson) as { activityType?: string })
+                        : {};
+                      const [ahead, week, rem, registerPack, magi] = await Promise.all([
+                        client.executeQuery("WeekAheadGet", { asOfDate: asOf }),
+                        client.executeQuery("CashManagementWeekGet", {
+                          asOfDate: asOf,
+                        }),
+                        client.executeQuery("CashManagementRemindersGet", {
+                          asOfDate: asOf,
+                        }),
+                        fetchCashNav(client,
+                          asOf,
+                          registerBookRef.current,
+                          registerPeriodRef.current,
+                          ytdViewRef.current,
+                        ),
+                        magiQualifyingType(posted.activityType)
+                          ? client.executeQuery("MagiProjectionGet")
+                          : Promise.resolve(null),
+                      ]);
+                      if (ahead.ok && ahead.bodyJson) {
+                        setWeekAhead(JSON.parse(ahead.bodyJson) as WeekAheadGet);
+                      }
+                      if (week.ok && week.bodyJson) {
+                        setCashWeek(
+                          JSON.parse(week.bodyJson) as CashManagementWeekGet,
+                        );
+                      }
+                      if (rem.ok && rem.bodyJson) {
+                        setCashReminders(
+                          JSON.parse(rem.bodyJson) as CashManagementRemindersGet,
+                        );
+                      }
+                      if (registerPack.register) {
+                        setCashRegister(registerPack.register);
+                      }
+                      if (registerPack.elements) {
+                        setCashElements(registerPack.elements);
+                      }
+                      if (registerPack.ytd) {
+                        setCashYtd(registerPack.ytd);
+                      }
+                      if (magi && magi.ok && magi.bodyJson) {
+                        setCashMagi(JSON.parse(magi.bodyJson) as MagiProjection);
+                      }
+                    } finally {
+                      setWeekAheadPending(null);
+                      setBusy(false);
+                    }
+                  })();
+                }}
+                onOpenEditor={(row) => {
+                  leaveWithoutSaving(() => {
+                  void (async () => {
+                    registerBookRef.current = row.account;
+                    setRegisterBook(row.account);
+                    setCmDesk("elements");
+                    const asOf = cashWeek?.periodEnd || asOfDate;
+                    const els = await fetchElementList(client, asOf);
+                    if (els) setCashElements(els);
+                    setEditorElement(
+                      els?.items.find((e) => e.elementId === row.elementId) ?? null,
+                    );
+                    setEditorOccurrenceId(row.occurrenceId);
+                    setElementEditorOpen(true);
+                  })();
+                  }, "cash-management", "elements");
+                }}
+                onDefer={(occurrenceId) => {
+                  void (async () => {
+                    const r = await client.executeCommand("WeekAheadDefer", {
+                      occurrenceId,
+                    });
+                    if (!r.ok) {
+                      setActionMessage(
+                        `Week ahead defer failed: ${r.errorCode ?? "error"}`,
+                      );
+                      return;
+                    }
+                    const asOf = cashWeek?.periodEnd || asOfDate;
+                    const ahead = await client.executeQuery("WeekAheadGet", {
+                      asOfDate: asOf,
+                    });
+                    if (ahead.ok && ahead.bodyJson) {
+                      setWeekAhead(JSON.parse(ahead.bodyJson) as WeekAheadGet);
+                    }
+                  })();
+                }}
+              />
+            }
+            cashElements={
+              <CashElementsCatalog
+                catalog={cashElements}
+                book={catalogBook}
+                editorOpen={elementEditorOpen}
+                editorAccount={
+                  editorElement?.account
+                  || (catalogBook === "all" ? registerBook : catalogBook)
+                }
+                editorElement={editorElement}
+                editorOccurrenceId={editorOccurrenceId}
+                editorOccurrences={
+                  (editorElement?.upcoming ?? editorElement?.exceptions ?? []).map(
+                    (row) => ({
+                      occurrenceId: row.occurrenceId,
+                      occurredOn: row.occurredOn,
+                      amountMinor: row.amountMinor,
+                      isException: row.isException,
+                      isCancelled: row.isCancelled,
+                    }),
+                  )
+                }
+                busy={busy}
+                onBook={setCatalogBook}
+                onAddElement={() => {
+                  if (!catalogBook || catalogBook === "all") return;
+                  const book = catalogBook;
+                  registerBookRef.current = book;
+                  setRegisterBook(book);
+                  setEditorElement(null);
+                  setEditorOccurrenceId(null);
+                  setElementDirty(false);
+                  setElementEditorOpen(true);
+                }}
+                onOpenElement={(element) => {
+                  registerBookRef.current = element.account;
+                  setRegisterBook(element.account);
+                  setCatalogBook(element.account);
+                  setEditorElement(element);
+                  setEditorOccurrenceId(null);
+                  setElementDirty(false);
+                  setElementEditorOpen(true);
+                  setBusy(true);
+                  const seq = ++catalogFetchSeq.current;
+                  void (async () => {
+                    try {
+                      const els = await fetchElementList(
+                        client,
+                        cashWeek?.periodEnd || asOfDate,
+                      );
+                      if (seq !== catalogFetchSeq.current) return;
+                      if (els) {
+                        setCashElements(els);
+                        const updated = els.items.find(
+                          (e) => e.elementId === element.elementId,
+                        );
+                        if (updated) setEditorElement(updated);
+                      }
+                    } finally {
+                      if (seq === catalogFetchSeq.current) setBusy(false);
+                    }
+                  })();
+                }}
+                onCloseEditor={() => {
+                  setElementEditorOpen(false);
+                  setEditorElement(null);
+                  setEditorOccurrenceId(null);
+                  setElementDirty(false);
+                  const seq = ++catalogFetchSeq.current;
+                  void fetchElementList(
+                    client,
+                    cashWeek?.periodEnd || asOfDate,
+                  ).then((els) => {
+                    if (seq !== catalogFetchSeq.current) return;
+                    if (els) setCashElements(els);
+                  });
+                }}
+                onDirtyChange={setElementDirty}
+                asOfDate={asOfDate}
+                onSaveElement={async (body) => {
+                  setBusy(true);
+                  const seq = ++catalogFetchSeq.current;
+                  try {
+                    const r = await client.executeCommand("CashElementSave", {
+                      ...body,
+                      asOfDate: cashWeek?.periodEnd || asOfDate,
+                    });
+                    if (!r.ok) {
+                      setActionMessage(
+                        `Element save failed: ${r.errorCode ?? "error"}`,
+                      );
+                      return false;
+                    }
+                    const els = await fetchElementList(
+                      client,
+                      cashWeek?.periodEnd || asOfDate,
+                    );
+                    if (seq !== catalogFetchSeq.current) return true;
+                    if (els) setCashElements(els);
+                    const saved = r.bodyJson
+                      ? (JSON.parse(r.bodyJson) as {
+                          element?: { elementId?: string };
+                        })
+                      : {};
+                    const id = body.elementId || saved.element?.elementId;
+                    const updated = els?.items.find((e) => e.elementId === id);
+                    if (updated) setEditorElement(updated);
+                    setElementDirty(false);
+                    setActionMessage("Element saved.");
+                    return true;
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+                onDeleteSeries={(elementId) => {
+                  setBusy(true);
+                  void (async () => {
+                    try {
+                      const r = await client.executeCommand("CashElementDelete", {
+                        elementId,
+                      });
+                      if (!r.ok) {
+                        setActionMessage(
+                          `Element delete failed: ${r.errorCode ?? "error"}`,
+                        );
+                        return;
+                      }
+                      const els = await fetchElementList(
+                        client,
+                        cashWeek?.periodEnd || asOfDate,
+                      );
+                      if (els) setCashElements(els);
+                      setElementDirty(false);
+                      setElementEditorOpen(false);
+                    } finally {
+                      setBusy(false);
+                    }
+                  })();
+                }}
+                onSaveExceptions={async (body) => {
+                  setBusy(true);
+                  try {
+                    const r = await client.executeCommand(
+                      "PlannedOccurrenceSave",
+                      {
+                        elementId: body.elementId,
+                        occurrenceId: body.occurrenceId,
+                        asOfDate: cashWeek?.periodEnd || asOfDate,
+                        cancel: body.cancel,
+                        occurredOn: body.occurredOn,
+                        amountMinor: body.amountMinor,
+                      },
+                    );
+                    if (!r.ok) {
+                      setActionMessage(
+                        `Exception save failed: ${r.errorCode ?? "error"}`,
+                      );
+                      return false;
+                    }
+                    const els = await fetchElementList(
+                      client,
+                      cashWeek?.periodEnd || asOfDate,
+                    );
+                    if (els) {
+                      setCashElements(els);
+                      const updated = els.items.find(
+                        (e) => e.elementId === body.elementId,
+                      );
+                      if (updated) setEditorElement(updated);
+                    }
+                    setElementDirty(false);
+                    setActionMessage("Exceptions saved.");
+                    return true;
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              />
+            }
+            cashRegister={
+              <CashRegisterPanel
+                register={cashRegister}
+                book={registerBook}
+                period={registerPeriod}
+                view={registerView}
+                asOfDate={cashWeek?.periodEnd || asOfDate}
+                weeks={accountValues?.weeks ?? trends?.weeks}
+                busy={busy}
+                loading={registerBusy}
+                onBook={(book) => {
+                  const seq = ++registerFetchSeq.current;
+                  registerBookRef.current = book;
+                  setRegisterBook(book);
+                  setRegisterBusy(true);
+                  void (async () => {
+                    try {
+                      const pack = await fetchCashNav(client,
+                        cashWeek?.periodEnd || asOfDate,
+                        book,
+                        registerPeriodRef.current,
+                        ytdViewRef.current,
+                      );
+                      if (seq !== registerFetchSeq.current) {
+                        return;
+                      }
+                      if (pack.register) setCashRegister(pack.register);
+                      if (pack.elements) setCashElements(pack.elements);
+                      if (pack.ytd) setCashYtd(pack.ytd);
+                    } finally {
+                      if (seq === registerFetchSeq.current) {
+                        setRegisterBusy(false);
+                      }
+                    }
+                  })();
+                }}
+                onPeriod={(period) => {
+                  const seq = ++registerFetchSeq.current;
+                  registerPeriodRef.current = period;
+                  setRegisterPeriod(period);
+                  setRegisterBusy(true);
+                  void (async () => {
+                    try {
+                      const pack = await fetchCashNav(client,
+                        cashWeek?.periodEnd || asOfDate,
+                        registerBookRef.current,
+                        period,
+                        ytdViewRef.current,
+                      );
+                      if (seq !== registerFetchSeq.current) {
+                        return;
+                      }
+                      if (pack.register) setCashRegister(pack.register);
+                      if (pack.elements) setCashElements(pack.elements);
+                      if (pack.ytd) setCashYtd(pack.ytd);
+                    } finally {
+                      if (seq === registerFetchSeq.current) {
+                        setRegisterBusy(false);
+                      }
+                    }
+                  })();
+                }}
+                onView={setRegisterView}
+                onLoadMonth={loadRegisterMonth}
+                onManageElements={() => {
+                  setCatalogBook(registerBookRef.current);
+                  goCmDesk("elements", "Element Management");
+                }}
+                onAddElement={() => {
+                  setEditorElement(null);
+                  setEditorOccurrenceId(null);
+                  setElementDirty(false);
+                  setElementEditorOpen(true);
+                }}
+              />
+            }
+            cashYtd={
+              <CashYtdPanel
+                ytd={cashYtd}
+                view={ytdView}
+                busy={busy}
+                onView={(view) => {
+                  ytdViewRef.current = view;
+                  setYtdView(view);
+                  void (async () => {
+                    const pack = await fetchCashNav(client,
+                      cashWeek?.periodEnd || asOfDate,
+                      registerBookRef.current,
+                      registerPeriodRef.current,
+                      view,
+                    );
+                    if (pack.register) setCashRegister(pack.register);
+                    if (pack.elements) setCashElements(pack.elements);
+                    if (pack.ytd) setCashYtd(pack.ytd);
+                  })();
+                }}
+              />
+            }
             onDirtyChange={setCashDirty}
             onReload={(d) => {
               void (async () => {
-                const [r, rem, mo, roc] = await Promise.all([
+                const [r, rem, mo, roc, tax, ahead, registerPack] = await Promise.all([
                   client.executeQuery("CashManagementWeekGet", {
                     asOfDate: d,
                   }),
@@ -10444,6 +10978,14 @@ export default function App() {
                     asOfDate: d,
                   }),
                   client.executeQuery("CarRocPlanGet", { asOfDate: d }),
+                  client.executeQuery("TaxPlanningGet", { asOfDate: d }),
+                  client.executeQuery("WeekAheadGet", { asOfDate: d }),
+                  fetchCashNav(client,
+                    d,
+                    registerBookRef.current,
+                    registerPeriodRef.current,
+                    ytdViewRef.current,
+                  ),
                 ]);
                 if (r.ok && r.bodyJson) {
                   setCashWeek(JSON.parse(r.bodyJson) as CashManagementWeekGet);
@@ -10461,6 +11003,21 @@ export default function App() {
                 if (roc.ok && roc.bodyJson) {
                   setCarRocPlan(JSON.parse(roc.bodyJson) as CarRocPlanGet);
                 }
+                if (tax.ok && tax.bodyJson) {
+                  setTaxPlanning(JSON.parse(tax.bodyJson) as TaxPlanningGet);
+                }
+                if (ahead.ok && ahead.bodyJson) {
+                  setWeekAhead(JSON.parse(ahead.bodyJson) as WeekAheadGet);
+                }
+                if (registerPack.register) {
+                  setCashRegister(registerPack.register);
+                }
+                if (registerPack.elements) {
+                  setCashElements(registerPack.elements);
+                }
+                if (registerPack.ytd) {
+                  setCashYtd(registerPack.ytd);
+                }
               })();
             }}
             onSave={async (body) => {
@@ -10472,7 +11029,7 @@ export default function App() {
                 return false;
               }
               const asOf = (body.occurredOn as string) || asOfDate;
-              const [week, rem, mo] = await Promise.all([
+              const [week, rem, mo, registerPack, magi] = await Promise.all([
                 client.executeQuery("CashManagementWeekGet", {
                   asOfDate: asOf,
                 }),
@@ -10482,6 +11039,15 @@ export default function App() {
                 client.executeQuery("CashManagementMonthGet", {
                   asOfDate: asOf,
                 }),
+                fetchCashNav(client,
+                  asOf,
+                  registerBookRef.current,
+                  registerPeriodRef.current,
+                  ytdViewRef.current,
+                ),
+                magiQualifyingType(body.activityType as string)
+                  ? client.executeQuery("MagiProjectionGet")
+                  : Promise.resolve(null),
               ]);
               if (week.ok && week.bodyJson) {
                 setCashWeek(JSON.parse(week.bodyJson) as CashManagementWeekGet);
@@ -10493,6 +11059,12 @@ export default function App() {
               }
               if (mo.ok && mo.bodyJson) {
                 setCashMonth(JSON.parse(mo.bodyJson) as CashManagementMonthGet);
+              }
+              if (registerPack.register) setCashRegister(registerPack.register);
+              if (registerPack.elements) setCashElements(registerPack.elements);
+              if (registerPack.ytd) setCashYtd(registerPack.ytd);
+              if (magi && magi.ok && magi.bodyJson) {
+                setCashMagi(JSON.parse(magi.bodyJson) as MagiProjection);
               }
               setCashDirty(false);
               setActionMessage("Cash distribution saved.");
@@ -10507,7 +11079,10 @@ export default function App() {
                 return false;
               }
               const asOf = (body.occurredOn as string) || asOfDate;
-              const [week, rem, mo] = await Promise.all([
+              const posted = r.bodyJson
+                ? (JSON.parse(r.bodyJson) as { activityType?: string })
+                : {};
+              const [week, rem, mo, registerPack, magi] = await Promise.all([
                 client.executeQuery("CashManagementWeekGet", {
                   asOfDate: asOf,
                 }),
@@ -10517,6 +11092,15 @@ export default function App() {
                 client.executeQuery("CashManagementMonthGet", {
                   asOfDate: asOf,
                 }),
+                fetchCashNav(client,
+                  asOf,
+                  registerBookRef.current,
+                  registerPeriodRef.current,
+                  ytdViewRef.current,
+                ),
+                magiQualifyingType(posted.activityType)
+                  ? client.executeQuery("MagiProjectionGet")
+                  : Promise.resolve(null),
               ]);
               if (week.ok && week.bodyJson) {
                 setCashWeek(JSON.parse(week.bodyJson) as CashManagementWeekGet);
@@ -10529,13 +11113,31 @@ export default function App() {
               if (mo.ok && mo.bodyJson) {
                 setCashMonth(JSON.parse(mo.bodyJson) as CashManagementMonthGet);
               }
+              if (registerPack.register) setCashRegister(registerPack.register);
+              if (registerPack.elements) setCashElements(registerPack.elements);
+              if (registerPack.ytd) setCashYtd(registerPack.ytd);
+              if (magi && magi.ok && magi.bodyJson) {
+                setCashMagi(JSON.parse(magi.bodyJson) as MagiProjection);
+              }
               setCashDirty(false);
               setActionMessage("Tom Social Security retirement confirmed.");
               return true;
             }}
           >
             <TrendsCapturePanel
-              capture={trendsCapture}
+              capture={
+                trendsCapture &&
+                incomeWeek &&
+                (incomeWeek.start === trendsCapture.periodStart ||
+                  incomeWeek.end === trendsCapture.periodEnd)
+                  ? {
+                      ...trendsCapture,
+                      plannedWeeklyIncomeMinor:
+                        incomePlanWeekPlanMinor(incomeWeek) ??
+                        trendsCapture.plannedWeeklyIncomeMinor,
+                    }
+                  : trendsCapture
+              }
               busy={busy}
               onReload={(d) => {
                 trendsWeekAsOfRef.current = d;
@@ -10569,7 +11171,11 @@ export default function App() {
                   if (saved) {
                     setTrendsCapture(saved);
                   }
-                  await refreshData(asOfDate || (body.periodEnd as string));
+                  trendsGraphPeriodRef.current = DEFAULT_GRAPH_PERIOD;
+                  setTrendsChartEpoch((n) => n + 1);
+                  await refreshData(
+                    saved?.periodEnd || asOfDate || (body.periodEnd as string),
+                  );
                   if (!correct) {
                     setCashWeekSavedAt(Date.now());
                   }
@@ -10606,6 +11212,7 @@ export default function App() {
               onWizardActive={setWeekWizardActive}
             />
           </CashManagementPanel>
+          )}
         </section>
       ) : null}
 
@@ -10637,6 +11244,7 @@ export default function App() {
               openedOn: l.openedOn,
               remainingPerformanceMinor: l.remainingPerformanceMinor,
               remainingTaxMinor: l.remainingTaxMinor,
+              scale: l.scale,
             }))}
             value={lotId}
             onChange={setLotId}
@@ -11869,721 +12477,65 @@ export default function App() {
       ) : null}
 
       {screen === "collectors" ? (
-        <section aria-label="Collectors">
-          <h2>Collectors</h2>
-          <p>
-            Income names only (DIV-1, CASH, Weekly/Monthly/Quarterly). Non-payers
-            are excluded. Collect fresh distribution data is the daily run —
-            declarations only. Establish and Reevaluate collector are on Tools.
-            Yahoo last price is separate and does not fill this page. Yahoo is
-            never a declaration source.
-          </p>
-          <div className="buttons">
-            <button
-              type="button"
-              aria-label="Run enabled collectors"
-              disabled={busy || writesBlocked}
-              onClick={() => void runEnabledCollectors()}
-            >
-              {collectorRunProgress?.running
-                ? `Running ${formatCount(collectorRunProgress.current)} of ${formatCount(collectorRunProgress.total)}${
-                    collectorRunProgress.symbol
-                      ? `: ${collectorRunProgress.symbol}`
-                      : ""
-                  }…`
-                : "Run enabled collectors"}
-            </button>
-            <button
-              type="button"
-              aria-label="Run misses only"
-              disabled={busy || writesBlocked}
-              onClick={() => void runMissesOnlyCollectors()}
-            >
-              Run misses only
-            </button>
-            <button
-              type="button"
-              aria-label="Fill research gaps"
-              disabled={busy || writesBlocked || Boolean(researchActivity?.running)}
-              onClick={() => void fillResearchGaps()}
-            >
-              {researchActivity?.running && screen === "collectors"
-                ? "Filling research gaps…"
-                : "Fill research gaps"}
-            </button>
-            <button
-              type="button"
-              aria-label="Apply issuer sources from provider"
-              disabled={busy || writesBlocked}
-              onClick={() => void applyIssuerSources()}
-            >
-              Apply issuer sources from provider
-            </button>
-          </div>
-          {researchActivity?.running && screen === "collectors" ? (
-            <section
-              className="process-a-research-progress"
-              aria-label="Research progress"
-              aria-busy="true"
-            >
-              <p role="status" aria-live="polite">
-                {researchActivity.label}
-              </p>
-              {researchActivity.total > 0 ? (
-                <progress
-                  max={researchActivity.total}
-                  value={Math.min(researchActivity.step, researchActivity.total)}
-                />
-              ) : (
-                <div className="process-a-research-spinner" aria-hidden="true" />
-              )}
-            </section>
-          ) : null}
-          {researchActivity?.resultLine &&
-          !researchActivity.running &&
-          screen === "collectors" ? (
-            <p role="status" aria-label="Research result">
-              {researchActivity.resultLine}
-            </p>
-          ) : null}
-          {writesBlocked ? (
-            <p role="status">
-              Writes are blocked on this device, so Apply and Run enabled are
-              disabled.
-            </p>
-          ) : null}
-          {collectorAction ? (
-            <p aria-label="Collector action status" role="status" aria-live="polite">
-              {collectorAction}
-            </p>
-          ) : (
-            <p aria-label="Collector action status" role="status">
-              Daily fleet
-              is open lots only — saved-but-incomplete names stay out. Run
-              enabled and Run misses only collect declarations (not prices).
-              Collect fresh distribution data is one symbol, declarations
-              only. Stored pays are never overwritten. Amount changes ticket
-              Except or Reject. Empty / 403 / JS parks the name — do not
-              Establish-replace. Identity and Accept ROC are on Tools. Fill
-              research gaps fills missing provider, frequency, DIV-1, or ROC
-              estimate (underlying is extra). Apply fills empty templates
-              from provider (0 updated means already assigned).
-            </p>
-          )}
-          {collectorRunProgress ? (
-            <section
-              aria-label="Collector run progress"
-              aria-busy={collectorRunProgress.running}
-            >
-              <h3>
-                {collectorRunProgress.running ? "Collecting…" : "Last run"}
-              </h3>
-              <p>
-                {collectorRunProgress.running
-                  ? "In progress"
-                  : `Finished ${formatCollectorClock(collectorRunProgress.finishedAt)}`}
-                . Progress {formatCount(collectorRunProgress.current)} /{" "}
-                {formatCount(collectorRunProgress.total)}
-                {collectorRunProgress.symbol
-                  ? ` — ${collectorRunProgress.symbol}`
-                  : ""}
-                . Ok {formatCount(collectorRunProgress.ok)}. Miss{" "}
-                {formatCount(collectorRunProgress.miss)}.
-              </p>
-              <progress
-                max={Math.max(collectorRunProgress.total, 1)}
-                value={collectorRunProgress.current}
-              />
-              <div className="table-wrap">
-                <table aria-label="Collector run log">
-                  <thead>
-                    <tr>
-                      <th scope="col">Result</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {collectorRunProgress.lines.length === 0 ? (
-                      <tr>
-                        <td>
-                          {collectorRunProgress.running
-                            ? "Waiting for first symbol…"
-                            : "No lines."}
-                        </td>
-                      </tr>
-                    ) : (
-                      [...collectorRunProgress.lines].reverse().map((line, idx) => (
-                        <tr key={`${idx}-${line}`}>
-                          <td>{line}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          ) : null}
-          {collectorStats ? (
-            <p aria-label="Collector statistics">
-              Assigned {formatCount(collectorStats.assigned)}. Enabled{" "}
-              {formatCount(collectorStats.enabled)}. We collect these{" "}
-              {formatCount(collectorStats.enabled)} income names. Ran{" "}
-              {formatCount(collectorStats.ranToday)} of those{" "}
-              {formatCount(collectorStats.enabled)} we asked the issuer about
-              today
-              {(collectorStats.ranOutsideFleet ?? []).length > 0
-                ? ` (also retrieved ${(collectorStats.ranOutsideFleet ?? []).join(", ")} — not income fleet)`
-                : ""}
-              . Still miss {formatCount(collectorStats.stillMiss ?? collectorStats.missToday)}
-              — last ask today is not OK. Fail{" "}
-              {formatCount(collectorStats.failCount ?? collectorStats.stillMiss ?? 0)}{" "}
-              must equal miss tickets{" "}
-              {formatCount(collectorStats.failTicketCount ?? 0)}
-              {collectorStats.failTicketParity === false
-                ? " — gate broken"
-                : ""}
-              . Had a miss today{" "}
-              {formatCount(collectorStats.hadMissToday ?? 0)} — failed at least
-              once today; a later retry may have worked. Unchanged{" "}
-              {formatCount(collectorStats.unchangedToday)} — issuer page matched
-              the last copy; we did not rewrite Plan $. Price current{" "}
-              {formatCount(collectorStats.priceCurrent)} / stale{" "}
-              {formatCount(collectorStats.priceStale)} — share price quotes, not
-              dividend pages. Open tickets{" "}
-              {formatCount(collectorStats.openExceptions)} — owner work still
-              open, including older days.
-            </p>
-          ) : null}
-          {(() => {
-            const today = new Date().toISOString().slice(0, 10);
-            const fleetEnabled = collectorItems.filter(
-              (row) =>
-                row.collectorEnabled && (row.declarationSource || "").trim(),
-            );
-            const todayOk = fleetEnabled.filter(
-              (row) =>
-                row.lastRunOk === true &&
-                (row.lastRunAt || "").startsWith(today),
-            );
-            const todayMisses = fleetEnabled.filter(
-              (row) =>
-                !(
-                  row.lastRunOk === true &&
-                  (row.lastRunAt || "").startsWith(today)
-                ),
-            );
-            const latestStored = [...todayOk, ...todayMisses]
-              .map((row) => row.lastRunAt || "")
-              .filter((at) => at.length >= 10)
-              .sort()
-              .at(-1);
-            return (
-              <section aria-label="Today collector status">
-                <h3>Today&apos;s declaration status</h3>
-                <p>
-                  As of {formatCollectorClock(latestStored || collectorStatusAt)}.{" "}
-                  {formatCount(todayOk.length)} last retrieve today OK ·{" "}
-                  {formatCount(todayMisses.length)} still miss of{" "}
-                  {formatCount(fleetEnabled.length)} enabled.
-                  Older tickets below are a work queue, not this run.
-                </p>
-                {todayMisses.length > 0 ? (
-                  <div className="table-wrap">
-                    <table aria-label="Today declaration misses">
-                      <thead>
-                        <tr>
-                          <th scope="col">Symbol</th>
-                          <th scope="col">Source</th>
-                          <th scope="col">Last run</th>
-                          <th scope="col">Why this run missed</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {todayMisses.map((row) => (
-                          <tr key={`miss-${row.securityId}`}>
-                            <td>{row.symbol}</td>
-                            <td>{row.declarationSource || "unassigned"}</td>
-                            <td>{formatCollectorClock(row.lastRunAt)}</td>
-                            <td>{row.lastRunMessage || "Issuer page empty."}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <p>No declaration misses recorded today.</p>
-                )}
-              </section>
-            );
-          })()}
-          {(() => {
-            const missing = collectorItems.filter(collectorNeedsOwnerUrl);
-            if (missing.length === 0) {
-              return null;
-            }
-            return (
-              <section aria-label="Missing collector URLs">
-                <h3>Missing issuer URLs</h3>
-                <p>
-                  Paste Template Dividend (seed URL) for each failing DIV-1 or
-                  CASH collector that has none. Apply before collect will succeed.
-                  CASH does not take Template ROC. Empty cells stay empty.
-                </p>
-                <div className="table-wrap">
-                  <table aria-label="Missing collector URLs">
-                    <thead>
-                      <tr>
-                        <th scope="col">Symbol</th>
-                        <th scope="col">Adapter</th>
-                        <th scope="col">Template Dividend</th>
-                        <th scope="col">Template ROC</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {missing.map((row) => {
-                        const draft = missingUrlDrafts[row.securityId] ?? {
-                          sourceUrl: row.sourceUrl ?? "",
-                          rocSourceUrl: row.rocSourceUrl ?? "",
-                        };
-                        const cash = collectorIsCash(row);
-                        return (
-                          <tr key={`url-${row.securityId}`}>
-                            <td>{row.symbol}</td>
-                            <td>{row.declarationSource || "unassigned"}</td>
-                            <td>
-                              <input
-                                aria-label={`Template Dividend for ${row.symbol}`}
-                                value={draft.sourceUrl}
-                                onChange={(e) =>
-                                  setMissingUrlDrafts((prev) => ({
-                                    ...prev,
-                                    [row.securityId]: {
-                                      ...draft,
-                                      sourceUrl: e.target.value,
-                                    },
-                                  }))
-                                }
-                                disabled={busy || writesBlocked}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                aria-label={`Template ROC for ${row.symbol}`}
-                                value={cash ? "" : draft.rocSourceUrl}
-                                onChange={(e) =>
-                                  setMissingUrlDrafts((prev) => ({
-                                    ...prev,
-                                    [row.securityId]: {
-                                      ...draft,
-                                      rocSourceUrl: e.target.value,
-                                    },
-                                  }))
-                                }
-                                disabled={busy || writesBlocked || cash}
-                              />
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="buttons">
-                  <button
-                    type="button"
-                    aria-label="Apply URLs"
-                    disabled={busy || writesBlocked}
-                    onClick={() => void applyMissingCollectorUrls()}
-                  >
-                    Apply URLs
-                  </button>
-                </div>
-              </section>
-            );
-          })()}
-          <section aria-label="Collector footer grid">
-          <h3>Fleet footer</h3>
-          <p>
-            One row per open-lot collector — the same set as Run enabled.
-            Adapter is the face source. Missing ROC, declaration, price, or
-            actual is N/A, never $0.
-          </p>
-          <div className="table-wrap">
-            <table aria-label="Collector fleet">
-              <thead>
-                <tr>
-                  <th scope="col">Symbol</th>
-                  <th scope="col">Adapter</th>
-                  <th scope="col">Enabled</th>
-                  <th scope="col">Complete</th>
-                  <th scope="col">div_type</th>
-                  <th scope="col">Frequency</th>
-                  <th scope="col">Remaining</th>
-                  <th scope="col">Paid decls</th>
-                  <th scope="col">Inception</th>
-                  <th scope="col">Last run</th>
-                  <th scope="col">Runs ok / fail</th>
-                  <th scope="col">Template Dividend</th>
-                  <th scope="col">Template ROC</th>
-                  <th scope="col">Tickets</th>
-                  <th scope="col">Last price</th>
-                  <th scope="col">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {collectorItems.map((row) => {
-                  const complete = row.complete === true;
-                  const gaps = row.gaps ?? [];
-                  const remaining =
-                    row.remainingPlanned == null && row.remainingExpected == null
-                      ? "—"
-                      : `${formatCount(row.remainingPlanned ?? 0)} / ${formatCount(row.remainingExpected ?? 0)}`;
-                  const open = fleetDetailId === row.securityId;
-                  return (
-                    <Fragment key={row.securityId}>
-                  <tr>
-                    <td>
-                      <button
-                        type="button"
-                        aria-label={`Open ${row.symbol} position`}
-                        onClick={() => {
-                          leaveWithoutSaving(() => {
-                            setPositionSymbol(row.symbol);
-                            setScreen("position-details");
-                            void loadInvestment(row.symbol);
-                          });
-                        }}
-                      >
-                        {row.symbol}
-                      </button>
-                    </td>
-                    <td>{row.declarationSource || "unassigned"}</td>
-                    <td>{row.collectorEnabled ? "yes" : "no"}</td>
-                    <td>
-                      {complete ? "Y" : "N"}
-                      {!complete && gaps.length > 0
-                        ? ` — ${gaps.join(", ")}`
-                        : ""}
-                    </td>
-                    <td>{(row.divType ?? "").trim() ? row.divType : "blank"}</td>
-                    <td>{row.paymentFrequency || "—"}</td>
-                    <td>{remaining}</td>
-                    <td>{formatCount(row.paidDeclarationCount ?? 0)}</td>
-                    <td>{row.inceptionOn?.trim() || "—"}</td>
-                    <td>
-                      {row.lastRunAt || "never"}
-                      {row.lastRunOk === true
-                        ? " ok"
-                        : row.lastRunOk === false
-                          ? " miss"
-                          : ""}
-                    </td>
-                    <td>
-                      {formatCount(row.successfulRunCount ?? 0)} /{" "}
-                      {formatCount(row.failureCount ?? 0)}
-                    </td>
-                    <td>{row.sourceUrl?.trim() || "—"}</td>
-                    <td>{row.rocSourceUrl?.trim() || "—"}</td>
-                    <td>
-                      <button
-                        type="button"
-                        aria-label={`Open tickets for ${row.symbol}`}
-                        disabled={(row.openTicketCount ?? 0) === 0}
-                        onClick={() => {
-                          setTicketFocusSymbol(row.symbol);
-                          setScreen("tickets");
-                        }}
-                      >
-                        {formatCount(row.openTicketCount ?? 0)}
-                        {row.latestTicketField
-                          ? ` ${row.latestTicketField}`
-                          : ""}
-                      </button>
-                    </td>
-                    <td>
-                      {row.lastPriceFreshness === "Unavailable" ||
-                      !row.lastPriceFreshness
-                        ? "N/A — Unavailable"
-                        : `${row.lastPriceAsOf?.trim() || "N/A"} ${row.lastPriceFreshness}`}
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        aria-label={
-                          row.collectorEnabled
-                            ? `Disable collector for ${row.symbol}`
-                            : `Enable collector for ${row.symbol}`
-                        }
-                        disabled={busy || writesBlocked || !row.declarationSource}
-                        onClick={() =>
-                          void toggleCollectorEnabled(row, !row.collectorEnabled)
-                        }
-                      >
-                        {row.collectorEnabled ? "Disable" : "Enable"}
-                      </button>{" "}
-                      <button
-                        type="button"
-                        aria-label="Collect fresh distribution data for this symbol"
-                        disabled={busy || writesBlocked}
-                        onClick={() => void forceCollectorRefresh(row)}
-                      >
-                        Collect fresh distribution data
-                      </button>{" "}
-                      <button
-                        type="button"
-                        aria-label={`Toggle details for ${row.symbol}`}
-                        aria-expanded={open}
-                        onClick={() =>
-                          setFleetDetailId(open ? null : row.securityId)
-                        }
-                      >
-                        {open ? "Hide detail" : "Detail"}
-                      </button>
-                    </td>
-                  </tr>
-                  {open ? (
-                    <tr>
-                      <td colSpan={16}>
-                        <dl aria-label={`${row.symbol} collector detail`}>
-                          <div>
-                            <dt>Provider</dt>
-                            <dd>{row.provider || "—"}</dd>
-                          </div>
-                          <div>
-                            <dt>Underlying</dt>
-                            <dd>{row.underlying?.trim() || "—"}</dd>
-                          </div>
-                          <div>
-                            <dt>ROC estimate</dt>
-                            <dd>{fleetRocText(row)}</dd>
-                          </div>
-                          <div>
-                            <dt>Content hash</dt>
-                            <dd>
-                              {row.lastContentHash?.trim()
-                                ? row.lastContentHash.slice(0, 8)
-                                : "—"}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt>Open lots</dt>
-                            <dd>{formatCount(row.openLotCount ?? 0)}</dd>
-                          </div>
-                          <div>
-                            <dt>Last payable</dt>
-                            <dd>{row.lastPayableOn?.trim() || "—"}</dd>
-                          </div>
-                        </dl>
-                      </td>
-                    </tr>
-                  ) : null}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          </section>
-          <section aria-label="Collector work queue">
-            <h3>Work queue (not today&apos;s run log)</h3>
-            <p>
-              Open tickets stay until filed. Use Today&apos;s declaration status
-              above for the current run.
-            </p>
-            <ExceptionList exceptions={exceptions} onOpenLog={() => void openExceptionLog()} />
-            <WorkTicketQueue
-              tickets={workTickets}
-              retryingTicketId={retryingTicket?.ticketId}
-              retryingSymbol={retryingTicket?.symbol}
-              pendingTicketId={ticketDecision?.ticketId}
-              pendingAction={ticketDecision?.action}
-              onRetry={(t) => void resolveTicketRetry(t as WorkTicketRecord)}
-              onRecreateAdapter={(t) =>
-                openRecreateAdapter(t as WorkTicketRecord)
-              }
-              onExcept={(t) =>
-                resolveConfirmTicket(t as WorkTicketRecord, "positive")
-              }
-              onReject={(t) =>
-                resolveConfirmTicket(t as WorkTicketRecord, "reject")
-              }
-              onEnterAmount={(t, amount) =>
-                void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
-              }
-              onFile={(t) => void fileWorkTicket(t as WorkTicketRecord)}
-            />
-          </section>
-          {collectorSymbol ? (
-            <section aria-label="Collector symbol page">
-              <h3>{collectorSymbol}</h3>
-              <div className="buttons">
-                <button
-                  type="button"
-                  aria-label="Open in Position Details"
-                  onClick={() => openPositionHub(collectorSymbol)}
-                >
-                  Open in Position Details
-                </button>
-              </div>
-              <p>
-                Collectors is ops only — last retrieve runs and payload. Position
-                data (declarations, plan pays, received totals) lives on Position
-                Details.
-              </p>
-              {collectorPlan ? (
-                <p aria-label="Collector plan">
-                  Plan check:{" "}
-                  {collectorPlan.known
-                    ? `${formatUsd(collectorPlan.perShareMinor, collectorPlan.scale)}${
-                        collectorPlan.reason ? ` — ${collectorPlan.reason}` : ""
-                      }`
-                    : "unknown (not $0)"}
-                </p>
-              ) : null}
-              <div className="table-wrap">
-                <table aria-label="Retrieve runs">
-                  <thead>
-                    <tr>
-                      <th scope="col">When</th>
-                      <th scope="col">Kind</th>
-                      <th scope="col">Ok</th>
-                      <th scope="col">Recorded</th>
-                      <th scope="col">Skipped</th>
-                      <th scope="col">Message</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {collectorRuns
-                      .filter((run) => run.kind !== "price")
-                      .concat(collectorRuns.filter((run) => run.kind === "price").slice(0, 3))
-                      .map((run) => (
-                      <tr key={run.runId}>
-                        <td>{run.requestedAt}</td>
-                        <td>{run.kind}</td>
-                        <td>{run.ok ? "ok" : "miss"}</td>
-                        <td>{formatCount(run.recorded)}</td>
-                        <td>{formatCount(run.skipped)}</td>
-                        <td>
-                          {run.code ? `${run.code}: ` : ""}
-                          {run.message || "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {collectorPayload ? (
-                <div className="table-wrap">
-                  <table aria-label="Collector retrieve payload">
-                    <thead>
-                      <tr>
-                        <th scope="col">Field</th>
-                        <th scope="col">Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Object.entries(collectorPayload).map(([key, value]) => (
-                        <tr key={key}>
-                          <td>{key}</td>
-                          <td>
-                            <code>
-                              {typeof value === "string"
-                                ? value
-                                : JSON.stringify(value)}
-                            </code>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p>
-                  No declaration retrieve payload yet. Daily open and Force
-                  refresh write declaration runs here; last-price-only runs are
-                  not shown as the payload.
-                </p>
-              )}
-            </section>
-          ) : null}
-        </section>
+        <CollectorsScreen
+          busy={busy}
+          writesBlocked={writesBlocked}
+          collectorItems={collectorItems}
+          collectorStats={collectorStats}
+          collectorAction={collectorAction}
+          collectorStatusAt={collectorStatusAt}
+          collectorRunProgress={collectorRunProgress}
+          researchActivity={researchActivity}
+          missingUrlDrafts={missingUrlDrafts}
+          setMissingUrlDrafts={setMissingUrlDrafts}
+          fleetDetailId={fleetDetailId}
+          setFleetDetailId={setFleetDetailId}
+          collectorSymbol={collectorSymbol}
+          collectorRuns={collectorRuns}
+          collectorPayload={collectorPayload}
+          collectorPlan={collectorPlan}
+          exceptions={exceptions}
+          workTickets={workTickets}
+          retryingTicket={retryingTicket}
+          ticketDecision={ticketDecision}
+          onRunEnabled={() => void runEnabledCollectors()}
+          onRunMisses={() => void runMissesOnlyCollectors()}
+          onFillResearchGaps={() => void fillResearchGaps()}
+          onApplyIssuerSources={() => void applyIssuerSources()}
+          onApplyMissingUrls={() => void applyMissingCollectorUrls()}
+          onToggleEnabled={(row, enabled) => void toggleCollectorEnabled(row, enabled)}
+          onForceRefresh={(row) => void forceCollectorRefresh(row)}
+          onOpenPosition={(symbol) => {
+            leaveWithoutSaving(() => {
+              setPositionSymbol(symbol);
+              setScreen("position-details");
+              void loadInvestment(symbol);
+            });
+          }}
+          onOpenTickets={(symbol) => {
+            setTicketFocusSymbol(symbol);
+            setScreen("tickets");
+          }}
+          onOpenPositionHub={(symbol) => openPositionHub(symbol)}
+          onOpenExceptionLog={() => void openExceptionLog()}
+          onRetryTicket={(t) => void resolveTicketRetry(t)}
+          onRecreateAdapter={(t) => openRecreateAdapter(t as WorkTicketRecord)}
+          onExceptTicket={(t) => resolveConfirmTicket(t, "positive")}
+          onRejectTicket={(t) => resolveConfirmTicket(t, "reject")}
+          onEnterAmount={(t, amount) => void resolveEnterDeclaredAmount(t, amount)}
+          onFileTicket={(t) => void fileWorkTicket(t)}
+        />
       ) : null}
 
       {screen === "collector-establish" ? (
-        <section aria-label="Reevaluate collector">
-          <h2>Reevaluate collector</h2>
-          <p>
-            Collect fresh on Collectors is the daily adapter run. Establish /
-            Reevaluate here is identity and 19a-1 — it does not rewrite stored
-            pays. New unpaid dates may be added. Amount changes ticket Except
-            or Reject. Empty / 403 / JS last_run is parked, not a wipe.
-          </p>
-          <div className="table-wrap">
-            <table aria-label="Establish collector fleet">
-              <thead>
-                <tr>
-                  <th scope="col">Symbol</th>
-                  <th scope="col">Complete</th>
-                  <th scope="col">Gaps</th>
-                  <th scope="col">ROC</th>
-                  <th scope="col">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {collectorItems.length === 0 ? (
-                  <tr>
-                    <td colSpan={5}>No paying symbols loaded yet.</td>
-                  </tr>
-                ) : (
-                  collectorItems.map((row) => {
-                    const roc =
-                      row.rocEstimateMinor == null
-                        ? "none"
-                        : `${(row.rocEstimateMinor / 10 ** (row.rocScale || 2)).toFixed(row.rocScale || 2)}%`;
-                    return (
-                      <tr key={row.securityId}>
-                        <td>{row.symbol}</td>
-                        <td>{row.complete ? "yes" : "no"}</td>
-                        <td>{(row.gaps ?? []).join(", ") || "—"}</td>
-                        <td>{roc}</td>
-                        <td>
-                          <button
-                            type="button"
-                            aria-label={`Establish collector ${row.symbol}`}
-                            disabled={busy || writesBlocked}
-                            onClick={() => void establishCollector(row)}
-                          >
-                            Establish
-                          </button>{" "}
-                          <button
-                            type="button"
-                            aria-label={`Reevaluate collector ${row.symbol}`}
-                            disabled={busy || writesBlocked}
-                            onClick={() => void reevaluateCollector(row)}
-                          >
-                            Reevaluate
-                          </button>{" "}
-                          <button
-                            type="button"
-                            aria-label={`Accept recommended ROC ${row.symbol}`}
-                            disabled={
-                              busy ||
-                              writesBlocked ||
-                              row.rocEstimateMinor == null ||
-                              row.complete === true
-                            }
-                            onClick={() => void acceptCollectorRoc(row)}
-                          >
-                            Accept ROC
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <CollectorEstablishScreen
+          busy={busy}
+          writesBlocked={writesBlocked}
+          collectorItems={collectorItems}
+          onEstablish={(row) => void establishCollector(row)}
+          onReevaluate={(row) => void reevaluateCollector(row)}
+          onAcceptRoc={(row) => void acceptCollectorRoc(row)}
+        />
       ) : null}
 
       {screen === "components" ? (

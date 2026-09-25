@@ -28,6 +28,17 @@ main.container:has(.home-top-row) {
   padding: 1rem 0.85rem 2rem;
 }
 
+main.container:has(.calculator-page) {
+  max-width: none;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.35rem 0.5rem 0.35rem;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 2.5rem);
+  overflow: hidden;
+}
+
 .nav {
   display: flex;
   flex-wrap: wrap;
@@ -123,6 +134,15 @@ main.container:has(.home-top-row) {
   cursor: not-allowed;
 }
 
+.menubar-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex: 1;
+  min-width: 11rem;
+}
+
 .menubar-week {
   margin: 0;
   align-self: center;
@@ -132,6 +152,72 @@ main.container:has(.home-top-row) {
   letter-spacing: 0.02em;
   white-space: nowrap;
   color: #f0f0f2;
+}
+
+.menubar-activity {
+  position: relative;
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 22rem;
+}
+
+.menubar-activity-chip {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 1.7rem;
+  padding: 0.12rem 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0.25rem;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f0f0f2;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.menubar-activity-chip.is-busy {
+  background: #e67a12;
+  border-color: #c45f08;
+  color: #fff;
+  font-weight: 700;
+}
+
+.menubar-activity-last {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menubar-activity-list {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 80;
+  width: 18.5rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.65rem 0.9rem;
+  background: #f4f1ea;
+  color: #1a1a1a;
+  border: 1px solid #1a3654;
+  box-shadow: 0 0.35rem 0.85rem rgba(26, 54, 84, 0.18);
+}
+
+.menubar-activity-list ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.menubar-activity-list li {
+  margin: 0.15rem 0;
+}
+
+.menubar-activity-list li[data-done="0"] {
+  font-weight: 600;
+}
+
+.menubar-activity-list li[data-done="1"] {
+  color: #4a5568;
 }
 
 .trends-chart-grid {
@@ -198,6 +284,22 @@ main.container:has(.home-top-row) {
   opacity: 0.8;
 }
 
+.plan-horizon-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 0.65rem;
+  margin: 0 0 0.35rem;
+  background: #f4efe4;
+  border: 1px solid #c9b896;
+}
+
+.plan-horizon-prompt p {
+  margin: 0;
+  font-size: 0.88rem;
+}
+
 .income-plan-report-tabs {
   display: flex;
   gap: 0.35rem;
@@ -224,6 +326,42 @@ main.container:has(.home-top-row) {
   align-items: flex-end;
   gap: 0.25rem 0.5rem;
   margin: 0 0 0.2rem;
+}
+
+.income-account-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 1rem;
+  margin: 0.35rem 0 0.15rem;
+}
+
+.income-account-head h3 {
+  margin: 0;
+}
+
+.income-account-head .income-week-bar {
+  flex: 1 1 18rem;
+  justify-content: flex-end;
+  margin: 0;
+}
+
+.income-plan-tickets {
+  align-items: center;
+  gap: 0.35rem 0.85rem;
+}
+
+.income-plan-tickets .ip-field {
+  display: inline-block;
+  min-width: 1.6rem;
+  margin-left: 0.2rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 4px;
+  background: #d7ebf8;
+  color: #1b365d;
+  font-weight: 700;
+  text-align: center;
 }
 
 .income-week-bar button.is-loading,
@@ -293,6 +431,20 @@ main.container:has(.home-top-row) {
 
 .income-account-tick.off {
   opacity: 0.45;
+}
+
+.income-account-tick.is-locked {
+  cursor: not-allowed;
+}
+
+.income-account-tick.is-locked input {
+  cursor: not-allowed;
+}
+
+.account-tick-must-pick {
+  margin: 0.35rem 0 0;
+  font-size: 0.82rem;
+  color: #5a6a78;
 }
 
 select.ip-num {
@@ -840,6 +992,197 @@ td.cell-future {
   margin: 0.15rem 0;
 }
 
+.cash-coverage {
+  max-width: 48rem;
+  margin: 0.75rem 0 1.25rem;
+  padding: 1rem 1.15rem 1.1rem;
+  border: 1px solid #c5d0dc;
+  border-radius: 10px;
+  background: linear-gradient(#f8fbff, #ffffff);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8) inset, 0 8px 18px rgba(29, 79, 122, 0.06);
+}
+
+.cash-coverage h3 {
+  margin: 0 0 0.35rem;
+  color: #16324f;
+  letter-spacing: 0.01em;
+}
+
+.cash-coverage-window {
+  margin: 0 0 0.65rem;
+  color: #3d5266;
+}
+
+.cash-coverage-loading {
+  margin: 0.75rem 0 0.35rem;
+  font-weight: 650;
+  color: #16324f;
+}
+
+.cash-coverage-table-wrap {
+  max-height: none;
+  overflow: visible;
+  margin: 0 0 0.85rem;
+  border: 1px solid #d5dde6;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.cash-coverage-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.cash-coverage-table-wrap caption.cash-coverage-caption {
+  caption-side: top;
+  text-align: left;
+  padding: 0.45rem 0.55rem 0.4rem;
+  font-weight: 650;
+  color: #16324f;
+}
+
+.cash-coverage-table-wrap thead th {
+  text-align: left;
+  padding: 0.4rem 0.55rem;
+  vertical-align: bottom;
+}
+
+.cash-coverage-table-wrap thead th.numeric {
+  text-align: right;
+}
+
+.cash-coverage-col-period {
+  display: block;
+  margin-top: 0.15rem;
+  font-weight: 500;
+  font-size: 0.78rem;
+  color: #3d5266;
+}
+
+.cash-coverage-actual-note {
+  margin: 0.55rem 0 0;
+  color: #3d5266;
+}
+
+.cash-coverage-table-wrap thead th:first-child {
+  width: 28%;
+}
+
+.cash-coverage-table-wrap tbody th {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.35rem 0.55rem;
+}
+
+.cash-coverage-table-wrap td {
+  padding: 0.35rem 0.55rem;
+}
+
+.cash-coverage-table-wrap tbody tr:last-child th,
+.cash-coverage-table-wrap tbody tr:last-child td {
+  font-weight: 700;
+  border-top: 1px solid #c5d0dc;
+}
+
+.car-tax-plan {
+  max-width: 42rem;
+  margin: 0.75rem 0 1.25rem;
+  padding: 1rem 1.15rem 1.1rem;
+  border: 1px solid #c5d0dc;
+  border-radius: 10px;
+  background: linear-gradient(#f8fbff, #ffffff);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8) inset, 0 8px 18px rgba(29, 79, 122, 0.06);
+}
+
+.car-tax-plan h3 {
+  margin: 0 0 0.75rem;
+  color: #16324f;
+  letter-spacing: 0.01em;
+}
+
+.car-tax-table-wrap {
+  max-height: none;
+  overflow: visible;
+  border: 1px solid #d5dde6;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.car-tax-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.car-tax-table-wrap thead th {
+  position: static;
+  background: #1d4f7a;
+  color: #f4f8fc;
+  box-shadow: none;
+  padding: 0.5rem 0.7rem;
+  font-weight: 600;
+  text-align: right;
+}
+
+.car-tax-table-wrap thead th:first-child {
+  text-align: left;
+}
+
+.car-tax-table-wrap tbody th,
+.car-tax-table-wrap tfoot th {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.5rem 0.7rem;
+}
+
+.car-tax-table-wrap td {
+  padding: 0.5rem 0.7rem;
+}
+
+.car-tax-ordinary {
+  background: #eef5fb;
+}
+
+.car-tax-ordinary th {
+  color: #1d4f7a;
+  border-left: 4px solid #2f6fed;
+}
+
+.car-tax-roc {
+  background: #eefaf6;
+}
+
+.car-tax-roc th {
+  color: #0f5c4c;
+  border-left: 4px solid #0f766e;
+}
+
+.car-tax-lt {
+  background: #f3faf3;
+}
+
+.car-tax-lt th {
+  color: #166534;
+  border-left: 4px solid #3d8b4a;
+}
+
+.car-tax-st {
+  background: #fff6ee;
+}
+
+.car-tax-st th {
+  color: #9a3412;
+  border-left: 4px solid #d97706;
+}
+
+.car-tax-table-wrap tfoot td,
+.car-tax-table-wrap tfoot th {
+  position: static;
+  background: #16324f;
+  color: #f4f8fc;
+  box-shadow: none;
+  font-weight: 700;
+}
+
 .trends-week-table-wrap {
   max-height: none;
   overflow: visible;
@@ -1105,6 +1448,10 @@ td.cell-future {
   min-width: 0;
 }
 
+.dividend-year-compare {
+  margin-top: 0.35rem;
+}
+
 .table-wrap {
   max-height: 28rem;
   overflow: auto;
@@ -1148,6 +1495,21 @@ td.cell-future {
   font-weight: 600;
   background: #f6f6f6;
   box-shadow: 0 -1px 0 #d0d0d0;
+}
+
+.table-wrap.car-tax-table-wrap thead th {
+  position: static;
+  background: #1d4f7a;
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.table-wrap.car-tax-table-wrap tfoot td,
+.table-wrap.car-tax-table-wrap tfoot th {
+  position: static;
+  background: #16324f;
+  color: #ffffff;
+  box-shadow: none;
 }
 
 th.sortable {
@@ -1348,6 +1710,18 @@ dd {
   margin: 0;
 }
 
+.menu-working {
+  padding: 0.35rem 0.75rem;
+  font-weight: 600;
+}
+
+.cash-cm-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0 0 0.75rem;
+}
+
 .restart-bar {
   position: sticky;
   top: 2.4rem;
@@ -1379,6 +1753,12 @@ dd {
 
 .refresh-activity-bar progress {
   max-width: 16rem;
+}
+
+.page-activity-idle {
+  margin: 0;
+  color: #4a5568;
+  font-size: 0.88rem;
 }
 
 .status-stored {
@@ -1605,6 +1985,14 @@ table[aria-label="Remaining-year payment dates"] input {
   margin: 0;
 }
 
+.snapshot-confirm-dialog {
+  width: min(32rem, 100%);
+}
+
+.snapshot-confirm-dialog p {
+  margin: 0 0 0.85rem;
+}
+
 .income-export-preview-dialog {
   width: min(72rem, 100%);
 }
@@ -1763,6 +2151,14 @@ table[aria-label="Remaining-year payment dates"] input {
   box-sizing: border-box;
 }
 
+.home-top-right {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  min-height: 0;
+}
+
 .home-dividend-plan {
   min-width: 0;
   width: 100%;
@@ -1770,6 +2166,115 @@ table[aria-label="Remaining-year payment dates"] input {
   justify-self: stretch;
   box-sizing: border-box;
   overflow-x: hidden;
+}
+
+.home-trend-focus {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 16rem;
+  display: flex;
+  flex-direction: column;
+  padding: 0.4rem 0.5rem 0.5rem;
+  border: 1px solid rgba(26, 43, 60, 0.18);
+  border-radius: 0.45rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(236, 242, 247, 0.9) 100%);
+  box-sizing: border-box;
+}
+
+.home-trend-focus h2 {
+  margin: 0 0 0.25rem;
+  font-size: clamp(0.7rem, 1.35vw, 0.95rem);
+  font-weight: 650;
+  line-height: 1.15;
+  color: #1a2b3c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-trend-focus-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.12rem 0.5rem;
+  margin: 0 0 0.25rem;
+}
+
+.home-trend-focus-title h2 {
+  margin: 0;
+}
+
+.home-trend-focus-top {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.home-trend-focus-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.home-trend-focus-flow {
+  flex: 1 1 100%;
+  display: grid;
+  grid-template-columns: max-content max-content max-content max-content;
+  column-gap: 0.4rem;
+  row-gap: 0.05rem;
+  align-items: baseline;
+  justify-content: center;
+}
+
+.home-trend-focus-flow > .home-trend-focus-label:nth-child(3),
+.home-trend-focus-flow > .home-trend-focus-label:nth-child(7) {
+  margin-left: 0.9rem;
+}
+
+.home-trend-focus-label {
+  font-size: 0.62rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #4a6175;
+}
+
+.home-trend-focus-flow .home-av-value {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.15;
+  font-weight: 700;
+}
+
+.home-trend-focus-flow .home-av-value.is-income {
+  color: #2f6b32;
+}
+
+.home-trend-focus-flow .home-av-value.is-withdraw {
+  color: #8a2f2f;
+}
+
+.home-trend-focus-title select {
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 650;
+  color: #1a2b3c;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid rgba(26, 43, 60, 0.22);
+  border-radius: 0.28rem;
+  background: #fff;
+}
+
+.home-trend-focus-title .home-av-value {
+  margin: 0;
+}
+
+.home-trend-focus-chart {
+  flex: 1 1 auto;
+  min-height: 14rem;
+  width: 100%;
 }
 
 .portfolio-summary {
@@ -1805,7 +2310,7 @@ table[aria-label="Remaining-year payment dates"] input {
 }
 
 .portfolio-summary .ps-pair {
-  grid-column: span 2;
+  grid-column: span 3;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.4rem;
@@ -1900,6 +2405,59 @@ table[aria-label="Remaining-year payment dates"] input {
   color: #0b6b49;
 }
 
+.portfolio-summary .ps-cash {
+  grid-column: span 3;
+}
+
+.portfolio-summary .ps-cash dt {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.portfolio-summary .ps-cash-total {
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #14324a;
+}
+
+.portfolio-summary .ps-cash dd {
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.portfolio-summary .ps-cash ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.12rem 0.75rem;
+}
+
+.portfolio-summary .ps-cash li {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.06rem 0.28rem;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(20, 80, 60, 0.2);
+}
+
+.portfolio-summary .ps-cash-name {
+  text-align: right;
+}
+
+.portfolio-summary .ps-cash-amt {
+  min-width: 4.6rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .portfolio-summary .ps-count {
   border-color: rgba(50, 80, 110, 0.22);
 }
@@ -1929,6 +2487,22 @@ table[aria-label="Remaining-year payment dates"] input {
   border-radius: 0.15rem;
 }
 
+.portfolio-summary .ps-coverage button:disabled {
+  color: #1a1a1a;
+  opacity: 1;
+}
+
+.portfolio-summary .ps-coverage .ps-refresh-count {
+  display: block;
+  color: #1a1a1a;
+  font-size: 0.58rem;
+  line-height: 1.15;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .portfolio-summary .ps-date {
   border-color: rgba(40, 100, 120, 0.28);
   background: linear-gradient(180deg, #eef9fb 0%, #d7eef3 100%);
@@ -1945,6 +2519,11 @@ table[aria-label="Remaining-year payment dates"] input {
   color: inherit;
   text-decoration: underline;
   cursor: pointer;
+}
+
+.portfolio-summary .ps-week-declared {
+  display: block;
+  margin-top: 0.15rem;
 }
 
 .income-tx-dialog {
@@ -2179,11 +2758,375 @@ button:disabled {
   opacity: 0.55;
 }
 
-button.is-unsaved:not(:disabled) {
+button.is-unsaved,
+button.is-unsaved:disabled,
+.cash-element-editor.is-owner-edit-active button {
   background: #e67a12;
   color: #fff;
   border: 1px solid #c45f08;
   font-weight: 700;
+}
+
+button.is-unsaved:disabled,
+.cash-element-editor.is-owner-edit-active button:disabled {
+  opacity: 1;
+}
+
+.elements-group {
+  margin: 0.85rem 0 1.25rem;
+}
+
+.elements-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.35rem;
+}
+
+.elements-group-head h4 {
+  margin: 0;
+}
+
+.elements-catalog-row {
+  cursor: pointer;
+}
+
+.element-editor-account {
+  margin: 0 0 0.35rem;
+  font-weight: 700;
+}
+
+.element-never-expires {
+  margin: 0.25rem 0 0.5rem;
+}
+
+.element-history {
+  margin: 2rem 0 0;
+}
+
+.element-history-break {
+  height: 0;
+  border: 0;
+  border-top: 2px solid #1a3654;
+  margin: 0 0 1rem;
+}
+
+.element-history-kicker {
+  margin: 0 0 0.2rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  color: #4a5568;
+}
+
+.element-history h3 {
+  margin: 0 0 0.75rem;
+}
+
+.element-history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  margin: 0 0 0.75rem;
+}
+
+.element-history-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 16rem;
+}
+
+.element-history-meta,
+.element-history-totals {
+  margin: 0.5rem 0;
+}
+
+.element-history-debit {
+  color: #b42318;
+  font-weight: 700;
+}
+
+.element-history-credit {
+  color: #027a48;
+  font-weight: 700;
+}
+
+button.element-exceptions-link {
+  display: inline-block;
+  margin: 0.25rem 0 0.5rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #0b3d91;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+button.element-exceptions-link:disabled {
+  color: #666;
+  cursor: default;
+  text-decoration: none;
+}
+
+.cash-element-editor.is-owner-edit-active button.element-exceptions-link,
+.cash-element-editor.is-owner-edit-active button.element-exceptions-link:disabled {
+  background: none;
+  color: #0b3d91;
+  border: 0;
+  font-weight: inherit;
+}
+
+.element-exceptions-series {
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+}
+
+.element-exception-original {
+  margin: 0 0 0.75rem;
+}
+
+.element-exception-mode {
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: 0;
+}
+
+.element-exception-mode legend {
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.element-exception-mode label {
+  display: block;
+  margin: 0.25rem 0;
+}
+
+tr.element-upcoming-row {
+  cursor: pointer;
+}
+
+tr.element-upcoming-row.is-selected {
+  background: #fff3b0;
+}
+
+tr.element-upcoming-row.is-cancelled td {
+  color: #666;
+  text-decoration: line-through;
+}
+
+.cash-register,
+.cash-element-editor,
+.week-ahead {
+  margin: 1rem 0;
+}
+
+.cash-register .buttons,
+.cash-element-editor .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+
+.cash-register .register-account-line {
+  margin: 0.15rem 0 0.5rem;
+  font-weight: 700;
+}
+
+.register-month-flow {
+  margin: 0.25rem 0 0.35rem;
+}
+
+.cashflow-manager-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.cashflow-manager-head h3 {
+  margin: 0;
+}
+
+.cashflow-picker-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.75rem;
+}
+
+.cashflow-picker-row .income-account-picker {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.cashflow-picker-row .buttons {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.cash-register .buttons button[aria-pressed="true"] {
+  background: #1e3a5f;
+  color: #fff;
+  border-color: #1e3a5f;
+  font-weight: 700;
+}
+
+.register-month-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.3rem;
+}
+
+.register-month-nav h4 {
+  margin: 0;
+  flex: 1;
+  font-size: 1.1rem;
+}
+
+.cash-register .is-debit,
+.register-calendar .cal-net.is-debit {
+  color: #b00000;
+  font-weight: 700;
+}
+
+.cash-register .is-credit,
+.register-calendar .cal-net.is-credit {
+  color: #0b5d1e;
+  font-weight: 700;
+}
+
+.register-calendar-wrap {
+  overflow-x: auto;
+  margin: 0.35rem 0 0.5rem;
+}
+
+.register-calendar {
+  width: 100%;
+  min-width: 52rem;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.register-calendar caption {
+  caption-side: top;
+  text-align: left;
+  font-weight: 700;
+  font-size: 1.1rem;
+  padding: 0 0 0.5rem;
+}
+
+.register-calendar th {
+  text-align: center;
+  padding: 0.18rem 0.2rem;
+  background: #1e3a5f;
+  color: #fff;
+  font-weight: 600;
+}
+
+.register-calendar td {
+  vertical-align: top;
+  height: auto;
+  border: 1px solid #c8c8c8;
+  padding: 0.1rem 0.28rem 0.12rem;
+  background: #fff;
+}
+
+.register-calendar td.is-outside {
+  background: #f3f3f3;
+  color: #8a8a8a;
+}
+
+.register-calendar td.has-activity {
+  background: #eef4fb;
+}
+
+.register-calendar td.is-inflow {
+  background: #e8f6ee;
+}
+
+.register-calendar td.is-outflow {
+  background: #fbeeee;
+}
+
+.register-calendar td.is-asof,
+.register-calendar td.is-focus {
+  outline: 2px solid #1e3a5f;
+  outline-offset: -2px;
+}
+
+.register-calendar td[role="button"] {
+  cursor: pointer;
+}
+
+.cash-register tr.is-focus {
+  background: #eef4fb;
+  outline: 2px solid #1e3a5f;
+  outline-offset: -2px;
+}
+
+.register-calendar .cal-day {
+  display: block;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.register-calendar .cal-net,
+.register-calendar .cal-run {
+  display: block;
+  font-size: 0.8rem;
+  line-height: 1.2;
+  margin-top: 0.04rem;
+}
+
+.register-calendar .cal-run {
+  color: #333;
+}
+
+.register-trend-wrap {
+  margin: 0.75rem 0 1rem;
+}
+
+.register-trend-wrap .home-trend-focus {
+  min-height: 16rem;
+}
+
+.register-trend-wrap h4 {
+  margin: 0 0 0.4rem;
+}
+
+.register-trend-wrap[aria-busy="true"] p {
+  font-weight: 700;
+}
+
+.register-trend {
+  display: block;
+  width: 100%;
+  max-width: 46rem;
+  height: auto;
+  cursor: crosshair;
+}
+
+.register-trend-grid {
+  stroke: #d8d8d8;
+  stroke-width: 1;
+}
+
+.register-trend-axis-line {
+  stroke: #333;
+  stroke-width: 1;
+}
+
+.register-trend-axis,
+.register-trend-hover {
+  fill: #333;
+  font-size: 11px;
 }
 
 .decl-history-bar {
@@ -2210,6 +3153,162 @@ button.is-unsaved:not(:disabled) {
 
 .decl-history-wrap {
   max-height: 36rem;
+}
+
+.calculator-sheet-wrap {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+}
+
+section.calculator-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+section.calculator-page > h2 {
+  margin: 0 0 0.2rem;
+  font-size: 1rem;
+}
+
+section.calculator-page > .calculator-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.calculator-page .decl-history-bar {
+  margin: 0 0 0.25rem;
+  gap: 0.3rem 0.55rem;
+}
+
+.calculator-page .decl-history-filter {
+  min-width: 0;
+  font-size: 0.72rem;
+  gap: 0.05rem;
+}
+
+.calculator-sheet-note {
+  margin: 0 0 0.25rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  color: #3d4d5c;
+}
+
+.calculator-sheet-wrap table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.15;
+}
+
+.calculator-sheet-wrap th,
+.calculator-sheet-wrap td {
+  white-space: nowrap;
+  padding: 0.05rem 0.28rem;
+}
+
+.calculator-sheet-wrap th.sortable button {
+  padding: 0.05rem 0.28rem;
+  font-size: 0.68rem;
+}
+
+.calculator-sheet-wrap thead th {
+  background: #2f6fad;
+  color: #fff;
+  box-shadow: none;
+}
+
+.calculator-sheet-wrap thead th button {
+  color: inherit;
+}
+
+.calculator-sheet-wrap th:first-child,
+.calculator-sheet-wrap td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #fff;
+  color: #0f0f0f;
+}
+
+.calculator-sheet-wrap td.cadence-weekly {
+  background: #f4c84a;
+}
+
+.calculator-sheet-wrap td.cadence-monthly {
+  background: #7cba5a;
+}
+
+.calculator-sheet-wrap td.cadence-quarterly {
+  background: #e8a54b;
+}
+
+.calc-month-chart {
+  margin: 0.4rem 0 0;
+}
+
+.calc-month-chart h3 {
+  margin: 0 0 0.15rem;
+  font-size: 0.85rem;
+}
+
+.calc-month-chart ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 16rem;
+  overflow: auto;
+}
+
+.calc-month-chart li {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr 3.2rem;
+  gap: 0.35rem;
+  align-items: center;
+  margin: 0.12rem 0;
+  font-size: 0.72rem;
+}
+
+.calc-month-symbol {
+  font-weight: 650;
+}
+
+.calc-month-track {
+  display: flex;
+  height: 0.55rem;
+  background: rgba(26, 43, 60, 0.08);
+}
+
+.calc-month-rest {
+  background: #2a5f8f;
+  height: 100%;
+}
+
+.calc-month-roc {
+  background: #7cba5a;
+  height: 100%;
+}
+
+.calc-month-amount {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.calculator-sheet-wrap td.plan-check-met {
+  background: #7cba5a;
+  color: #0f0f0f;
+}
+
+.calculator-sheet-wrap thead th:first-child {
+  z-index: 4;
+  background: #2f6fad;
+  color: #fff;
 }
 
 .decl-history-wrap table {
@@ -2243,6 +3342,262 @@ button.is-unsaved:not(:disabled) {
   background: #e8a54b;
 }
 
+.external-find {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 0.45rem;
+}
+
+.external-find-grid {
+  display: grid;
+  grid-template-columns: auto minmax(12rem, 22rem) auto auto auto auto;
+  border: 1px solid #1b365d;
+  background: #e7f0fa;
+}
+
+.external-find-grid > * {
+  border-left: 1px solid #8eafd0;
+  padding: 0.1rem 0.45rem;
+  display: flex;
+  align-items: center;
+}
+
+.external-find-grid > :first-child {
+  border-left: 0;
+}
+
+.external-find-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  background: #d3e4f5;
+}
+
+.external-find-count {
+  min-width: 2.6rem;
+  justify-content: flex-end;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  background: #fff;
+}
+
+.external-find-grid input {
+  width: 100%;
+  height: 1.35rem;
+  margin: 0;
+  padding: 0 0.3rem;
+  border: 0;
+  background: #fff;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.external-register-wrap table {
+  font-size: 0.82rem;
+}
+
+.external-register-wrap th,
+.external-register-wrap td {
+  padding: 0.08rem 0.28rem;
+  white-space: nowrap;
+}
+
+.external-register-wrap td input:not([type="checkbox"]) {
+  width: 100%;
+  min-width: 5.5rem;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.external-register-wrap tr.external-entry td {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.external-register-wrap tr.external-entry button {
+  height: 1.25rem;
+  margin: 0;
+  padding: 0 0.55rem;
+  font: inherit;
+  line-height: 1.15;
+}
+
+.table-wrap.external-open-wrap,
+.table-wrap.external-open-wrap:has(input) {
+  width: 0;
+  min-width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.external-open-wrap table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.external-open-wrap td input:not([type="checkbox"]) {
+  min-width: 0;
+}
+
+.external-open-wrap td:nth-child(6) {
+  min-width: 0;
+}
+
+.external-open-wrap th:nth-child(7),
+.external-open-wrap th:nth-child(8),
+.external-open-wrap th:nth-child(9) {
+  width: 4.4rem;
+}
+
+.external-open-wrap td.external-entry-actions {
+  white-space: nowrap;
+}
+
+.external-entry-actions button + button {
+  margin-left: 0.35rem;
+}
+
+.external-register-wrap tr.external-entry input:not([type="checkbox"]) {
+  height: 1.25rem;
+  min-height: 0;
+  margin: 0;
+  padding: 0 0.28rem;
+  line-height: 1.15;
+}
+
+.external-date-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.12rem;
+  max-width: 100%;
+}
+
+.external-date-step input[type="date"] {
+  width: 6.6rem;
+  min-width: 0;
+  max-width: 6.6rem;
+  flex: 0 0 6.6rem;
+}
+
+.external-register-wrap tr .external-date-step button {
+  width: 1.15rem;
+  height: 1.25rem;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  line-height: 1;
+}
+
+.external-open-wrap th:nth-child(2) {
+  width: 9.2rem;
+}
+
+.external-register-wrap tr.external-entry input[type="date"] {
+  height: 1.25rem;
+  max-height: 1.25rem;
+  padding: 0 0.2rem;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.external-register-wrap tr.external-entry input[type="date"]::-webkit-datetime-edit,
+.external-register-wrap tr.external-entry input[type="date"]::-webkit-datetime-edit-fields-wrapper,
+.external-register-wrap tr.external-entry input[type="date"]::-webkit-datetime-edit-text,
+.external-register-wrap tr.external-entry input[type="date"]::-webkit-datetime-edit-month-field,
+.external-register-wrap tr.external-entry input[type="date"]::-webkit-datetime-edit-day-field,
+.external-register-wrap tr.external-entry input[type="date"]::-webkit-datetime-edit-year-field {
+  padding: 0;
+  margin: 0;
+  line-height: 1.15;
+}
+
+.external-register-wrap tr.external-entry input[type="date"]::-webkit-calendar-picker-indicator {
+  margin: 0;
+  padding: 0;
+  height: 0.85rem;
+  width: 0.85rem;
+}
+
+.external-register-wrap td input[type="checkbox"] {
+  width: auto;
+  min-width: 0;
+}
+
+.external-register-wrap td:nth-child(6) {
+  white-space: normal;
+  min-width: 12rem;
+}
+
+.external-transfer-total button {
+  margin-left: 0.6rem;
+}
+
+.external-open-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.external-transfer-total {
+  margin-left: 1rem;
+  padding: 0.1rem 0.4rem;
+  background: #d7ebf8;
+  color: #1b365d;
+  font-weight: 800;
+}
+
+.external-steps {
+  margin: 0.2rem 0 0.6rem;
+  padding-left: 1.2rem;
+}
+
+.external-subtotal td {
+  font-weight: 700;
+  background: #e7f2fb;
+}
+
+.external-col-filter {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  height: 1.15rem;
+  min-height: 0;
+  margin: 0.08rem 0 0;
+  padding: 0 0.2rem;
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.15;
+}
+
+.table-wrap.external-completed-wrap,
+.table-wrap.external-completed-wrap:has(input),
+.table-wrap.external-completed-wrap:has(select) {
+  max-height: 28rem;
+  overflow: auto;
+}
+
+.table-wrap.external-completed-wrap:has(input) thead th,
+.table-wrap.external-completed-wrap:has(select) thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f6f6f6;
+  box-shadow: 0 1px 0 #d0d0d0;
+  pointer-events: auto;
+  vertical-align: bottom;
+}
+
+.external-register-wrap tr.is-complete td {
+  background: #d9f2df;
+}
+
+.external-register-wrap td.external-green-date {
+  background: #7dcea0;
+  font-weight: 700;
+}
+
 .cart-step-rail {
   display: flex;
   flex-wrap: wrap;
@@ -2267,14 +3622,19 @@ button.is-unsaved:not(:disabled) {
   margin: 1rem 0;
 }
 
-.cart-blend table {
+.cart-blend table,
+.plan-sheet table,
+.shopping-cart section[aria-label="Allocation gap"] table,
+.shopping-cart section[aria-label="Traded dollars income"] table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.85rem;
 }
 
 .cart-blend th,
-.cart-blend td {
+.cart-blend td,
+.plan-sheet th,
+.plan-sheet td {
   padding: 0.25rem 0.4rem;
   text-align: right;
   white-space: nowrap;
@@ -2285,6 +3645,11 @@ button.is-unsaved:not(:disabled) {
 .cart-blend th:nth-child(11),
 .cart-blend td:nth-child(11) {
   text-align: left;
+}
+
+.plan-sheet select,
+.plan-sheet input {
+  width: 6.5rem;
 }
 
 .cart-blend input[type="number"] {

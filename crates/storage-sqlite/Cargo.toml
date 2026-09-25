@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 application-core = { path = "../application-core" }
 async-trait.workspace = true
+calamine = "0.26"
 chrono.workspace = true
 financial-domain = { path = "../financial-domain" }
 import-engine = { path = "../import-engine" }

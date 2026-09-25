@@ -197,7 +197,11 @@ pub fn is_retrieve_failure_code(code: &str) -> bool {
 
 /// Closed when retrieve is ok. Confirm tickets (variation) stay open for Except/Reject.
 pub fn is_auto_file_on_ok_code(code: &str) -> bool {
-    is_retrieve_failure_code(code) || code.trim() == "declaration_history_dropped"
+    is_retrieve_failure_code(code)
+        || matches!(
+            code.trim(),
+            "declaration_history_dropped" | "declaration_lookback_short"
+        )
 }
 
 /// Pre-D2 leftover: calendar stub year forced to 4/12/52. Close when lists agree.

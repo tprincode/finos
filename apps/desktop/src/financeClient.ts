@@ -6,6 +6,11 @@ import {
   type QueryRequest,
   type QueryResult,
 } from "@finos/app-contracts";
+import {
+  activityLabel,
+  beginPageActivity,
+  endPageActivity,
+} from "./features/shared/pageActivity";
 
 function envelopeQuery(queryName: string, body?: unknown): QueryRequest {
   return {
@@ -36,13 +41,17 @@ export class LocalTauriFinanceClient {
   }
 
   executeQuery(queryName: string, body?: unknown): Promise<QueryResult> {
-    return invoke<QueryResult>("finance_query", { request: envelopeQuery(queryName, body) });
+    const activityId = beginPageActivity(activityLabel(queryName));
+    return invoke<QueryResult>("finance_query", {
+      request: envelopeQuery(queryName, body),
+    }).finally(() => endPageActivity(activityId));
   }
 
   executeCommand(commandName: string, body?: unknown): Promise<CommandResult> {
+    const activityId = beginPageActivity(activityLabel(commandName));
     return invoke<CommandResult>("finance_command", {
       request: envelopeCommand(commandName, body),
-    });
+    }).finally(() => endPageActivity(activityId));
   }
 }
 

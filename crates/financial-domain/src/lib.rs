@@ -33,6 +33,7 @@ pub mod regime;
 pub mod roc;
 pub mod schedule;
 pub mod seed_audit;
+pub mod symbol;
 pub mod tax_projection;
 pub mod trends;
 pub mod updater;

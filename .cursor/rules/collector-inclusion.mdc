@@ -1,0 +1,16 @@
+---
+description: Collector Establish and Runtime — do not drop locked requirements
+alwaysApply: true
+---
+
+# Collector inclusion
+
+Do not recite collector rules from chat memory. Open [docs/Authority/collector-inclusion-checklist.md](docs/Authority/collector-inclusion-checklist.md) and walk every **E** and **R** row.
+
+Authority behind that list: `.cursor/req_extract/Collector_Requirements_Initial_and_Runtime_Locked_2026-09-04.txt` and `.cursor/req_extract/Adapter_Collector_Owner_Decisions_Locked_2026-09-02.txt`. The checklist is not a new lock.
+
+Establish is locked. Runtime collect uses Template Dividend only. ROC uses Template ROC only. Stored paid rows are facts — a failed collect tickets (`declaration_retrieve_miss`) and does not wipe history. ROC miss does not flip `last_run_ok`.
+
+To add a requirement: add a row to the checklist **and** `REQUIRED_FIELDS` or the named Runtime command path. If it is only in a document, the product will not enforce it.
+
+Do not call a collector complete from `last_run_ok` alone. Owner Accept/Reject is not a harden criterion.

@@ -1934,6 +1934,54 @@ async fn amplify_retry_accepts_amplify_url_then_retrieve_files_ticket() {
     assert_eq!(after["openCount"], 0, "auto-file: {after}");
 }
 
+/// Fleet / DeclarationRefresh `unchanged` is an ok retrieve. It must file the miss ticket.
+#[tokio::test]
+async fn unchanged_ok_auto_files_open_retrieve_miss() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "ORC", "orchidisland").await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "ORC",
+            "declarationSource": "orchidisland",
+            "candidates": [],
+            "misses": [{
+                "securityId": security_id,
+                "symbol": "ORC",
+                "code": "declaration_retrieve_miss",
+                "reason": "Issuer page empty."
+            }]
+        }),
+    )
+    .await;
+    let opened = query_json(&platform, "WorkTicketList", serde_json::json!({})).await;
+    assert_eq!(opened["openCount"], 1, "miss must ticket: {opened}");
+    must_ok(
+        &platform,
+        "DeclarationRefresh",
+        serde_json::json!({
+            "unchanged": [{
+                "securityId": security_id,
+                "symbol": "ORC"
+            }]
+        }),
+    )
+    .await;
+    let after = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "status": "open" }),
+    )
+    .await;
+    assert_eq!(
+        after["openCount"], 0,
+        "unchanged ok must auto-file the miss ticket: {after}"
+    );
+}
+
 #[tokio::test]
 async fn identity_save_not_blocked_by_open_ticket() {
     let dir = tempfile::tempdir().unwrap();
@@ -2211,8 +2259,8 @@ fn declaration_refresh_uses_standing_order_not_entered_today() {
     let root = golden_harness::repo_root();
     let lib = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
     assert!(
-        lib.contains("declaration_daily_retrieve_current"),
-        "Home Refresh must skip only collectors already retrieved today"
+        lib.contains("if !force") && lib.contains("same_day_retrieve_skip_allowed"),
+        "automatic DeclarationRefresh skips collectors already retrieved today; force does not"
     );
     assert!(
         lib.contains("collector_set()"),
@@ -2228,6 +2276,10 @@ fn declaration_refresh_uses_standing_order_not_entered_today() {
 fn tickets_nav_opens_all_symbol_queue() {
     let root = golden_harness::repo_root();
     let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    let collectors = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/collectors/CollectorsScreen.tsx"),
+    )
+    .unwrap();
     let ui = std::fs::read_to_string(root.join("packages/ui-components/src/index.tsx")).unwrap();
     assert!(
         app.contains("navButton(\"tickets\", \"Tickets\")"),
@@ -2242,15 +2294,20 @@ fn tickets_nav_opens_all_symbol_queue() {
         "desktop must ticket missed collectors that have no open ticket"
     );
     assert!(
-        app.contains("formatCollectorClock") && app.contains("As of {formatCollectorClock"),
+        collectors.contains("formatCollectorClock")
+            && collectors.contains("As of {formatCollectorClock"),
         "declaration status must show date and time"
     );
     assert!(
-        !app.contains("DIV-1 compliance") && !app.contains("Required paid"),
+        !app.contains("DIV-1 compliance")
+            && !app.contains("Required paid")
+            && !collectors.contains("DIV-1 compliance")
+            && !collectors.contains("Required paid"),
         "Collectors must not keep the DIV-1 compliance date dump"
     );
     assert!(
-        app.contains("aria-label=\"Missing collector URLs\"") && app.contains("Apply URLs"),
+        collectors.contains("aria-label=\"Missing collector URLs\"")
+            && collectors.contains("Apply URLs"),
         "failing DIV-1/CASH names without a seed URL must get a fill-in grid"
     );
     assert!(
@@ -2826,6 +2883,140 @@ async fn collector_retrieve_tickets_paid_payable_and_keeps_plan() {
     .await;
     assert_eq!(inv["planPerShareMinor"], 1200);
     assert_eq!(inv["planScale"], 4);
+}
+
+/// Record leftover 9/15 after that day has passed: move to vendor 9/30, no ticket.
+#[tokio::test]
+async fn collector_retrieve_moves_leftover_record_after_date_passed() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "CLM", "cornerstone").await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1215,
+            "amountScale": 4,
+            "paymentPeriod": "2026-08-31",
+            "source": "cornerstone",
+            "enteredAt": "2026-08-08"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1215,
+            "amountScale": 4,
+            "paymentPeriod": "2026-09-15",
+            "source": "cornerstone",
+            "enteredAt": "2026-08-08"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1215,
+            "amountScale": 4,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-01-01",
+            "decisionReason": "owner",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-08-01",
+            "dates": [
+                {"payOn": "2026-09-15", "source": "derived_walk"},
+                {"payOn": "2026-09-30", "source": "vendor_payable"},
+                {"payOn": "2026-10-15", "source": "derived_walk"}
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "CLM",
+            "declarationSource": "cornerstone",
+            "asOfDate": "2026-09-18",
+            "candidates": [
+                {
+                    "paymentPeriod": "2026-09-30",
+                    "amountPerShareMinor": 1215,
+                    "amountScale": 4,
+                    "source": "cornerstone",
+                    "recordDate": "2026-09-15"
+                },
+                {
+                    "paymentPeriod": "2026-10-30",
+                    "amountPerShareMinor": 1215,
+                    "amountScale": 4,
+                    "source": "cornerstone",
+                    "recordDate": "2026-10-15"
+                }
+            ],
+            "upcomingPays": [
+                {"payOn": "2026-09-30", "source": "vendor_payable"},
+                {"payOn": "2026-10-30", "source": "vendor_payable"}
+            ]
+        }),
+    )
+    .await;
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["code"] != "paid_payable_supersede"),
+        "{tickets}"
+    );
+    let remaining = query_json(
+        &platform,
+        "RemainingYearIncomeGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-18" }),
+    )
+    .await;
+    let dates: Vec<_> = remaining["payments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["payOn"].as_str().unwrap().to_string())
+        .collect();
+    assert!(dates.contains(&"2026-09-30".to_string()), "{dates:?}");
+    assert!(!dates.contains(&"2026-09-15".to_string()), "{dates:?}");
+    assert!(!dates.contains(&"2026-10-15".to_string()), "{dates:?}");
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let decls = platform.issuer_declaration_list(sid).await.unwrap();
+    assert!(
+        decls
+            .iter()
+            .any(|d| d.payment_period == "2026-09-30" && d.amount_per_share_minor == Some(1215)),
+        "payable declaration stays live: {decls:?}"
+    );
+    assert!(
+        decls.iter().all(|d| d.payment_period != "2026-09-15"),
+        "record leftover must not stay as the pay date: {decls:?}"
+    );
 }
 
 /// Weekly 9/04 paid + vendor 9/11 as of 9/10: add the next Friday, no supersede ticket.
@@ -3760,24 +3951,62 @@ async fn fleet_paid_count_unchanged_when_history_unchanged() {
 fn collectors_footer_grid_is_the_operator_console() {
     let root = golden_harness::repo_root();
     let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
-    assert!(app.contains("aria-label=\"Collector footer grid\""));
-    assert!(app.contains("aria-label={`Open ${row.symbol} position`}"));
-    assert!(app.contains("aria-label={`Open tickets for ${row.symbol}`}"));
+    let collectors = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/collectors/CollectorsScreen.tsx"),
+    )
+    .unwrap();
+    assert!(collectors.contains("aria-label=\"Collector footer grid\""));
+    assert!(collectors.contains("aria-label={`Open ${row.symbol} position`}"));
+    assert!(collectors.contains("aria-label={`Open tickets for ${row.symbol}`}"));
     assert!(app.contains("setScreen(\"position-details\")"));
-    assert!(app.contains("setTicketFocusSymbol(row.symbol)"));
-    assert!(app.contains("Collect fresh distribution data for this symbol"));
-    assert!(app.contains("Run misses only"));
+    assert!(app.contains("setTicketFocusSymbol"));
+    assert!(collectors.contains("Collect fresh distribution data for this symbol"));
+    assert!(collectors.contains("Run misses only"));
     assert!(
-        !app.contains("DIV-1 compliance") && !app.contains("Required paid"),
+        !collectors.contains("DIV-1 compliance") && !collectors.contains("Required paid"),
         "footer grid is the operator console; compliance date dump must be gone"
     );
     assert!(
-        !app.contains("futurePayDates.join"),
+        !collectors.contains("futurePayDates.join"),
         "do not dump every remaining pay date on Collectors"
     );
-    assert!(app.contains("aria-label=\"Missing collector URLs\""));
-    assert!(app.contains("Apply URLs"));
-    assert!(app.contains("collectorNeedsOwnerUrl"));
+    assert!(collectors.contains("aria-label=\"Missing collector URLs\""));
+    assert!(collectors.contains("Apply URLs"));
+    assert!(collectors.contains("collectorNeedsOwnerUrl"));
+}
+
+#[test]
+fn collectors_live_in_feature_module_not_app() {
+    let root = golden_harness::repo_root();
+    for rel in [
+        "apps/desktop/src/features/collectors/CollectorsScreen.tsx",
+        "apps/desktop/src/features/collectors/CollectorEstablishScreen.tsx",
+        "apps/desktop/src/features/collectors/helpers.ts",
+        "apps/desktop/src/features/collectors/types.ts",
+        "apps/desktop/src/features/collectors/index.ts",
+    ] {
+        assert!(root.join(rel).is_file(), "missing {rel}");
+    }
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    assert!(
+        app.contains("from \"./features/collectors\"")
+            && app.contains("<CollectorsScreen")
+            && app.contains("<CollectorEstablishScreen"),
+        "App.tsx mounts the collectors module; it must not own the screen"
+    );
+    assert!(
+        !app.contains("aria-label=\"Collectors\"")
+            && !app.contains("aria-label=\"Collector footer grid\"")
+            && !app.contains("aria-label=\"Establish collector fleet\""),
+        "collector markup must live in features/collectors/, not App.tsx"
+    );
+    let catalog = std::fs::read_to_string(root.join("docs/architecture/ui-modules.json")).unwrap();
+    assert!(
+        catalog.contains("\"id\": \"collectors\"")
+            && catalog.contains("apps/desktop/src/features/collectors/")
+            && catalog.contains("\"status\": \"extracted\""),
+        "Components catalog must list Collectors as an extracted module"
+    );
 }
 
 /// Failing DIV-1 with empty seed URL tickets and blocks probe-only retrieve.
@@ -4570,7 +4799,7 @@ async fn mlp_sec_8k_fixture_declares_aug_and_derives_nov() {
 }
 
 /// Recertify must collapse IR leftovers + derived_walk siblings to one 2026-11-19
-/// and stay that way on a second run. Do not keep 2027 in remaining-year.
+/// and stay that way on a second run. Do not invent 2027 in remaining-year.
 #[tokio::test]
 async fn recertify_mlp_remaining_year_keeps_one_nov_19() {
     let dir = tempfile::tempdir().unwrap();
@@ -4658,6 +4887,168 @@ async fn recertify_mlp_remaining_year_keeps_one_nov_19() {
         remaining_again,
         [("2026-11-19", "derived_template")],
         "{again:?}"
+    );
+}
+
+/// Vendor/8-K printed 2027 is saved. Invented derived_walk 2027 is dropped.
+/// remaining_year tickets stay this calendar year.
+#[tokio::test]
+async fn recertify_mlp_keeps_published_2027_drops_invented() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_mlp1_quarterly(&platform).await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 3400,
+            "amountScale": 4,
+            "paymentPeriod": "2026-08-19",
+            "source": "sec_8k",
+            "enteredAt": "2026-08-19"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-01",
+            "dates": [
+                {"payOn": "2026-11-19", "source": "derived_template"},
+                {"payOn": "2027-02-17", "source": "derived_walk"},
+                {"payOn": "2027-02-19", "source": "sec_8k"}
+            ]
+        }),
+    )
+    .await;
+    let recert = must_ok(
+        &platform,
+        "CollectorRecertify",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-14",
+            "trigger": "manual"
+        }),
+    )
+    .await;
+    assert!(
+        !recert["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g.as_str() == Some("remaining_year")),
+        "{recert}"
+    );
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let pays = platform.issuer_pay_date_list(sid).await.unwrap();
+    let remaining: Vec<_> = pays
+        .iter()
+        .filter(|p| p.pay_on.as_str() >= "2026-09-14")
+        .map(|p| (p.pay_on.as_str(), p.source.as_str()))
+        .collect();
+    assert_eq!(
+        remaining,
+        [
+            ("2026-11-19", "derived_template"),
+            ("2027-02-19", "sec_8k")
+        ],
+        "{pays:?}"
+    );
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["code"] != "remaining_year"),
+        "{tickets}"
+    );
+}
+
+/// Collect saves a vendor-printed 2027 payable and does not ticket remaining_year.
+#[tokio::test]
+async fn collector_saves_vendor_2027_without_remaining_year_ticket() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "PAY1", "issuer").await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-05",
+            "dates": [
+                {"payOn": "2026-09-30", "source": "derived_walk"},
+                {"payOn": "2026-10-31", "source": "derived_walk"},
+                {"payOn": "2026-11-30", "source": "derived_walk"},
+                {"payOn": "2026-12-31", "source": "derived_walk"}
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "PAY1",
+            "declarationSource": "issuer",
+            "asOfDate": "2026-09-05",
+            "candidates": monthly_paid_candidates(&security_id, "issuer", 12, 2),
+            "upcomingPays": [
+                {"payOn": "2026-09-30", "source": "issuer"},
+                {"payOn": "2026-10-31", "source": "issuer"},
+                {"payOn": "2026-11-30", "source": "issuer"},
+                {"payOn": "2026-12-31", "source": "issuer"},
+                {"payOn": "2027-01-30", "source": "issuer"}
+            ]
+        }),
+    )
+    .await;
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let pays = platform.issuer_pay_date_list(sid).await.unwrap();
+    assert!(
+        pays.iter().any(|p| p.pay_on == "2027-01-30"),
+        "vendor 2027 must be stored: {pays:?}"
+    );
+    let remaining = query_json(
+        &platform,
+        "RemainingYearIncomeGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-05" }),
+    )
+    .await;
+    let dates: Vec<_> = remaining["payments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["payOn"].as_str().unwrap().to_string())
+        .collect();
+    assert!(dates.contains(&"2026-09-30".to_string()), "{dates:?}");
+    assert!(
+        !dates.iter().any(|d| d.starts_with("2027")),
+        "remaining-year must stay this 31 Dec: {dates:?}"
+    );
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["code"] != "remaining_year"),
+        "{tickets}"
     );
 }
 

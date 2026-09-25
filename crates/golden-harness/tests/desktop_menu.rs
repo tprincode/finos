@@ -31,6 +31,7 @@ const MENU_QUERIES: &[&str] = &[
     "CoreFunctionsGet",
     "ConfigGet",
     "HandoffStatusGet",
+    "HomeOpenGet",
     "IncomePlanWeekGet",
     "IncomePlanGridGet",
     "DividendPerformanceGet",
@@ -43,6 +44,10 @@ const MENU_QUERIES: &[&str] = &[
     "CashManagementWeekGet",
     "CashManagementRemindersGet",
     "CashManagementMonthGet",
+    "CashRegisterGet",
+    "CashYtdGet",
+    "CashCoverageGet",
+    "TaxPlanningGet",
     "DeclarationHistoryGet",
     "AccountList",
     "SecurityList",
@@ -138,6 +143,38 @@ fn last_prices_summary_replaces_refresh_banner() {
     assert!(
         !app.contains("Applied issuer sources from provider:"),
         "issuer-source apply is not a last-price grid fact"
+    );
+    assert!(
+        app.contains("<dt>Last Price all symbols</dt>"),
+        "Last prices cell title includes all symbols"
+    );
+    assert!(
+        !app.contains("<dt>Symbols</dt>"),
+        "Home grid must not show a separate Symbols tile"
+    );
+    assert!(
+        app.contains("<dt>Dividend Managed positions</dt>"),
+        "Declarations tile is Dividend Managed positions"
+    );
+    assert!(
+        !app.contains("<dt>Declarations</dt>"),
+        "Home grid must not use the Declarations title"
+    );
+    assert!(
+        !app.contains("<dt>Calculator plans</dt>"),
+        "Home grid must not show Calculator plans"
+    );
+    assert!(
+        app.contains("summary.declarationCollectorCount"),
+        "Dividend Managed positions keeps N of M"
+    );
+    assert!(
+        app.contains("summary.declarationRefreshedOn"),
+        "Last update is last last_run day, not today's as-of"
+    );
+    assert!(
+        !app.contains("One issuer retrieve per enabled collector"),
+        "Dividend Managed positions drops lecture copy under the count"
     );
     assert!(
         app.contains("Last refresh"),
@@ -258,16 +295,24 @@ fn native_and_in_app_menus_list_screens() {
         "native File menu must not include print/export current view"
     );
     assert!(
+        !app.contains("\"File\""),
+        "in-app menubar must not repeat File; the native top menu already has it"
+    );
+    assert!(
         app.contains("Save data snapshot"),
-        "in-app File menu must include Save data snapshot"
+        "Save data snapshot stays available outside the removed in-app File menu"
     );
     assert!(
-        app.contains("aria-label=\"Confirm save data snapshot\""),
-        "Save data snapshot must ask before writing"
+        app.contains("aria-label=\"Confirm save data snapshot\"")
+            && app.contains("snapshot-confirm-dialog")
+            && app.contains("home-av-dialog-backdrop"),
+        "Save data snapshot must ask in a popup before writing"
     );
     assert!(
-        app.contains("Restart Application"),
-        "in-app File menu must include Restart Application"
+        lib.contains("SubmenuBuilder::new(app, \"File\")")
+            && lib.contains(".text(\"app-restart\", \"Restart Application\")")
+            && lib.contains(".text(\"app-exit\", \"Exit\")"),
+        "native top File menu keeps Restart and Exit"
     );
     assert!(
         app.contains("Waiting for in-flight work, then closing the data file"),
@@ -324,32 +369,42 @@ fn native_and_in_app_menus_list_screens() {
         "dev start must wait until Vite port 1420 is free and take a single-flight lock"
     );
     assert!(
+        bat.contains(":old_session_ended") && bat.contains("exit 0") && !bat.contains("use the new finos"),
+        "Restart / killed Vite must close the old finos (dev) console"
+    );
+    assert!(
         !bat.contains("set \"ERR=") && !bat.contains("%ERR%"),
         "dev start must not use ERR as a batch variable; cmd treats if not \"%ERR%\"==\"0\" as a command"
     );
-    let supervisor =
-        std::fs::read_to_string(root.join("apps/desktop/start-finos-supervisor.bat")).unwrap();
     assert!(
-        supervisor.contains("finos supervisor")
-            && supervisor.contains("restart.token")
-            && supervisor.contains("stale restart.token")
-            && supervisor.contains("Start-Process -FilePath")
-            && supervisor.contains("start-finos-dev.bat")
-            && supervisor.contains("supervisor.pid")
-            && supervisor.contains("dev-start.lock")
-            && supervisor.contains("WriteAllText"),
-        "supervisor must Start-Process start-finos-dev.bat on restart.token"
+        !root.join("apps/desktop/start-finos-supervisor.bat").is_file(),
+        "start-finos-supervisor.bat is removed; coding start is repo-root finos.bat"
+    );
+    let parent = std::fs::read_to_string(root.join("finos.bat")).unwrap();
+    assert!(
+        parent.contains("finos supervisor")
+            && parent.contains("restart.token")
+            && parent.contains("stale restart.token")
+            && parent.contains("Start-Process -FilePath")
+            && parent.contains("start-finos-dev.bat")
+            && parent.contains("supervisor.pid")
+            && parent.contains("dev-start.lock")
+            && parent.contains("WriteAllText")
+            && parent.contains("MainWindowTitle")
+            && parent.contains("finos.bat"),
+        "finos.bat must Start-Process start-finos-dev.bat on restart.token"
     );
     assert!(
-        !supervisor.contains("call start-finos-dev"),
-        "supervisor must not call start-finos-dev.bat as a child"
+        !parent.contains("call start-finos-dev") && !parent.contains("npm run desktop"),
+        "finos.bat must not run npm or call start-finos-dev.bat as a child"
     );
     assert!(
         lib.contains("restart.token")
             && lib.contains("close_for_shutdown")
             && lib.contains("ensure_coding_supervisor")
+            && lib.contains("finos.bat")
             && lib.contains("app.restart()"),
-        "coding Restart writes restart.token, starts the supervisor if missing, then exits; household uses app.restart()"
+        "coding Restart writes restart.token, starts finos.bat if missing, then exits; household uses app.restart()"
     );
     for banned in [
         "schtasks",
@@ -364,8 +419,8 @@ fn native_and_in_app_menus_list_screens() {
         );
     }
     assert!(
-        app.contains("supervisor is running"),
-        "Restart copy must name the supervisor"
+        app.contains("Coding start is finos.bat"),
+        "Restart copy must name finos.bat"
     );
     assert!(
         !root.join("apps/desktop/spawn-finos-dev.cmd").exists(),

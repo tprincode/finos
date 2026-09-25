@@ -81,17 +81,21 @@
     {
       "id": "home-declarations-coverage",
       "menuArea": "Home",
-      "function": "Declarations N of M — last retrieve today OK",
-      "lastChanged": "2026-09-10",
-      "lastVerified": "2026-09-10",
+      "function": "Dividend Managed positions N of M — last update date; Refresh declarations",
+      "lastChanged": "2026-09-21",
+      "lastVerified": "2026-09-21",
       "sentinels": [
+        {
+          "path": "apps/desktop/src/App.tsx",
+          "mustContain": "Dividend Managed positions"
+        },
         {
           "path": "apps/desktop/src/App.tsx",
           "mustContain": "summary.declarationCollectorCount"
         },
         {
           "path": "apps/desktop/src/App.tsx",
-          "mustContain": "Last retrieve today OK"
+          "mustContain": "Last update"
         },
         {
           "path": "crates/application-core/src/queries.rs",
@@ -107,7 +111,7 @@
         },
         {
           "path": "apps/desktop/src/App.tsx",
-          "mustContain": "declarationFailTicketParity"
+          "mustContain": "aria-label=\"Refresh declarations\""
         }
       ]
     },
@@ -158,14 +162,18 @@
     {
       "id": "home-dividend-plan-panel",
       "menuArea": "Home",
-      "function": "Home 3×5 portfolio tiles in a fixed 580px left column beside Dividend Plan (annual, MV, monthly income/medical, weekly, effective annual). Energy and Robinhood income are $0. Unknown stays unknown.",
-      "lastChanged": "2026-09-11",
-      "lastVerified": "2026-09-11",
+      "function": "Home 3×5 portfolio tiles in a fixed 580px left column beside Dividend Plan (annual, MV, monthly income/medical, weekly, effective annual). Empty space under Dividend Plan is the shared Account cash flow projection (same AccountCashFlow as Cash Management Register Trend). Title account and duration dropdowns (default Health + 2 months). Not market value. Energy and Robinhood income are $0. Unknown stays unknown.",
+      "lastChanged": "2026-09-20",
+      "lastVerified": "2026-09-20",
       "alsoVerify": ["account_value", "accessibility"],
       "sentinels": [
         {
           "path": "apps/desktop/src/App.css",
           "mustContain": "home-top-row"
+        },
+        {
+          "path": "apps/desktop/src/features/cash/AccountCashFlow.tsx",
+          "mustContain": "HOME_FOCUS_DEFAULT_ACCOUNT = \"healthCashMinor\""
         },
         {
           "path": "apps/desktop/src/App.css",
@@ -553,16 +561,120 @@
       ]
     },
     {
-      "id": "cash-management-car-roc-plan",
+      "id": "cash-management-week-ahead",
       "menuArea": "Plan",
-      "function": "Cash Management: Car ROC plan — remaining ordinary/ROC, YTD estimate split, lot P/L. Not 1099.",
-      "lastChanged": "2026-09-13",
-      "lastVerified": "2026-09-13",
-      "alsoVerify": ["cash_management", "ui_modules", "roc_plan"],
+      "function": "Cash Management: Week Ahead confirms this Sat–Fri planned Element occurrences",
+      "lastChanged": "2026-09-17",
+      "lastVerified": "2026-09-17",
+      "alsoVerify": ["week_ahead", "accessibility", "cash_management"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/features/cash/WeekAhead.tsx",
+          "mustContain": "aria-label=\"Week ahead\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"WeekAheadGet\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"WeekAheadConfirm\""
+        },
+        {
+          "path": "crates/storage-sqlite/migrations/0039_cash_week_ahead.sql",
+          "mustContain": "planned_occurrence"
+        }
+      ]
+    },
+    {
+      "id": "cash-management-register",
+      "menuArea": "Cash Management",
+      "function": "First-class Cashflow Manager: month calendar (day click lists that day’s transactions), Home AccountCashFlow Trend (same account and duration choosers), Manage Elements. YTD is Tax Planning, not this page.",
+      "lastChanged": "2026-09-21",
+      "lastVerified": "2026-09-21",
+      "alsoVerify": ["cash_register", "week_ahead", "accessibility"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/features/cash/CashRegister.tsx",
+          "mustContain": "aria-label=\"Cashflow manager\""
+        },
+        {
+          "path": "apps/desktop/src/features/cash/CashElementEditor.tsx",
+          "mustContain": "aria-label=\"Save element\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CashRegisterGet\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CashElementSave\""
+        }
+      ]
+    },
+    {
+      "id": "cash-management-elements",
+      "menuArea": "Plan",
+      "function": "Cash Management: one Elements catalog for all managed accounts; same editor. Element history register for any current or retired element (all / YTD / 6 / 3 / 1 month).",
+      "lastChanged": "2026-09-22",
+      "lastVerified": "2026-09-22",
+      "alsoVerify": ["cash_slice4", "cash_register"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/features/cash/CashElementsCatalog.tsx",
+          "mustContain": "aria-label=\"Elements catalog\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CashElementListGet\""
+        },
+        {
+          "path": "apps/desktop/src/features/cash/CashElementHistory.tsx",
+          "mustContain": "aria-label=\"Element history\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CashElementHistoryGet\""
+        },
+        {
+          "path": "apps/desktop/src/features/shared/PageActivityCard.tsx",
+          "mustContain": "aria-label=\"Page activity\""
+        }
+      ]
+    },
+    {
+      "id": "cash-management-ytd",
+      "menuArea": "Plan",
+      "function": "Cash Management: YTD actual + remaining plan by account or tax type, at the bottom of Tax Planning. Not MAGI dollars.",
+      "lastChanged": "2026-09-21",
+      "lastVerified": "2026-09-21",
+      "alsoVerify": ["cash_slice4"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/features/cash/CashYtd.tsx",
+          "mustContain": "aria-label=\"Cash YTD\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CashYtdGet\""
+        }
+      ]
+    },
+    {
+      "id": "cash-management-car-roc-plan",
+      "menuArea": "Cash Management",
+      "function": "Cash Management: Tax Planning — MAGI threshold from MagiProjectionGet; household YTD/projected IRA (Income + Speculation + Account 9), Roth, ROC, ordinary, 1099 job ($14,625 2026 MAGI), SSA, LT/ST gains; Car table unchanged. Seed Form_1099 ROC is not this-year YTD. Never invent $0.",
+      "lastChanged": "2026-09-19",
+      "lastVerified": "2026-09-19",
+      "alsoVerify": ["cash_management", "ui_modules", "roc_plan", "cash_menu_ia"],
       "sentinels": [
         {
           "path": "apps/desktop/src/CashManagement.tsx",
-          "mustContain": "aria-label=\"Cash Management Car ROC plan\""
+          "mustContain": "aria-label=\"Cash Management Tax Planning\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"TaxPlanningGet\""
         },
         {
           "path": "crates/application-core/src/queries.rs",
@@ -571,6 +683,28 @@
         {
           "path": "crates/financial-domain/src/roc.rs",
           "mustContain": "CAR_TAX_UNKNOWN_NOTE"
+        }
+      ]
+    },
+    {
+      "id": "cash-management-coverage",
+      "menuArea": "Cash Management",
+      "function": "Cash Management: Coverage — Weekly/Monthly/Annual comparison: average income vs average expenses over the lookback (13 weeks / 12 months / last year), Δ = income − expenses. Monthly series convert into the week × 3/13. Plan vs Actual is average plan income vs average recorded income on that same lookback. Unknown ≠ $0. No SSA.",
+      "lastChanged": "2026-09-19",
+      "lastVerified": "2026-09-19",
+      "alsoVerify": ["cm_coverage", "cash_menu_ia", "ui_modules"],
+      "sentinels": [
+        {
+          "path": "apps/desktop/src/features/cash/CashCoverage.tsx",
+          "mustContain": "aria-label=\"Cash Management Coverage\""
+        },
+        {
+          "path": "crates/application-core/src/queries.rs",
+          "mustContain": "\"CashCoverageGet\""
+        },
+        {
+          "path": "crates/application-core/src/cash_coverage.rs",
+          "mustContain": "actual_known.then_some"
         }
       ]
     },
@@ -651,14 +785,14 @@
     {
       "id": "file-restart-graceful",
       "menuArea": "File",
-      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts the supervisor if missing, and exits. The supervisor Start-Process-es start-finos-dev.bat. Household release uses app.restart(). A stale supervisor.lock is not a live supervisor; File → Restart waits for cmd /c start so the new console is not in the dying Tauri job.",
-      "lastChanged": "2026-09-16",
-      "lastVerified": "2026-09-16",
+      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts repo-root finos.bat if the supervisor.lock parent is missing, and exits. Coding start is finos.bat (Restart parent); it Start-Process-es start-finos-dev.bat. Household release uses app.restart(). A stale supervisor.lock is not a live parent; File → Restart waits for cmd /c start so the new console is not in the dying Tauri job.",
+      "lastChanged": "2026-09-18",
+      "lastVerified": "2026-09-18",
       "alsoVerify": ["desktop_menu", "accessibility", "account_value"],
       "sentinels": [
         {
           "path": "apps/desktop/src/App.tsx",
-          "mustContain": "Restarting coding launch. Waiting for in-flight work, then closing the data file. A new finos (dev) console opens if the supervisor is running."
+          "mustContain": "Restarting coding launch. Waiting for in-flight work, then closing the data file. Coding start is finos.bat; a new finos (dev) console opens."
         },
         {
           "path": "apps/desktop/src/App.tsx",
@@ -685,15 +819,15 @@
           "mustContain": "ensure_coding_supervisor"
         },
         {
-          "path": "apps/desktop/start-finos-supervisor.bat",
-          "mustContain": "start-finos-supervisor"
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "mustContain": "finos.bat"
         },
         {
-          "path": "apps/desktop/start-finos-supervisor.bat",
+          "path": "finos.bat",
           "mustContain": "stale restart.token"
         },
         {
-          "path": "apps/desktop/start-finos-supervisor.bat",
+          "path": "finos.bat",
           "mustContain": "Start-Process -FilePath"
         },
         {
@@ -927,14 +1061,14 @@
     {
       "id": "last-price-auto-window",
       "menuArea": "Home",
-      "function": "Auto LastPriceRefresh and hub autoPrice MarketRetrieve run weekdays 9–4 Eastern only and skip when the last price retrieve_run (ok, fail, or started) is under 4 hours. Manual Refresh last prices sends force. Stored last price still displays. Unknown stays unknown. 3s per symbol; miss keeps last price.",
-      "lastChanged": "2026-09-16",
-      "lastVerified": "2026-09-16",
+      "function": "Auto LastPriceRefresh, hub autoPrice MarketRetrieve, and auto DeclarationRefresh share weekdays 9–4 Eastern. Last price also skips when the last price retrieve_run (ok, fail, or started) is under 4 hours. Collectors run once per local date (not the 4-hour gate). Manual Refresh last prices and Refresh declarations send force. Stored last price still displays. Unknown stays unknown. 3s per symbol; miss keeps last price.",
+      "lastChanged": "2026-09-19",
+      "lastVerified": "2026-09-19",
       "alsoVerify": ["position_details", "accessibility"],
       "sentinels": [
         {
           "path": "crates/application-core/src/last_price_window.rs",
-          "mustContain": "fn auto_last_price_allowed"
+          "mustContain": "fn in_auto_schedule"
         },
         {
           "path": "apps/desktop/src-tauri/src/lib.rs",
@@ -942,7 +1076,7 @@
         },
         {
           "path": "apps/desktop/src/App.tsx",
-          "mustContain": "refreshLastPrices(true)"
+          "mustContain": "inSchedule === true"
         }
       ]
     },
@@ -969,6 +1103,32 @@
         {
           "path": "docs/architecture/ui-modules.json",
           "mustContain": "\"status\": \"extracted\""
+        }
+      ]
+    },
+    {
+      "id": "planned-week-authority",
+      "menuArea": "Income Plan",
+      "function": "Income Plan Plan $ is the planned week total; payable date is the week key",
+      "lastChanged": "2026-09-18",
+      "lastVerified": "2026-09-18",
+      "alsoVerify": ["income_plan_week", "collectors"],
+      "sentinels": [
+        {
+          "path": "docs/Authority/collector-inclusion-checklist.md",
+          "mustContain": "R10"
+        },
+        {
+          "path": "docs/architecture/component-contracts.md",
+          "mustContain": "vendor payable"
+        },
+        {
+          "path": "apps/desktop/src/features/cash/CashWeekDesk.tsx",
+          "mustContain": "if (row?.planKnown)"
+        },
+        {
+          "path": "crates/golden-harness/tests/income_plan_week.rs",
+          "mustContain": "leftover_record_pay_date_plans_on_payable_week_not_record_week"
         }
       ]
     }

@@ -1,6 +1,7 @@
-//! Household data snapshot: individual importable workbooks under raw-data/<date>/.
-//! Sheets use the seed `Data` header row so `parse_production_templates` can reload them.
-//! Only stored facts — no derived market-value or Plan rollups.
+//! Household backup under raw-data/<date>/: workbooks plus a copy of local.sqlite
+//! (and WAL sidecars if present). Seed-shaped sheets keep the `Data` header so
+//! `parse_production_templates` can reload them. Extra workbooks are archive
+//! copies of tables the seed parser does not yet consume.
 
 use std::path::{Path, PathBuf};
 
@@ -34,7 +35,10 @@ pub async fn export_data_snapshot(
     let chars = canonical.position_characteristic_list().await?;
     let trends = canonical.trends_week_list().await?;
     let snapshots = canonical.account_balance_snapshot_list().await?;
-    let plans = canonical.plan_history_list().await?;
+    let plans = match canonical.plan_history_version_list().await {
+        Ok(rows) if !rows.is_empty() => rows,
+        _ => canonical.plan_history_list().await?,
+    };
 
     let acct_name = |id| {
         accounts
@@ -216,6 +220,8 @@ pub async fn export_data_snapshot(
                 act.occurred_on.clone(),
                 act.occurred_on.chars().take(4).collect(),
                 act.idempotency_key.clone(),
+                money_str(act.federal_withholding_minor, act.scale),
+                money_str(act.state_withholding_minor, act.scale),
             ]);
         }
     }
@@ -238,6 +244,8 @@ pub async fn export_data_snapshot(
             "txn_date",
             "source_year",
             "source_ref",
+            "fed_tax_withheld",
+            "state_tax_withheld",
         ],
         &disb_rows,
         &mut files,
@@ -246,16 +254,22 @@ pub async fn export_data_snapshot(
     let trend_rows: Vec<Vec<String>> = trends
         .iter()
         .map(|w| {
+            let snap_of = |name: &str| {
+                snapshots.iter().find(|s| {
+                    s.period_end == w.period_end
+                        && accounts.iter().any(|a| {
+                            a.account_id == s.account_id && a.name.eq_ignore_ascii_case(name)
+                        })
+                })
+            };
             let bal = |name: &str| {
-                snapshots
-                    .iter()
-                    .find(|s| {
-                        s.period_end == w.period_end
-                            && accounts.iter().any(|a| {
-                                a.account_id == s.account_id && a.name.eq_ignore_ascii_case(name)
-                            })
-                    })
+                snap_of(name)
                     .map(|s| money_str(s.balance_minor, s.scale))
+                    .unwrap_or_default()
+            };
+            let cash = |name: &str| {
+                snap_of(name)
+                    .and_then(|s| s.cash_minor.map(|n| money_str(n, s.scale)))
                     .unwrap_or_default()
             };
             vec![
@@ -272,10 +286,453 @@ pub async fn export_data_snapshot(
                 bal("Health"),
                 bal("FI Roth"),
                 bal("Speculation"),
+                cash("Car"),
+                cash("Health"),
+                cash("FI Roth"),
+                cash("Speculation"),
             ]
         })
         .collect();
     counts.push(("trends_weeks".into(), trend_rows.len() as u64));
+    let week_cash_rows: Vec<Vec<String>> = snapshots
+        .iter()
+        .map(|s| {
+            vec![
+                acct_name(s.account_id),
+                s.period_end.clone(),
+                s.cash_minor
+                    .map(|n| money_str(n, s.scale))
+                    .unwrap_or_default(),
+                money_str(s.balance_minor, s.scale),
+            ]
+        })
+        .collect();
+    counts.push(("account_week_cash".into(), week_cash_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_Account_Week_Cash.xlsx",
+        &["account_name", "week_end_friday", "cash", "balance"],
+        &week_cash_rows,
+        &mut files,
+    )?;
+
+    let elements = canonical.cash_element_list().await.unwrap_or_default();
+    let element_rows: Vec<Vec<String>> = elements
+        .iter()
+        .map(|e| {
+            vec![
+                e.account.clone(),
+                e.kind.clone(),
+                e.cadence.clone(),
+                e.weekday_or_month_day.clone(),
+                money_str(e.amount_minor, 2),
+                e.note.clone(),
+                e.start_on.clone(),
+                e.stop_on.clone(),
+            ]
+        })
+        .collect();
+    counts.push(("cash_elements".into(), element_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_Cash_Elements.xlsx",
+        &[
+            "account",
+            "kind",
+            "cadence",
+            "weekday_or_month_day",
+            "amount",
+            "note",
+            "start_on",
+            "stop_on",
+        ],
+        &element_rows,
+        &mut files,
+    )?;
+
+    let occs = canonical.planned_occurrence_list().await.unwrap_or_default();
+    let occ_rows: Vec<Vec<String>> = occs
+        .iter()
+        .map(|o| {
+            vec![
+                o.account.clone(),
+                o.kind.clone(),
+                o.occurred_on.clone(),
+                money_str(o.amount_minor, 2),
+                o.note.clone(),
+                o.confirmed_at.clone().unwrap_or_default(),
+            ]
+        })
+        .collect();
+    counts.push(("planned_occurrences".into(), occ_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_Planned_Occurrences.xlsx",
+        &[
+            "account",
+            "kind",
+            "occurred_on",
+            "amount",
+            "note",
+            "confirmed_at",
+        ],
+        &occ_rows,
+        &mut files,
+    )?;
+
+    let plan_rows: Vec<Vec<String>> = plans
+        .iter()
+        .map(|p| {
+            vec![
+                sym(p.security_id),
+                money_str(p.amount_per_share_minor, p.amount_scale),
+                p.planning_periods_per_year.to_string(),
+                p.effective_from.clone(),
+                p.effective_to.clone(),
+                p.decision_reason.clone(),
+            ]
+        })
+        .collect();
+    counts.push(("plan_history".into(), plan_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_PlanHistory.xlsx",
+        &[
+            "symbol",
+            "amount_per_share",
+            "periods_per_year",
+            "effective_from",
+            "effective_to",
+            "decision_reason",
+        ],
+        &plan_rows,
+        &mut files,
+    )?;
+
+    let patterns = canonical
+        .expected_payment_pattern_list()
+        .await
+        .unwrap_or_default();
+    let pattern_rows: Vec<Vec<String>> = patterns
+        .iter()
+        .map(|p| {
+            vec![
+                sym(p.security_id),
+                p.declaration_weekday.clone(),
+                p.exdate_weekday.clone(),
+                p.payday_weekday.clone(),
+            ]
+        })
+        .collect();
+    counts.push(("payment_patterns".into(), pattern_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_PaymentPatterns.xlsx",
+        &[
+            "symbol",
+            "declaration_weekday",
+            "exdate_weekday",
+            "payday_weekday",
+        ],
+        &pattern_rows,
+        &mut files,
+    )?;
+
+    let mut override_rows = Vec::new();
+    let mut roc_rows = Vec::new();
+    let mut run_rows = Vec::new();
+    for sec in &securities {
+        if let Ok(rows) = canonical
+            .remaining_payment_date_override_list(sec.security_id)
+            .await
+        {
+            for o in rows {
+                override_rows.push(vec![
+                    sec.symbol.clone(),
+                    o.original_pay_on,
+                    o.pay_on,
+                    o.recorded_at,
+                ]);
+            }
+        }
+        if let Ok(rows) = canonical.roc_observation_list(sec.security_id).await {
+            for o in rows {
+                roc_rows.push(vec![
+                    sec.symbol.clone(),
+                    money_opt(o.roc_pct_minor, o.scale),
+                    o.tax_year,
+                    o.source,
+                    o.source_url,
+                    o.method,
+                    o.as_of,
+                    o.kind,
+                    o.established_how,
+                    if o.owner_override { "1".into() } else { "0".into() },
+                    o.recorded_at,
+                ]);
+            }
+        }
+        if let Ok(rows) = canonical.retrieve_run_list(Some(sec.security_id), 200).await {
+            for r in rows {
+                run_rows.push(vec![
+                    sec.symbol.clone(),
+                    r.kind,
+                    r.requested_at,
+                    if r.ok { "1".into() } else { "0".into() },
+                    r.code,
+                    r.message,
+                    r.attempted.to_string(),
+                    r.recorded.to_string(),
+                    r.skipped.to_string(),
+                    r.unchanged.to_string(),
+                ]);
+            }
+        }
+    }
+    counts.push(("pay_date_overrides".into(), override_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_PayDateOverrides.xlsx",
+        &["symbol", "original_pay_on", "pay_on", "recorded_at"],
+        &override_rows,
+        &mut files,
+    )?;
+    counts.push(("roc_observations".into(), roc_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_RocObservations.xlsx",
+        &[
+            "symbol",
+            "roc_pct",
+            "tax_year",
+            "source",
+            "source_url",
+            "method",
+            "as_of",
+            "kind",
+            "established_how",
+            "owner_override",
+            "recorded_at",
+        ],
+        &roc_rows,
+        &mut files,
+    )?;
+    counts.push(("retrieve_runs".into(), run_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_RetrieveRuns.xlsx",
+        &[
+            "symbol",
+            "kind",
+            "requested_at",
+            "ok",
+            "code",
+            "message",
+            "attempted",
+            "recorded",
+            "skipped",
+            "unchanged",
+        ],
+        &run_rows,
+        &mut files,
+    )?;
+
+    let tickets = canonical
+        .work_ticket_list(None, None)
+        .await
+        .unwrap_or_default();
+    let ticket_rows: Vec<Vec<String>> = tickets
+        .iter()
+        .map(|t| {
+            vec![
+                t.symbol.clone(),
+                t.field.clone(),
+                t.code.clone(),
+                t.tool.clone(),
+                t.reason.clone(),
+                t.opened_on.clone(),
+                t.last_seen_on.clone(),
+                t.status.clone(),
+                t.filed_on.clone(),
+                t.completed_how.clone(),
+                t.owner_note.clone(),
+            ]
+        })
+        .collect();
+    counts.push(("work_tickets".into(), ticket_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_WorkTickets.xlsx",
+        &[
+            "symbol",
+            "field",
+            "code",
+            "tool",
+            "reason",
+            "opened_on",
+            "last_seen_on",
+            "status",
+            "filed_on",
+            "completed_how",
+            "owner_note",
+        ],
+        &ticket_rows,
+        &mut files,
+    )?;
+
+    let exceptions = canonical.exception_list().await.unwrap_or_default();
+    let exception_rows: Vec<Vec<String>> = exceptions
+        .iter()
+        .map(|e| {
+            vec![
+                e.code.clone(),
+                e.message.clone(),
+                if e.acknowledged { "1".into() } else { "0".into() },
+                e.created_at.clone(),
+            ]
+        })
+        .collect();
+    counts.push(("exceptions".into(), exception_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_Exceptions.xlsx",
+        &["code", "message", "acknowledged", "created_at"],
+        &exception_rows,
+        &mut files,
+    )?;
+
+    let qty_events = canonical.holding_qty_event_list().await.unwrap_or_default();
+    let qty_rows: Vec<Vec<String>> = qty_events
+        .iter()
+        .map(|e| {
+            vec![
+                sym(e.security_id),
+                e.occurred_on.clone(),
+                money_str(e.remaining_quantity_minor, e.quantity_scale),
+                e.kind.clone(),
+            ]
+        })
+        .collect();
+    counts.push(("holding_qty_events".into(), qty_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_HoldingQtyEvents.xlsx",
+        &["symbol", "occurred_on", "remaining_quantity", "kind"],
+        &qty_rows,
+        &mut files,
+    )?;
+
+    let assigns = canonical.lot_assignment_list().await.unwrap_or_default();
+    let assign_rows: Vec<Vec<String>> = assigns
+        .iter()
+        .map(|a| {
+            let lot = basis.lots.iter().find(|l| l.lot_id == a.lot_id);
+            vec![
+                lot.map(|l| acct_name(l.account_id)).unwrap_or_default(),
+                lot.map(|l| sym(l.security_id)).unwrap_or_default(),
+                a.lot_id.to_string(),
+                a.activity_id.to_string(),
+                money_str(a.quantity_minor, a.quantity_scale),
+                money_str(a.proceeds_minor, a.scale),
+            ]
+        })
+        .collect();
+    counts.push(("lot_assignments".into(), assign_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_LotAssignments.xlsx",
+        &[
+            "account_name",
+            "symbol",
+            "lot_id",
+            "activity_id",
+            "quantity",
+            "proceeds",
+        ],
+        &assign_rows,
+        &mut files,
+    )?;
+
+    let tax_profiles = canonical
+        .position_tax_profile_list()
+        .await
+        .unwrap_or_default();
+    let tax_rows: Vec<Vec<String>> = tax_profiles
+        .iter()
+        .map(|t| vec![sym(t.security_id), t.expected_handling.clone()])
+        .collect();
+    counts.push(("tax_profiles".into(), tax_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_TaxProfiles.xlsx",
+        &["symbol", "expected_handling"],
+        &tax_rows,
+        &mut files,
+    )?;
+
+    let mv_days = canonical
+        .account_market_value_daily_list()
+        .await
+        .unwrap_or_default();
+    let mv_rows: Vec<Vec<String>> = mv_days
+        .iter()
+        .map(|m| {
+            vec![
+                m.account_name.clone(),
+                m.as_of.clone(),
+                m.market_value_minor
+                    .map(|n| money_str(n, m.scale))
+                    .unwrap_or_default(),
+                if m.market_value_complete {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+                m.captured_at.clone(),
+            ]
+        })
+        .collect();
+    counts.push(("market_value_daily".into(), mv_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_MarketValueDaily.xlsx",
+        &[
+            "account_name",
+            "as_of",
+            "market_value",
+            "complete",
+            "captured_at",
+        ],
+        &mv_rows,
+        &mut files,
+    )?;
+
+    let div = canonical.dividend_get().await.ok();
+    let actual_rows: Vec<Vec<String>> = div
+        .as_ref()
+        .map(|d| {
+            d.actuals
+                .iter()
+                .map(|a| {
+                    vec![
+                        acct_name(a.account_id),
+                        a.security_id.map(sym).unwrap_or_default(),
+                        a.occurred_on.clone(),
+                        money_str(a.amount_minor, a.scale),
+                    ]
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    counts.push(("dividend_actuals".into(), actual_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_DividendActuals.xlsx",
+        &["account_name", "symbol", "occurred_on", "amount"],
+        &actual_rows,
+        &mut files,
+    )?;
+
     write_named(
         &folder,
         "Template_Trends_Weekly.xlsx",
@@ -293,6 +750,10 @@ pub async fn export_data_snapshot(
             "health_balance",
             "roth_balance",
             "speculation_balance",
+            "car_cash",
+            "health_cash",
+            "roth_cash",
+            "speculation_cash",
         ],
         &trend_rows,
         &mut files,
@@ -406,8 +867,10 @@ pub async fn export_data_snapshot(
         .map_err(|e| PlatformError::new("snapshot_write_failed", format!("{yaml_name}: {e}")))?;
     files.push(yaml_name.into());
 
+    copy_live_sqlite(platform, &folder, &mut files).await?;
+
     let mut manifest = format!(
-        "finos data snapshot\nas_of: {as_of}\nfolder: {}\n\nUncomputed source facts only. Reload via production seed parse of this folder.\n\n",
+        "finos data snapshot (full backup)\nas_of: {as_of}\nfolder: {}\n\nWorkbooks plus a consistent VACUUM INTO of local.sqlite. Seed-shaped sheets can also reload via parse_production_templates.\n\n",
         folder.display()
     );
     for (name, n) in &counts {
@@ -436,9 +899,44 @@ pub async fn export_data_snapshot(
             .find(|(n, _)| n == "yields")
             .map(|(_, n)| *n)
             .unwrap_or(0),
-        note: "Individual workbooks under raw-data/<date>. Data sheets match seed import headers."
+        note: "Full backup under raw-data/<date>: workbooks plus a consistent VACUUM INTO of local.sqlite."
             .into(),
     })
+}
+
+async fn copy_live_sqlite(
+    platform: &dyn crate::ports::platform::Platform,
+    folder: &Path,
+    files: &mut Vec<String>,
+) -> Result<(), PlatformError> {
+    let dest = folder.join("local.sqlite");
+    match platform
+        .sqlite_vacuum_into(dest.to_string_lossy().into_owned())
+        .await
+    {
+        Ok(()) => {
+            files.push("local.sqlite".into());
+            return Ok(());
+        }
+        Err(e) if e.code == "not_implemented" => {}
+        Err(e) => return Err(e),
+    }
+    let app_dir = platform.app_data_dir();
+    let src = app_dir.join("local.sqlite");
+    if !src.is_file() {
+        return Err(PlatformError::new(
+            "snapshot_write_failed",
+            format!("live data file missing: {}", src.display()),
+        ));
+    }
+    std::fs::copy(&src, &dest).map_err(|e| {
+        PlatformError::new(
+            "snapshot_write_failed",
+            format!("copy local.sqlite to {}: {e}", dest.display()),
+        )
+    })?;
+    files.push("local.sqlite".into());
+    Ok(())
 }
 
 fn write_named(

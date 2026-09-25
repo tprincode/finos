@@ -6,7 +6,16 @@ export type LotCostOption = LotOption & {
   openedOn?: string;
   remainingPerformanceMinor: number;
   remainingTaxMinor: number;
+  /** Lot money scale. Basis is not cents unless this is 2. */
+  scale?: number;
 };
+
+function toCents(minor: number, scale: number | undefined): number {
+  const places = scale ?? 2;
+  if (places === 2) return minor;
+  if (places > 2) return Math.round(minor / 10 ** (places - 2));
+  return Math.round(minor * 10 ** (2 - places));
+}
 
 const CASH = new Set(["SPAXX", "CASH", "FDRXX", "SWVXX"]);
 
@@ -61,7 +70,8 @@ export function rankLargestTaxLoss(
     const taxGain =
       isCashSymbol(lot.symbol) || last == null
         ? null
-        : lotDollars(lot.remainingQuantityMinor, lot.quantityScale, last) - lot.remainingTaxMinor;
+        : lotDollars(lot.remainingQuantityMinor, lot.quantityScale, last) -
+          toCents(lot.remainingTaxMinor, lot.scale);
     return { lotId: lot.lotId, taxGain };
   });
   return rows
@@ -155,14 +165,25 @@ export function LotCostTable({
                   ? null
                   : lotDollars(lot.remainingQuantityMinor, lot.quantityScale, last);
               const perfPl =
-                cash || proceeds == null ? null : proceeds - lot.remainingPerformanceMinor;
-              const taxPl = cash || proceeds == null ? null : proceeds - lot.remainingTaxMinor;
+                cash || proceeds == null
+                  ? null
+                  : proceeds - toCents(lot.remainingPerformanceMinor, lot.scale);
+              const taxPl =
+                cash || proceeds == null ? null : proceeds - toCents(lot.remainingTaxMinor, lot.scale);
               const perfUnit = cash
                 ? null
-                : unitCost(lot.remainingPerformanceMinor, lot.remainingQuantityMinor, lot.quantityScale);
+                : unitCost(
+                    toCents(lot.remainingPerformanceMinor, lot.scale),
+                    lot.remainingQuantityMinor,
+                    lot.quantityScale,
+                  );
               const taxUnit = cash
                 ? null
-                : unitCost(lot.remainingTaxMinor, lot.remainingQuantityMinor, lot.quantityScale);
+                : unitCost(
+                    toCents(lot.remainingTaxMinor, lot.scale),
+                    lot.remainingQuantityMinor,
+                    lot.quantityScale,
+                  );
               return (
                 <tr
                   key={lot.lotId}

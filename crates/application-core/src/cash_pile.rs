@@ -58,6 +58,38 @@ pub async fn pile_for_account(
     Ok(best)
 }
 
+fn basis_for_dollars(dollars_minor: i64, scale: u8) -> i64 {
+    if scale == 2 {
+        return dollars_minor;
+    }
+    if scale > 2 {
+        return dollars_minor.saturating_mul(10_i64.pow(u32::from(scale - 2)));
+    }
+    dollars_minor / 10_i64.pow(u32::from(2 - scale))
+}
+
+/// The cash lot remaining quantity is the account’s current cash. Saturday entry sets it.
+pub async fn set_pile_dollars(
+    canonical: &dyn Canonical,
+    account_id: Uuid,
+    dollars_minor: i64,
+) -> Result<(), PlatformError> {
+    if dollars_minor < 0 {
+        return Err(PlatformError::new(
+            "invalid_qty",
+            "cash total cannot be negative",
+        ));
+    }
+    let Some(pile) = pile_for_account(canonical, account_id).await? else {
+        return Ok(());
+    };
+    let lot = canonical.lot_get(pile.lot_id).await?;
+    let qty = cash_qty_for_dollars(dollars_minor, pile.quantity_scale);
+    let basis = basis_for_dollars(dollars_minor, lot.scale);
+    canonical.lot_cash_set(pile.lot_id, qty, basis).await?;
+    Ok(())
+}
+
 pub async fn pile_get(
     canonical: &dyn Canonical,
     account_id: Uuid,

@@ -27,7 +27,7 @@ export function ComparePlans({
         <thead>
           <tr>
             <th scope="col"> </th>
-            <th scope="col">Keep cash</th>
+            <th scope="col">Cash on traded</th>
             {shown.map((d) => (
               <th key={d.scenarioId} scope="col">
                 <button

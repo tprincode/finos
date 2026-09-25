@@ -381,6 +381,23 @@ fn year_month(raw: &str) -> Option<&str> {
 /// Issuer declaration belongs on this week's payable: period in the Sat–Fri week.
 /// Monthly leftover-ex may match the same year-month as the week's pay-on.
 /// Weekly (52) never clones a prior-week payable onto this week's forecast pay-on.
+pub fn money_market_symbol(symbol: &str) -> bool {
+    matches!(symbol.trim(), "SPAXX" | "FDRXX" | "SWVXX")
+}
+
+/// Cash dividends post one business day into the next month. The plan shows the 3rd.
+pub fn money_market_report_on(pay_on: &str) -> Option<String> {
+    let day = pay_on.get(..10)?;
+    let date = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    let (year, month) = if date.month() == 12 {
+        (date.year() + 1, 1)
+    } else {
+        (date.year(), date.month() + 1)
+    };
+    let report = chrono::NaiveDate::from_ymd_opt(year, month, 3)?;
+    Some(report.format("%Y-%m-%d").to_string())
+}
+
 pub fn declaration_belongs_in_week(
     payment_period: &str,
     week_start: &str,
@@ -404,6 +421,20 @@ pub fn declaration_belongs_in_week(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+
+    #[test]
+    fn money_market_reports_on_the_third() {
+        assert!(money_market_symbol("SPAXX"));
+        assert!(!money_market_symbol("GLAD"));
+        assert_eq!(
+            money_market_report_on("2026-09-30"),
+            Some("2026-10-03".to_string())
+        );
+        assert_eq!(
+            money_market_report_on("2026-12-31"),
+            Some("2027-01-03".to_string())
+        );
+    }
 
     #[test]
     fn maps_fi_roth_and_excludes_speculation() {

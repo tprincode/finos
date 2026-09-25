@@ -524,14 +524,15 @@ async fn tom_ssa_confirm_miss_variance_and_june_extra() {
     .await;
     assert_eq!(june["tomSsa"]["status"], "confirmed");
     assert_eq!(june["tomSsa"]["postedMinor"].as_i64(), Some(286500));
-    assert_eq!(june["tomSsa"]["extraAudit"], true);
+    assert_eq!(june["tomSsa"]["extraAudit"], false);
     let extra = june["tomSsa"]["recent"]
         .as_array()
         .unwrap()
         .iter()
         .find(|r| r["occurredOn"] == "2026-06-26")
         .unwrap();
-    assert_eq!(extra["extraAudit"], true);
+    assert_eq!(extra["extraAudit"], false);
+    assert_eq!(extra["payee"], "tom");
 
     let july_after = query_json(
         &platform,
@@ -1027,14 +1028,31 @@ fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
     assert!(cm.contains("aria-label=\"Distribution account totals\""));
     assert!(cm.contains("aria-label=\"Distribution tax sections\""));
     assert!(cm.contains("aria-label=\"Cash Management tax and ACA monitor\""));
-    assert!(cm.contains("aria-label=\"Cash Management Car ROC plan\""));
-    assert!(cm.contains("<h3>Car ROC plan</h3>"));
-    assert!(cm.contains("<dt>Remaining ordinary</dt>"));
-    assert!(cm.contains("<dt>Remaining ROC</dt>"));
-    assert!(cm.contains("<dt>YTD ordinary (estimate)</dt>"));
-    assert!(cm.contains("<dt>YTD ROC (estimate)</dt>"));
-    assert!(cm.contains("<dt>Long-term capital gain/loss</dt>"));
-    assert!(cm.contains("<dt>Short-term capital gain/loss</dt>"));
+    assert!(cm.contains("aria-label=\"Cash Management Tax Planning\""));
+    assert!(cm.contains("<h3>Car</h3>"));
+    assert!(cm.contains("aria-label=\"Car account tax planning\""));
+    assert!(cm.contains("aria-label=\"Tax Planning income\""));
+    assert!(cm.contains("aria-label=\"Tax Planning MAGI\""));
+    assert!(
+        cm.contains("desk === \"weekly\" && activity == null")
+            && cm.contains("Add cash activity"),
+        "Add cash activity stays on System update tasks and confirmations only"
+    );
+    assert!(
+        cm.contains("if (desk === \"car\")"),
+        "Car Account Tax Planning is display-only"
+    );
+    assert!(cm.contains("YTD"));
+    assert!(cm.contains("Planned"));
+    assert!(cm.contains("Total YTD + Planned"));
+    assert!(cm.contains("Ordinary"));
+    assert!(cm.contains("Long Term Capital Gains"));
+    assert!(cm.contains("Short Term Capital Gains"));
+    assert!(cm.contains("formatCarUsd"));
+    assert!(cm.contains("ytdRocUnknownReason"));
+    assert!(!cm.contains("ytdRocMinor ?? 0"));
+    assert!(!cm.contains("remainingRocMinor ?? 0"));
+    assert!(!cm.contains("YTD ROC unknown reason"));
     assert!(!cm.contains("taxable brokerage stay"));
     assert!(!cm.contains("rocPct2026Actual"));
     assert!(!cm.contains("Prior-year 1099 is ROC guidance"));

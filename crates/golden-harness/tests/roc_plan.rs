@@ -869,3 +869,83 @@ async fn reject_roc_change_keeps_previous_projection() {
     .await;
     assert_eq!(inv["rocPct2026EstimateMinor"].as_i64(), Some(2500));
 }
+
+#[tokio::test]
+async fn wpay_car_dividends_use_topw_roc_estimate() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let car = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Car", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = car["accountId"].as_str().unwrap();
+    let topw = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "TOPW", "name": "Top basket"}),
+    )
+    .await;
+    let wpay = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "WPAY", "name": "WPAY"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": topw["securityId"],
+            "paymentFrequency": "Weekly",
+            "riskTier": "Risk On",
+            "rocPct2026EstimateMinor": 10_000,
+            "rocScale": 2,
+            "needsRocResearch": false
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "DividendActualRecord",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": wpay["securityId"],
+            "occurredOn": "2026-03-18",
+            "amountMinor": 10_000,
+            "scale": 2,
+            "idempotencyKey": "wpay-div-1"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "DividendActualRecord",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": topw["securityId"],
+            "occurredOn": "2026-03-25",
+            "amountMinor": 10_000,
+            "scale": 2,
+            "idempotencyKey": "topw-div-1"
+        }),
+    )
+    .await;
+    let plan = query_json(
+        &platform,
+        "CarRocPlanGet",
+        serde_json::json!({ "asOfDate": "2026-09-13" }),
+    )
+    .await;
+    assert_eq!(plan["ytdPaidMinor"].as_i64(), Some(20_000), "{plan}");
+    assert_eq!(
+        plan["ytdRocMinor"].as_i64(),
+        Some(20_000),
+        "WPAY is the former TOPW ticker — use TOPW 100% estimate, never mixed WPAY: {plan}"
+    );
+    assert!(
+        plan["ytdRocUnknownReason"].is_null(),
+        "former ticker is not unclassified: {plan}"
+    );
+}

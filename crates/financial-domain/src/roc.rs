@@ -173,6 +173,48 @@ pub const CAR_ROC_PLAN_NOTE: &str =
 pub const CAR_TAX_UNKNOWN_NOTE: &str =
     "Car 2026 tax stays unknown until the 1099 process (April 2027).";
 
+pub const YTD_ROC_NO_PAYMENTS: &str = "no Car payments this year yet";
+pub const YTD_ROC_ESTIMATE_BLANK: &str =
+    "Position.roc_pct_2026_estimate blank on names that paid";
+pub const YTD_ROC_NEEDS_RESEARCH: &str = "needs_roc_research still set";
+pub const YTD_ROC_UNTIL_1099: &str = "2026_actual empty until 1099 (expected)";
+
+pub fn ytd_roc_mixed_reason(symbols: &[String]) -> String {
+    let listed = if symbols.is_empty() {
+        String::new()
+    } else {
+        format!(" — {}", symbols.join(", "))
+    };
+    format!("mixed: some names estimated, some unclassified{listed}")
+}
+
+/// First owner-facing reason when YTD ROC cannot be computed. Never invent $0.
+pub fn first_ytd_roc_unknown_reason(
+    no_payments: bool,
+    all_paid_estimate_blank: bool,
+    needs_research: bool,
+    actual_empty: bool,
+    mixed: bool,
+    mixed_symbols: &[String],
+) -> Option<String> {
+    if no_payments {
+        return Some(YTD_ROC_NO_PAYMENTS.into());
+    }
+    if all_paid_estimate_blank {
+        return Some(YTD_ROC_ESTIMATE_BLANK.into());
+    }
+    if needs_research {
+        return Some(YTD_ROC_NEEDS_RESEARCH.into());
+    }
+    if actual_empty {
+        return Some(YTD_ROC_UNTIL_1099.into());
+    }
+    if mixed {
+        return Some(ytd_roc_mixed_reason(mixed_symbols));
+    }
+    None
+}
+
 pub const NO_ASSIGNED_LOT_SALES_NOTE: &str =
     "No assigned lot sales. Long-term and short-term stay unknown.";
 
@@ -272,6 +314,30 @@ mod tests {
         assert_eq!(sum_known(Some(100), Some(40)), Some(140));
         assert_eq!(sum_known(Some(100), None), None);
         assert_eq!(sum_known(None, Some(40)), None);
+    }
+
+    #[test]
+    fn first_ytd_roc_reason_is_priority_order() {
+        assert_eq!(
+            first_ytd_roc_unknown_reason(true, true, true, true, true, &["HAKY".into()]).as_deref(),
+            Some(YTD_ROC_NO_PAYMENTS)
+        );
+        assert_eq!(
+            first_ytd_roc_unknown_reason(false, true, true, true, true, &[]).as_deref(),
+            Some(YTD_ROC_ESTIMATE_BLANK)
+        );
+        assert_eq!(
+            first_ytd_roc_unknown_reason(false, false, true, true, true, &[]).as_deref(),
+            Some(YTD_ROC_NEEDS_RESEARCH)
+        );
+        assert_eq!(
+            first_ytd_roc_unknown_reason(false, false, false, true, true, &[]).as_deref(),
+            Some(YTD_ROC_UNTIL_1099)
+        );
+        assert_eq!(
+            first_ytd_roc_unknown_reason(false, false, false, false, true, &["HAKY".into()]),
+            Some("mixed: some names estimated, some unclassified — HAKY".into())
+        );
     }
 
     #[test]

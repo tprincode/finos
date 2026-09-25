@@ -129,8 +129,8 @@ fn periods_elapsed(inception: NaiveDate, as_of: NaiveDate, periods_per_year: u8)
     let days = (as_of - inception).num_days().max(0) as u32;
     match periods_per_year {
         52 => days / 7,
-        12 => month_span(inception, as_of),
-        4 => month_span(inception, as_of) / 3,
+        12 => completed_month_ends_after_launch_month(inception, as_of),
+        4 => completed_month_ends_after_launch_month(inception, as_of) / 3,
         _ => {
             let step = (365u32).div_ceil(u32::from(periods_per_year)).max(1);
             days / step
@@ -138,13 +138,68 @@ fn periods_elapsed(inception: NaiveDate, as_of: NaiveDate, periods_per_year: u8)
     }
 }
 
-fn month_span(from: NaiveDate, to: NaiveDate) -> u32 {
-    let mut months =
-        (to.year() - from.year()) * 12 + (to.month() as i32 - from.month() as i32);
-    if to.day() < from.day() {
-        months -= 1;
+fn last_day_of_month(d: NaiveDate) -> NaiveDate {
+    let next = if d.month() == 12 {
+        NaiveDate::from_ymd_opt(d.year() + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(d.year(), d.month() + 1, 1)
+    };
+    next.and_then(|n| n.pred_opt()).unwrap_or(d)
+}
+
+/// Month-end pay slots after the launch month that have already occurred.
+/// Launch month is not a required pay (mid-month inception). The current
+/// month is required only on that month's last calendar day — not when the
+/// inception day-of-month comes around again (HAKY 21 Jan vs payable 30 Sep).
+fn completed_month_ends_after_launch_month(inception: NaiveDate, as_of: NaiveDate) -> u32 {
+    let mut year = inception.year();
+    let mut month = inception.month() + 1;
+    if month > 12 {
+        month = 1;
+        year += 1;
     }
-    months.max(0) as u32
+    let mut n = 0u32;
+    while n < u32::from(DECLARATION_LOOKBACK_TARGET) {
+        let Some(first) = NaiveDate::from_ymd_opt(year, month, 1) else {
+            break;
+        };
+        let end = last_day_of_month(first);
+        if end > as_of {
+            break;
+        }
+        n += 1;
+        month += 1;
+        if month > 12 {
+            month = 1;
+            year += 1;
+        }
+    }
+    n
+}
+
+/// Month-end as-of: vendor still lists this month's payable with no amount.
+/// That one-period short is not a lookback miss (unknown ≠ $0).
+pub fn unpaid_current_month_covers_short(
+    paid: u8,
+    expected: u8,
+    as_of: &str,
+    unpaid_pay_ons: &[&str],
+) -> bool {
+    if expected.saturating_sub(paid) != 1 {
+        return false;
+    }
+    let Some(as_of_d) = parse_iso_date(as_of) else {
+        return false;
+    };
+    if as_of_d != last_day_of_month(as_of_d) {
+        return false;
+    }
+    let Some(ym) = as_of.get(..7) else {
+        return false;
+    };
+    unpaid_pay_ons
+        .iter()
+        .any(|p| p.starts_with(ym) && *p >= as_of)
 }
 
 #[cfg(test)]
@@ -177,7 +232,7 @@ mod tests {
             validate_paid_lookback(6, "2026-02-27", "2026-08-27", "Monthly"),
             LookbackValidation::CompleteViaInception {
                 paid: 6,
-                expected: 6
+                expected: 5
             }
         );
     }
@@ -188,9 +243,53 @@ mod tests {
             validate_paid_lookback(3, "2026-02-27", "2026-08-27", "Monthly"),
             LookbackValidation::ShortWithInception {
                 paid: 3,
-                expected: 6
+                expected: 5
             }
         );
+    }
+
+    #[test]
+    fn haky_inception_anniversary_does_not_require_unpaid_current_month() {
+        assert_eq!(
+            validate_paid_lookback(7, "2026-01-21", "2026-09-21", "Monthly"),
+            LookbackValidation::CompleteViaInception {
+                paid: 7,
+                expected: 7
+            }
+        );
+        assert_eq!(
+            validate_paid_lookback(7, "2026-01-21", "2026-10-21", "Monthly"),
+            LookbackValidation::ShortWithInception {
+                paid: 7,
+                expected: 8
+            }
+        );
+        assert_eq!(
+            expected_from_inception("2026-01-21", "2026-09-30", "Monthly"),
+            8
+        );
+    }
+
+    #[test]
+    fn unpaid_month_end_shell_covers_one_period_short() {
+        assert!(unpaid_current_month_covers_short(
+            7,
+            8,
+            "2026-09-30",
+            &["2026-09-30", "2026-10-30"]
+        ));
+        assert!(!unpaid_current_month_covers_short(
+            7,
+            8,
+            "2026-09-21",
+            &["2026-09-30"]
+        ));
+        assert!(!unpaid_current_month_covers_short(
+            7,
+            8,
+            "2026-10-05",
+            &["2026-09-30", "2026-10-30"]
+        ));
     }
 
     #[test]

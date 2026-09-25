@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::contracts::{
     AccountPositionTotalBody, AccountRecord, ActivityRecord, AllocationGetBody,
-    BacktestPeriodRecord, BasisGetBody, CalculatorGetBody, CalculatorRowBody,
-    CarRocPlanBody, CashDividendCoverageBody, CashDividendCoverageRow,
+    BacktestPeriodRecord, CalculatorGetBody, CalculatorRowBody,
+    CarRocPlanBody, CashDividendCoverageBody, CashDividendCoverageRow, TaxPlanningBody,
     CollectorFieldDecisionRecord,
     CollectorRecertifyBody, CollectorRetrieveBody, CollectorSetBody, CollectorSetItem,
     CollectorStatsBody, CommandRequest,
@@ -15,7 +15,7 @@ use crate::contracts::{
     DashboardBody, DashboardBurndownBody, DashboardBurndownLineBody, DataSummaryBody,
     DeclarationHistoryCellBody, DeclarationHistoryGetBody, DeclarationHistoryRowBody,
     DeclarationRefreshBody, DistributionRecord, Div1ComplianceSummaryBody,
-    Div1ComplianceSummaryRow, DividendGetBody, DividendPerformanceBody,
+    Div1ComplianceSummaryRow, DividendPerformanceBody,
     DividendPerformancePositionBody, DividendPerformanceSummaryBody, DividendPerformanceWeekBody,
     EvidenceDimensionsBody, ExpectedPaymentPattern, HoldingsGetBody, HoldingsLotBody,
     ImportCandidate, IncomePlanDrillBody, IncomePlanExportBody, IncomePlanGridBody,
@@ -55,6 +55,13 @@ const ORDINARY_WRITES: &[&str] = &[
     "CashDistributionPost",
     "CashAdjustPost",
     "WeekCaptureAccept",
+    "WeekAheadConfirm",
+    "WeekAheadEdit",
+    "WeekAheadDefer",
+    "CashElementSave",
+    "CashElementDelete",
+    "PlannedOccurrenceSave",
+    "PlannedOccurrenceDelete",
     "SsaConfirm",
     "ActivityCorrect",
     "ExceptionAcknowledge",
@@ -85,6 +92,11 @@ const ORDINARY_WRITES: &[&str] = &[
     "CartScenarioDiscard",
     "CartScenarioRename",
     "CartScenarioDuplicate",
+    "CartSellLineRemove",
+    "CartSellSymbolClear",
+    "CartBuyLineRemove",
+    "CartScenarioSlotAdd",
+    "CartPlanDepositSet",
     "BacktestRun",
     "ClassificationReviewRecord",
     "AiAnalyze",
@@ -120,6 +132,11 @@ const ORDINARY_WRITES: &[&str] = &[
     "WorkTicketFile",
     "WorkTicketSyncMisses",
     "CollectorFieldDecisionSet",
+    "PlanHorizonAssumeNextYear",
+    "ExternalRegisterSave",
+    "ExternalRegisterTrueUp",
+    "ExternalRegisterMarkStep",
+    "ExternalRegisterImport",
 ];
 
 #[derive(Debug, Default, Deserialize)]
@@ -309,13 +326,16 @@ fn last_price_auto_window_body() -> LastPriceAutoWindowBody {
 }
 
 fn last_price_auto_window_body_with_last(last: Option<&str>) -> LastPriceAutoWindowBody {
+    let in_schedule = crate::last_price_window::last_price_auto_window_now().is_ok();
     match crate::last_price_window::last_price_auto_window_with_last(last) {
         Ok(()) => LastPriceAutoWindowBody {
             allowed: true,
+            in_schedule: true,
             skip_reason: None,
         },
         Err(skip) => LastPriceAutoWindowBody {
             allowed: false,
+            in_schedule,
             skip_reason: Some(skip.reason().to_string()),
         },
     }
@@ -392,15 +412,17 @@ async fn income_plan_view(
     Ok(plan)
 }
 
-/// January 1 of the week-ending year. Remaining issuer dates must cover historical
-/// pay weeks in that year; `week.start` of the Jan 1 week is often in December and
-/// would truncate remaining to the prior year (dropping MON1 on 2026-08-28).
-fn income_plan_remaining_as_of(week_end: &str) -> String {
-    match week_end.get(..4) {
-        Some(year) if year.len() == 4 && year.bytes().all(|b| b.is_ascii_digit()) => {
-            format!("{year}-01-01")
-        }
-        _ => week_end.to_string(),
+/// This week’s Saturday through December 31 of the week-end year.
+/// Jan 1 of the year is too wide: later vendor dates make `has_remaining`
+/// true and drop this week’s cadence hole (OPEN 31 Aug). A Sat–Fri week
+/// that crosses 31 Dec still sees Dec 30 monthlies via the week-end year.
+fn income_plan_remaining_bounds(week_start: &str, week_end: &str) -> (String, String) {
+    let end_year = week_end
+        .get(..4)
+        .filter(|y| y.bytes().all(|b| b.is_ascii_digit()));
+    match end_year {
+        Some(y) => (week_start.to_string(), format!("{y}-12-31")),
+        None => (week_start.to_string(), week_end.to_string()),
     }
 }
 
@@ -408,20 +430,103 @@ async fn remaining_pay_dates_for(
     canonical: &dyn Canonical,
     security_id: Uuid,
     as_of: &str,
+    horizon_end: &str,
     periods: u8,
-    cache: &mut std::collections::HashMap<Uuid, Vec<String>>,
+    cache: &mut crate::query_cache::DeclDateCache,
+    clock: Option<&str>,
 ) -> Result<Vec<String>, PlatformError> {
-    if let Some(dates) = cache.get(&security_id) {
+    let key = (security_id, format!("{as_of}..{horizon_end}"));
+    if let Some(dates) = cache.get(&key) {
         return Ok(dates.clone());
     }
-    let schedule =
-        remaining_year_schedule_for(canonical, security_id, as_of, periods, None, &[]).await?;
-    let dates = if schedule.known {
-        schedule.payments.iter().map(|p| p.pay_on.clone()).collect()
+    let year = as_of.get(..4).unwrap_or("");
+    let year_end = if horizon_end.len() >= 10 {
+        horizon_end[..10].to_string()
     } else {
-        Vec::new()
+        format!("{year}-12-31")
     };
-    cache.insert(security_id, dates.clone());
+    let cadence = match periods {
+        52 => "Weekly",
+        12 => "Monthly",
+        4 => "Quarterly",
+        _ => "",
+    };
+    let issuer_all: Vec<String> = canonical
+        .issuer_pay_date_list(security_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| row.pay_on)
+        .collect();
+    let issuer_in_year: Vec<String> = issuer_all
+        .iter()
+        .filter(|pay_on| pay_on.as_str() >= as_of && pay_on.as_str() <= year_end.as_str())
+        .cloned()
+        .collect();
+    let skip_next_year_derive = clock
+        .and_then(|c| {
+            let assume = financial_domain::schedule::assume_calendar_year(c)?;
+            let clock_year = c.get(..4)?.parse::<i32>().ok()?;
+            let as_of_year = year.parse::<i32>().ok()?;
+            Some(as_of_year > clock_year && assume == as_of_year)
+        })
+        .unwrap_or(false);
+    let mut dates = if skip_next_year_derive {
+        issuer_in_year
+    } else {
+        let schedule =
+            remaining_year_schedule_for(canonical, security_id, as_of, periods, None, &[]).await?;
+        if schedule.known {
+            schedule.payments.iter().map(|p| p.pay_on.clone()).collect()
+        } else {
+            issuer_in_year
+        }
+    };
+    if let Ok(assumed) = canonical.assumed_pay_date_list(security_id).await {
+        for row in assumed {
+            if row.pay_on.as_str() < as_of || row.pay_on.as_str() > year_end.as_str() {
+                continue;
+            }
+            if dates.iter().any(|d| {
+                d == &row.pay_on
+                    || financial_domain::schedule::vendor_payables_same_period(
+                        cadence,
+                        d,
+                        &row.pay_on,
+                    )
+            }) {
+                continue;
+            }
+            dates.push(row.pay_on);
+        }
+    }
+    // Forecast holes: cadence slots in [as_of, year_end]. Vendor / assumed
+    // already in `dates` win the period. Collector remaining-year tickets still
+    // skip inventing next year (`skip_next_year_derive`); this walk only places
+    // Plan $ on Income Plan / cash-flow / Coverage forecast readers.
+    if !cadence.is_empty() {
+        let clock_s = clock.unwrap_or(as_of);
+        let paid_refs: Vec<&str> = issuer_all.iter().map(String::as_str).collect();
+        for hole in financial_domain::schedule::derive_horizon_pay_ons(
+            clock_s,
+            cadence,
+            &paid_refs,
+            as_of,
+            &year_end,
+        ) {
+            let already = dates.iter().chain(issuer_all.iter()).any(|d| {
+                d == &hole
+                    || financial_domain::schedule::vendor_payables_same_period(cadence, d, &hole)
+            });
+            if already {
+                continue;
+            }
+            dates.push(hole);
+        }
+    }
+    dates.sort();
+    dates.dedup();
+    cache.insert(key, dates.clone());
     Ok(dates)
 }
 
@@ -757,9 +862,10 @@ async fn persist_retrieve_run(
     payload: &Value,
 ) {
     let payload_json = serde_json::to_string(payload).unwrap_or_else(|_| "{}".into());
+    let run_id = Uuid::new_v4();
     let _ = canonical
         .retrieve_run_record(RetrieveRunRecord {
-            run_id: Uuid::new_v4(),
+            run_id,
             security_id,
             kind: kind.into(),
             requested_at: requested_at.into(),
@@ -773,6 +879,9 @@ async fn persist_retrieve_run(
             payload_json,
         })
         .await;
+    if ok && kind == "declaration" {
+        work_ticket_auto_file_declaration(canonical, security_id, run_id).await;
+    }
 }
 
 fn is_cash_rate_candidate(row: &Value) -> bool {
@@ -986,56 +1095,72 @@ fn merge_date_overrides(
     out
 }
 
+pub(crate) struct WeekAlignedIncome {
+    pub planned_minor: i64,
+    pub reported_minor: i64,
+    pub any_actual: bool,
+}
+
+impl WeekAlignedIncome {
+    pub fn mixed(self) -> i64 {
+        if self.any_actual {
+            self.reported_minor
+        } else {
+            self.planned_minor
+        }
+    }
+}
+
+pub(crate) async fn week_aligned_income_parts(
+    canonical: &dyn Canonical,
+    as_of: &str,
+) -> Result<WeekAlignedIncome, PlatformError> {
+    let week = income_plan_week_view(canonical, as_of.to_string(), as_of.to_string()).await?;
+    let any_actual = week.positions.iter().any(|p| p.actual_known);
+    let reported_minor = if any_actual {
+        week.positions
+            .iter()
+            .filter(|p| p.actual_known)
+            .map(|p| p.actual_minor)
+            .sum()
+    } else {
+        0
+    };
+    let planned_minor = week
+        .positions
+        .iter()
+        .filter(|p| p.plan_known)
+        .map(|p| p.planned_minor)
+        .sum();
+    Ok(WeekAlignedIncome {
+        planned_minor,
+        reported_minor,
+        any_actual,
+    })
+}
+
 pub(crate) async fn week_aligned_income_minor(
     canonical: &dyn Canonical,
     as_of: &str,
 ) -> Result<i64, PlatformError> {
-    let week = income_plan_week_view(canonical, as_of.to_string(), as_of.to_string()).await?;
-    let any_actual = week.positions.iter().any(|p| p.actual_known);
-    if any_actual {
-        return Ok(week
-            .positions
-            .iter()
-            .filter(|p| p.actual_known)
-            .map(|p| p.actual_minor)
-            .sum());
-    }
-    let any_decl = week.positions.iter().any(|p| p.declaration_known);
-    if any_decl {
-        return Ok(week
-            .positions
-            .iter()
-            .filter(|p| p.declaration_known)
-            .map(|p| p.declaration_minor)
-            .sum());
-    }
-    // Unknown week money stays 0 — never sum Plan. That was the ~$4k weekly
-    // figure (full fleet plan) when no declaration or broker actual existed.
-    Ok(0)
+    // Mixed fallback is reported actuals, else this week's Income Plan Plan $.
+    Ok(week_aligned_income_parts(canonical, as_of).await?.mixed())
 }
 
-async fn income_plan_week_view(
+pub(crate) async fn income_plan_week_view(
     canonical: &dyn Canonical,
     pick_date: String,
     closed_as_of: String,
 ) -> Result<IncomePlanWeekBody, PlatformError> {
-    let accounts = canonical.account_list().await?;
-    let securities = canonical.security_list().await?;
-    let dividend = canonical.dividend_get().await?;
-    let plans = canonical.plan_history_list().await?;
-    let characteristics = canonical.position_characteristic_list().await?;
-    let basis = canonical.basis_get().await?;
-    let mut decl_dates = std::collections::HashMap::new();
+    let lists = crate::query_cache::load_income_plan_lists(canonical).await?;
+    let mut decl_dates = crate::query_cache::DeclDateCache::new();
+    let mut decl_cache = crate::query_cache::DeclRowCache::new();
     income_plan_week_with(
         canonical,
-        &accounts,
-        &securities,
-        &dividend,
-        &plans,
-        &characteristics,
-        &basis,
+        &lists,
         pick_date,
         &mut decl_dates,
+        &mut decl_cache,
         if closed_as_of.trim().is_empty() {
             None
         } else {
@@ -1043,6 +1168,47 @@ async fn income_plan_week_view(
         },
     )
     .await
+}
+
+/// One Income Plan week body per Sat–Fri in `[start, end]`, sharing remaining-date cache.
+/// Cash Register uses this so a two-month window does not rebuild every name nine times.
+pub(crate) async fn income_plan_week_views_in_range(
+    canonical: &dyn Canonical,
+    start: &str,
+    end: &str,
+    closed_as_of: &str,
+) -> Result<Vec<IncomePlanWeekBody>, PlatformError> {
+    let start_d = parse_iso_date(start)
+        .ok_or_else(|| PlatformError::new("bad_date", format!("invalid start {start}")))?;
+    let end_d = parse_iso_date(end)
+        .ok_or_else(|| PlatformError::new("bad_date", format!("invalid end {end}")))?;
+    let lists = crate::query_cache::load_income_plan_lists(canonical).await?;
+    let mut decl_dates = crate::query_cache::DeclDateCache::new();
+    let mut decl_cache = crate::query_cache::DeclRowCache::new();
+    let closed = if closed_as_of.trim().is_empty() {
+        None
+    } else {
+        Some(closed_as_of.to_string())
+    };
+    let mut cursor = financial_domain::week::week_containing(start_d).start;
+    let last = financial_domain::week::week_containing(end_d).end;
+    let mut views = Vec::new();
+    while cursor <= last {
+        let week = financial_domain::week::week_containing(cursor);
+        views.push(
+            income_plan_week_with(
+                canonical,
+                &lists,
+                week.end.to_string(),
+                &mut decl_dates,
+                &mut decl_cache,
+                closed.clone(),
+            )
+            .await?,
+        );
+        cursor += chrono::Duration::days(7);
+    }
+    Ok(views)
 }
 
 async fn income_plan_grid_view(
@@ -1058,27 +1224,19 @@ async fn income_plan_grid_view(
     let fut = financial_domain::income_plan::clamp_week_count(future_weeks as i64);
     let visible = financial_domain::income_plan::visible_grid_weeks(as_of, hist, fut);
     let year = crate::income_plan_display::year_weeks_for(as_of);
-    let accounts_list = canonical.account_list().await?;
-    let securities = canonical.security_list().await?;
-    let dividend = canonical.dividend_get().await?;
-    let plans = canonical.plan_history_list().await?;
-    let characteristics = canonical.position_characteristic_list().await?;
-    let basis = canonical.basis_get().await?;
-    let mut cache = std::collections::HashMap::new();
+    let lists = crate::query_cache::load_income_plan_lists(canonical).await?;
+    let mut cache = crate::query_cache::DeclDateCache::new();
+    let mut decl_cache = crate::query_cache::DeclRowCache::new();
     // Sequential load (cache is shared). Year-start first so remaining dates cover the year.
     let mut year_bodies = Vec::new();
     for gw in &year {
         year_bodies.push(
             income_plan_week_with(
                 canonical,
-                &accounts_list,
-                &securities,
-                &dividend,
-                &plans,
-                &characteristics,
-                &basis,
+                &lists,
                 gw.week.end.to_string(),
                 &mut cache,
+                &mut decl_cache,
                 Some(as_of_date.clone()),
             )
             .await
@@ -1097,14 +1255,10 @@ async fn income_plan_grid_view(
         week_bodies.push(
             income_plan_week_with(
                 canonical,
-                &accounts_list,
-                &securities,
-                &dividend,
-                &plans,
-                &characteristics,
-                &basis,
+                &lists,
                 gw.week.end.to_string(),
                 &mut cache,
+                &mut decl_cache,
                 Some(as_of_date.clone()),
             )
             .await
@@ -1202,16 +1356,18 @@ async fn income_plan_export_view(
 
 async fn income_plan_week_with(
     canonical: &dyn Canonical,
-    accounts: &[AccountRecord],
-    securities: &[SecurityRecord],
-    dividend: &DividendGetBody,
-    plans: &[PlanHistoryRecord],
-    characteristics: &[PositionCharacteristicRecord],
-    basis: &BasisGetBody,
+    lists: &crate::query_cache::IncomePlanLists,
     as_of_date: String,
-    decl_dates: &mut std::collections::HashMap<uuid::Uuid, Vec<String>>,
+    decl_dates: &mut crate::query_cache::DeclDateCache,
+    decl_cache: &mut crate::query_cache::DeclRowCache,
     closed_as_of: Option<String>,
 ) -> Result<IncomePlanWeekBody, PlatformError> {
+    let accounts = lists.accounts.as_slice();
+    let securities = lists.securities.as_slice();
+    let dividend = &lists.dividend;
+    let plans = lists.plans.as_slice();
+    let characteristics = lists.characteristics.as_slice();
+    let basis = &lists.basis;
     let latest_actual_on = dividend.actuals.iter().map(|a| a.occurred_on.clone()).max();
     let yield_count = dividend.actuals.len() as u64;
     let as_of = if as_of_date.trim().is_empty() {
@@ -1275,8 +1431,8 @@ async fn income_plan_week_with(
             actual.scale,
         );
     }
-    if let Ok(activities) = canonical.activity_list().await {
-        for act in activities {
+    {
+        for act in &lists.activities {
             if !financial_domain::income_plan::is_income_cash_activity(&act.activity_type) {
                 continue;
             }
@@ -1349,52 +1505,17 @@ async fn income_plan_week_with(
                 )
             })
             .collect();
-    let plan_versions = canonical
-        .plan_history_version_list()
-        .await
-        .unwrap_or_else(|_| plans.to_vec());
+    let plan_versions = lists.plan_versions.as_slice();
     let plan_catalog: std::collections::HashMap<uuid::Uuid, _> =
         plans.iter().map(|p| (p.security_id, p)).collect();
     let freq_catalog: std::collections::HashMap<uuid::Uuid, String> = characteristics
         .iter()
         .map(|c| (c.security_id, c.payment_frequency.clone()))
         .collect();
-    let mut lots_by_security: std::collections::HashMap<uuid::Uuid, Vec<&LotRecord>> =
-        std::collections::HashMap::new();
-    for lot in &basis.lots {
-        if lot.remaining_quantity_minor <= 0 {
-            continue;
-        }
-        let opened = lot.opened_on.get(..10).unwrap_or(lot.opened_on.as_str());
-        if opened > week.end.as_str() {
-            continue;
-        }
-        lots_by_security
-            .entry(lot.security_id)
-            .or_default()
-            .push(lot);
-    }
-    let last_update_by_sec: std::collections::HashMap<uuid::Uuid, Option<String>> =
-        match canonical.collector_set().await {
-            Ok(set) => set
-                .items
-                .into_iter()
-                .map(|item| {
-                    (
-                        item.security_id,
-                        financial_domain::income_plan::last_update_success(
-                            item.last_run_ok,
-                            &item.last_run_at,
-                        ),
-                    )
-                })
-                .collect(),
-            Err(_) => std::collections::HashMap::new(),
-        };
+    let lots_by_security = crate::query_cache::lots_open_as_of(&basis.lots, week.end.as_str());
+    let last_update_by_sec = &lists.last_update_by_sec;
     let mut positions: Vec<IncomePlanPositionBody> = Vec::new();
     let mut listed: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut decl_cache: std::collections::HashMap<Uuid, Vec<IssuerDeclarationRecord>> =
-        std::collections::HashMap::new();
     for (security_id, lots) in &lots_by_security {
         let freq = freq_catalog
             .get(security_id)
@@ -1407,12 +1528,16 @@ async fn income_plan_week_with(
         let Some(periods) = cadence.and_then(|c| c.periods()) else {
             continue;
         };
+        let (remain_from, remain_through) =
+            income_plan_remaining_bounds(&week.start, &week.end);
         let remaining = remaining_pay_dates_for(
             canonical,
             *security_id,
-            &income_plan_remaining_as_of(&week.end),
+            &remain_from,
+            &remain_through,
             periods,
             &mut *decl_dates,
+            closed_as_of.as_deref(),
         )
         .await?;
         let remaining_refs: Vec<&str> = remaining.iter().map(|s| s.as_str()).collect();
@@ -1426,6 +1551,27 @@ async fn income_plan_week_with(
         );
         let Some(sec) = securities.iter().find(|s| s.security_id == *security_id) else {
             continue;
+        };
+        let money_market = financial_domain::income_plan::money_market_symbol(&sec.symbol);
+        let report_dates: Vec<String> = if money_market {
+            remaining
+                .iter()
+                .filter_map(|d| financial_domain::income_plan::money_market_report_on(d))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let report_refs: Vec<&str> = report_dates.iter().map(String::as_str).collect();
+        let calendar_pay = if money_market {
+            financial_domain::schedule::pay_on_for_week(
+                periods,
+                &week.start,
+                &week.end,
+                &report_refs,
+                last,
+            )
+        } else {
+            calendar_pay
         };
         let actual_known = position_actuals.contains_key(&sec.symbol);
         let actual = actual_known
@@ -1445,12 +1591,28 @@ async fn income_plan_week_with(
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
         let pay_hint = calendar_pay.clone().unwrap_or_default();
-        let decl_row =
+        let mut decl_row =
             issuer_declaration_for_week(decls, &week.start, &week.end, &pay_hint, periods);
-        let declaration_known = decl_row.is_some();
-        if calendar_pay.is_none() && !actual_known && !declaration_known {
-            continue;
+        if money_market && calendar_pay.is_none() {
+            decl_row = None;
         }
+        let declaration_known = decl_row.is_some();
+        if calendar_pay.is_none() && !declaration_known {
+            let payable_elsewhere = if money_market {
+                report_refs.iter().any(|d| {
+                    !financial_domain::schedule::pay_on_in_week(d, &week.start, &week.end)
+                })
+            } else {
+                remaining_refs.iter().any(|d| {
+                    !financial_domain::schedule::pay_on_in_week(d, &week.start, &week.end)
+                })
+            };
+            if !actual_known || payable_elsewhere {
+                // Off-calendar broker cash is not this week's Plan (GLAD 9/16 vs payable 9/30).
+                continue;
+            }
+        }
+        let attach_plan = calendar_pay.is_some() || declaration_known;
         let pay_on = calendar_pay
             .or_else(|| {
                 decl_row.map(|d| {
@@ -1500,7 +1662,7 @@ async fn income_plan_week_with(
                 p.amount_scale = scale;
             }
         }
-        let plan_known = plan_for_week.is_some();
+        let plan_known = attach_plan && plan_for_week.is_some();
         let mut planned_minor = 0i64;
         for lot in lots {
             let Some(account) = accounts.iter().find(|a| a.account_id == lot.account_id) else {
@@ -1517,6 +1679,9 @@ async fn income_plan_week_with(
                 scheduled: 0,
                 unknown_plan: 0,
             });
+            if !attach_plan {
+                continue;
+            }
             entry.scheduled = entry.scheduled.saturating_add(1);
             if let Some(p) = plan_for_week.as_ref() {
                 let pay = financial_domain::calculator::plan_payment_cents(
@@ -1563,6 +1728,34 @@ async fn income_plan_week_with(
     for (symbol, actual) in &position_actuals {
         if *actual == 0 || listed.contains(symbol) {
             continue;
+        }
+        if let Some(sec) = securities.iter().find(|s| s.symbol == *symbol) {
+            if lots_by_security.contains_key(&sec.security_id) {
+                let periods = freq_catalog
+                    .get(&sec.security_id)
+                    .and_then(|f| {
+                        financial_domain::calculator::PaymentCadence::parse(f)
+                            .and_then(|c| c.periods())
+                    })
+                    .unwrap_or(12);
+                let (remain_from, remain_through) =
+                    income_plan_remaining_bounds(&week.start, &week.end);
+                let remaining = remaining_pay_dates_for(
+                    canonical,
+                    sec.security_id,
+                    &remain_from,
+                    &remain_through,
+                    periods,
+                    &mut *decl_dates,
+                    closed_as_of.as_deref(),
+                )
+                .await?;
+                if remaining.iter().any(|d| {
+                    !financial_domain::schedule::pay_on_in_week(d, &week.start, &week.end)
+                }) {
+                    continue;
+                }
+            }
         }
         let account_slices = income_plan_position_accounts(
             symbol,
@@ -1760,12 +1953,9 @@ async fn dividend_performance_view(
     as_of_date: String,
     range: String,
 ) -> Result<DividendPerformanceBody, PlatformError> {
-    let accounts = canonical.account_list().await?;
-    let securities = canonical.security_list().await?;
-    let dividend = canonical.dividend_get().await?;
-    let plans = canonical.plan_history_list().await?;
-    let characteristics = canonical.position_characteristic_list().await?;
-    let basis = canonical.basis_get().await?;
+    let lists = crate::query_cache::load_income_plan_lists(canonical).await?;
+    let dividend = &lists.dividend;
+    let basis = &lists.basis;
     let latest_actual_on = dividend.actuals.iter().map(|a| a.occurred_on.clone()).max();
     let as_of = if as_of_date.trim().is_empty() {
         latest_actual_on.clone().unwrap_or_else(today_iso)
@@ -1812,7 +2002,8 @@ async fn dividend_performance_view(
             });
         }
     };
-    let mut decl_dates = std::collections::HashMap::new();
+    let mut decl_dates = crate::query_cache::DeclDateCache::new();
+    let mut decl_cache = crate::query_cache::DeclRowCache::new();
     let mut last_year: Option<i32> = None;
     let mut weeks: Vec<DividendPerformanceWeekBody> = Vec::new();
     let mut cursor = financial_domain::week::week_containing(walk_from).start;
@@ -1830,14 +2021,10 @@ async fn dividend_performance_view(
         if in_range {
             let view = income_plan_week_with(
                 canonical,
-                &accounts,
-                &securities,
-                &dividend,
-                &plans,
-                &characteristics,
-                &basis,
+                &lists,
                 w.end.to_string(),
                 &mut decl_dates,
+                &mut decl_cache,
                 None,
             )
             .await?;
@@ -2009,8 +2196,11 @@ pub(crate) async fn account_trends_weeks(
                 None => continue,
             }
         };
+        let friday = financial_domain::week::parse_iso_day(&snap.period_end)
+            .map(|d| financial_domain::week::week_containing(d).end.to_string())
+            .unwrap_or_else(|| snap.period_end.clone());
         by_period
-            .entry(snap.period_end.clone())
+            .entry(friday)
             .or_default()
             .insert(control, snap.balance_minor);
     }
@@ -2033,10 +2223,14 @@ pub(crate) async fn account_trends_weeks(
                 None => continue,
             }
         };
-        cash_by_period
-            .entry(snap.period_end.clone())
-            .or_default()
-            .insert(control, cash);
+        let friday = financial_domain::week::parse_iso_day(&snap.period_end)
+            .map(|d| financial_domain::week::week_containing(d).end.to_string())
+            .unwrap_or_else(|| snap.period_end.clone());
+        let exact = snap.period_end.starts_with(&friday);
+        let map = cash_by_period.entry(friday).or_default();
+        if exact || !map.contains_key(control) {
+            map.insert(control, cash);
+        }
     }
     let mut weeks = Vec::with_capacity(sources.len());
     let mut prev_divs: Option<i64> = None;
@@ -2046,7 +2240,11 @@ pub(crate) async fn account_trends_weeks(
     for src in &sources {
         let combined = src.fidelity_total_minor + src.schwab_total_minor;
         let proxy = acct9_etf_proxy_minor(src.acct9_etf_value_minor);
-        let cash_map = cash_by_period.get(&src.period_end);
+        // Saturday week cash joins the Friday of that Sat–Fri week.
+        let friday = financial_domain::week::parse_iso_day(&src.period_end)
+            .map(|d| financial_domain::week::week_containing(d).end.to_string())
+            .unwrap_or_else(|| src.period_end.clone());
+        let cash_map = cash_by_period.get(&friday);
         let income_cash = cash_map
             .and_then(|m| m.get("Income").copied())
             .unwrap_or(src.income_cash_minor);
@@ -2074,7 +2272,7 @@ pub(crate) async fn account_trends_weeks(
             Some(prev) => src.schwab_total_minor - prev,
             None => 0,
         };
-        let bals = by_period.get(&src.period_end);
+        let bals = by_period.get(&friday);
         weeks.push(TrendsWeekPoint {
             period_end: src.period_end.clone(),
             period_start: {
@@ -2104,6 +2302,10 @@ pub(crate) async fn account_trends_weeks(
             health_balance_minor: bals.and_then(|m| m.get("Health").copied()),
             roth_balance_minor: bals.and_then(|m| m.get("Roth").copied()),
             speculation_balance_minor: bals.and_then(|m| m.get("Speculation").copied()),
+            car_cash_minor: cash_map.and_then(|m| m.get("Car").copied()),
+            health_cash_minor: cash_map.and_then(|m| m.get("Health").copied()),
+            roth_cash_minor: cash_map.and_then(|m| m.get("Roth").copied()),
+            speculation_cash_minor: cash_map.and_then(|m| m.get("Speculation").copied()),
             fidelity_wk_change_minor: fid_change,
             schwab_wk_change_minor: sch_change,
             closed: src.closed,
@@ -3040,7 +3242,10 @@ async fn work_ticket_sync_misses(
                     run.message.clone()
                 },
             ),
-            Some(_) => continue,
+            Some(run) => {
+                work_ticket_auto_file_declaration(canonical, item.security_id, run.run_id).await;
+                continue;
+            }
             None if last_failed => (
                 "declaration_retrieve_miss".into(),
                 if item.last_run_message.trim().is_empty() {
@@ -3453,9 +3658,10 @@ async fn apply_phase_i_establish(
     out
 }
 
-/// MLP remaining-year is one `derived_template` payable per unpaid 2026 quarter
-/// (ET: last accepted 8-K 2026-08-19 → 2026-11-19). Drop sibling `derived_walk`
-/// and IR leftovers. Do not keep 2027 in remaining-year.
+/// MLP remaining-year is one `derived_template` payable per unpaid quarter in
+/// this calendar year (ET: last accepted 8-K 2026-08-19 → 2026-11-19). Drop
+/// sibling `derived_walk` and IR leftovers. Drop invented 2027 derived_* rows.
+/// Keep vendor-printed / 8-K 2027 — save ≠ remaining-year ticket.
 async fn persist_mlp_remaining_year(canonical: &dyn Canonical, security_id: Uuid, as_of: &str) {
     let year = as_of.get(..4).unwrap_or("");
     let year_end = format!("{year}-12-31");
@@ -3475,13 +3681,7 @@ async fn persist_mlp_remaining_year(canonical: &dyn Canonical, security_id: Uuid
         .unwrap_or_default();
     for old in &existing {
         let extra_year = old.pay_on.as_str() > year_end.as_str()
-            && (old.source.eq_ignore_ascii_case("derived_walk")
-                || old
-                    .source
-                    .eq_ignore_ascii_case(financial_domain::mlp_sec::SOURCE_DERIVED_TEMPLATE)
-                || old
-                    .source
-                    .eq_ignore_ascii_case(financial_domain::mlp_sec::LEGACY_SOURCE));
+            && financial_domain::mlp_sec::is_invented_horizon_source(&old.source);
         let keep_template = needed.iter().any(|n| n == &old.pay_on)
             || (old
                 .source
@@ -3971,7 +4171,12 @@ async fn apply_runtime_vendor_payables(
                 wrote = wrote.saturating_add(1);
             }
         }
-        if !financial_domain::schedule::period_has_occurred(from, as_of) {
+        if financial_domain::schedule::leftover_record_to_later_payable(
+            payment_frequency,
+            from,
+            to,
+        ) || !financial_domain::schedule::period_has_occurred(from, as_of)
+        {
             if let Some(old) = decls.iter().find(|d| d.payment_period == *from) {
                 let occurred: Vec<(i64, u8)> = decls
                     .iter()
@@ -4079,6 +4284,11 @@ async fn align_unoccurred_declarations_to_plan(
     for d in &decls {
         let amt = d.amount_per_share_minor.unwrap_or(0);
         if amt <= 0 {
+            continue;
+        }
+        if d.source.eq_ignore_ascii_case("vendor_payable")
+            || financial_domain::div1::is_registered_declaration_source(&d.source)
+        {
             continue;
         }
         if !financial_domain::schedule::unoccurred_declaration_is_placeholder(
@@ -4250,6 +4460,14 @@ async fn data_summary_view(
     canonical: &dyn Canonical,
     as_of: &str,
 ) -> Result<DataSummaryBody, PlatformError> {
+    data_summary_view_with_avgs(canonical, as_of, None).await
+}
+
+pub(crate) async fn data_summary_view_with_avgs(
+    canonical: &dyn Canonical,
+    as_of: &str,
+    avgs: Option<(Option<i64>, Option<i64>)>,
+) -> Result<DataSummaryBody, PlatformError> {
     let accounts = canonical.account_list().await?;
     let basis = canonical.basis_get().await?;
     let dividend = canonical.dividend_get().await?;
@@ -4366,8 +4584,10 @@ async fn data_summary_view(
         } else {
             (0, 0, true)
         };
-    let (avg_monthly_plan_income_minor, avg_monthly_actual_income_minor) =
-        crate::dividend_plan::home_avg_monthly_income(canonical, as_of).await?;
+    let (avg_monthly_plan_income_minor, avg_monthly_actual_income_minor) = match avgs {
+        Some(pair) => pair,
+        None => crate::dividend_plan::home_avg_monthly_income(canonical, as_of).await?,
+    };
     Ok(DataSummaryBody {
         account_count: accounts.iter().filter(|a| is_data_account(&a.name)).count() as u64,
         open_lot_count,
@@ -6294,6 +6514,43 @@ async fn allocation_view(canonical: &dyn Canonical) -> Result<AllocationGetBody,
     Ok(alloc)
 }
 
+fn characteristic_for_listed<'a>(
+    security_id: Option<Uuid>,
+    securities: &[crate::contracts::SecurityRecord],
+    chars: &'a [crate::contracts::PositionCharacteristicRecord],
+) -> Option<&'a crate::contracts::PositionCharacteristicRecord> {
+    let sid = security_id?;
+    let listed = chars.iter().find(|c| c.security_id == sid);
+    if listed.and_then(|c| c.roc_pct_2026_estimate_minor).is_some() {
+        return listed;
+    }
+    let symbol = securities
+        .iter()
+        .find(|s| s.security_id == sid)
+        .map(|s| s.symbol.as_str())?;
+    let current = financial_domain::symbol::current_listed_symbol(symbol);
+    if current.eq_ignore_ascii_case(symbol) {
+        return listed;
+    }
+    let current_id = securities
+        .iter()
+        .find(|s| s.symbol.eq_ignore_ascii_case(&current))
+        .map(|s| s.security_id)?;
+    chars
+        .iter()
+        .find(|c| c.security_id == current_id)
+        .or(listed)
+}
+
+fn listed_symbol_for_reason(
+    security_id: Option<Uuid>,
+    securities: &[crate::contracts::SecurityRecord],
+) -> Option<String> {
+    let sid = security_id?;
+    let symbol = securities.iter().find(|s| s.security_id == sid)?.symbol.clone();
+    Some(financial_domain::symbol::current_listed_symbol(&symbol))
+}
+
 async fn car_roc_plan_view(
     canonical: &dyn Canonical,
     as_of: &str,
@@ -6307,8 +6564,10 @@ async fn car_roc_plan_view(
         remaining_ordinary_minor: Some(0),
         remaining_roc_minor: Some(0),
         ytd_paid_minor: 0,
-        ytd_ordinary_minor: Some(0),
-        ytd_roc_minor: Some(0),
+        ytd_ordinary_minor: None,
+        ytd_roc_minor: None,
+        ytd_roc_pct: None,
+        ytd_roc_unknown_reason: Some(financial_domain::roc::YTD_ROC_NO_PAYMENTS.into()),
         ytd_long_term_gain_minor: None,
         ytd_short_term_gain_minor: None,
         lot_sale_pl_minor: None,
@@ -6330,6 +6589,7 @@ async fn car_roc_plan_view(
     };
     let basis = canonical.basis_get().await?;
     let chars = canonical.position_characteristic_list().await?;
+    let securities = canonical.security_list().await.unwrap_or_default();
     let plans = canonical.plan_history_list().await?;
     let activities = canonical.activity_list().await.unwrap_or_default();
 
@@ -6357,7 +6617,7 @@ async fn car_roc_plan_view(
             .map(|l| l.remaining_quantity_minor)
             .sum();
         let qscale = lot.quantity_scale;
-        let ch = chars.iter().find(|c| c.security_id == lot.security_id);
+        let ch = characteristic_for_listed(Some(lot.security_id), &securities, &chars);
         let estimate = ch.and_then(|c| c.roc_pct_2026_estimate_minor);
         let pct_scale = ch
             .and_then(|c| c.roc_scale)
@@ -6397,6 +6657,12 @@ async fn car_roc_plan_view(
     let mut ytd_paid = 0i64;
     let mut ytd_ordinary = Some(0i64);
     let mut ytd_roc = Some(0i64);
+    let mut paid_count = 0u64;
+    let mut paid_with_estimate = 0u64;
+    let mut paid_missing_estimate = 0u64;
+    let mut paid_missing_symbols: Vec<String> = Vec::new();
+    let mut needs_research = false;
+    let mut any_paid_missing_actual = false;
     for act in &activities {
         if act.account_id != car.account_id {
             continue;
@@ -6407,11 +6673,26 @@ async fn car_roc_plan_view(
         if !act.occurred_on.starts_with(&tax_year) {
             continue;
         }
+        paid_count += 1;
         ytd_paid = ytd_paid.saturating_add(act.amount_minor);
-        let ch = act
-            .security_id
-            .and_then(|sid| chars.iter().find(|c| c.security_id == sid));
+        let ch = characteristic_for_listed(act.security_id, &securities, &chars);
+        if ch.map(|c| c.needs_roc_research).unwrap_or(false) {
+            needs_research = true;
+        }
+        if ch.and_then(|c| c.roc_pct_2026_actual_minor).is_none() {
+            any_paid_missing_actual = true;
+        }
         let estimate = ch.and_then(|c| c.roc_pct_2026_estimate_minor);
+        if estimate.is_some() {
+            paid_with_estimate += 1;
+        } else {
+            paid_missing_estimate += 1;
+            if let Some(sym) = listed_symbol_for_reason(act.security_id, &securities) {
+                if !paid_missing_symbols.iter().any(|s| s == &sym) {
+                    paid_missing_symbols.push(sym);
+                }
+            }
+        }
         let pct_scale = ch
             .and_then(|c| c.roc_scale)
             .unwrap_or(financial_domain::roc::ROC_PCT_SCALE);
@@ -6419,6 +6700,27 @@ async fn car_roc_plan_view(
         ytd_ordinary = financial_domain::roc::sum_known(ytd_ordinary, split.ordinary_minor);
         ytd_roc = financial_domain::roc::sum_known(ytd_roc, split.roc_minor);
     }
+    let no_payments = paid_count == 0;
+    let mixed = paid_with_estimate > 0 && paid_missing_estimate > 0;
+    let all_blank = paid_count > 0 && paid_with_estimate == 0;
+    let ytd_roc_unknown_reason = financial_domain::roc::first_ytd_roc_unknown_reason(
+        no_payments,
+        all_blank,
+        needs_research && paid_count > 0,
+        paid_count > 0 && any_paid_missing_actual && ytd_roc.is_none() && !all_blank && !mixed,
+        mixed,
+        &paid_missing_symbols,
+    );
+    if ytd_roc_unknown_reason.is_some() {
+        ytd_roc = None;
+        if no_payments {
+            ytd_ordinary = None;
+        }
+    }
+    let ytd_roc_pct = match (ytd_roc, ytd_paid > 0) {
+        (Some(roc), true) => Some(roc.saturating_mul(10_000) / ytd_paid),
+        _ => None,
+    };
 
     let assignments = canonical
         .lot_assignment_list()
@@ -6473,6 +6775,8 @@ async fn car_roc_plan_view(
         ytd_paid_minor: ytd_paid,
         ytd_ordinary_minor: ytd_ordinary,
         ytd_roc_minor: ytd_roc,
+        ytd_roc_pct,
+        ytd_roc_unknown_reason,
         ytd_long_term_gain_minor: long_term,
         ytd_short_term_gain_minor: short_term,
         lot_sale_pl_minor,
@@ -8254,6 +8558,12 @@ pub async fn execute_query_on(
             None => query_err(&request, "missing_account_id"),
         },
         "AccountList" => map_q(&request, canonical.account_list().await),
+        "ExternalRegisterGet" => map_q(
+            &request,
+            canonical
+                .external_register_get(jstr(&json, "search"))
+                .await,
+        ),
         "SecurityGet" => match juuid(&json, "securityId") {
             Some(id) => map_q(&request, canonical.security_get(id).await),
             None => query_err(&request, "missing_security_id"),
@@ -8286,6 +8596,77 @@ pub async fn execute_query_on(
                 crate::cash_management::cash_management_week(canonical, &as_of).await,
             )
         }
+        "WeekAheadGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            map_q(
+                &request,
+                crate::week_ahead::week_ahead_get(canonical, &as_of).await,
+            )
+        }
+        "CashRegisterGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            let account = jstr(&json, "account").unwrap_or_else(|| "Income".into());
+            let period = jstr(&json, "period").unwrap_or_else(|| "1M".into());
+            let include_unconfirmed = jbool(&json, "includeUnconfirmedPast", false);
+            let window_start = jstr(&json, "periodStart");
+            let window_end = jstr(&json, "periodEnd");
+            let hits_only = jbool(&json, "hitsOnly", false);
+            map_q(
+                &request,
+                crate::cash_register::cash_register_get(
+                    canonical,
+                    &account,
+                    &period,
+                    &as_of,
+                    include_unconfirmed,
+                    window_start.as_deref(),
+                    window_end.as_deref(),
+                    hits_only,
+                )
+                .await,
+            )
+        }
+        "CashElementListGet" => {
+            let account = jstr(&json, "account").unwrap_or_else(|| "Income".into());
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            map_q(
+                &request,
+                crate::cash_register::cash_element_list_get(canonical, &account, &as_of).await,
+            )
+        }
+        "CashElementHistoryGet" => match juuid(&json, "elementId") {
+            Some(element_id) => {
+                let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+                let duration = jstr(&json, "duration").unwrap_or_else(|| "ytd".into());
+                map_q(
+                    &request,
+                    crate::cash_register::cash_element_history_get(
+                        canonical,
+                        element_id,
+                        &duration,
+                        &as_of,
+                    )
+                    .await,
+                )
+            }
+            None => query_err(&request, "missing_element_id"),
+        }
+        "CashYtdGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            let view = jstr(&json, "view").unwrap_or_else(|| "account".into());
+            map_q(
+                &request,
+                crate::cash_ytd::cash_ytd_get(canonical, &as_of, &view).await,
+            )
+        }
+        "CashCoverageGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            let period = jstr(&json, "period").unwrap_or_else(|| "week".into());
+            map_q(
+                &request,
+                crate::cash_coverage::cash_coverage_get(canonical, &as_of, &period).await,
+            )
+        }
         "CashManagementRemindersGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
             map_q(
@@ -8296,6 +8677,17 @@ pub async fn execute_query_on(
         "CarRocPlanGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
             map_q(&request, car_roc_plan_view(canonical, &as_of).await)
+        }
+        "TaxPlanningGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            let car = car_roc_plan_view(canonical, &as_of).await;
+            match car {
+                Ok(plan) => map_q(
+                    &request,
+                    crate::tax_planning::tax_planning_get(canonical, &as_of, &plan).await,
+                ),
+                Err(e) => map_q::<TaxPlanningBody>(&request, Err(e)),
+            }
         }
         "CashManagementMonthGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
@@ -8550,12 +8942,9 @@ pub async fn execute_query_on(
             let requested = jstr(&json, "asOfDate").filter(|s| !s.trim().is_empty());
             match crate::trends_app::resolve_capture_as_of(canonical, requested.as_deref()).await {
                 Ok(as_of) => {
-                    let income = week_aligned_income_minor(canonical, &as_of)
-                        .await
-                        .unwrap_or(0);
                     map_q(
                         &request,
-                        crate::trends_app::trends_week_capture_view(canonical, &as_of, income)
+                        crate::trends_app::trends_week_capture_view(canonical, &as_of, 0)
                             .await,
                     )
                 }
@@ -8589,6 +8978,13 @@ pub async fn execute_query_on(
             map_q(
                 &request,
                 crate::dividend_plan::dividend_plan_home_view(canonical, &as_of).await,
+            )
+        }
+        "HomeOpenGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_local_iso);
+            map_q(
+                &request,
+                crate::dividend_plan::home_open_bundle(canonical, &as_of).await,
             )
         }
         "PositionMasterGet" => map_q(&request, position_master_view(canonical).await),
@@ -8661,6 +9057,13 @@ pub async fn execute_query_on(
             None => query_err(&request, "missing_run_id"),
         },
         "AnalysisRunList" => map_q(&request, canonical.analysis_run_list().await),
+        "PlanHorizonGet" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            map_q(
+                &request,
+                crate::plan_horizon::plan_horizon_preview(canonical, &as_of).await,
+            )
+        }
         _ => query_err(&request, "unknown_query"),
     }
 }
@@ -8831,6 +9234,151 @@ pub async fn execute_command_on(
                 .await,
             ),
             None => command_err(&request, "missing_account_id"),
+        },
+        "WeekAheadConfirm" => match juuid(&json, "occurrenceId") {
+            Some(id) => map_c(
+                &request,
+                crate::week_ahead::week_ahead_confirm(canonical, id).await,
+            ),
+            None => command_err(&request, "missing_occurrence_id"),
+        },
+        "WeekAheadEdit" => match juuid(&json, "occurrenceId") {
+            Some(id) => map_c(
+                &request,
+                crate::week_ahead::week_ahead_edit(
+                    canonical,
+                    id,
+                    jstr(&json, "occurredOn"),
+                    ji64(&json, "amountMinor"),
+                )
+                .await,
+            ),
+            None => command_err(&request, "missing_occurrence_id"),
+        },
+        "WeekAheadDefer" => match juuid(&json, "occurrenceId") {
+            Some(id) => map_c(
+                &request,
+                crate::week_ahead::week_ahead_defer(canonical, id).await,
+            ),
+            None => command_err(&request, "missing_occurrence_id"),
+        },
+        "CashElementSave" => {
+            let account = jstr(&json, "account").unwrap_or_default();
+            let name = jstr(&json, "name")
+                .or_else(|| jstr(&json, "note"))
+                .unwrap_or_default();
+            let kind = jstr(&json, "kind")
+                .or_else(|| jstr(&json, "type"))
+                .unwrap_or_default();
+            let cadence = jstr(&json, "cadence")
+                .or_else(|| jstr(&json, "frequency"))
+                .unwrap_or_default();
+            let day = jstr(&json, "weekdayOrMonthDay").unwrap_or_default();
+            let start_on = jstr(&json, "startOn").unwrap_or_default();
+            let stop_on = jstr(&json, "stopOn").unwrap_or_default();
+            let amount = ji64(&json, "amountMinor").unwrap_or(0);
+            let element_id = juuid(&json, "elementId");
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            let occs: Vec<(Option<Uuid>, String, i64)> = json
+                .get("occurrences")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|o| {
+                            let on = jstr(o, "occurredOn")?;
+                            let amt = ji64(o, "amountMinor")?;
+                            Some((juuid(o, "occurrenceId"), on, amt))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            map_c(
+                &request,
+                crate::cash_register::cash_element_save(
+                    canonical,
+                    &account,
+                    &name,
+                    &kind,
+                    &cadence,
+                    &day,
+                    amount,
+                    element_id,
+                    &occs,
+                    &as_of,
+                    &start_on,
+                    &stop_on,
+                )
+                .await,
+            )
+        }
+        "CashElementDelete" => match juuid(&json, "elementId") {
+            Some(id) => map_c(
+                &request,
+                crate::cash_register::cash_element_delete(canonical, id).await,
+            ),
+            None => command_err(&request, "missing_element_id"),
+        },
+        "PlannedOccurrenceSave" => match juuid(&json, "elementId") {
+            Some(element_id) => {
+                let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+                let cancel = json
+                    .get("cancel")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let source = juuid(&json, "occurrenceId")
+                    .or_else(|| juuid(&json, "sourceOccurrenceId"));
+                if let Some(source_id) = source {
+                    if cancel || jstr(&json, "occurredOn").is_some() {
+                        map_c(
+                            &request,
+                            crate::cash_register::planned_occurrence_edit(
+                                canonical,
+                                element_id,
+                                source_id,
+                                &as_of,
+                                cancel,
+                                jstr(&json, "occurredOn").as_deref(),
+                                ji64(&json, "amountMinor"),
+                            )
+                            .await,
+                        )
+                    } else {
+                        command_err(&request, "missing_occurred_on")
+                    }
+                } else {
+                    let occs: Vec<(Option<Uuid>, String, i64)> = json
+                        .get("occurrences")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|o| {
+                                    let on = jstr(o, "occurredOn")?;
+                                    let amt = ji64(o, "amountMinor")?;
+                                    Some((juuid(o, "occurrenceId"), on, amt))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    map_c(
+                        &request,
+                        crate::cash_register::planned_occurrence_save(
+                            canonical,
+                            element_id,
+                            &occs,
+                            &as_of,
+                        )
+                        .await,
+                    )
+                }
+            }
+            None => command_err(&request, "missing_element_id"),
+        },
+        "PlannedOccurrenceDelete" => match juuid(&json, "occurrenceId") {
+            Some(id) => map_c(
+                &request,
+                crate::cash_register::planned_occurrence_delete(canonical, id).await,
+            ),
+            None => command_err(&request, "missing_occurrence_id"),
         },
         "SsaConfirm" => match juuid(&json, "accountId") {
             Some(account_id) => map_c(
@@ -9631,6 +10179,48 @@ pub async fn execute_command_on(
         },
         "CartScenarioDuplicate" => match juuid(&json, "scenarioId") {
             Some(id) => map_c(&request, crate::cart::duplicate(canonical, id).await),
+            None => command_err(&request, "missing_scenario_id"),
+        },
+        "CartSellLineRemove" => match (juuid(&json, "scenarioId"), juuid(&json, "lineId")) {
+            (Some(scenario_id), Some(line_id)) => map_c(
+                &request,
+                crate::cart::sell_line_remove(canonical, scenario_id, line_id).await,
+            ),
+            _ => command_err(&request, "missing_scenario_or_line"),
+        },
+        "CartSellSymbolClear" => match juuid(&json, "scenarioId") {
+            Some(id) => map_c(
+                &request,
+                crate::cart::sell_symbol_clear(
+                    canonical,
+                    id,
+                    jstr(&json, "symbol").unwrap_or_default(),
+                )
+                .await,
+            ),
+            None => command_err(&request, "missing_scenario_id"),
+        },
+        "CartBuyLineRemove" => match (juuid(&json, "scenarioId"), juuid(&json, "lineId")) {
+            (Some(scenario_id), Some(line_id)) => map_c(
+                &request,
+                crate::cart::buy_line_remove(canonical, scenario_id, line_id).await,
+            ),
+            _ => command_err(&request, "missing_scenario_or_line"),
+        },
+        "CartScenarioSlotAdd" => match juuid(&json, "scenarioId") {
+            Some(id) => map_c(&request, crate::cart::scenario_slot_add(canonical, id).await),
+            None => command_err(&request, "missing_scenario_id"),
+        },
+        "CartPlanDepositSet" => match juuid(&json, "scenarioId") {
+            Some(id) => map_c(
+                &request,
+                crate::cart::plan_deposit_set(
+                    canonical,
+                    id,
+                    ji64(&json, "depositMinor").unwrap_or(0),
+                )
+                .await,
+            ),
             None => command_err(&request, "missing_scenario_id"),
         },
         "BacktestRun" => map_c(
@@ -11207,6 +11797,9 @@ pub async fn execute_command_on(
                     }
                     let period = jstr(decl, "paymentPeriod").unwrap_or_default();
                     if !financial_domain::mlp_sec::is_adapter_kind(&declaration_source)
+                        && !financial_domain::div1::is_registered_declaration_source(
+                            &declaration_source,
+                        )
                         && financial_domain::schedule::unoccurred_declaration_is_placeholder(
                             &period,
                             amount.unwrap_or(0),
@@ -11291,7 +11884,7 @@ pub async fn execute_command_on(
                     }
                 }
 
-                let pay_dates = if seed_blocked {
+                let mut pay_dates = if seed_blocked {
                     Vec::new()
                 } else {
                     json
@@ -11301,6 +11894,9 @@ pub async fn execute_command_on(
                         .cloned()
                         .unwrap_or_default()
                 };
+                if pay_dates.is_empty() && !declarations.is_empty() {
+                    pay_dates = declarations.clone();
+                }
                 let _ = canonical.issuer_pay_date_dedupe(security_id).await;
                 if financial_domain::mlp_sec::is_adapter_kind(&declaration_source) {
                     let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
@@ -11707,6 +12303,44 @@ pub async fn execute_command_on(
             }
             None => command_err(&request, "missing_security_id"),
         },
+        "PlanHorizonAssumeNextYear" => {
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            map_c(
+                &request,
+                crate::plan_horizon::plan_horizon_assume(canonical, &as_of).await,
+            )
+        }
+        "ExternalRegisterSave" => match crate::external_register::lines_from_json(&json) {
+            Ok(lines) => map_c(&request, canonical.external_register_save(lines).await),
+            Err(err) => command_err(&request, &err.code),
+        },
+        "ExternalRegisterTrueUp" => match crate::external_register::true_up_from_json(&json) {
+            Ok((line_ids, true_up_on)) => map_c(
+                &request,
+                canonical
+                    .external_register_true_up(line_ids, true_up_on)
+                    .await,
+            ),
+            Err(err) => command_err(&request, &err.code),
+        },
+        "ExternalRegisterMarkStep" => match crate::external_register::mark_step_from_json(&json) {
+            Ok((line_ids, step)) => map_c(
+                &request,
+                canonical.external_register_mark_step(line_ids, step).await,
+            ),
+            Err(err) => command_err(&request, &err.code),
+        },
+        "ExternalRegisterImport" => {
+            let path = jstr(&json, "path").unwrap_or_default();
+            if path.is_empty() {
+                command_err(&request, "missing_path")
+            } else {
+                map_c(
+                    &request,
+                    canonical.external_register_import(path).await,
+                )
+            }
+        }
         _ => command_err(&request, "not_implemented"),
     }
 }
@@ -11825,10 +12459,12 @@ mod tests {
         match crate::last_price_window::last_price_auto_window_now() {
             Ok(()) => {
                 assert!(body.allowed);
+                assert!(body.in_schedule);
                 assert!(body.skip_reason.is_none());
             }
             Err(skip) => {
                 assert!(!body.allowed);
+                assert!(!body.in_schedule);
                 assert_eq!(body.skip_reason.as_deref(), Some(skip.reason()));
             }
         }

@@ -173,6 +173,10 @@ async fn trends_suggested_profit_from_dividend_activity() {
         capture["suggestedMonthlyDivsMinor"], 25000,
         "week-aligned income is the paid dividend in that Sat–Fri week"
     );
+    assert_eq!(
+        capture["reportedWeeklyIncomeMinor"], 25000,
+        "reported weekly income is the paid dividend in that Sat–Fri week"
+    );
 }
 
 #[tokio::test]

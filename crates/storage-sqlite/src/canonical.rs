@@ -4,6 +4,7 @@ use std::fs;
 
 use application_core::contracts::{
     AccountRecord, ActivityRecord, AuditRecord, BasisGetBody, BrokerLotReconcileBody,
+    CashElementRecord, PlannedOccurrenceRecord,
     CanonicalWeekBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
     ExceptionRecord, HoldingQtyEventRecord, ImportBatchRecord, ImportCandidate, IncomePlanBody,
     LotAssignmentRecord,
@@ -13,7 +14,8 @@ use application_core::contracts::{
     PlanHistoryRecord, PositionCharacteristicRecord, PositionDetailsBody, PositionLineBody,
     TaxProjectionBody, BacktestPeriodRecord, PositionBacktestResultBody,
     RocResearchObservation, RemainingPaymentDateOverride, ExpectedPaymentPattern,
-    PositionTaxProfile, IssuerPayDateRecord, AccountBalanceSnapshotRecord, TrendsWeekSourceRecord,
+    PositionTaxProfile, AssumedPayDateRecord, IssuerPayDateRecord, AccountBalanceSnapshotRecord,
+    TrendsWeekSourceRecord,
     AccountMarketValueDailyRecord, WorkTicketRecord, CollectorFieldDecisionRecord,
 };
 use application_core::ports::canonical::Canonical;
@@ -286,6 +288,50 @@ fn holding_qty_event_from_row(
             .try_get::<i64, _>("quantity_scale")
             .map_err(|e| map_err(e.into()))? as u8,
         kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+    })
+}
+
+fn cash_element_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<CashElementRecord, PlatformError> {
+    let parse = |col: &str| -> Result<Uuid, PlatformError> {
+        Uuid::parse_str(&row.try_get::<String, _>(col).map_err(|e| map_err(e.into()))?)
+            .map_err(|e| PlatformError::new("parse_error", e.to_string()))
+    };
+    Ok(CashElementRecord {
+        element_id: parse("element_id")?,
+        account: row.try_get("account").map_err(|e| map_err(e.into()))?,
+        kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+        cadence: row.try_get("cadence").map_err(|e| map_err(e.into()))?,
+        amount_minor: row.try_get("amount_minor").map_err(|e| map_err(e.into()))?,
+        note: row.try_get("note").map_err(|e| map_err(e.into()))?,
+        weekday_or_month_day: row
+            .try_get("weekday_or_month_day")
+            .map_err(|e| map_err(e.into()))?,
+        start_on: row.try_get("start_on").unwrap_or_default(),
+        stop_on: row.try_get("stop_on").unwrap_or_default(),
+    })
+}
+
+fn planned_occurrence_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<PlannedOccurrenceRecord, PlatformError> {
+    let parse = |col: &str| -> Result<Uuid, PlatformError> {
+        Uuid::parse_str(&row.try_get::<String, _>(col).map_err(|e| map_err(e.into()))?)
+            .map_err(|e| PlatformError::new("parse_error", e.to_string()))
+    };
+    let confirmed: Option<String> = row.try_get("confirmed_at").map_err(|e| map_err(e.into()))?;
+    Ok(PlannedOccurrenceRecord {
+        occurrence_id: parse("occurrence_id")?,
+        element_id: parse("element_id")?,
+        account: row.try_get("account").map_err(|e| map_err(e.into()))?,
+        kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+        occurred_on: row.try_get("occurred_on").map_err(|e| map_err(e.into()))?,
+        amount_minor: row.try_get("amount_minor").map_err(|e| map_err(e.into()))?,
+        confirmed_at: confirmed.filter(|s| !s.is_empty()),
+        note: row.try_get("note").map_err(|e| map_err(e.into()))?,
+        is_exception: row.try_get::<i64, _>("is_exception").unwrap_or(0) != 0,
+        is_cancelled: row.try_get::<i64, _>("is_cancelled").unwrap_or(0) != 0,
     })
 }
 
@@ -1250,6 +1296,48 @@ impl Canonical for LocalPlatform {
         rows.iter().map(activity_from_row).collect()
     }
 
+    async fn activity_list_in_range(
+        &self,
+        account_id: Option<Uuid>,
+        start: &str,
+        end: &str,
+    ) -> Result<Vec<ActivityRecord>, PlatformError> {
+        if start > end {
+            return Ok(Vec::new());
+        }
+        let pool = self.pool.read().await;
+        let sql = if account_id.is_some() {
+            "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
+                    occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
+                    COALESCE(federal_withholding_minor, 0) AS federal_withholding_minor,
+                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor,
+                    COALESCE(note, '') AS note
+             FROM activity_event
+             WHERE account_id = ? AND occurred_on >= ? AND occurred_on <= ?
+             ORDER BY occurred_on, activity_id"
+        } else {
+            "SELECT activity_id, account_id, security_id, activity_type, amount_minor, scale,
+                    occurred_on, corrects_activity_id, import_batch_id, idempotency_key,
+                    COALESCE(federal_withholding_minor, 0) AS federal_withholding_minor,
+                    COALESCE(state_withholding_minor, 0) AS state_withholding_minor,
+                    COALESCE(note, '') AS note
+             FROM activity_event
+             WHERE occurred_on >= ? AND occurred_on <= ?
+             ORDER BY occurred_on, activity_id"
+        };
+        let mut q = sqlx::query(sql);
+        if let Some(id) = account_id {
+            q = q.bind(id.to_string());
+        }
+        let rows = q
+            .bind(start)
+            .bind(end)
+            .fetch_all(&*pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+        rows.iter().map(activity_from_row).collect()
+    }
+
     async fn activity_reassign_security(
         &self,
         activity_id: Uuid,
@@ -1638,6 +1726,66 @@ impl Canonical for LocalPlatform {
         })
     }
 
+    async fn dividend_list_in_range(
+        &self,
+        account_id: Option<Uuid>,
+        start: &str,
+        end: &str,
+    ) -> Result<Vec<DividendActual>, PlatformError> {
+        if start > end {
+            return Ok(Vec::new());
+        }
+        let pool = self.pool.read().await;
+        let sql = if account_id.is_some() {
+            "SELECT actual_id, account_id, security_id, occurred_on, amount_minor, scale, activity_id
+             FROM dividend_actual
+             WHERE account_id = ? AND occurred_on >= ? AND occurred_on <= ?
+             ORDER BY occurred_on, actual_id"
+        } else {
+            "SELECT actual_id, account_id, security_id, occurred_on, amount_minor, scale, activity_id
+             FROM dividend_actual
+             WHERE occurred_on >= ? AND occurred_on <= ?
+             ORDER BY occurred_on, actual_id"
+        };
+        let mut q = sqlx::query(sql);
+        if let Some(id) = account_id {
+            q = q.bind(id.to_string());
+        }
+        let actual_rows = q
+            .bind(start)
+            .bind(end)
+            .fetch_all(&*pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+        actual_rows
+            .iter()
+            .map(|row| {
+                let parse = |col: &str| -> Result<Uuid, PlatformError> {
+                    Uuid::parse_str(&row.try_get::<String, _>(col).map_err(|e| map_err(e.into()))?)
+                        .map_err(|e| PlatformError::new("parse_error", e.to_string()))
+                };
+                let opt_uuid = |col: &str| -> Result<Option<Uuid>, PlatformError> {
+                    let v: Option<String> = row.try_get(col).map_err(|e| map_err(e.into()))?;
+                    v.map(|s| {
+                        Uuid::parse_str(&s)
+                            .map_err(|e| PlatformError::new("parse_error", e.to_string()))
+                    })
+                    .transpose()
+                };
+                Ok(DividendActual {
+                    actual_id: parse("actual_id")?,
+                    account_id: parse("account_id")?,
+                    security_id: opt_uuid("security_id")?,
+                    occurred_on: row.try_get("occurred_on").map_err(|e| map_err(e.into()))?,
+                    amount_minor: row.try_get("amount_minor").map_err(|e| map_err(e.into()))?,
+                    scale: row.try_get::<i64, _>("scale").map_err(|e| map_err(e.into()))? as u8,
+                    activity_id: opt_uuid("activity_id")?,
+                    already_posted: false,
+                })
+            })
+            .collect()
+    }
+
     async fn income_plan_update(
         &self,
         planned_minor: i64,
@@ -1969,6 +2117,186 @@ impl Canonical for LocalPlatform {
         rows.iter().map(holding_qty_event_from_row).collect()
     }
 
+    async fn cash_element_upsert(
+        &self,
+        record: CashElementRecord,
+    ) -> Result<CashElementRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        sqlx::query(
+            "INSERT INTO cash_element (
+                element_id, account, kind, cadence, amount_minor, note,
+                weekday_or_month_day, start_on, stop_on
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(element_id) DO UPDATE SET
+                account = excluded.account,
+                kind = excluded.kind,
+                cadence = excluded.cadence,
+                amount_minor = excluded.amount_minor,
+                note = excluded.note,
+                weekday_or_month_day = excluded.weekday_or_month_day,
+                start_on = excluded.start_on,
+                stop_on = excluded.stop_on",
+        )
+        .bind(record.element_id.to_string())
+        .bind(&record.account)
+        .bind(&record.kind)
+        .bind(&record.cadence)
+        .bind(record.amount_minor)
+        .bind(&record.note)
+        .bind(&record.weekday_or_month_day)
+        .bind(&record.start_on)
+        .bind(&record.stop_on)
+        .execute(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        audit(&pool, "CashElement", "cash_element", &record.element_id.to_string()).await?;
+        Ok(record)
+    }
+
+    async fn cash_element_list(&self) -> Result<Vec<CashElementRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        let rows = sqlx::query(
+            "SELECT element_id, account, kind, cadence, amount_minor, note,
+                    weekday_or_month_day, start_on, stop_on
+             FROM cash_element
+             ORDER BY account, note",
+        )
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        rows.iter().map(cash_element_from_row).collect()
+    }
+
+    async fn planned_occurrence_upsert(
+        &self,
+        record: PlannedOccurrenceRecord,
+    ) -> Result<PlannedOccurrenceRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        let existing_id = sqlx::query_scalar::<_, String>(
+            "SELECT occurrence_id FROM planned_occurrence
+             WHERE element_id = ? AND occurred_on = ?",
+        )
+        .bind(record.element_id.to_string())
+        .bind(&record.occurred_on)
+        .fetch_optional(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        let mut record = record;
+        if let Some(id) = existing_id {
+            record.occurrence_id = Uuid::parse_str(&id)
+                .map_err(|e| PlatformError::new("parse_error", e.to_string()))?;
+        }
+        sqlx::query(
+            "INSERT INTO planned_occurrence (
+                occurrence_id, element_id, account, kind, occurred_on,
+                amount_minor, confirmed_at, note, is_exception, is_cancelled
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(occurrence_id) DO UPDATE SET
+                element_id = excluded.element_id,
+                account = excluded.account,
+                kind = excluded.kind,
+                occurred_on = excluded.occurred_on,
+                amount_minor = excluded.amount_minor,
+                confirmed_at = excluded.confirmed_at,
+                note = excluded.note,
+                is_exception = excluded.is_exception,
+                is_cancelled = excluded.is_cancelled",
+        )
+        .bind(record.occurrence_id.to_string())
+        .bind(record.element_id.to_string())
+        .bind(&record.account)
+        .bind(&record.kind)
+        .bind(&record.occurred_on)
+        .bind(record.amount_minor)
+        .bind(record.confirmed_at.as_deref())
+        .bind(&record.note)
+        .bind(if record.is_exception { 1 } else { 0 })
+        .bind(if record.is_cancelled { 1 } else { 0 })
+        .execute(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        audit(
+            &pool,
+            "PlannedOccurrence",
+            "planned_occurrence",
+            &record.occurrence_id.to_string(),
+        )
+        .await?;
+        Ok(record)
+    }
+
+    async fn planned_occurrence_list(&self) -> Result<Vec<PlannedOccurrenceRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        let rows = sqlx::query(
+            "SELECT occurrence_id, element_id, account, kind, occurred_on,
+                    amount_minor, confirmed_at, note, is_exception, is_cancelled
+             FROM planned_occurrence
+             ORDER BY occurred_on, account, note",
+        )
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        rows.iter().map(planned_occurrence_from_row).collect()
+    }
+
+    async fn planned_occurrence_get(
+        &self,
+        occurrence_id: Uuid,
+    ) -> Result<PlannedOccurrenceRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        let row = sqlx::query(
+            "SELECT occurrence_id, element_id, account, kind, occurred_on,
+                    amount_minor, confirmed_at, note, is_exception, is_cancelled
+             FROM planned_occurrence
+             WHERE occurrence_id = ?",
+        )
+        .bind(occurrence_id.to_string())
+        .fetch_optional(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?
+        .ok_or_else(|| PlatformError::new("not_found", "planned occurrence not found"))?;
+        planned_occurrence_from_row(&row)
+    }
+
+    async fn planned_occurrence_delete(&self, occurrence_id: Uuid) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        let result = sqlx::query("DELETE FROM planned_occurrence WHERE occurrence_id = ?")
+            .bind(occurrence_id.to_string())
+            .execute(&*pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::new("not_found", "planned occurrence not found"));
+        }
+        audit(
+            &pool,
+            "PlannedOccurrenceDelete",
+            "planned_occurrence",
+            &occurrence_id.to_string(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn cash_element_delete(&self, element_id: Uuid) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        sqlx::query("DELETE FROM planned_occurrence WHERE element_id = ?")
+            .bind(element_id.to_string())
+            .execute(&*pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+        let result = sqlx::query("DELETE FROM cash_element WHERE element_id = ?")
+            .bind(element_id.to_string())
+            .execute(&*pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::new("not_found", "cash element not found"));
+        }
+        audit(&pool, "CashElementDelete", "cash_element", &element_id.to_string()).await?;
+        Ok(())
+    }
+
     async fn lot_qty_add(
         &self,
         lot_id: Uuid,
@@ -2000,6 +2328,35 @@ impl Canonical for LocalPlatform {
         .await
         .map_err(|e| map_err(e.into()))?;
         audit(&pool, "LotQtyAdd", "lot", &lot.lot_id.to_string()).await?;
+        drop(pool);
+        self.lot_get(lot_id).await
+    }
+
+    async fn lot_cash_set(
+        &self,
+        lot_id: Uuid,
+        remaining_qty_minor: i64,
+        remaining_basis_minor: i64,
+    ) -> Result<LotRecord, PlatformError> {
+        if remaining_qty_minor < 0 || remaining_basis_minor < 0 {
+            return Err(PlatformError::new("invalid_qty", "cash lot total cannot be negative"));
+        }
+        let lot = self.lot_get(lot_id).await?;
+        let pool = self.pool.read().await;
+        sqlx::query(
+            "UPDATE lot SET remaining_quantity_minor = ?,
+                remaining_performance_minor = ?,
+                remaining_tax_minor = ?
+             WHERE lot_id = ?",
+        )
+        .bind(remaining_qty_minor)
+        .bind(remaining_basis_minor)
+        .bind(remaining_basis_minor)
+        .bind(lot_id.to_string())
+        .execute(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        audit(&pool, "LotCashSet", "lot", &lot.lot_id.to_string()).await?;
         drop(pool);
         self.lot_get(lot_id).await
     }
@@ -2399,6 +2756,31 @@ impl Canonical for LocalPlatform {
         crate::issuer_pay::pay_date_dedupe(&*pool, security_id).await
     }
 
+    async fn assumed_pay_date_list(
+        &self,
+        security_id: Uuid,
+    ) -> Result<Vec<AssumedPayDateRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::assumed_pay::list(&*pool, security_id).await
+    }
+
+    async fn assumed_pay_date_insert(
+        &self,
+        record: AssumedPayDateRecord,
+    ) -> Result<AssumedPayDateRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::assumed_pay::insert(&*pool, record).await
+    }
+
+    async fn assumed_pay_date_prune_for_vendor(
+        &self,
+        security_id: Uuid,
+        vendor_pay_on: String,
+    ) -> Result<u64, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::assumed_pay::prune_for_vendor(&*pool, security_id, &vendor_pay_on).await
+    }
+
     async fn price_quote_record(
         &self,
         security_id: Uuid,
@@ -2778,6 +3160,50 @@ impl Canonical for LocalPlatform {
         crate::cart::scenario_discard(&*pool, scenario_id).await
     }
 
+    async fn cart_sell_line_remove(
+        &self,
+        scenario_id: Uuid,
+        line_id: Uuid,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::sell_line_remove(&*pool, scenario_id, line_id).await
+    }
+
+    async fn cart_sell_symbol_clear(
+        &self,
+        scenario_id: Uuid,
+        symbol: String,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::sell_symbol_clear(&*pool, scenario_id, symbol).await
+    }
+
+    async fn cart_buy_line_remove(
+        &self,
+        scenario_id: Uuid,
+        line_id: Uuid,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::buy_line_remove(&*pool, scenario_id, line_id).await
+    }
+
+    async fn cart_scenario_slot_add(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::scenario_slot_add(&*pool, scenario_id).await
+    }
+
+    async fn cart_plan_deposit_set(
+        &self,
+        scenario_id: Uuid,
+        deposit_minor: i64,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::plan_deposit_set(&*pool, scenario_id, deposit_minor).await
+    }
+
     async fn backtest_run(
         &self,
         scenario: String,
@@ -3145,6 +3571,48 @@ impl Canonical for LocalPlatform {
             applicable_threshold: magi.applicable_threshold,
             data_completeness: magi.data_completeness,
         })
+    }
+
+    async fn external_register_get(
+        &self,
+        search: Option<String>,
+    ) -> Result<application_core::contracts::ExternalRegisterGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_register::get(&pool, search).await
+    }
+
+    async fn external_register_save(
+        &self,
+        lines: Vec<application_core::contracts::ExternalRegisterLine>,
+    ) -> Result<application_core::contracts::ExternalRegisterGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_register::save(&pool, lines).await
+    }
+
+    async fn external_register_true_up(
+        &self,
+        line_ids: Vec<Uuid>,
+        true_up_on: Option<String>,
+    ) -> Result<application_core::contracts::ExternalRegisterGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_register::true_up(&pool, line_ids, true_up_on).await
+    }
+
+    async fn external_register_mark_step(
+        &self,
+        line_ids: Vec<Uuid>,
+        step: String,
+    ) -> Result<application_core::contracts::ExternalRegisterGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_register::mark_step(&pool, line_ids, &step).await
+    }
+
+    async fn external_register_import(
+        &self,
+        path: String,
+    ) -> Result<application_core::contracts::ExternalRegisterGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_register::import_workbook(&pool, std::path::Path::new(&path)).await
     }
 }
 

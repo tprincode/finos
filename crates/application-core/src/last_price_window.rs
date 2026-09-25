@@ -1,6 +1,7 @@
-//! Auto last-price fetch window: weekdays 09:00–16:00 America/New_York,
-//! skipped when the last price retrieve_run is under four hours old
+//! Shared auto schedule: weekdays 09:00–16:00 America/New_York.
+//! Last price also skips when the last price retrieve_run is under four hours
 //! (ok, fail, or started — Restart must not start another auto fetch).
+//! Collectors use the same clock and run once per local date (not the 4-hour gate).
 
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, TimeZone, Timelike, Weekday};
 use chrono_tz::America::New_York;
@@ -43,9 +44,23 @@ pub fn parse_run_stamp_et(stamp: &str) -> Option<DateTime<Tz>> {
     New_York.from_local_datetime(&naive).single()
 }
 
+/// Shared auto schedule: weekday 09:00–16:00 America/New_York.
+/// Last price adds a 4-hour cooldown. Collectors add once-per-day.
+pub fn in_auto_schedule(now: DateTime<Tz>) -> Result<(), LastPriceAutoSkip> {
+    match now.weekday() {
+        Weekday::Sat | Weekday::Sun => return Err(LastPriceAutoSkip::Weekend),
+        _ => {}
+    }
+    let minutes = (now.hour() as i32) * 60 + (now.minute() as i32);
+    if minutes < 9 * 60 || minutes >= 16 * 60 {
+        return Err(LastPriceAutoSkip::OutsideHours);
+    }
+    Ok(())
+}
+
 /// Clock-only window (weekend / hours). Pass a retrieve_run stamp for the 4-hour cooldown.
 pub fn last_price_auto_window(now: DateTime<Tz>) -> Result<(), LastPriceAutoSkip> {
-    auto_last_price_allowed(now, None)
+    in_auto_schedule(now)
 }
 
 pub fn last_price_auto_window_now() -> Result<(), LastPriceAutoSkip> {
@@ -61,14 +76,7 @@ pub fn auto_last_price_allowed(
     now: DateTime<Tz>,
     last_ok: Option<DateTime<Tz>>,
 ) -> Result<(), LastPriceAutoSkip> {
-    match now.weekday() {
-        Weekday::Sat | Weekday::Sun => return Err(LastPriceAutoSkip::Weekend),
-        _ => {}
-    }
-    let minutes = (now.hour() as i32) * 60 + (now.minute() as i32);
-    if minutes < 9 * 60 || minutes >= 16 * 60 {
-        return Err(LastPriceAutoSkip::OutsideHours);
-    }
+    in_auto_schedule(now)?;
     if let Some(then) = last_ok {
         if now.signed_duration_since(then) < Duration::hours(LAST_PRICE_FRESH_HOURS) {
             return Err(LastPriceAutoSkip::FreshUnderFourHours);
@@ -151,6 +159,23 @@ mod tests {
     #[test]
     fn monday_nine_with_no_prior_run_allows() {
         assert_eq!(auto_last_price_allowed(et(2026, 9, 14, 9, 0), None), Ok(()));
+    }
+
+    #[test]
+    fn collectors_share_clock_not_four_hour() {
+        assert_eq!(in_auto_schedule(et(2026, 9, 14, 10, 0)), Ok(()));
+        assert_eq!(
+            auto_last_price_allowed(et(2026, 9, 14, 10, 0), Some(et(2026, 9, 14, 9, 0))),
+            Err(LastPriceAutoSkip::FreshUnderFourHours)
+        );
+        assert_eq!(
+            in_auto_schedule(et(2026, 9, 12, 10, 0)),
+            Err(LastPriceAutoSkip::Weekend)
+        );
+        assert_eq!(
+            in_auto_schedule(et(2026, 9, 14, 16, 0)),
+            Err(LastPriceAutoSkip::OutsideHours)
+        );
     }
 
     #[test]

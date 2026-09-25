@@ -32,11 +32,34 @@ fn accessibility_primary_actions_have_accessible_names() {
     let cash_management =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/CashManagement.tsx"))
             .expect("CashManagement.tsx");
+    let cash_coverage =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/cash/CashCoverage.tsx"))
+            .expect("CashCoverage.tsx");
     let home_dividend_plan =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/features/home/HomeDividendPlan.tsx"))
             .expect("HomeDividendPlan.tsx");
+    let plan_horizon =
+        std::fs::read_to_string(
+            repo_root().join("apps/desktop/src/features/income-plan/PlanHorizonPrompt.tsx"),
+        )
+        .expect("PlanHorizonPrompt.tsx");
+    let income_plan_screen = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/income-plan/IncomePlanScreen.tsx"),
+    )
+    .expect("IncomePlanScreen.tsx");
+    let home_trend_focus =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/cash/AccountCashFlow.tsx"))
+            .expect("AccountCashFlow.tsx");
+    let collectors_screen = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/collectors/CollectorsScreen.tsx"),
+    )
+    .expect("CollectorsScreen.tsx");
+    let collector_establish = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/collectors/CollectorEstablishScreen.tsx"),
+    )
+    .expect("CollectorEstablishScreen.tsx");
     let sources = format!(
-        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{cash_week_desk}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}\n{home_dividend_plan}"
+        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{cash_week_desk}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}\n{cash_coverage}\n{home_dividend_plan}\n{home_trend_focus}\n{plan_horizon}\n{income_plan_screen}\n{collectors_screen}\n{collector_establish}"
     );
     for name in [
         "aria-label=\"Import wizard\"",
@@ -63,7 +86,6 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Create snapshot\"",
         "aria-label=\"Restore published\"",
         "aria-label=\"Acknowledge review\"",
-        "aria-label=\"Restart Application\"",
         "aria-label=\"Restart in progress\"",
         "aria-label=\"Exit\"",
         "aria-label=\"Import Fidelity or Schwab CSV\"",
@@ -74,6 +96,8 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Post manual dividends\"",
         "aria-label=\"Add manual dividend row\"",
         "aria-label=\"Income Plan\"",
+        "aria-label=\"Next-year plan dates\"",
+        "aria-label=\"Confirm next-year plan dates\"",
         "aria-label=\"Calculator\"",
         "aria-label=\"Distribution history\"",
         "aria-label=\"Payment frequency filter\"",
@@ -135,13 +159,13 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Retrieve declarations for this symbol\"",
         "aria-label=\"Mandatory data checklist\"",
         "aria-label=\"Use Most Current as Plan\"",
-        "aria-label=\"Save new investment facts\"",
+        "aria-label=\"Save Process A research\"",
         "aria-label=\"Save stored facts\"",
         "aria-label=\"Position information\"",
         "aria-label=\"Position risk\"",
         "aria-label=\"Position frequency\"",
         "aria-label=\"Cancel position edits\"",
-        "aria-label=\"Cancel new investment edits\"",
+        "aria-label=\"Research\"",
         "aria-label=\"Cancel add lot edits\"",
         "aria-label=\"Cancel unsaved edits\"",
         "aria-label=\"Open screen with unsaved edits\"",
@@ -206,8 +230,8 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Component registry\"",
         "declaration-refresh-progress",
         "last-price-refresh-progress",
-        "Refreshing ${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}",
-        "Refreshing last prices ${formatCount(lastPriceProgress.current)} of ${formatCount(lastPriceProgress.total)}",
+        "${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}",
+        "${formatCount(lastPriceProgress.current)} of ${formatCount(lastPriceProgress.total)}",
         "aria-label=\"Last price refresh progress\"",
         "aria-label=\"Declaration refresh progress\"",
         "aria-label=\"Refresh last price for this symbol\"",
@@ -257,6 +281,13 @@ fn accessibility_primary_actions_have_accessible_names() {
         "label=\"Filter dashboard\"",
         "aria-label=\"Account values\"",
         "aria-label=\"Dividend Plan\"",
+        "aria-label=\"Account cash flow projection\"",
+        "aria-label=\"Ending plotted cash\"",
+        "aria-label=\"Starting balance for period\"",
+        "aria-label=\"Planned income for period\"",
+        "aria-label=\"Planned withdrawals for period\"",
+        "aria-label=\"Account trend account\"",
+        "aria-label=\"Account trend duration\"",
         "aria-label=\"Account value legend\"",
         "Weekly actuals",
         "aria-label=\"Home graphing period\"",
@@ -304,7 +335,14 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"All distribution accounts\"",
         "aria-label=\"Distribution tax sections\"",
         "aria-label=\"Cash Management tax and ACA monitor\"",
-        "aria-label=\"Cash Management Car ROC plan\"",
+        "aria-label=\"Cash Management Tax Planning\"",
+        "aria-label=\"Tax Planning income\"",
+        "aria-label=\"Tax Planning MAGI\"",
+        "aria-label=\"Cash Management Coverage\"",
+        "aria-label=\"Coverage period\"",
+        "aria-label=\"Coverage plan\"",
+        "aria-label=\"Coverage income math\"",
+        "aria-label=\"Coverage expense math\"",
         "aria-label=\"Portfolio summary\"",
         "aria-label={`Sort by ${label}`}",
     ] {
@@ -348,14 +386,19 @@ fn dividend_weeks_lives_on_income_plan_not_trends_middle() {
         !trends.contains("DividendWeeksPanel"),
         "Plan vs Decl must not sit on the Trends capture page"
     );
-    let income = app
-        .split("{screen === \"income-plan\" ? (")
-        .nth(1)
-        .and_then(|rest| rest.split("{screen === \"calculator\" ? (").next())
-        .unwrap_or("");
+    let income = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/income-plan/IncomePlanScreen.tsx"),
+    )
+    .unwrap();
     assert!(
-        income.contains("DividendWeeksPanel"),
+        income.contains("DividendWeeksPanel")
+            && income.contains("aria-label=\"Income Plan\""),
         "Plan vs Decl belongs at the bottom of Income Plan"
+    );
+    assert!(
+        app.contains("<IncomePlanScreen")
+            && !app.contains("className=\"income-plan-page\""),
+        "Income Plan screen lives in features/income-plan, not App.tsx"
     );
     let charts = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/graphing/TrendsCharts.tsx"),
@@ -395,21 +438,30 @@ fn dividend_weeks_lives_on_income_plan_not_trends_middle() {
         "cash week table must enumerate Sat–Fri gaps through today"
     );
     assert!(
-        cash_desk.contains("weekIncomeMinor"),
-        "Week income must be paid/declared that week, not stored monthly DIVS"
+        cash_desk.contains("plannedWeekIncomeMinor")
+            && cash_desk.contains("reportedWeekIncomeMinor"),
+        "Week income splits planned (Decl $) from reported (paid actuals)"
+    );
+    assert!(
+        cash_desk.contains("Planned weekly income")
+            && cash_desk.contains("Reported weekly income"),
+        "Cash week desk has Planned and Reported weekly income columns"
     );
     assert!(
         !cash_desk.contains("<th className=\"numeric\">Profit</th>")
             && !cash_desk.contains("Profit {"),
-        "Cash week desk keeps one Week income column; seed Profit is not shown"
+        "Cash week desk does not show seed Profit"
     );
     assert!(
         charts.contains("Weekly Decl vs Plan"),
         "Trends must keep the weekly Plan vs Declaration chart"
     );
     assert!(
-        charts.contains("weekIncomeMinor") && charts.contains("aria-label=\"Week income\""),
-        "Weekly Gross must plot Week income, not stored seed Profit"
+        charts.contains("plannedWeekIncomeMinor")
+            && charts.contains("reportedWeekIncomeMinor")
+            && charts.contains("aria-label=\"Planned weekly income\"")
+            && charts.contains("aria-label=\"Reported weekly income\""),
+        "Weekly charts plot Planned and Reported weekly income, not stored seed Profit"
     );
     assert!(
         !charts.contains("key: \"profitMinor\""),
@@ -439,8 +491,10 @@ fn dividend_weeks_lives_on_income_plan_not_trends_middle() {
     )
     .unwrap();
     assert!(
-        !capture.contains("<dt>Profit</dt>"),
-        "week review shows Week income only, not seed Profit"
+        !capture.contains("<dt>Profit</dt>")
+            && capture.contains("<dt>Planned weekly income</dt>")
+            && capture.contains("<dt>Reported weekly income</dt>"),
+        "week review shows Planned and Reported weekly income, not seed Profit"
     );
     assert!(
         capture.contains("onWizardActive"),
@@ -558,6 +612,12 @@ fn g1_g6_slice1b_capture_grid_one_table() {
             && capture.contains("draft[row.totalKey].trim() !== \"\""),
         "blank cash is allowed on input and Accept; only totals are required"
     );
+    assert!(
+        capture.contains("const weekIncome = capture.suggestedMonthlyDivsMinor")
+            && capture.contains("monthlyDivsMinor: weekIncome")
+            && capture.contains("aria-label=\"Accept blocked reason\""),
+        "Accept must send suggestedMonthlyDivsMinor; blocked clicks must say why"
+    );
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
     assert!(
         app.contains("WeekCaptureAccept"),
@@ -566,5 +626,11 @@ fn g1_g6_slice1b_capture_grid_one_table() {
     assert!(
         app.contains("declarationRefreshedOn === summary.declarationAsOf"),
         "DeclarationRefresh on open runs once per local date"
+    );
+    assert!(
+        app.contains("inSchedule === true")
+            && app.contains("refreshDeclarations(true)")
+            && app.contains("force ? { force: true }"),
+        "auto collectors share weekday 9-4; Refresh declarations is force"
     );
 }

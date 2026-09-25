@@ -1,0 +1,29 @@
+---
+description: If a restart or Vite reload is required, the agent does it
+alwaysApply: true
+---
+
+# Restart the app yourself
+
+Do not end a turn with **File → Restart** or **File → Reload** as owner homework. If the change cannot show until the host or Vite reloads, restart in the same turn and wait until the desktop is back.
+
+## When it is required
+
+- **Host restart:** rust, SQL/migrations, native menu, Tauri `lib.rs`, or any command/query the running exe has not loaded.
+- **Vite reload / restart:** new `features/` files, stale webview, or HMR did not pick up the screen. If Reload is not enough, do the host restart.
+
+## How (coding launch)
+
+1. Write `%LOCALAPPDATA%\com.finos.desktop\restart.token` (ISO stamp + a reason line).
+2. Stop `finos-desktop` so repo-root `finos.bat` consumes the token and starts one `finos (dev)` child.
+3. Wait until `finos-desktop` is running and `http://localhost:1420` answers.
+4. Grep `%LOCALAPPDATA%\com.finos.desktop\dev-console.log` for `panicked`, `Failed to setup`, and `npm error`. A live desktop does not clear a migrate panic in that log.
+5. If the parent is missing, start **repo-root `finos.bat` only**.
+
+## Do not
+
+- Start `apps/desktop/start-finos-dev.bat` alone
+- `npm run desktop:build`
+- Start a second copy while one desktop is already up
+- `taskkill` port 1420 unless you are in the restart sequence above (killing Vite without the token leaves the app dead)
+- Leave “reload the Vite screen” as the last sentence

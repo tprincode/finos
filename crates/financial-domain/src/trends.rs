@@ -26,6 +26,7 @@ pub fn is_non_roi_distribution(activity_type: &str) -> bool {
     matches!(
         activity_type,
         "IRA_Distribution" | "Withdrawal" | "Form_1099" | "SSA" | "Roth_Distribution"
+            | "HSA_Withdrawal"
     )
 }
 

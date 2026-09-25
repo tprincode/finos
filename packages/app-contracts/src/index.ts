@@ -552,6 +552,10 @@ export type TrendsWeekPoint = {
   healthBalanceMinor: number | null;
   rothBalanceMinor: number | null;
   speculationBalanceMinor: number | null;
+  carCashMinor?: number | null;
+  healthCashMinor?: number | null;
+  rothCashMinor?: number | null;
+  speculationCashMinor?: number | null;
   fidelityWkChangeMinor?: number;
   schwabWkChangeMinor?: number;
   closed?: boolean;
@@ -568,6 +572,199 @@ export type CashManagementWeekRow = {
   federalWithholdingMinor: number;
   stateWithholdingMinor: number;
   netMinor: number;
+  scale: number;
+};
+
+export type WeekAheadRow = {
+  occurrenceId: string;
+  elementId: string;
+  occurredOn: string;
+  account: string;
+  transaction: string;
+  amountMinor: number;
+  note: string;
+  scale: number;
+};
+
+export type WeekAheadGet = {
+  periodStart: string;
+  periodEnd: string;
+  rows: WeekAheadRow[];
+  scale: number;
+};
+
+export type CashRegisterRow = {
+  occurredOn: string;
+  status: string;
+  transaction: string;
+  depositMinor: number;
+  withdrawalMinor: number;
+  runningMinor: number | null;
+  label: string;
+  posted: boolean;
+  source: string;
+  occurrenceId?: string | null;
+  elementId?: string | null;
+  scale: number;
+};
+
+export type CashRegisterSeriesPoint = {
+  occurredOn: string;
+  netMinor: number;
+  runningMinor: number | null;
+};
+
+export type CashRegisterGet = {
+  account: string;
+  period: string;
+  periodStart: string;
+  periodEnd: string;
+  asOfDate: string;
+  startKnown: boolean;
+  startMinor: number | null;
+  rows: CashRegisterRow[];
+  series: CashRegisterSeriesPoint[];
+  scale: number;
+};
+
+export type CashElementRecord = {
+  elementId: string;
+  account: string;
+  kind: string;
+  cadence: string;
+  amountMinor: number;
+  note: string;
+  weekdayOrMonthDay: string;
+  startOn?: string;
+  stopOn?: string;
+  nextOccurredOn?: string | null;
+  nextAmountMinor?: number | null;
+  exceptionCount?: number;
+  exceptions?: Array<{
+    occurrenceId?: string;
+    occurredOn: string;
+    amountMinor: number;
+    isException?: boolean;
+    isCancelled?: boolean;
+  }>;
+  upcoming?: Array<{
+    occurrenceId?: string;
+    occurredOn: string;
+    amountMinor: number;
+    isException?: boolean;
+    isCancelled?: boolean;
+  }>;
+};
+
+export type CashElementListGet = {
+  account: string;
+  items: CashElementRecord[];
+};
+
+export type CashElementHistoryRow = {
+  occurredOn: string;
+  elementId: string;
+  occurrenceId: string;
+  elementName: string;
+  account: string;
+  kind: string;
+  side: string;
+  amountMinor: number;
+  status: string;
+  cadence: string;
+  activityType: string;
+  postedKey: string;
+  isException: boolean;
+  note: string;
+  scale: number;
+};
+
+export type CashElementHistoryTotals = {
+  actualCount: number;
+  actualDebitMinor: number;
+  actualCreditMinor: number;
+  actualNetMinor: number;
+  plannedCount: number;
+  plannedDebitMinor: number;
+  plannedCreditMinor: number;
+  rowCount: number;
+};
+
+export type CashElementHistoryGet = {
+  elementId: string;
+  elementName: string;
+  account: string;
+  kind: string;
+  cadence: string;
+  amountMinor: number;
+  startOn: string;
+  stopOn: string;
+  retired: boolean;
+  duration: string;
+  periodStart: string;
+  periodEnd: string;
+  asOfDate: string;
+  rows: CashElementHistoryRow[];
+  totals: CashElementHistoryTotals;
+  scale: number;
+};
+
+export type CashYtdRow = {
+  label: string;
+  actualMinor: number;
+  remainingMinor: number | null;
+  eoyMinor: number | null;
+};
+
+export type CashYtdGet = {
+  asOfDate: string;
+  view: string;
+  rows: CashYtdRow[];
+  scale: number;
+};
+
+export type CashCoverageRow = {
+  account: string;
+  planIncomeMinor: number | null;
+  planExpenseMinor: number | null;
+  planMinor: number | null;
+  averageMinor: number | null;
+  actualIncomeMinor: number | null;
+  actualExpenseMinor: number | null;
+  actualMinor: number | null;
+  declaredMinor: number | null;
+  lookbackPlanMinor: number | null;
+  deltaMinor: number | null;
+  varianceBps: number | null;
+};
+
+export type CashCoverageIncomeLine = {
+  account: string;
+  symbol: string;
+  perPeriodMinor: number | null;
+  periods: number | null;
+  yearMinor: number | null;
+};
+
+export type CashCoverageExpenseLine = {
+  account: string;
+  name: string;
+  cadence: string;
+  perPeriodMinor: number;
+  periods: number;
+  yearMinor: number;
+};
+
+export type CashCoverageGet = {
+  asOfDate: string;
+  period: string;
+  periodStart: string;
+  periodEnd: string;
+  lookbackStart: string;
+  lookbackEnd: string;
+  rows: CashCoverageRow[];
+  incomeLines?: CashCoverageIncomeLine[];
+  expenseLines?: CashCoverageExpenseLine[];
   scale: number;
 };
 
@@ -593,6 +790,7 @@ export type CashManagementSsaRecent = {
   occurredOn: string;
   amountMinor: number;
   accountName: string;
+  payee: string;
   extraAudit: boolean;
 };
 
@@ -635,6 +833,33 @@ export type CashManagementMonthRow = {
   scale: number;
 };
 
+export type TaxPlanningRow = {
+  key: string;
+  label: string;
+  ytdMinor: number | null;
+  projectedMinor: number | null;
+  totalMinor: number | null;
+  magiImpact: string;
+};
+
+export type TaxPlanningGroup = {
+  label: string;
+  ytdMinor: number | null;
+  projectedMinor: number | null;
+  totalMinor: number | null;
+};
+
+export type TaxPlanningGet = {
+  asOfDate: string;
+  rows: TaxPlanningRow[];
+  magiIncluded: TaxPlanningGroup;
+  notMagi: TaxPlanningGroup;
+  allSources: TaxPlanningGroup;
+  scale: number;
+  car?: CarRocPlanGet | null;
+  ytd?: CashYtdGet | null;
+};
+
 export type CarRocPlanGet = {
   accountName: string;
   taxYear: string;
@@ -645,6 +870,8 @@ export type CarRocPlanGet = {
   ytdPaidMinor: number;
   ytdOrdinaryMinor: number | null;
   ytdRocMinor: number | null;
+  ytdRocPct?: number | null;
+  ytdRocUnknownReason?: string | null;
   ytdLongTermGainMinor: number | null;
   ytdShortTermGainMinor: number | null;
   lotSalePlMinor: number | null;
@@ -823,6 +1050,7 @@ export type AccountValueHomeGet = {
   fidelity: AccountValueSeries;
   schwab?: AccountValueSeries;
   risk?: RiskValueHome;
+  weeks?: TrendsWeekPoint[];
   note: string;
   scale: number;
 };
@@ -842,6 +1070,12 @@ export type DividendPlanHomeGet = {
   rows: DividendPlanRow[];
   total: DividendPlanRow;
   scale: number;
+};
+
+export type HomeOpenGet = {
+  summary: DataSummaryGet;
+  accountValue: AccountValueHomeGet;
+  dividendPlan: DividendPlanHomeGet;
 };
 
 export type DataSnapshotExport = {
@@ -1092,6 +1326,9 @@ export type CartScenario = {
   asOf: string;
   cashYieldBps: number;
   fundingSource?: string;
+  planId?: string | null;
+  slot?: string;
+  depositMinor?: number;
   overrideReason: string | null;
   sellLines: CartSellLine[];
   buyLines: CartBuyLine[];
@@ -1547,5 +1784,16 @@ export type UpdaterCheckGet = {
 
 export type LastPriceAutoWindowGet = {
   allowed: boolean;
+  inSchedule: boolean;
   skipReason?: string;
+};
+
+export type PlanHorizonGet = {
+  assumeYear: number;
+  holeCount: number;
+  names: Array<{
+    securityId: string;
+    symbol: string;
+    holes: string[];
+  }>;
 };

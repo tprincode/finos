@@ -1104,6 +1104,7 @@ fn declaration_target_from_item(
     paid_count: u8,
     known_payment_periods: Vec<String>,
     known_declaration_amounts: Vec<(String, i64, u8)>,
+    force_refresh: bool,
 ) -> import_engine::DeclarationTarget {
     import_engine::DeclarationTarget {
         security_id: item.security_id.to_string(),
@@ -1113,7 +1114,7 @@ fn declaration_target_from_item(
         source_url: item.source_url.clone(),
         last_content_hash: item.last_content_hash.clone(),
         div_type: item.div_type.clone(),
-        force_refresh: false,
+        force_refresh,
         last_run_ok: item.last_run_ok.unwrap_or(false),
         last_run_at: item.last_run_at.clone(),
         inception_on: item.inception_on.clone(),
@@ -1361,6 +1362,11 @@ async fn fill_declaration_refresh(
             return;
         }
     };
+    let force = body
+        .get("force")
+        .and_then(|v| v.as_bool())
+        .or_else(|| body.get("forceRefresh").and_then(|v| v.as_bool()))
+        .unwrap_or(false);
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut targets = Vec::new();
     let mut disabled_misses = Vec::new();
@@ -1375,7 +1381,8 @@ async fn fill_declaration_refresh(
         let registered = import_engine::is_registered_declaration_source(source);
 
         if registered && item.collector_enabled {
-            if financial_domain::collector::same_day_retrieve_skip_allowed(
+            if !force
+                && financial_domain::collector::same_day_retrieve_skip_allowed(
                 item.last_run_ok,
                 &item.last_run_at,
                 &today,
@@ -1395,6 +1402,7 @@ async fn fill_declaration_refresh(
                 paid_count,
                 known_payment_periods,
                 known_declaration_amounts,
+                force,
             ));
             queued.insert(id);
             continue;
@@ -1451,6 +1459,7 @@ async fn fill_declaration_refresh(
             paid_count,
             known_payment_periods,
             known_declaration_amounts,
+            force,
         ));
     }
     let total = (already_current.len() + targets.len()) as u32;
@@ -1606,9 +1615,9 @@ fn app_exit(app: AppHandle) {
 }
 
 /// Coding launch serves the UI from Vite on localhost:1420. The host writes
-/// `%LOCALAPPDATA%\com.finos.desktop\restart.token` and exits. The already-running
-/// supervisor Start-Process-es the titled finos (dev) stack. Household release
-/// bundles the UI and uses `app.restart()`.
+/// `%LOCALAPPDATA%\com.finos.desktop\restart.token` and exits. Repo-root `finos.bat`
+/// (already running, or started here) Start-Process-es the titled finos (dev) stack.
+/// Household release bundles the UI and uses `app.restart()`.
 fn write_restart_token() -> Result<(), String> {
     let local = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -1666,7 +1675,27 @@ fn pid_is_live_cmd(pid: &str) -> bool {
         return false;
     };
     let text = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
-    text.contains("cmd.exe") || text.contains("powershell")
+    if !(text.contains("cmd.exe") || text.contains("powershell")) {
+        return false;
+    }
+    // A leftover untitled cmd is not the supervisor.
+    let Ok(check) = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "$p = Get-CimInstance Win32_Process -Filter 'ProcessId={pid}'; \
+                 if (-not $p) {{ exit 1 }}; \
+                 $c = [string]$p.CommandLine; \
+                 $t = [string](Get-Process -Id {pid} -EA SilentlyContinue).MainWindowTitle; \
+                 if ($t -eq 'finos' -or $c -match '(?i)[/\\\\]finos\\.bat') {{ exit 0 }} else {{ exit 1 }}"
+            ),
+        ])
+        .output()
+    else {
+        return false;
+    };
+    check.status.success()
 }
 
 fn coding_supervisor_running() -> bool {
@@ -1689,15 +1718,16 @@ fn ensure_coding_supervisor() -> Result<(), String> {
     }
     let bat = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("start-finos-supervisor.bat");
+        .join("..")
+        .join("finos.bat");
     if !bat.is_file() {
-        return Err(format!("start-finos-supervisor.bat missing: {}", bat.display()));
+        return Err(format!("finos.bat missing: {}", bat.display()));
     }
-    let desktop = bat
+    let repo = bat
         .parent()
-        .ok_or_else(|| "supervisor bat has no parent".to_string())?;
+        .ok_or_else(|| "finos.bat has no parent".to_string())?;
     let bat_s = bat.to_string_lossy().replace(r"\\?\", "");
-    let dir_s = desktop.to_string_lossy().replace(r"\\?\", "");
+    let dir_s = repo.to_string_lossy().replace(r"\\?\", "");
     let mut cmd = std::process::Command::new("cmd");
     cmd.args(["/C", "start", "", "/D", &dir_s, &bat_s]);
     #[cfg(windows)]
@@ -1762,6 +1792,14 @@ pub fn run() {
             let trends_menu = SubmenuBuilder::new(app, "Trends")
                 .text("trends", "Trends")
                 .build()?;
+            let cash_menu = SubmenuBuilder::new(app, "Cash Management")
+                .text("cash-elements", "Element Management")
+                .text("cash-cashflow", "Cashflow Manager")
+                .text("cash-weekly", "System update tasks and confirmations")
+                .text("cash-car-tax", "Tax Planning")
+                .text("cash-coverage", "Coverage")
+                .text("cash-external", "External accounts")
+                .build()?;
             let plan_menu = SubmenuBuilder::new(app, "Plan")
                 .text("calculator", "Calculator")
                 .text("dashboard", "Dashboard")
@@ -1788,6 +1826,7 @@ pub fn run() {
                 .item(&file_menu)
                 .item(&income_menu)
                 .item(&trends_menu)
+                .item(&cash_menu)
                 .item(&plan_menu)
                 .item(&positions_menu)
                 .item(&data_menu)
@@ -1818,6 +1857,12 @@ pub fn run() {
                     | "dashboard"
                     | "trends"
                     | "cash-management"
+                    | "cash-elements"
+                    | "cash-cashflow"
+                    | "cash-weekly"
+                    | "cash-car-tax"
+                    | "cash-coverage"
+                    | "cash-external"
                     | "shopping-cart"
                     | "position-details"
                     | "holdings"

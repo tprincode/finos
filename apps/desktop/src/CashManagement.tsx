@@ -7,12 +7,14 @@ import type {
   CashManagementWeekGet,
   DividendPerformanceGet,
   MagiProjection,
+  TaxPlanningGet,
   TrendsWeekPoint,
 } from "@finos/app-contracts";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   CashWeekDesk,
   type CashWeekOverview,
+  type OpenWeekIncome,
   type TrendIncomePoint,
 } from "./features/cash/CashWeekDesk";
 
@@ -80,6 +82,246 @@ function formatPlanUsd(
   return formatUsd(minor, scale);
 }
 
+function formatCarUsd(
+  minor: number | null | undefined,
+  scale: number,
+): string {
+  return formatUsd(minor ?? 0, scale);
+}
+
+function formatRocCell(
+  minor: number | null | undefined,
+  scale: number,
+  reason?: string | null,
+): string {
+  if (minor == null) {
+    const text = reason?.trim();
+    return text ? text : "unknown";
+  }
+  return formatUsd(minor, scale);
+}
+
+function addKnown(left: number | null, right: number | null): number | null {
+  if (left == null || right == null) return null;
+  return left + right;
+}
+
+function CarTaxPlanTable({ plan }: { plan: CarRocPlanGet }) {
+  const scale = plan.scale;
+  const rocReason = plan.ytdRocUnknownReason;
+  const rocYtd = plan.ytdRocMinor;
+  const rocPlanned = plan.remainingRocMinor;
+  const rows = [
+    {
+      key: "ordinary",
+      label: "Ordinary",
+      ytd: plan.ytdOrdinaryMinor ?? 0,
+      planned: plan.remainingOrdinaryMinor ?? 0,
+      ytdText: formatCarUsd(plan.ytdOrdinaryMinor ?? 0, scale),
+      plannedText: formatCarUsd(plan.remainingOrdinaryMinor ?? 0, scale),
+      totalText: formatCarUsd(
+        (plan.ytdOrdinaryMinor ?? 0) + (plan.remainingOrdinaryMinor ?? 0),
+        scale,
+      ),
+    },
+    {
+      key: "roc",
+      label: "ROC",
+      ytd: rocYtd,
+      planned: rocPlanned,
+      ytdText: formatRocCell(rocYtd, scale, rocReason),
+      plannedText: formatRocCell(rocPlanned, scale, rocPlanned == null ? rocReason : null),
+      totalText: formatRocCell(addKnown(rocYtd, rocPlanned), scale, rocReason),
+    },
+    {
+      key: "lt",
+      label: "Long Term Capital Gains",
+      ytd: plan.ytdLongTermGainMinor ?? 0,
+      planned: 0,
+      ytdText: formatCarUsd(plan.ytdLongTermGainMinor ?? 0, scale),
+      plannedText: formatCarUsd(0, scale),
+      totalText: formatCarUsd(plan.ytdLongTermGainMinor ?? 0, scale),
+    },
+    {
+      key: "st",
+      label: "Short Term Capital Gains",
+      ytd: plan.ytdShortTermGainMinor ?? 0,
+      planned: 0,
+      ytdText: formatCarUsd(plan.ytdShortTermGainMinor ?? 0, scale),
+      plannedText: formatCarUsd(0, scale),
+      totalText: formatCarUsd(plan.ytdShortTermGainMinor ?? 0, scale),
+    },
+  ];
+  const knownYtd = rows.every((row) => row.ytd != null)
+    ? rows.reduce((sum, row) => sum + (row.ytd as number), 0)
+    : null;
+  const knownPlanned = rows.every((row) => row.planned != null)
+    ? rows.reduce((sum, row) => sum + (row.planned as number), 0)
+    : null;
+  return (
+    <div className="table-wrap car-tax-table-wrap">
+      <table aria-label="Car account tax planning">
+        <thead>
+          <tr>
+            <th scope="col"> </th>
+            <th scope="col" className="numeric">
+              YTD
+            </th>
+            <th scope="col" className="numeric">
+              Planned
+            </th>
+            <th scope="col" className="numeric">
+              Total YTD + Planned
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key} className={`car-tax-row car-tax-${row.key}`}>
+              <th scope="row">{row.label}</th>
+              <td className="numeric">{row.ytdText}</td>
+              <td className="numeric">{row.plannedText}</td>
+              <td className="numeric">{row.totalText}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr>
+            <th scope="row">Total</th>
+            <td className="numeric">{formatRocCell(knownYtd, scale, rocReason)}</td>
+            <td className="numeric">{formatRocCell(knownPlanned, scale, rocReason)}</td>
+            <td className="numeric">
+              {formatRocCell(addKnown(knownYtd, knownPlanned), scale, rocReason)}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+function magiImpactLabel(impact: string): string {
+  if (impact === "none") {
+    return "None";
+  }
+  if (impact === "magi_ltcg") {
+    return "MAGI · LTCG rate";
+  }
+  return "MAGI";
+}
+
+function formatPlanCell(
+  minor: number | null | undefined,
+  scale: number,
+  reason?: string | null,
+): string {
+  if (minor == null) {
+    return reason?.trim() ? `— (${reason})` : "—";
+  }
+  return formatUsd(minor, scale);
+}
+
+function HouseholdTaxTable({ plan }: { plan: TaxPlanningGet }) {
+  const scale = plan.scale;
+  const groups = [plan.magiIncluded, plan.notMagi, plan.allSources];
+  return (
+    <div className="table-wrap car-tax-table-wrap">
+      <table aria-label="Tax Planning income">
+        <thead>
+          <tr>
+            <th scope="col"> </th>
+            <th scope="col" className="numeric">
+              YTD
+            </th>
+            <th scope="col" className="numeric">
+              Projected
+            </th>
+            <th scope="col" className="numeric">
+              Total
+            </th>
+            <th scope="col">Tax impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {plan.rows.map((row) => (
+            <tr key={row.key}>
+              <th scope="row">{row.label}</th>
+              <td className="numeric">{formatPlanCell(row.ytdMinor, scale)}</td>
+              <td className="numeric">{formatPlanCell(row.projectedMinor, scale)}</td>
+              <td className="numeric">{formatPlanCell(row.totalMinor, scale)}</td>
+              <td>{magiImpactLabel(row.magiImpact)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          {groups.map((group) => (
+            <tr key={group.label}>
+              <th scope="row">{group.label}</th>
+              <td className="numeric">{formatPlanCell(group.ytdMinor, scale)}</td>
+              <td className="numeric">{formatPlanCell(group.projectedMinor, scale)}</td>
+              <td className="numeric">{formatPlanCell(group.totalMinor, scale)}</td>
+              <td> </td>
+            </tr>
+          ))}
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+function MagiThresholdBoard({ magi }: { magi: MagiProjection | null }) {
+  if (!magi) {
+    return <p role="status">Loading MAGI…</p>;
+  }
+  const scale = magi.applicableThreshold.scale;
+  const money = (m: { amountMinor: number; scale: number }) =>
+    formatUsd(m.amountMinor, m.scale ?? scale);
+  return (
+    <div className="table-wrap car-tax-table-wrap">
+      <table aria-label="Tax Planning MAGI">
+        <thead>
+          <tr>
+            <th scope="col">MAGI</th>
+            <th scope="col" className="numeric">
+              Amount
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Threshold</th>
+            <td className="numeric">{money(magi.applicableThreshold)}</td>
+          </tr>
+          <tr>
+            <th scope="row">YTD included</th>
+            <td className="numeric">{money(magi.actualIncludedYtd)}</td>
+          </tr>
+          <tr>
+            <th scope="row">Known remaining</th>
+            <td className="numeric">{money(magi.knownRemaining)}</td>
+          </tr>
+          <tr>
+            <th scope="row">Forecast</th>
+            <td className="numeric">{money(magi.baseForecast)}</td>
+          </tr>
+          <tr>
+            <th scope="row">Conservative forecast</th>
+            <td className="numeric">{money(magi.conservativeForecast)}</td>
+          </tr>
+          <tr>
+            <th scope="row">Headroom</th>
+            <td className="numeric">{money(magi.protectedHeadroom)}</td>
+          </tr>
+          <tr>
+            <th scope="row">Decision</th>
+            <td>{magi.decisionState}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function dollarsToMinor(raw: string, scale: number): number | null {
   const t = raw.trim();
   if (!t) return null;
@@ -129,6 +371,7 @@ function accountsForCashType(
 }
 
 export function CashManagementPanel({
+  desk = "weekly",
   week,
   month,
   reminders,
@@ -138,7 +381,12 @@ export function CashManagementPanel({
   distributions,
   taxMonitor,
   carRocPlan,
+  taxPlanning,
   children,
+  weekAhead,
+  cashElements,
+  cashRegister,
+  cashYtd,
   weekDesk,
   weekJustSavedAt,
   onReload,
@@ -146,6 +394,7 @@ export function CashManagementPanel({
   onSsaConfirm,
   onDirtyChange,
 }: {
+  desk?: "elements" | "weekly" | "car" | "cashflow";
   week: CashManagementWeekGet | null;
   month: CashManagementMonthGet | null;
   reminders: CashManagementRemindersGet | null;
@@ -155,12 +404,19 @@ export function CashManagementPanel({
   distributions?: CashDistributionYtd | null;
   taxMonitor?: CashTaxAcaMonitor | null;
   carRocPlan?: CarRocPlanGet | null;
+  taxPlanning?: TaxPlanningGet | null;
   children?: ReactNode;
+  weekAhead?: ReactNode;
+  cashElements?: ReactNode;
+  cashRegister?: ReactNode;
+  cashYtd?: ReactNode;
   weekDesk?: {
     weeks?: TrendsWeekPoint[] | null;
     points?: TrendIncomePoint[];
     dividendPerf?: DividendPerformanceGet | null;
     overview?: CashWeekOverview | null;
+    openWeek?: OpenWeekIncome | null;
+    incomePlanWeek?: OpenWeekIncome | null;
   };
   weekJustSavedAt?: number;
   onReload: (asOf: string) => void;
@@ -342,11 +598,54 @@ export function CashManagementPanel({
     setActivity(next);
   };
 
+  if (desk === "car") {
+    return (
+      <div className="cash-management" aria-label="Cash Management">
+        <section className="car-tax-plan" aria-label="Cash Management Tax Planning">
+          <h3>MAGI threshold</h3>
+          <MagiThresholdBoard magi={magi} />
+          {taxPlanning ? (
+            <>
+              <h3>Income by tax type</h3>
+              <HouseholdTaxTable plan={taxPlanning} />
+            </>
+          ) : (
+            <p role="status">Loading Tax Planning…</p>
+          )}
+          {carRocPlan ? (
+            <>
+              <h3>Car</h3>
+              <CarTaxPlanTable plan={carRocPlan} />
+            </>
+          ) : null}
+          {cashYtd}
+        </section>
+      </div>
+    );
+  }
+
+  if (desk === "elements") {
+    return (
+      <div className="cash-management" aria-label="Cash Management">
+        {cashElements}
+      </div>
+    );
+  }
+
+  if (desk === "cashflow") {
+    return (
+      <div className="cash-management" aria-label="Cash Management">
+        {cashRegister}
+      </div>
+    );
+  }
+
   if (!week) {
     return (
       <div className="cash-management" aria-label="Cash Management">
         {children}
-        <p>Loading Cash Management…</p>
+        {weekAhead}
+        {children || weekAhead ? null : <p>Loading Cash Management…</p>}
       </div>
     );
   }
@@ -376,8 +675,9 @@ export function CashManagementPanel({
 
   return (
     <div className="cash-management" aria-label="Cash Management">
-      {children}
-      {activity === "chooser" ? (
+      {desk === "weekly" ? children : null}
+      {desk === "weekly" ? weekAhead : null}
+      {desk === "weekly" && activity === "chooser" ? (
         <div className="cash-follow-up" aria-label="Cash week follow-up">
           <p>
             Do you have any distributions, withdrawals, or cash payments to
@@ -419,7 +719,7 @@ export function CashManagementPanel({
           </div>
         </div>
       ) : null}
-      {activity == null ? (
+      {desk === "weekly" && activity == null ? (
         <div className="buttons">
           <button
             type="button"
@@ -431,7 +731,7 @@ export function CashManagementPanel({
           </button>
         </div>
       ) : null}
-      {activity === "distribution" ? (
+      {desk === "weekly" && activity === "distribution" ? (
         <section aria-label="Distribution wizard">
           <ol className="cart-step-rail" aria-label="Distribution steps">
             {DIST_STEPS.map((name) => (
@@ -613,7 +913,7 @@ export function CashManagementPanel({
           </div>
         </section>
       ) : null}
-      {activity === "withdrawal" ? (
+      {desk === "weekly" && activity === "withdrawal" ? (
         <section aria-label="Withdrawal wizard">
           <ol className="cart-step-rail" aria-label="Withdrawal steps">
             {WITHDRAW_STEPS.map((name) => (
@@ -754,7 +1054,7 @@ export function CashManagementPanel({
           </div>
         </section>
       ) : null}
-      {activity === "ssa" ? (
+      {desk === "weekly" && activity === "ssa" ? (
         <section aria-label="Tom SSA wizard">
           <ol className="cart-step-rail" aria-label="Tom SSA steps">
             {SSA_STEPS.map((name) => (
@@ -772,7 +1072,7 @@ export function CashManagementPanel({
             Barbara {formatUsd(133100, scale)} and Tom {formatUsd(286500, scale)}{" "}
             each month, two confirms. A missed payee stays unknown, never $0.
             {reminders?.tomSsa.extraAudit
-              ? " A third or duplicate SSA row is audit, not next month."
+              ? " An unexpected SSA amount needs a review; June’s two Tom pays are facts."
               : ""}
           </p>
           <p>
@@ -917,12 +1217,18 @@ export function CashManagementPanel({
           </div>
         </section>
       ) : null}
+      {desk === "weekly" ? (
       <CashWeekDesk
         weeks={weekDesk?.weeks}
         points={weekDesk?.points}
         dividendPerf={weekDesk?.dividendPerf}
         overview={weekDesk?.overview}
+        openWeek={weekDesk?.openWeek}
+        incomePlanWeek={weekDesk?.incomePlanWeek}
       />
+      ) : null}
+      {desk === "weekly" ? (
+      <>
       <div className="trends-period-bar">
         <label className="trends-period-label">
           Week
@@ -1036,10 +1342,11 @@ export function CashManagementPanel({
       ) : null}
       {reminders && reminders.tomSsa.recent.length > 0 ? (
         <div className="table-wrap">
-          <table aria-label="Tom Social Security retirement history">
+          <table aria-label="Social Security retirement history">
             <thead>
               <tr>
                 <th>Paid</th>
+                <th>Payee</th>
                 <th>Amount</th>
                 <th>Account</th>
                 <th>Note</th>
@@ -1047,72 +1354,23 @@ export function CashManagementPanel({
             </thead>
             <tbody>
               {reminders.tomSsa.recent.map((row) => (
-                <tr key={`${row.occurredOn}-${row.amountMinor}`}>
+                <tr key={`${row.occurredOn}-${row.amountMinor}-${row.payee}`}>
                   <td>{row.occurredOn}</td>
+                  <td>{row.payee === "barbara" ? "Barbara" : row.payee === "tom" ? "Tom" : row.payee || "—"}</td>
                   <td className="numeric">
                     {formatUsd(row.amountMinor, scale)}
                   </td>
                   <td>{row.accountName}</td>
-                  <td>{row.extraAudit ? "extra — audit" : "match"}</td>
+                  <td>{row.extraAudit ? "unexpected amount" : ""}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       ) : null}
-      {carRocPlan ? (
-        <section aria-label="Cash Management Car ROC plan">
-          <h3>Car ROC plan</h3>
-          <dl>
-            <div>
-              <dt>Remaining ordinary</dt>
-              <dd>
-                {formatPlanUsd(
-                  carRocPlan.remainingOrdinaryMinor,
-                  carRocPlan.scale,
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>Remaining ROC</dt>
-              <dd>
-                {formatPlanUsd(carRocPlan.remainingRocMinor, carRocPlan.scale)}
-              </dd>
-            </div>
-            <div>
-              <dt>YTD ordinary (estimate)</dt>
-              <dd>
-                {formatPlanUsd(carRocPlan.ytdOrdinaryMinor, carRocPlan.scale)}
-              </dd>
-            </div>
-            <div>
-              <dt>YTD ROC (estimate)</dt>
-              <dd>
-                {formatPlanUsd(carRocPlan.ytdRocMinor, carRocPlan.scale)}
-              </dd>
-            </div>
-            <div>
-              <dt>Long-term capital gain/loss</dt>
-              <dd>
-                {formatPlanUsd(
-                  carRocPlan.ytdLongTermGainMinor,
-                  carRocPlan.scale,
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>Short-term capital gain/loss</dt>
-              <dd>
-                {formatPlanUsd(
-                  carRocPlan.ytdShortTermGainMinor,
-                  carRocPlan.scale,
-                )}
-              </dd>
-            </div>
-          </dl>
-        </section>
+      </>
       ) : null}
-      {distributions ? (
+      {desk === "weekly" && distributions ? (
         <section aria-label="Cash Management distributions YTD">
           <h3>Distributions (YTD)</h3>
           <div
@@ -1207,7 +1465,7 @@ export function CashManagementPanel({
           </div>
         </section>
       ) : null}
-      {taxMonitor ? (
+      {desk === "weekly" && taxMonitor ? (
         <section aria-label="Cash Management tax and ACA monitor">
           <h3>Tax / ACA monitor</h3>
           <p>

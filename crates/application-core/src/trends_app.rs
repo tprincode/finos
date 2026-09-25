@@ -191,6 +191,9 @@ pub async fn trends_week_capture_view(
             today,
         );
     let cash_references = crate::cash_management::cash_references_for_week(canonical, &period_end).await?;
+    let income_parts = crate::queries::week_aligned_income_parts(canonical, &period_end)
+        .await
+        .ok();
     Ok(TrendsWeekCaptureBody {
         period_start: period_start.clone(),
         period_end: period_end.clone(),
@@ -212,7 +215,25 @@ pub async fn trends_week_capture_view(
         roth_cash_minor: roth_cash,
         speculation_cash_minor: speculation_cash,
         suggested_profit_minor: suggested_profit,
-        suggested_monthly_divs_minor: week_income_minor,
+        suggested_monthly_divs_minor: if week_income_minor != 0 {
+            week_income_minor
+        } else if let Some(p) = &income_parts {
+            if p.any_actual {
+                p.reported_minor
+            } else {
+                p.planned_minor
+            }
+        } else {
+            0
+        },
+        planned_weekly_income_minor: income_parts
+            .as_ref()
+            .map(|p| p.planned_minor)
+            .unwrap_or(0),
+        reported_weekly_income_minor: income_parts
+            .as_ref()
+            .map(|p| p.reported_minor)
+            .unwrap_or(0),
         suggested_acct9_etf_proxy_minor: suggested_acct9,
         first_unpopulated_start,
         chooser_saturdays,

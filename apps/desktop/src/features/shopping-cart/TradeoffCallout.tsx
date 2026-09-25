@@ -14,7 +14,8 @@ export function TradeoffCallout({
   onOverrideReason: (reason: string) => void;
 }) {
   if (!ev) return null;
-  const needsReason = ev.cashFloorWarn || mixWorse;
+  const floorApplies = ev.cashFloorWarn && ev.leftoverMinor >= 0;
+  const needsReason = floorApplies || mixWorse;
   if (!needsReason && !ev.insufficientLotQty) return null;
   return (
     <aside className="cart-tradeoff" aria-label="Tradeoff">
@@ -23,7 +24,7 @@ export function TradeoffCallout({
           Named remaining does not cover spend. Math is intent only. Agree stays blocked.
         </p>
       ) : null}
-      {ev.cashFloorWarn ? (
+      {floorApplies ? (
         <p role="status">Cash leftover is below the account floor. Typed reason required to Agree.</p>
       ) : null}
       {incomeRises && mixWorse ? (

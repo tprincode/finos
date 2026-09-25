@@ -294,7 +294,12 @@ pub async fn price_quote_record(
         "INSERT INTO price_quote (
             price_quote_id, security_id, price_minor, scale, currency, quote_type,
             as_of_at, retrieved_at, source, validation_status
-         ) VALUES (?, ?, ?, ?, 'USD', 'last', ?, ?, ?, 'accepted')",
+         ) VALUES (?, ?, ?, ?, 'USD', 'last', ?, ?, ?, 'accepted')
+         ON CONFLICT(security_id, as_of_at, source) DO UPDATE SET
+            price_minor = excluded.price_minor,
+            scale = excluded.scale,
+            retrieved_at = excluded.retrieved_at,
+            validation_status = 'accepted'",
     )
     .bind(record.price_quote_id.to_string())
     .bind(security_id.to_string())

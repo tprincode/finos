@@ -5,13 +5,15 @@ use uuid::Uuid;
 
 use crate::contracts::{
     AccountBalanceSnapshotRecord, AccountRecord, ActivityRecord, AiRunListBody, AiRunRecord,
+    CashElementRecord, PlannedOccurrenceRecord,
     AllocationGetBody, AuditRecord, BacktestGetBody, BacktestPeriodRecord, BasisGetBody,
     BrokerLotReconcileBody, BurndownBody, CalculatorPlanBody, CanonicalWeekBody, CartGetBody,
     CartScenarioBody, CartScenarioListBody, ClassificationReviewGetBody,
     CollectorFieldDecisionRecord, CollectorSetBody, CollectorStatsBody, CurrentPriceBody,
     DistributionGetBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
     ExceptionRecord, ExpectedPaymentPattern, ImportBatchRecord, ImportCandidate, IncomePlanBody,
-    HoldingQtyEventRecord, IssuerDeclarationRecord, IssuerPayDateRecord, LotAssignmentRecord,
+    AssumedPayDateRecord, HoldingQtyEventRecord, IssuerDeclarationRecord, IssuerPayDateRecord,
+    LotAssignmentRecord,
     LotRecommendBody, LotRecord,
     MagiProjection, MagiTaxPaymentBody, PlanHistoryRecord, PositionBacktestResultBody,
     PositionCharacteristicRecord, PositionDetailsBody, PositionTaxProfile, PriceQuoteBody,
@@ -149,6 +151,28 @@ pub trait Canonical: Send + Sync {
     async fn activity_list(&self) -> Result<Vec<ActivityRecord>, PlatformError> {
         ni()
     }
+    /// Inclusive `occurred_on` window. Empty is unknown-not-zero for callers that need a miss.
+    async fn activity_list_in_range(
+        &self,
+        account_id: Option<Uuid>,
+        start: &str,
+        end: &str,
+    ) -> Result<Vec<ActivityRecord>, PlatformError> {
+        if start > end {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .activity_list()
+            .await?
+            .into_iter()
+            .filter(|a| {
+                match account_id {
+                    Some(id) if a.account_id != id => false,
+                    _ => a.occurred_on.as_str() >= start && a.occurred_on.as_str() <= end,
+                }
+            })
+            .collect())
+    }
     async fn activity_reassign_security(
         &self,
         activity_id: Uuid,
@@ -251,6 +275,29 @@ pub trait Canonical: Send + Sync {
     async fn dividend_get(&self) -> Result<DividendGetBody, PlatformError> {
         ni()
     }
+    /// Inclusive `occurred_on` window over stored dividend actuals. Empty ≠ $0.
+    async fn dividend_list_in_range(
+        &self,
+        account_id: Option<Uuid>,
+        start: &str,
+        end: &str,
+    ) -> Result<Vec<DividendActual>, PlatformError> {
+        if start > end {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .dividend_get()
+            .await?
+            .actuals
+            .into_iter()
+            .filter(|a| {
+                match account_id {
+                    Some(id) if a.account_id != id => false,
+                    _ => a.occurred_on.as_str() >= start && a.occurred_on.as_str() <= end,
+                }
+            })
+            .collect())
+    }
     async fn income_plan_update(
         &self,
         planned_minor: i64,
@@ -308,6 +355,41 @@ pub trait Canonical: Send + Sync {
         ni()
     }
     async fn holding_qty_event_list(&self) -> Result<Vec<HoldingQtyEventRecord>, PlatformError> {
+        ni()
+    }
+    async fn cash_element_upsert(
+        &self,
+        record: CashElementRecord,
+    ) -> Result<CashElementRecord, PlatformError> {
+        let _ = record;
+        ni()
+    }
+    async fn cash_element_list(&self) -> Result<Vec<CashElementRecord>, PlatformError> {
+        ni()
+    }
+    async fn planned_occurrence_upsert(
+        &self,
+        record: PlannedOccurrenceRecord,
+    ) -> Result<PlannedOccurrenceRecord, PlatformError> {
+        let _ = record;
+        ni()
+    }
+    async fn planned_occurrence_list(&self) -> Result<Vec<PlannedOccurrenceRecord>, PlatformError> {
+        ni()
+    }
+    async fn planned_occurrence_get(
+        &self,
+        occurrence_id: Uuid,
+    ) -> Result<PlannedOccurrenceRecord, PlatformError> {
+        let _ = occurrence_id;
+        ni()
+    }
+    async fn planned_occurrence_delete(&self, occurrence_id: Uuid) -> Result<(), PlatformError> {
+        let _ = occurrence_id;
+        ni()
+    }
+    async fn cash_element_delete(&self, element_id: Uuid) -> Result<(), PlatformError> {
+        let _ = element_id;
         ni()
     }
     async fn lot_get(&self, lot_id: Uuid) -> Result<LotRecord, PlatformError> {
@@ -508,6 +590,25 @@ pub trait Canonical: Send + Sync {
         ni()
     }
     async fn issuer_pay_date_dedupe(&self, _security_id: Uuid) -> Result<u64, PlatformError> {
+        Ok(0)
+    }
+    async fn assumed_pay_date_list(
+        &self,
+        _security_id: Uuid,
+    ) -> Result<Vec<AssumedPayDateRecord>, PlatformError> {
+        Ok(Vec::new())
+    }
+    async fn assumed_pay_date_insert(
+        &self,
+        record: AssumedPayDateRecord,
+    ) -> Result<AssumedPayDateRecord, PlatformError> {
+        Ok(record)
+    }
+    async fn assumed_pay_date_prune_for_vendor(
+        &self,
+        _security_id: Uuid,
+        _vendor_pay_on: String,
+    ) -> Result<u64, PlatformError> {
         Ok(0)
     }
     async fn price_quote_record(
@@ -780,6 +881,16 @@ pub trait Canonical: Send + Sync {
     ) -> Result<crate::contracts::LotRecord, PlatformError> {
         ni()
     }
+    /// Sets the cash lot’s remaining quantity and both remaining bases. That remaining quantity is the account’s current cash.
+    async fn lot_cash_set(
+        &self,
+        lot_id: Uuid,
+        remaining_qty_minor: i64,
+        remaining_basis_minor: i64,
+    ) -> Result<crate::contracts::LotRecord, PlatformError> {
+        let _ = (lot_id, remaining_qty_minor, remaining_basis_minor);
+        ni()
+    }
     async fn cart_buy_line_add(
         &self,
         scenario_id: Uuid,
@@ -828,6 +939,45 @@ pub trait Canonical: Send + Sync {
         ni()
     }
     async fn cart_scenario_discard(&self, scenario_id: Uuid) -> Result<(), PlatformError> {
+        ni()
+    }
+    async fn cart_sell_line_remove(
+        &self,
+        scenario_id: Uuid,
+        line_id: Uuid,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        let _ = (scenario_id, line_id);
+        ni()
+    }
+    async fn cart_sell_symbol_clear(
+        &self,
+        scenario_id: Uuid,
+        symbol: String,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        let _ = (scenario_id, symbol);
+        ni()
+    }
+    async fn cart_buy_line_remove(
+        &self,
+        scenario_id: Uuid,
+        line_id: Uuid,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        let _ = (scenario_id, line_id);
+        ni()
+    }
+    async fn cart_scenario_slot_add(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        let _ = scenario_id;
+        ni()
+    }
+    async fn cart_plan_deposit_set(
+        &self,
+        scenario_id: Uuid,
+        deposit_minor: i64,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        let _ = (scenario_id, deposit_minor);
         ni()
     }
 
@@ -957,6 +1107,44 @@ pub trait Canonical: Send + Sync {
     async fn account_market_value_daily_list(
         &self,
     ) -> Result<Vec<crate::contracts::AccountMarketValueDailyRecord>, PlatformError> {
+        ni()
+    }
+
+    async fn external_register_get(
+        &self,
+        search: Option<String>,
+    ) -> Result<crate::contracts::ExternalRegisterGetBody, PlatformError> {
+        let _ = search;
+        ni()
+    }
+    async fn external_register_save(
+        &self,
+        lines: Vec<crate::contracts::ExternalRegisterLine>,
+    ) -> Result<crate::contracts::ExternalRegisterGetBody, PlatformError> {
+        let _ = lines;
+        ni()
+    }
+    async fn external_register_true_up(
+        &self,
+        line_ids: Vec<Uuid>,
+        true_up_on: Option<String>,
+    ) -> Result<crate::contracts::ExternalRegisterGetBody, PlatformError> {
+        let _ = (line_ids, true_up_on);
+        ni()
+    }
+    async fn external_register_mark_step(
+        &self,
+        line_ids: Vec<Uuid>,
+        step: String,
+    ) -> Result<crate::contracts::ExternalRegisterGetBody, PlatformError> {
+        let _ = (line_ids, step);
+        ni()
+    }
+    async fn external_register_import(
+        &self,
+        path: String,
+    ) -> Result<crate::contracts::ExternalRegisterGetBody, PlatformError> {
+        let _ = path;
         ni()
     }
 }

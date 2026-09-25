@@ -53,9 +53,9 @@ Week entry, SSA (Barbara $1,331 and Tom $2,865), IRA/Roth distributions, and Wit
 
 | Commands | Queries |
 |----------|---------|
-| `CashDistributionPost`, `SsaConfirm` | `CashManagementWeekGet`, `CashManagementRemindersGet`, `CashManagementMonthGet`, `CarRocPlanGet` |
+| `CashDistributionPost`, `SsaConfirm`, `WeekAheadConfirm`, `WeekAheadEdit`, `WeekAheadDefer`, `CashElementSave`, `CashElementDelete`, `PlannedOccurrenceSave`, `PlannedOccurrenceDelete` | `CashManagementWeekGet`, `CashManagementRemindersGet`, `CashManagementMonthGet`, `CarRocPlanGet`, `TaxPlanningGet`, `WeekAheadGet`, `CashRegisterGet`, `CashElementListGet` (`account: "all"` lists every Register book), `CashElementHistoryGet` (`elementId` + `duration`: `all` \| `ytd` \| `6m` \| `3m` \| `1m`; current and retired elements; cancelled leftover occs omitted; Income net/fed/state also list seed IRA withholding slices, not only confirmed Saturdays), `CashYtdGet` (`view: "account"` \| `"tax"`; remaining plan is null when unknown, never invented $0), `CashCoverageGet` (`period: "week"` \| `"month"` \| `"year"`; Income Plan minus Elements by book; Average / Plan / Actual; unknown ≠ $0) |
 
-`CarRocPlanGet` is the Car **planning** report: remaining ordinary vs ROC, YTD paid split by `roc_pct_2026_estimate`, and long/short tax-lot gain or loss. Seed `Form_1099` is tax-year 2025 ROC guidance and never appears on current-year YTD cards. Car 2026 tax stays unknown until April 2027. Planning writes stay on `RocPlanConfirm`.
+Planned weekly income on this desk is Income Plan Plan $ for the Sat–Fri week, not Decl $. Register Plan deposits are Income Plan Plan $ on the payable day (R10), not Decl $. `CarRocPlanGet` is the Car **planning** report: remaining ordinary vs ROC, YTD paid split by `roc_pct_2026_estimate`, and long/short tax-lot gain or loss. `TaxPlanningGet` is the household Tax Planning rollup (IRA withdrawals on Income + Speculation + Account 9, Roth, ROC, ordinary, 1099 job, SSA, LT/ST) plus MAGI from `MagiProjectionGet`. 2026 1099 job received is $14,625 MAGI-included (`owner-1099-job-2026`). Seed `Form_1099` is tax-year 2025 ROC guidance and never appears on current-year YTD cards. Car 2026 tax stays unknown until April 2027. Planning writes stay on `RocPlanConfirm`.
 
 Withdrawal is cash leaving a taxable / non-IRA brokerage (Car, Robinhood, ENERGYX). `CashDistributionPost` / `SsaConfirm` refuse a type that does not match the account: IRA_Distribution only on `ira`; Roth_Distribution on `roth` / `fi_roth`; Withdrawal on taxable and not External; SSA only on External (by name — live seed stores External as `taxable`). SSA is two household payees, separate confirms.
 
@@ -73,6 +73,8 @@ Withdrawal is cash leaving a taxable / non-IRA brokerage (Car, Robinhood, ENERGY
 |-----------|----------|---------|--------|
 | Calculator Plan | `PlanApprove` | `CalculatorGet`, `PlanGet` | `PlanApproved` |
 | Income Plan | `IncomePlanUpdate` | `IncomePlanGet`, `IncomePlanWeekGet`, `IncomePlanGridGet`, `IncomePlanExportGet` | `IncomePlanChanged` |
+
+`IncomePlanWeekGet` Plan $ (`plan_history` × remaining qty for names whose **vendor payable** falls in that Sat–Fri week) is the planned weekly income. `TrendsWeekGet.plannedWeeklyIncomeMinor` and Cash week desk Planned weekly income must equal that sum. Declaration date is not the week key. Off-calendar broker actuals are Reported only.
 | Cash Burndown | — | `BurndownGet` | — |
 | Marketplace MAGI | `MagiRuleSet`, `MagiFactRecord`, `MagiCoverageSet`, `MagiAdjustmentRecord` | `MagiProjectionGet`, `MagiTaxPaymentGet` | — |
 

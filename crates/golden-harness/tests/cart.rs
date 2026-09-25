@@ -625,14 +625,14 @@ fn shopping_cart_feature_folder_not_app_or_queries_math() {
         root.join("apps/desktop/src/features/shopping-cart/ComparePlans.tsx"),
     )
     .unwrap();
-    assert!(compare.contains("Keep cash") && compare.contains("Monthly"));
+    assert!(compare.contains("Cash on traded") && compare.contains("Monthly"));
     let screen = std::fs::read_to_string(
         root.join("apps/desktop/src/features/shopping-cart/ShoppingCartScreen.tsx"),
     )
     .unwrap();
     assert!(
-        screen.contains("Cart cash yield from collector"),
-        "yield is collector-owned"
+        screen.contains("cashYieldBps") && !screen.contains("Cash income uses the"),
+        "cash yield stays in the sell table from the collector plan"
     );
     assert!(
         !screen.contains("Cart cash yield bps") && !screen.contains("Cash yield (bps)"),
@@ -640,9 +640,11 @@ fn shopping_cart_feature_folder_not_app_or_queries_math() {
     );
     assert!(
         screen.contains("CartStartWizard")
-            && screen.contains("Cart funding next step")
-            && screen.contains("AccountCashPlan"),
-        "start is a wizard; parked funding does not open the lot picker"
+            && screen.contains("ariaLabel=\"Sell plan\"")
+            && screen.contains("Scenario A")
+            && screen.contains("Add scenario B")
+            && !screen.contains("Cart funding next step"),
+        "start is account and plan name, then the sell table funds the scenarios"
     );
     assert!(
         !screen.contains("Create swap draft") && !screen.contains("Cart draft name"),
@@ -655,8 +657,8 @@ fn shopping_cart_feature_folder_not_app_or_queries_math() {
     assert!(
         wizard.contains("prompt === \"account\"")
             && wizard.contains("prompt === \"planName\"")
-            && wizard.contains("prompt === \"funding\""),
-        "one prompt at a time"
+            && !wizard.contains("prompt === \"funding\""),
+        "account then plan name; funding is the sell table"
     );
     assert!(
         wizard.contains("Next cart step") && wizard.contains("Previous cart step"),
@@ -666,7 +668,9 @@ fn shopping_cart_feature_folder_not_app_or_queries_math() {
         root.join("apps/desktop/src/features/shopping-cart/StepRail.tsx"),
     )
     .unwrap();
-    assert!(rail.contains("Account") && rail.contains("Plan name") && rail.contains("How funded"));
+    assert!(
+        rail.contains("Account") && rail.contains("Plan name") && !rail.contains("How funded")
+    );
 }
 
 #[tokio::test]
@@ -1077,18 +1081,30 @@ async fn account_cash_approve_checks_live_qty_fill_deducts() {
     assert_eq!(evaluated["eval"]["spendMinor"].as_i64().unwrap(), 5_990);
     assert_eq!(evaluated["eval"]["insufficientLotQty"], true);
 
-    let agree_short = execute_command_on(
+    let agreed = must_ok(
+        &platform,
+        "CartScenarioAgree",
+        serde_json::json!({ "scenarioId": scenario_id }),
+    )
+    .await;
+    assert_eq!(agreed["status"].as_str(), Some("agreed"));
+    let line_id = evaluated["buyLines"][0]["lineId"].as_str().unwrap();
+    let fill_short = execute_command_on(
         &platform,
         &platform,
         cmd(
-            "CartScenarioAgree",
-            serde_json::json!({ "scenarioId": scenario_id }),
+            "CartExecuteFill",
+            serde_json::json!({
+                "scenarioId": scenario_id,
+                "occurredOn": "2026-09-11",
+                "fills": [{ "lineId": line_id, "fillMinor": 2_995 }]
+            }),
         ),
     )
     .await;
-    assert!(!agree_short.ok);
+    assert!(!fill_short.ok);
     assert_eq!(
-        agree_short.error_code.as_deref(),
+        fill_short.error_code.as_deref(),
         Some("insufficient_account_cash")
     );
 
@@ -1127,13 +1143,6 @@ async fn account_cash_approve_checks_live_qty_fill_deducts() {
     assert_eq!(enough["eval"]["remainingMinor"].as_i64().unwrap(), 7_000);
     assert_eq!(enough["eval"]["insufficientLotQty"], false);
 
-    must_ok(
-        &platform,
-        "CartScenarioAgree",
-        serde_json::json!({ "scenarioId": scenario_id }),
-    )
-    .await;
-    let line_id = enough["buyLines"][0]["lineId"].as_str().unwrap();
     must_ok(
         &platform,
         "CartExecuteFill",

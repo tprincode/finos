@@ -58,9 +58,19 @@ fn cornerstone_press_keeps_only_requested_symbol() {
     let parsed = parse_cornerstone_press(&text, "PAY1");
     assert_eq!(parsed.len(), 3);
     assert_eq!(parsed[0]["paymentPeriod"], "2026-09-30");
+    assert_eq!(parsed[0]["recordDate"], "2026-09-15");
+    assert_ne!(parsed[0]["paymentPeriod"], parsed[0]["recordDate"]);
     assert_eq!(parsed[0]["amountPerShareMinor"], 1215);
     assert_eq!(parsed[0]["amountScale"], 4);
     assert!(parsed.iter().all(|c| c["source"] == "cornerstone"));
+    assert!(
+        parsed
+            .iter()
+            .all(|c| c["paymentPeriod"] != "2026-09-15"
+                && c["paymentPeriod"] != "2026-08-14"
+                && c["paymentPeriod"] != "2026-07-15"),
+        "record dates must not be the pay week key: {parsed:?}"
+    );
     let other = parse_cornerstone_press(&text, "XXX");
     assert_eq!(other.len(), 1);
     assert_eq!(other[0]["amountPerShareMinor"], 9999);
@@ -80,6 +90,7 @@ fn gladstone_press_keeps_common_ignores_series_a() {
     let parsed = parse_div1_distributions("gladstone", text);
     assert_eq!(parsed.len(), 3, "{parsed:?}");
     assert_eq!(parsed[0]["paymentPeriod"], "2026-09-30");
+    assert_eq!(parsed[0]["recordDate"], "2026-09-21");
     assert_eq!(parsed[0]["amountPerShareMinor"], 15);
     assert!(
         parsed

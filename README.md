@@ -132,7 +132,7 @@ cargo test
 
 **Desktop app** (see `apps/desktop/README.md`):
 
-Coding days: Desktop `finos.bat` or `apps/desktop/start-finos-dev.bat` (`npm run desktop`). The console is expected.
+Coding days: repo-root `finos.bat` (Restart parent + `finos (dev)` child). Do not start `apps/desktop/start-finos-dev.bat` alone. The consoles are expected.
 
 Household no-console sessions: Desktop `finos-installed.bat` after a one-off `npm run desktop:build` + NSIS install. Do not use that as the daily rebuild start.
 

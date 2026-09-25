@@ -476,18 +476,25 @@ fn home_charts_legend_replaces_sentence() {
     )
     .unwrap();
     assert!(trends.contains("aria-label=\"Trends account charts\""));
-    assert!(trends.contains("isTrendsPlacedAccount"));
+    assert!(trends.contains("accountChartOption"));
+    assert!(!trends.contains("TRENDS_CASH_ACCOUNT_CHARTS.map"));
     assert!(trends.contains("<LiveByRiskCharts"));
     assert!(trends.contains("period={period}"));
     assert!(!ui.contains("Live by risk graphing period"));
     assert!(app.contains("home-top-row"));
     assert!(app.contains("<HomeDividendPlan"));
+    assert!(app.contains("<AccountCashFlow"));
+    assert!(
+        app.contains("weeks={accountValues?.weeks ?? trends?.weeks}"),
+        "Home cash trend uses HomeOpenGet weeks, not a deferred TrendsGet"
+    );
     assert!(app.contains("DividendPlanHomeGet"));
     let css = std::fs::read_to_string(
         golden_harness::repo_root().join("apps/desktop/src/App.css"),
     )
     .unwrap();
     assert!(css.contains("home-top-row"));
+    assert!(css.contains("home-top-right"));
     assert!(css.contains("--home-left-col: 580px"));
     assert!(css.contains("repeat(3, minmax(0, 1fr))"));
     let home_charts = std::fs::read_to_string(
@@ -547,8 +554,189 @@ fn home_graphing_period_includes_one_and_two_months() {
         home.contains("useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD)")
             && trends.contains("useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD)")
             && app.contains("useRef<GraphPeriod>(DEFAULT_GRAPH_PERIOD)"),
-        "Home and Trends must open on DEFAULT_GRAPH_PERIOD"
+        "Home and Trends open on the 6 month graphing period"
     );
+    let focus = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/cash/AccountCashFlow.tsx"),
+    )
+    .unwrap();
+    let register = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/cash/CashRegister.tsx"),
+    )
+    .unwrap();
+    assert!(
+        register.contains("<AccountCashFlow")
+            && register.contains("from \"./AccountCashFlow\""),
+        "Register Trend is the same AccountCashFlow as Home"
+    );
+    assert!(
+        focus.contains("HOME_FOCUS_DEFAULT_PERIOD: GraphPeriod = \"2m\"")
+            && focus.contains("HOME_FOCUS_DEFAULT_ACCOUNT = \"healthCashMinor\"")
+            && focus.contains("TRENDS_CASH_ACCOUNT_CHARTS")
+            && focus.contains("homeCashWindow")
+            && focus.contains("homeCashPoints")
+            && focus.contains("HOME_CASH_WINDOW_EXAMPLES")
+            && focus.contains("Always opens on the 1st of the current month")
+            && focus.contains("Seed cash sits on Friday")
+            && focus.contains("periodStart: window.start")
+            && focus.contains("includeUnconfirmedPast: true")
+            && focus.contains("hitsOnly: true")
+            && focus.contains("weeks == null")
+            && focus.contains("Income Plan planned dividends")
+            && focus.contains("Skip Adjust only")
+            && focus.contains("type: \"time\"")
+            && focus.contains("projectHomeCashPoints")
+            && focus.contains("eventProjectedCashY")
+            && focus.contains("HOME_REGISTER_TIMEOUT_MS = 30_000")
+            && focus.contains("lastKnownCashY")
+            && focus.contains("combineLikeColorDots")
+            && focus.contains("Total ${formatUsd(totalMinor, scale)}")
+            && focus.contains("fallbackY")
+            && focus.contains("HOME_CASH_PROJECTION_EXAMPLE")
+            && focus.contains("HOME_CASH_NET_PROJECTION_EXAMPLE")
+            && focus.contains("HOME_CASH_CHART_END_EXAMPLE")
+            && focus.contains("HOME_CASH_PERIOD_TOTALS_EXAMPLE")
+            && focus.contains("periodCashFlowTotals")
+            && focus.contains("Planned Income")
+            && focus.contains("Planned withdrawals")
+            && focus.contains("aria-label=\"Planned income for period\"")
+            && focus.contains("aria-label=\"Planned withdrawals for period\"")
+            && focus.contains("lastFriday: \"2026-11-20\"")
+            && focus.contains("endingMinor: 85_000")
+            && focus.contains("CASH_FLOW_REGISTER_BOOK")
+            && focus.contains("speculationCashMinor: \"Speculation\"")
+            && focus.contains("every cash-flow account must use the same Register fold")
+            && focus.contains("formatProjectedCash")
+            && focus.contains("Projected cash")
+            && focus.contains("planned dividends")
+            && focus.contains("future debits")
+            && focus.contains("blank Accept")
+            && focus.contains("HOME_CASH_1M_ENDING_EXAMPLE")
+            && focus.contains("weekSnapshot")
+            && focus.contains("lastKnownCashFact")
+            && focus.contains("homeCashAxisEnd")
+            && focus.contains("overlappingFriday: \"2026-10-02\"")
+            && focus.contains("One Sat–Fri slot per week that overlaps the window. Seed cash sits on Friday")
+            && focus.contains("One green and/or one red dot per Sat–Fri week")
+            && !focus.contains("row.transaction === \"Withdrawal\"")
+            && focus.contains("startOn: \"2026-09-01\"")
+            && focus.contains("endOn: \"2026-11-19\"")
+            && focus.contains("endOn: \"2026-10-19\"")
+            && focus.contains("CashRegisterGet")
+            && focus.contains("Ending balance")
+            && focus.contains("Starting Balance")
+            && focus.contains("type: \"scatter\"")
+            && !focus.contains("accountChartOption")
+            && !focus.contains("linearTrend")
+            && !focus.contains("name: \"Trend\"")
+            && focus.contains("Account cash flow projection")
+            && focus.contains("aria-label=\"Account trend account\"")
+            && focus.contains("aria-label=\"Account trend duration\""),
+        "Home focus chart is weekly cash + element dots; header is ending plotted cash"
+    );
+    let queries = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/queries.rs"),
+    )
+    .unwrap();
+    assert!(
+        queries.contains("Saturday week cash joins the Friday of that Sat–Fri week"),
+        "TrendsGet attaches snapshot cash to Saturday-keyed weeks via that week's Friday"
+    );
+    assert!(
+        trends.contains("TRENDS_CASH_ACCOUNT_CHARTS")
+            && trends.contains("incomeCashMinor")
+            && trends.contains("rothCashMinor")
+            && trends.contains("carCashMinor")
+            && trends.contains("healthCashMinor")
+            && trends.contains("speculationCashMinor")
+            && trends.contains("acct9CashMinor"),
+        "Cash-flow books stay listed; Trends Accounts plots market value"
+    );
+    assert!(
+        trends.contains("accountChartOption")
+            && !trends.contains("TRENDS_CASH_ACCOUNT_CHARTS.map"),
+        "Trends account charts plot each account market value"
+    );
+    assert!(
+        trends.contains("latestSaved")
+            && trends.contains("newest saved Friday")
+            && app.contains("setTrendsChartEpoch")
+            && app.contains("trendsGraphPeriodRef.current = DEFAULT_GRAPH_PERIOD"),
+        "Accept remounts Trends on the 6 month period; charts include the newest saved Friday"
+    );
+}
+
+#[test]
+fn home_and_register_cash_chart_ends_in_amount() {
+    let root = golden_harness::repo_root();
+    let focus = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/cash/AccountCashFlow.tsx"),
+    )
+    .unwrap();
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    let register = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/cash/CashRegister.tsx"),
+    )
+    .unwrap();
+    let home_entry = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/home/HomeAccountTrendFocus.tsx"),
+    )
+    .unwrap();
+    let trends = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/graphing/TrendsCharts.tsx"),
+    )
+    .unwrap();
+    assert!(
+        focus.contains("lastFriday: \"2026-11-20\"")
+            && focus.contains("endingMinor: 85_000")
+            && focus.contains("debitProjectedY: 850")
+            && focus.contains("Dot Y is this week's Friday line cash")
+            && focus.contains("cashLineHoverValue")
+            && focus.contains("Line points are `[day, cash]`")
+            && focus.contains("formatProjectedCash")
+            && focus.contains("`Projected cash ${formatUsd(Math.round(cashY * 100), 2)}`")
+            && focus.contains("projectedCash: formatProjectedCash(group.cashY)")
+            && !focus.contains("label: { show: true")
+            && !focus.contains("unknown start stays unknown"),
+        "2m last Friday is $850; Projected cash is hover-only"
+    );
+    assert!(
+        app.contains("import { AccountCashFlow } from \"./features/cash/AccountCashFlow\"")
+            && app.contains("<AccountCashFlow")
+            && register.contains("import { AccountCashFlow } from \"./AccountCashFlow\"")
+            && register.contains("<AccountCashFlow weeks={weeks} asOf={asOfDate} />")
+            && home_entry.contains("from \"../cash/AccountCashFlow\"")
+            && home_entry.contains("AccountCashFlow as HomeAccountTrendFocus"),
+        "Home and Cash Management Register Trend are the same AccountCashFlow"
+    );
+    for book in [
+        "incomeCashMinor: \"Income\"",
+        "rothCashMinor: \"FI Roth\"",
+        "carCashMinor: \"Car\"",
+        "healthCashMinor: \"Health\"",
+        "speculationCashMinor: \"Speculation\"",
+        "acct9CashMinor: \"Account 9\"",
+    ] {
+        assert!(
+            focus.contains(book),
+            "cash-flow Register book missing {book}"
+        );
+    }
+    for key in [
+        "incomeCashMinor",
+        "rothCashMinor",
+        "carCashMinor",
+        "healthCashMinor",
+        "speculationCashMinor",
+        "acct9CashMinor",
+    ] {
+        assert!(
+            trends.contains(key) && focus.contains("TRENDS_CASH_ACCOUNT_CHARTS"),
+            "Home/CM dropdown and Trends books must include {key}"
+        );
+    }
 }
 
 #[test]

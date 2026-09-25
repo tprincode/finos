@@ -962,6 +962,16 @@ fn last_price_auto_refresh_uses_weekday_eastern_window() {
     assert!(helper.contains("weekday 9-4 Eastern"));
     assert!(helper.contains("fn auto_last_price_allowed"));
     assert!(helper.contains("fn last_price_auto_window_with_last"));
+    assert!(
+        helper.contains("fn in_auto_schedule"),
+        "collectors and last price share the weekday 9-4 clock"
+    );
+    assert!(
+        app.contains("inSchedule === true")
+            && app.contains("refreshDeclarations(true)")
+            && app.contains("force ? { force: true }"),
+        "auto collectors use inSchedule; Refresh declarations stays force"
+    );
     let retrieve = std::fs::read_to_string(root.join("crates/import-engine/src/retrieve/mod.rs")).unwrap();
     assert!(
         retrieve.contains("LAST_PRICE_QUOTE_SECS: u64 = 3"),

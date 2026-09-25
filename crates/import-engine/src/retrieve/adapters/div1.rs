@@ -154,13 +154,15 @@ fn cornerstone_urls(symbol: &str) -> Vec<String> {
     let sym = symbol.trim().to_ascii_uppercase();
     match sym.as_str() {
         "CLM" => vec![
+            "https://www.cornerstonestrategicinvestmentfund.com/press-releases".into(),
             "https://www.cornerstonestrategicinvestmentfund.com/press-releases.html".into(),
             "https://cornerstonestrategicinvestmentfund.com/press-releases".into(),
             "https://www.cornerstonestrategicinvestmentfund.com/".into(),
         ],
         _ => vec![
-            "https://www.cornerstonetotalreturnfund.com/press-releases.html".into(),
+            "https://www.cornerstonestrategicinvestmentfund.com/press-releases".into(),
             "https://www.cornerstonetotalreturnfund.com/press-releases".into(),
+            "https://www.cornerstonetotalreturnfund.com/press-releases.html".into(),
             "https://www.cornerstonetotalreturnfund.com/".into(),
         ],
     }
@@ -585,7 +587,10 @@ pub fn parse_cornerstone_press(text: &str, symbol: &str) -> Vec<Value> {
                         .get(after_pay)
                         .and_then(|t| parse_issuer_amount(t))
                     {
-                        out.push(distribution_candidate("cornerstone", pay, Some(amount), None));
+                        let mut row =
+                            distribution_candidate("cornerstone", pay, Some(amount), None);
+                        row["recordDate"] = serde_json::json!(record);
+                        out.push(row);
                         i = after_pay + 1;
                         continue;
                     }
@@ -782,7 +787,7 @@ pub fn parse_gladstone_press(text: &str) -> Vec<Value> {
             i += 1;
             continue;
         };
-        let Some(_rec_month) = month_num(tokens[i]) else {
+        let Some(rec_month) = month_num(tokens[i]) else {
             i += 1;
             continue;
         };
@@ -804,12 +809,17 @@ pub fn parse_gladstone_press(text: &str) -> Vec<Value> {
             i += 1;
             continue;
         };
-        out.push(distribution_candidate(
+        let rec = chrono::NaiveDate::from_ymd_opt(year, rec_month, rec_day.unwrap());
+        let mut row = distribution_candidate(
             "gladstone",
             pay.format("%Y-%m-%d").to_string(),
             Some(amount),
             None,
-        ));
+        );
+        if let Some(rec_d) = rec {
+            row["recordDate"] = serde_json::json!(rec_d.format("%Y-%m-%d").to_string());
+        }
+        out.push(row);
         i += 5;
     }
     sort_newest_first(&mut out);

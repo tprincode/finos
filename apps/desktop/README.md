@@ -7,7 +7,7 @@ No SQLite, snapshots, or SQL in the UI.
 
 Two launch modes share the same live SQLite. Do not run both at once.
 
-**Coding days (this month’s default).** Console is expected. Desktop shortcut `finos.bat` calls [`start-finos-dev.bat`](start-finos-dev.bat), which is `npm run desktop` (`tauri dev`). Fully quit, then run the bat again after a Rust host change.
+**Coding days (this month’s default).** Consoles are expected. Repo-root `finos.bat` is the only coding start (Restart parent). It Start-Process-es [`start-finos-dev.bat`](start-finos-dev.bat) (`npm run desktop`). Do not start that child bat alone.
 
 ```
 npm run desktop

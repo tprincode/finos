@@ -44,7 +44,7 @@ if defined OTHER (
     echo Another finos ^(dev^) start is already running. Use that window.
     echo This window must not kill port 1420 or Vite dies and tauri reports beforeDevCommand failed.
     pause
-    exit /b 0
+    exit 0
   )
 )
 if exist "%DEVLOCK%" rd /S /Q "%DEVLOCK%" >nul 2>&1
@@ -52,7 +52,7 @@ mkdir "%DEVLOCK%" >nul 2>&1
 if errorlevel 1 (
   echo Another finos ^(dev^) start is already running. Use that window.
   pause
-  exit /b 0
+  exit 0
 )
 powershell -NoProfile -Command "[IO.File]::WriteAllText('%DEVPID%', [string](Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId)"
 
@@ -71,9 +71,8 @@ if errorlevel 1 (
 
 echo Starting finos desktop ^(Vite UI + Tauri host + local SQLite^)...
 echo This console is expected for daily coding. Close the window or Ctrl+C to stop.
-echo If Restart opened this window, close the previous finos console. Its "dev failed" line is the old session dying.
 echo.
-call npm run desktop
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0dev-console.ps1"
 set DEVEXIT=%ERRORLEVEL%
 rd /S /Q "%DEVLOCK%" >nul 2>&1
 if %DEVEXIT% EQU 0 goto started_ok
@@ -83,15 +82,15 @@ if %DEVEXIT% EQU -1 goto old_session_ended
 echo.
 echo finos did not start. See the error above.
 pause
-exit /b 1
+exit 1
 
 :old_session_ended
-echo The previous Vite session ended. If you clicked Restart, use the new finos ^(dev^) window.
-exit /b 0
+endlocal
+exit 0
 
 :started_ok
 endlocal
-exit /b 0
+exit 0
 
 :kill_port
 for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr /R /C:":%~1" ^| findstr LISTENING') do (

@@ -70,6 +70,10 @@ Please treat G7 as an official 1b lock going forward, not a Slice 2 item.
 
 ---
 
+## Post-1b
+
+Week income was split after this status (Planned vs Reported). See [cm-post-1b-update-2026-09-17.md](cm-post-1b-update-2026-09-17.md).
+
 ## Adjacent (not 1b)
 
 DeclarationRefresh on desktop open runs **once per local calendar date**. Manual Retrieve declarations still force-runs.

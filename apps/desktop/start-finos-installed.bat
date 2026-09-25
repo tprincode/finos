@@ -12,7 +12,7 @@ if not exist "%EXE%" (
   echo   3. Run apps\desktop\src-tauri\target\release\bundle\nsis\finos_0.1.0_x64-setup.exe
   echo   4. Pin Start Menu / Desktop to %%LOCALAPPDATA%%\finos\finos-desktop.exe
   echo.
-  echo Keep start-finos-dev.bat / Desktop finos.bat for the next host change.
+  echo Keep repo-root finos.bat for the next host change.
   echo Do not run the installed exe and the dev app at the same time.
   pause
   exit /b 1

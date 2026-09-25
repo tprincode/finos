@@ -19,6 +19,12 @@ pub fn is_adapter_kind(source: &str) -> bool {
     s == ADAPTER_KIND || s == LEGACY_SOURCE
 }
 
+/// Invented next-year rows collect must drop. Vendor page / 8-K printed dates are not this.
+pub fn is_invented_horizon_source(source: &str) -> bool {
+    let s = source.trim().to_ascii_lowercase();
+    s == "derived_walk" || s == SOURCE_DERIVED_TEMPLATE || s == LEGACY_SOURCE
+}
+
 /// Route by kind, IR host, or this CIK. Not by household ticker.
 pub fn routes_fetch(source: &str, source_url: Option<&str>) -> bool {
     is_adapter_kind(source)
@@ -189,6 +195,12 @@ mod tests {
             owner_ask_on_for_pay("2027-02-19").as_deref(),
             Some("2027-02-07")
         );
+        assert!(is_invented_horizon_source("derived_walk"));
+        assert!(is_invented_horizon_source(SOURCE_DERIVED_TEMPLATE));
+        assert!(is_invented_horizon_source(LEGACY_SOURCE));
+        assert!(!is_invented_horizon_source(SOURCE_SEC_8K));
+        assert!(!is_invented_horizon_source("vendor_payable"));
+        assert!(!is_invented_horizon_source("issuer"));
     }
 
     #[test]

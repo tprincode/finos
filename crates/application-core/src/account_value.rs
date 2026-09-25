@@ -848,6 +848,7 @@ pub(crate) async fn account_value_home_view(
             points: risk_points,
             scale: 2,
         },
+        weeks,
         note: "Solid line is live holdings (qty Ã— last price). Dashed line is stored Trends weeks. Dotted line is weekly actuals on the Friday week-end. Missing stays unknown."
             .into(),
         scale: 2,

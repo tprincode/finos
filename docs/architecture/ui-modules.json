@@ -36,6 +36,10 @@
         "cash-management-month",
         "cash-management-import",
         "cash-management-car-roc-plan",
+        "cash-management-week-ahead",
+        "cash-management-register",
+        "cash-management-elements",
+        "cash-management-ytd",
         "TrendsWeekSave",
         "WeekCaptureAccept"
       ],
@@ -49,6 +53,78 @@
       "menuAreas": ["Cash Management"],
       "coreFunctionIds": ["TrendsWeekSave"],
       "host": "trends_app.rs"
+    },
+    {
+      "id": "week-ahead",
+      "title": "Week ahead",
+      "folder": "apps/desktop/src/features/cash/WeekAhead.tsx",
+      "status": "extracted",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": ["cash-management-week-ahead"],
+      "host": "week_ahead.rs"
+    },
+    {
+      "id": "cash-elements",
+      "title": "Elements catalog",
+      "folder": "apps/desktop/src/features/cash/CashElementsCatalog.tsx",
+      "status": "extracted",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": ["cash-management-elements"],
+      "host": "cash_register.rs"
+    },
+    {
+      "id": "cash-management-ytd",
+      "title": "Cash YTD",
+      "folder": "apps/desktop/src/CashManagement.tsx",
+      "status": "in-app",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": ["cash-management-ytd"],
+      "host": "cash_ytd.rs"
+    },
+    {
+      "id": "cm-element-management",
+      "title": "Element Management",
+      "folder": "apps/desktop/src/features/cash/CashElementsCatalog.tsx",
+      "status": "extracted",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": ["cash-management-elements"],
+      "host": "cash_register.rs"
+    },
+    {
+      "id": "cm-cashflow-manager",
+      "title": "Cashflow Manager",
+      "folder": "apps/desktop/src/features/cash/CashRegister.tsx",
+      "status": "extracted",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": ["cash-management-register"],
+      "host": "cash_register.rs"
+    },
+    {
+      "id": "cm-weekly-updates",
+      "title": "System update tasks and confirmations",
+      "folder": "apps/desktop/src/CashManagement.tsx",
+      "status": "in-app",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": ["cash-management-post", "cash-management-week-ahead"],
+      "host": "cash_management.rs"
+    },
+    {
+      "id": "cm-car-account-tax",
+      "title": "Tax Planning",
+      "folder": "apps/desktop/src/CashManagement.tsx",
+      "status": "in-app",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": ["cash-management-car-roc-plan", "cash-management-ytd"],
+      "host": "queries.rs"
+    },
+    {
+      "id": "cm-coverage",
+      "title": "Coverage",
+      "folder": "apps/desktop/src/features/cash/CashCoverage.tsx",
+      "status": "extracted",
+      "menuAreas": ["Cash Management"],
+      "coreFunctionIds": ["cash-management-coverage"],
+      "host": "cash_coverage.rs"
     },
     {
       "id": "home",
@@ -67,8 +143,8 @@
     {
       "id": "income-plan",
       "title": "Income Plan",
-      "folder": "apps/desktop/src/App.tsx",
-      "status": "in-app",
+      "folder": "apps/desktop/src/features/income-plan/",
+      "status": "extracted",
       "menuAreas": ["Income Plan"],
       "coreFunctionIds": [
         "income-week-decl-per-share",
@@ -168,8 +244,8 @@
     {
       "id": "collectors",
       "title": "Collectors",
-      "folder": "apps/desktop/src/App.tsx",
-      "status": "in-app",
+      "folder": "apps/desktop/src/features/collectors/",
+      "status": "extracted",
       "menuAreas": ["Data"],
       "coreFunctionIds": [
         "collectors-fleet",

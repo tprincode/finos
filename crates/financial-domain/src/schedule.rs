@@ -310,6 +310,22 @@ fn remaining_year_end(as_of: NaiveDate) -> NaiveDate {
     NaiveDate::from_ymd_opt(as_of.year(), 12, 31).unwrap_or(as_of)
 }
 
+/// Next calendar year on/after 1 June; otherwise this calendar year (backfill).
+pub fn assume_calendar_year(as_of: &str) -> Option<i32> {
+    let d = parse_iso_day(as_of)?;
+    Some(if d.month() >= 6 {
+        d.year() + 1
+    } else {
+        d.year()
+    })
+}
+
+/// Inclusive Jan 1–Dec 31 of [`assume_calendar_year`].
+pub fn assume_year_bounds(as_of: &str) -> Option<(String, String)> {
+    let year = assume_calendar_year(as_of)?;
+    Some((format!("{year}-01-01"), format!("{year}-12-31")))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VendorPayableConflict {
     pub vendor_pay_on: String,
@@ -335,6 +351,21 @@ pub fn vendor_payables_same_period(frequency: &str, left: &str, right: &str) -> 
         return same_pay_week(left, right) || within_calendar_days(left, right, 3);
     }
     year_month(left) == year_month(right)
+}
+
+/// Stored date is the earlier leftover (record/ex) for the same payable slot.
+/// Vendor payable is later — move even after the leftover calendar day has passed.
+pub fn leftover_record_to_later_payable(frequency: &str, existing: &str, vendor: &str) -> bool {
+    if existing.trim() == vendor.trim() {
+        return false;
+    }
+    let Some(existing_d) = parse_iso_day(existing) else {
+        return false;
+    };
+    let Some(vendor_d) = parse_iso_day(vendor) else {
+        return false;
+    };
+    existing_d < vendor_d && vendor_payables_same_period(frequency, existing, vendor)
 }
 
 fn same_pay_week(left: &str, right: &str) -> bool {
@@ -414,7 +445,22 @@ pub fn merge_runtime_vendor_payables(
         if vendor_on.is_empty() || parse_iso_day(vendor_on).is_none() {
             continue;
         }
+        let leftovers: Vec<String> = keep
+            .iter()
+            .filter(|d| leftover_record_to_later_payable(payment_frequency, d, vendor_on))
+            .cloned()
+            .collect();
         if keep.iter().any(|d| d == vendor_on) {
+            for existing_on in leftovers {
+                keep.retain(|d| d != &existing_on);
+                if !plan
+                    .moves
+                    .iter()
+                    .any(|(from, to)| from == &existing_on && to == vendor_on)
+                {
+                    plan.moves.push((existing_on, vendor_on.to_string()));
+                }
+            }
             continue;
         }
         let same = keep
@@ -429,7 +475,12 @@ pub fn merge_runtime_vendor_payables(
             let unoccurred = as_of_d
                 .and_then(|as_of| parse_iso_day(&existing_on).map(|d| d >= as_of))
                 .unwrap_or(false);
-            if paid {
+            if leftover_record_to_later_payable(payment_frequency, &existing_on, vendor_on)
+            {
+                keep.retain(|d| d != &existing_on);
+                keep.push(vendor_on.to_string());
+                plan.moves.push((existing_on, vendor_on.to_string()));
+            } else if paid {
                 plan.conflicts.push(VendorPayableConflict {
                     vendor_pay_on: vendor_on.to_string(),
                     existing_pay_on: existing_on,
@@ -553,6 +604,85 @@ pub fn derive_remaining_pay_ons(
     }
 }
 
+/// Walk cadence from last paid through `horizon_end`. Keep dates in
+/// `[horizon_start, horizon_end]`. Weekly keeps the last paid weekday.
+pub fn derive_horizon_pay_ons(
+    as_of: &str,
+    payment_frequency: &str,
+    paid_periods: &[&str],
+    horizon_start: &str,
+    horizon_end: &str,
+) -> Vec<String> {
+    let Some(_as_of_d) = parse_iso_day(as_of) else {
+        return Vec::new();
+    };
+    let Some(start_d) = parse_iso_day(horizon_start) else {
+        return Vec::new();
+    };
+    let Some(end_d) = parse_iso_day(horizon_end) else {
+        return Vec::new();
+    };
+    let mut paid: Vec<NaiveDate> = paid_periods
+        .iter()
+        .filter_map(|p| parse_iso_day(p))
+        .collect();
+    paid.sort();
+    paid.dedup();
+    match PaymentCadence::parse(payment_frequency).and_then(PaymentCadence::periods) {
+        Some(52) => {
+            let weekday = paid
+                .last()
+                .map(|d| d.weekday())
+                .unwrap_or(chrono::Weekday::Fri);
+            let mut cursor = start_d;
+            let mut out = Vec::new();
+            for _ in 0..400 {
+                if cursor > end_d {
+                    break;
+                }
+                if cursor >= start_d && cursor.weekday() == weekday {
+                    out.push(cursor.format("%Y-%m-%d").to_string());
+                }
+                cursor += Duration::days(1);
+            }
+            out
+        }
+        Some(12) => {
+            let day = if paid.is_empty() {
+                None
+            } else if paid.iter().rev().take(6).all(|d| d.day() <= 10) {
+                Some(3)
+            } else {
+                paid.last().map(|d| d.day())
+            };
+            month_slots_in_range(start_d, end_d, day)
+        }
+        Some(4) => {
+            if let Some(latest) = paid.last().copied() {
+                let mut out = Vec::new();
+                let mut cursor = latest;
+                for _ in 0..16 {
+                    let Some(next) = cursor.checked_add_months(Months::new(3)) else {
+                        break;
+                    };
+                    cursor = next;
+                    if cursor > end_d {
+                        break;
+                    }
+                    if cursor >= start_d {
+                        out.push(cursor.format("%Y-%m-%d").to_string());
+                    }
+                }
+                if !out.is_empty() {
+                    return out;
+                }
+            }
+            quarter_ends_in_range(start_d, end_d)
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// mlp_sec_8k remaining-year: +1 calendar quarter from last accepted payable, stop at 31 Dec.
 pub fn derive_quarterly_template_pay_ons(as_of: &str, paid_periods: &[&str]) -> Vec<String> {
     let Some(as_of_d) = parse_iso_day(as_of) else {
@@ -622,6 +752,59 @@ fn weekly_starts(as_of: NaiveDate, year_end: NaiveDate) -> Vec<NaiveDate> {
         }
         week.start += Duration::days(7);
         week.end += Duration::days(7);
+    }
+    dates
+}
+
+/// Cadence slots in `[start, end]`, crossing years. `day = None` is last calendar day.
+fn month_slots_in_range(start: NaiveDate, end: NaiveDate, day: Option<u32>) -> Vec<String> {
+    let mut dates = Vec::new();
+    let mut year = start.year();
+    let mut month = start.month();
+    for _ in 0..36 {
+        let Some(last) = last_day_of_month(year, month) else {
+            break;
+        };
+        let dom = day.unwrap_or(last.day()).min(last.day());
+        if let Some(d) = NaiveDate::from_ymd_opt(year, month, dom) {
+            if d >= start && d <= end {
+                dates.push(d.format("%Y-%m-%d").to_string());
+            }
+        }
+        if last >= end {
+            break;
+        }
+        if month == 12 {
+            month = 1;
+            year += 1;
+        } else {
+            month += 1;
+        }
+    }
+    dates
+}
+
+fn quarter_ends_in_range(start: NaiveDate, end: NaiveDate) -> Vec<String> {
+    let mut dates = Vec::new();
+    let mut year = start.year();
+    let mut month = start.month();
+    for _ in 0..16 {
+        if matches!(month, 3 | 6 | 9 | 12) {
+            if let Some(last) = last_day_of_month(year, month) {
+                if last >= start && last <= end {
+                    dates.push(last.format("%Y-%m-%d").to_string());
+                }
+                if last >= end {
+                    break;
+                }
+            }
+        }
+        if month == 12 {
+            month = 1;
+            year += 1;
+        } else {
+            month += 1;
+        }
     }
     dates
 }
@@ -1262,6 +1445,23 @@ mod tests {
     }
 
     #[test]
+    fn derive_horizon_monthly_fills_next_year_holes() {
+        let ons = derive_horizon_pay_ons(
+            "2026-09-20",
+            "Monthly",
+            &["2026-07-31", "2026-08-31", "2026-09-30"],
+            "2027-01-01",
+            "2027-09-20",
+        );
+        assert!(
+            ons.len() >= 8,
+            "cadence walk must place 2027 monthlies without vendor dates: {ons:?}"
+        );
+        assert!(ons.iter().all(|d| d.as_str() >= "2027-01-01" && d.as_str() <= "2027-09-20"));
+        assert!(ons.contains(&"2027-01-30".into()) || ons.iter().any(|d| d.starts_with("2027-01")));
+    }
+
+    #[test]
     fn qty_on_pay_date_excludes_lot_opened_after_that_date() {
         let lots = [
             OpenLotQty {
@@ -1418,6 +1618,59 @@ mod tests {
     }
 
     #[test]
+    fn assume_calendar_year_is_june_include_next() {
+        assert_eq!(assume_calendar_year("2026-05-31"), Some(2026));
+        assert_eq!(assume_calendar_year("2026-06-01"), Some(2027));
+        assert_eq!(assume_calendar_year("2026-09-20"), Some(2027));
+        assert_eq!(assume_calendar_year("2027-01-02"), Some(2027));
+        assert_eq!(assume_calendar_year("2027-06-01"), Some(2028));
+    }
+
+    #[test]
+    fn derive_horizon_monthly_walks_same_day_into_next_year() {
+        let holes = derive_horizon_pay_ons(
+            "2026-09-20",
+            "Monthly",
+            &["2026-08-15", "2026-09-15"],
+            "2027-01-01",
+            "2027-12-31",
+        );
+        assert!(holes.contains(&"2027-01-15".into()));
+        assert!(holes.contains(&"2027-12-15".into()));
+        assert_eq!(holes.len(), 12);
+    }
+
+    #[test]
+    fn derive_horizon_weekly_keeps_weekday() {
+        let holes = derive_horizon_pay_ons(
+            "2026-09-20",
+            "Weekly",
+            &["2026-09-16"],
+            "2027-01-01",
+            "2027-01-31",
+        );
+        assert!(holes.iter().all(|d| d.ends_with("-06")
+            || d.ends_with("-13")
+            || d.ends_with("-20")
+            || d.ends_with("-27")));
+        assert!(holes.contains(&"2027-01-06".into()));
+    }
+
+    #[test]
+    fn derive_horizon_monthly_empty_paid_fills_last_calendar_days() {
+        let holes = derive_horizon_pay_ons(
+            "2026-08-30",
+            "Monthly",
+            &[],
+            "2026-08-29",
+            "2026-12-31",
+        );
+        assert!(holes.contains(&"2026-08-31".into()));
+        assert!(holes.contains(&"2026-12-31".into()));
+        assert_eq!(holes.len(), 5);
+    }
+
+    #[test]
     fn remaining_periods_to_year_end_is_stub_year_not_full_year() {
         assert_eq!(remaining_periods_to_year_end("2026-08-22", 12), Some(5));
         assert_eq!(remaining_periods_to_year_end("2026-08-22", 4), Some(2));
@@ -1514,6 +1767,67 @@ mod tests {
         assert!(plan.conflicts.is_empty());
         assert!(plan.keep.contains(&"2026-10-03".to_string()));
         assert!(!plan.keep.contains(&"2026-10-01".to_string()));
+    }
+
+    #[test]
+    fn leftover_record_moves_after_date_passed_when_payable_already_stored() {
+        let plan = merge_runtime_vendor_payables(
+            "2026-09-18",
+            &[
+                "2026-09-15".into(),
+                "2026-09-30".into(),
+                "2026-10-15".into(),
+                "2026-10-30".into(),
+            ],
+            &["2026-08-31".into(), "2026-09-15".into()],
+            &[
+                "2026-09-30".into(),
+                "2026-10-30".into(),
+                "2026-11-30".into(),
+                "2026-12-31".into(),
+            ],
+            "Monthly",
+        );
+        assert!(plan.conflicts.is_empty(), "{plan:?}");
+        assert!(plan
+            .moves
+            .contains(&("2026-09-15".into(), "2026-09-30".into())));
+        assert!(plan
+            .moves
+            .contains(&("2026-10-15".into(), "2026-10-30".into())));
+        assert!(plan.add.contains(&"2026-11-30".to_string()));
+        assert!(plan.add.contains(&"2026-12-31".to_string()));
+        assert!(plan.keep.contains(&"2026-09-30".to_string()));
+        assert!(!plan.keep.contains(&"2026-09-15".to_string()));
+        assert!(!plan.keep.contains(&"2026-10-15".to_string()));
+    }
+
+    #[test]
+    fn leftover_ex_moves_same_month_record_without_record_field() {
+        let moves = leftover_ex_to_payable_moves(
+            &[
+                ("2026-09-15".into(), 1215, 4),
+                ("2026-09-21".into(), 1500, 4),
+            ],
+            &[
+                (
+                    "2026-09-30".into(),
+                    None,
+                    Some("2026-09-15".into()),
+                    1215,
+                    4,
+                ),
+                (
+                    "2026-09-30".into(),
+                    None,
+                    Some("2026-09-21".into()),
+                    1500,
+                    4,
+                ),
+            ],
+        );
+        assert!(moves.contains(&("2026-09-15".into(), "2026-09-30".into())));
+        assert!(moves.contains(&("2026-09-21".into(), "2026-09-30".into())));
     }
 
     #[test]

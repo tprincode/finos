@@ -315,7 +315,11 @@ pub async fn cash_management_reminders(
                 occurred_on,
                 amount_minor,
                 account_name,
-                extra_audit: payee.is_none() || *count >= 2,
+                payee: payee.map(|p| p.as_str().to_string()).unwrap_or_default(),
+                extra_audit: match payee {
+                    Some(p) => amount_minor != p.expected_minor() || *count >= 3,
+                    None => true,
+                },
             }
         })
         .collect();
@@ -665,6 +669,7 @@ pub async fn week_capture_accept(
         record.monthly_divs_minor = week_income_minor;
     }
     // Slice 1b: blank ETF total stays 0 — do not invent last-price 70% proxy on Accept.
+    // Gap is measured against the cash lot before it is changed. A material gap still requires a reason.
 
     let refs = cash_references_for_week(canonical, &record.period_end).await?;
     let mut expected: Vec<(uuid::Uuid, i64)> = Vec::new();
@@ -747,6 +752,10 @@ pub async fn week_capture_accept(
                 "adjust supplied for account with no material gap",
             ));
         }
+    }
+    // Saturday total is authoritative. After the reason is accepted, the lot quantity becomes that total.
+    for (account_id, dollars) in typed_cash {
+        crate::cash_pile::set_pile_dollars(canonical, *account_id, *dollars).await?;
     }
 
     let accounts = canonical.account_list().await?;

@@ -1,4 +1,4 @@
-use application_core::contracts::{
+﻿use application_core::contracts::{
     CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
 };
 use application_core::queries::{execute_command_on, execute_query_on};
@@ -928,7 +928,7 @@ async fn dividend_performance_keeps_empty_gap_weeks() {
     assert_eq!(
         ends,
         vec!["2026-07-31", "2026-08-07", "2026-08-14", "2026-08-21"],
-        "30d must list every Sat–Fri week, including empty gaps: {perf}"
+        "30d must list every Satâ€“Fri week, including empty gaps: {perf}"
     );
     let paid = weeks.iter().find(|w| w["end"] == "2026-07-31").unwrap();
     assert_eq!(paid["actualMinor"].as_i64().unwrap(), 12_500);
@@ -1053,7 +1053,7 @@ async fn dividend_performance_week_plan_survives_one_unplanned_name() {
     assert_eq!(vti["planKnown"], false);
 }
 
-/// Plan $ is owner. Declaration $ is the week's money (issuer payable in the Sat–Fri week).
+/// Plan $ is owner. Declaration $ is the week's money (issuer payable in the Satâ€“Fri week).
 /// Collect does not write plan. Missing declaration stays unknown, never $0.
 #[tokio::test]
 async fn week_carries_plan_declaration_actual_as_three_amounts() {
@@ -1267,7 +1267,7 @@ fn weekly_grid_week_window_applies_on_select() {
     );
     assert!(
         !ui.contains("Apply week window") && !ui.contains("Go weeks"),
-        "week window is a view filter — no second commit button"
+        "week window is a view filter â€” no second commit button"
     );
     assert!(
         app.contains("onHistoricalWeeks") && app.contains("withIncomeLoading"),
@@ -1310,11 +1310,11 @@ fn weekly_report_by_position_keeps_decl_per_share_column() {
         "paid-vs-plan exceptions stay off the weekly report"
     );
     assert!(
-        ui.contains("Current ·") && ui.contains("ip-current"),
+        ui.contains("ip-current") && ui.contains("Current"),
         "Weekly report must show a Current subtotals row"
     );
     assert!(
-        ui.contains("Grand Total ·") && ui.contains("ip-grand"),
+        ui.contains("ip-grand") && ui.contains("Grand Total"),
         "Weekly report must keep Grand Total"
     );
     assert!(
@@ -1339,3 +1339,392 @@ fn weekly_report_by_position_keeps_decl_per_share_column() {
         "Current and Grand Total money cells must be bold white on the blue/green bars"
     );
 }
+
+/// Leftover record 9/15 must not plan W37 after collect writes payable 9/30 (W39).
+/// Cash/Trends planned week money must equal Income Plan Plan $ for that week.
+#[tokio::test]
+async fn leftover_record_pay_date_plans_on_payable_week_not_record_week() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "CLM", "name": "CLM"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": "CLM",
+            "declarationSource": "cornerstone",
+            "sourceUrl": "https://www.cornerstonestrategicinvestmentfund.com/press-releases",
+            "calendarPolicy": "issuer_calendar",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "provider": "Cornerstone",
+            "divType": "DIV-1",
+            "riskTier": "Core"
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        security_id,
+        "CLM",
+        "Monthly",
+        false,
+    )
+    .await
+    .expect("complete collector");
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1215,
+            "amountScale": 4,
+            "paymentPeriod": "2026-08-31",
+            "source": "cornerstone",
+            "enteredAt": "2026-08-08"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1215,
+            "amountScale": 4,
+            "paymentPeriod": "2026-09-15",
+            "source": "cornerstone",
+            "enteredAt": "2026-08-08"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1215,
+            "amountScale": 4,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-01-01",
+            "decisionReason": "owner",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-01-02",
+            "origin": "purchase",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 10_000,
+            "taxBasisMinor": 10_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-08-01",
+            "dates": [
+                {"payOn": "2026-09-15", "source": "derived_walk"},
+                {"payOn": "2026-09-30", "source": "vendor_payable"}
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "CLM",
+            "declarationSource": "cornerstone",
+            "asOfDate": "2026-09-18",
+            "candidates": [{
+                "paymentPeriod": "2026-09-30",
+                "amountPerShareMinor": 1215,
+                "amountScale": 4,
+                "source": "cornerstone",
+                "recordDate": "2026-09-15"
+            }],
+            "upcomingPays": [{"payOn": "2026-09-30", "source": "vendor_payable"}]
+        }),
+    )
+    .await;
+
+    let w37 = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-18" }),
+    )
+    .await;
+    assert_eq!(w37["start"], "2026-09-12");
+    assert_eq!(w37["end"], "2026-09-18");
+    let w37_row = w37["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "CLM");
+    assert!(
+        w37_row.is_none() || w37_row.unwrap()["planKnown"] == false,
+        "record leftover must not put Plan $ on W37: {w37}"
+    );
+
+    let w39 = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-30" }),
+    )
+    .await;
+    assert_eq!(w39["start"], "2026-09-26");
+    assert_eq!(w39["end"], "2026-10-02");
+    let w39_row = w39["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "CLM")
+        .unwrap_or_else(|| panic!("CLM must plan on payable W39: {w39}"));
+    assert_eq!(w39_row["payOn"], "2026-09-30");
+    assert_eq!(w39_row["planKnown"], true);
+    assert_eq!(w39_row["plannedMinor"], 122);
+
+    let planned_w39: i64 = w39["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["planKnown"] == true)
+        .map(|p| p["plannedMinor"].as_i64().unwrap_or(0))
+        .sum();
+    let capture = query_json(
+        &platform,
+        "TrendsWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-30" }),
+    )
+    .await;
+    assert_eq!(
+        capture["plannedWeeklyIncomeMinor"].as_i64().unwrap(),
+        planned_w39,
+        "Cash/Trends Planned weekly income must equal Income Plan Plan $: {capture}"
+    );
+}
+
+/// Broker cash on the wrong day is Reported only. Plan $ stays on the payable week.
+#[tokio::test]
+async fn off_calendar_actual_does_not_move_plan_week() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "GLAD", "name": "GLAD"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": "GLAD",
+            "declarationSource": "gladstone",
+            "sourceUrl": "https://www.gladstonecapital.com/investors/stock-data/dividend-history",
+            "calendarPolicy": "issuer_calendar",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "provider": "Gladstone",
+            "divType": "DIV-1",
+            "riskTier": "Core"
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        security_id,
+        "GLAD",
+        "Monthly",
+        false,
+    )
+    .await
+    .expect("complete collector");
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1500,
+            "amountScale": 4,
+            "paymentPeriod": "2026-08-31",
+            "source": "gladstone",
+            "enteredAt": "2026-07-14"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1500,
+            "amountScale": 4,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-01-01",
+            "decisionReason": "owner",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-01-02",
+            "origin": "purchase",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 10_000,
+            "taxBasisMinor": 10_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-08-01",
+            "dates": [{"payOn": "2026-09-30", "source": "vendor_payable"}]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1500,
+            "amountScale": 4,
+            "paymentPeriod": "2026-09-30",
+            "source": "gladstone",
+            "enteredAt": "2026-07-14"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "activityType": "dividend",
+            "amountMinor": 5706,
+            "scale": 2,
+            "occurredOn": "2026-09-16",
+            "idempotencyKey": "glad-w37-actual"
+        }),
+    )
+    .await;
+
+    let w37 = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-18" }),
+    )
+    .await;
+    assert!(
+        w37["positions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["symbol"] != "GLAD"),
+        "off-calendar 9/16 actual must not put GLAD on W37 Plan: {w37}"
+    );
+
+    let w39 = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-30" }),
+    )
+    .await;
+    let w39_row = w39["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "GLAD")
+        .unwrap_or_else(|| panic!("GLAD Plan $ stays on payable W39: {w39}"));
+    assert_eq!(w39_row["payOn"], "2026-09-30");
+    assert_eq!(w39_row["planKnown"], true);
+    assert_eq!(w39_row["plannedMinor"], 150);
+
+    let planned_w37: i64 = w37["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["planKnown"] == true)
+        .map(|p| p["plannedMinor"].as_i64().unwrap_or(0))
+        .sum();
+    let capture_w37 = query_json(
+        &platform,
+        "TrendsWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-18" }),
+    )
+    .await;
+    assert_eq!(
+        capture_w37["plannedWeeklyIncomeMinor"].as_i64().unwrap(),
+        planned_w37,
+        "Cash/Trends W37 Planned weekly income must equal Income Plan Plan $: {capture_w37}"
+    );
+}
+

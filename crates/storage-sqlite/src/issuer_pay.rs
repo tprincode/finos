@@ -53,6 +53,7 @@ pub async fn pay_date_replace(
         .execute(pool)
         .await
         .map_err(|e| map_err(e.into()))?;
+        let _ = crate::assumed_pay::prune_for_vendor(pool, security_id, &row.pay_on).await;
         stored.push(row);
     }
     Ok(stored)
@@ -74,6 +75,7 @@ pub async fn pay_date_insert(
     .await
     .map_err(|e| map_err(e.into()))?;
     if existing.is_some() {
+        let _ = crate::assumed_pay::prune_for_vendor(pool, record.security_id, &record.pay_on).await;
         return Ok(record);
     }
     sqlx::query(
@@ -89,6 +91,7 @@ pub async fn pay_date_insert(
     .execute(pool)
     .await
     .map_err(|e| map_err(e.into()))?;
+    let _ = crate::assumed_pay::prune_for_vendor(pool, record.security_id, &record.pay_on).await;
     Ok(record)
 }
 

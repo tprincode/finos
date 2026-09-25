@@ -48,6 +48,8 @@ export type TrendsWeekCapture = {
   speculationCashMinor?: number | null;
   suggestedProfitMinor: number;
   suggestedMonthlyDivsMinor: number;
+  plannedWeeklyIncomeMinor?: number;
+  reportedWeeklyIncomeMinor?: number;
   suggestedAcct9EtfProxyMinor?: number | null;
   firstUnpopulatedStart?: string;
   chooserSaturdays?: string[];
@@ -322,8 +324,10 @@ export function TrendsCapturePanel({
     etfValueForTotals;
   const fidChange = fid - (capture.prior?.fidelityTotalMinor ?? 0);
   const schChange = schwab - (capture.prior?.schwabTotalMinor ?? 0);
-  const weekIncome = capture.suggestedMonthlyDivsMinor;
+  const plannedIncome = capture.plannedWeeklyIncomeMinor ?? null;
+  const reportedIncome = capture.reportedWeeklyIncomeMinor ?? 0;
   const profit = capture.suggestedProfitMinor;
+  const weekIncome = capture.suggestedMonthlyDivsMinor;
 
   const typedByAccount: Record<string, number | null> = {
     Income: incomeCash,
@@ -394,6 +398,15 @@ export function TrendsCapturePanel({
     capture.closed ||
     !gridFilled ||
     (materialGaps.length > 0 && !reasonsReady);
+  const acceptBlockedReason = busy
+    ? null
+    : !gridFilled
+      ? "Type a Total for every account before Accept."
+      : capture.closed
+        ? "This week is closed. Use Correct week."
+        : materialGaps.length > 0 && !reasonsReady
+          ? "Select a cash-gap reason (fee, split, or other) before Accept."
+          : null;
 
   const reloadWeekDraft = (from: TrendsWeekCapture) => {
     const next = draftFromCapture(from);
@@ -499,8 +512,12 @@ export function TrendsCapturePanel({
       </div>
       <dl className="trends-capture-review" aria-label="Trends week review">
         <div>
-          <dt>Week income</dt>
-          <dd>{formatUsd(weekIncome, scale)}</dd>
+          <dt>Planned weekly income</dt>
+          <dd>{plannedIncome ? formatUsd(plannedIncome, scale) : ""}</dd>
+        </div>
+        <div>
+          <dt>Reported weekly income</dt>
+          <dd>{reportedIncome ? formatUsd(reportedIncome, scale) : ""}</dd>
         </div>
         <div>
           <dt>Total cash</dt>
@@ -593,6 +610,11 @@ export function TrendsCapturePanel({
           </tbody>
         </table>
       </div>
+      {acceptBlockedReason ? (
+        <p aria-live="polite" aria-label="Accept blocked reason">
+          {acceptBlockedReason}
+        </p>
+      ) : null}
       <div className="buttons">
         <button
           type="button"

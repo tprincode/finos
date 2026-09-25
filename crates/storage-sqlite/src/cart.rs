@@ -74,10 +74,20 @@ fn parse_uuid(raw: &str) -> Result<Uuid, PlatformError> {
     Uuid::parse_str(raw).map_err(|e| PlatformError::new("parse_error", e.to_string()))
 }
 
+async fn plan_id_of(pool: &SqlitePool, scenario_id: Uuid) -> Result<Uuid, PlatformError> {
+    let raw: String = sqlx::query_scalar("SELECT plan_id FROM cart_scenario WHERE scenario_id = ?")
+        .bind(scenario_id.to_string())
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?
+        .ok_or_else(|| PlatformError::new("missing_scenario", "cart scenario not found"))?;
+    parse_uuid(&raw)
+}
+
 pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartScenarioBody, PlatformError> {
     let header = sqlx::query(
-        "SELECT scenario_id, account_id, account_name, name, kind, status, as_of, cash_yield_bps,
-                funding_source, override_reason, created_at, agreed_at
+        "SELECT scenario_id, plan_id, slot, account_id, account_name, name, kind, status, as_of,
+                cash_yield_bps, funding_source, override_reason, created_at, agreed_at
          FROM cart_scenario WHERE scenario_id = ?",
     )
     .bind(scenario_id.to_string())
@@ -85,13 +95,23 @@ pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartSc
     .await
     .map_err(|e| map_err(e.into()))?
     .ok_or_else(|| PlatformError::new("missing_scenario", "cart scenario not found"))?;
+    let plan_raw: String = header.try_get("plan_id").map_err(|e| map_err(e.into()))?;
+    let plan_id = parse_uuid(&plan_raw)?;
+    let deposit_minor: i64 = sqlx::query_scalar(
+        "SELECT deposit_minor FROM cart_plan WHERE plan_id = ?",
+    )
+    .bind(plan_id.to_string())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?
+    .unwrap_or(0);
     let sells = sqlx::query(
         "SELECT line_id, lot_id, security_id, symbol, qty_minor, qty_scale, unit_minor,
                 proceeds_minor, is_cash, original_cost_minor, performance_cost_minor, tax_cost_minor,
                 performance_gain_minor, tax_gain_minor
-         FROM cart_sell_line WHERE scenario_id = ? ORDER BY line_id",
+         FROM cart_sell_line WHERE plan_id = ? ORDER BY is_cash DESC, symbol, line_id",
     )
-    .bind(scenario_id.to_string())
+    .bind(plan_id.to_string())
     .fetch_all(pool)
     .await
     .map_err(|e| map_err(e.into()))?;
@@ -184,6 +204,9 @@ pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartSc
         as_of: header.try_get("as_of").map_err(|e| map_err(e.into()))?,
         cash_yield_bps: header.try_get("cash_yield_bps").map_err(|e| map_err(e.into()))?,
         funding_source: header.try_get("funding_source").map_err(|e| map_err(e.into()))?,
+        plan_id: Some(plan_id),
+        slot: header.try_get("slot").map_err(|e| map_err(e.into()))?,
+        deposit_minor,
         override_reason: header.try_get("override_reason").map_err(|e| map_err(e.into()))?,
         sell_lines,
         buy_lines,
@@ -200,6 +223,7 @@ pub async fn scenario_create(
     name: String,
     funding_source: String,
 ) -> Result<CartScenarioBody, PlatformError> {
+    let plan_id = Uuid::new_v4();
     let id = Uuid::new_v4();
     let created = chrono::Utc::now().to_rfc3339();
     let label = if name.trim().is_empty() {
@@ -208,18 +232,34 @@ pub async fn scenario_create(
         name
     };
     sqlx::query(
-        "INSERT INTO cart_scenario (scenario_id, account_id, account_name, name, kind, status, as_of,
-            cash_yield_bps, funding_source, created_at)
-         VALUES (?, ?, ?, ?, 'Swap', 'draft', ?, ?, ?, ?)",
+        "INSERT INTO cart_plan (plan_id, account_id, account_name, name, as_of, cash_yield_bps,
+            deposit_minor, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+    )
+    .bind(plan_id.to_string())
+    .bind(account_id.to_string())
+    .bind(&account_name)
+    .bind(&label)
+    .bind(&as_of)
+    .bind(cash_yield_bps)
+    .bind(&created)
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    sqlx::query(
+        "INSERT INTO cart_scenario (scenario_id, plan_id, slot, account_id, account_name, name, kind,
+            status, as_of, cash_yield_bps, funding_source, created_at)
+         VALUES (?, ?, 'A', ?, ?, ?, 'Swap', 'draft', ?, ?, ?, ?)",
     )
     .bind(id.to_string())
+    .bind(plan_id.to_string())
     .bind(account_id.to_string())
     .bind(&account_name)
     .bind(&label)
     .bind(&as_of)
     .bind(cash_yield_bps)
     .bind(&funding_source)
-    .bind(created)
+    .bind(&created)
     .execute(pool)
     .await
     .map_err(|e| map_err(e.into()))?;
@@ -243,14 +283,15 @@ pub async fn sell_line_add(
     performance_gain_minor: Option<i64>,
     tax_gain_minor: Option<i64>,
 ) -> Result<CartScenarioBody, PlatformError> {
+    let plan_id = plan_id_of(pool, scenario_id).await?;
     sqlx::query(
-        "INSERT INTO cart_sell_line (line_id, scenario_id, lot_id, security_id, symbol, qty_minor,
+        "INSERT INTO cart_sell_line (line_id, plan_id, lot_id, security_id, symbol, qty_minor,
             qty_scale, unit_minor, proceeds_minor, is_cash, original_cost_minor,
             performance_cost_minor, tax_cost_minor, performance_gain_minor, tax_gain_minor)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(Uuid::new_v4().to_string())
-    .bind(scenario_id.to_string())
+    .bind(plan_id.to_string())
     .bind(lot_id.to_string())
     .bind(security_id.map(|id| id.to_string()))
     .bind(&symbol)
@@ -441,15 +482,36 @@ pub async fn scenario_discard(pool: &SqlitePool, scenario_id: Uuid) -> Result<()
             "only a draft swap can be discarded",
         ));
     }
+    let plan_id = scene
+        .plan_id
+        .ok_or_else(|| PlatformError::new("missing_plan", "cart plan not found"))?;
+    let siblings: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cart_scenario WHERE plan_id = ?",
+    )
+    .bind(plan_id.to_string())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
     for sql in [
         "DELETE FROM cart_execute_step WHERE scenario_id = ?",
         "DELETE FROM cart_eval_snapshot WHERE scenario_id = ?",
         "DELETE FROM cart_buy_line WHERE scenario_id = ?",
-        "DELETE FROM cart_sell_line WHERE scenario_id = ?",
         "DELETE FROM cart_scenario WHERE scenario_id = ?",
     ] {
         sqlx::query(sql)
             .bind(scenario_id.to_string())
+            .execute(pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+    }
+    if siblings <= 1 {
+        sqlx::query("DELETE FROM cart_sell_line WHERE plan_id = ?")
+            .bind(plan_id.to_string())
+            .execute(pool)
+            .await
+            .map_err(|e| map_err(e.into()))?;
+        sqlx::query("DELETE FROM cart_plan WHERE plan_id = ?")
+            .bind(plan_id.to_string())
             .execute(pool)
             .await
             .map_err(|e| map_err(e.into()))?;
@@ -486,9 +548,122 @@ pub async fn scenario_rename(
     } else {
         name
     };
-    sqlx::query("UPDATE cart_scenario SET name = ? WHERE scenario_id = ?")
+    let plan_id = plan_id_of(pool, scenario_id).await?;
+    sqlx::query("UPDATE cart_plan SET name = ? WHERE plan_id = ?")
         .bind(&label)
+        .bind(plan_id.to_string())
+        .execute(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+    sqlx::query("UPDATE cart_scenario SET name = ? WHERE plan_id = ?")
+        .bind(&label)
+        .bind(plan_id.to_string())
+        .execute(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+    scenario_get(pool, scenario_id).await
+}
+
+pub async fn sell_line_remove(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+    line_id: Uuid,
+) -> Result<CartScenarioBody, PlatformError> {
+    let plan_id = plan_id_of(pool, scenario_id).await?;
+    sqlx::query("DELETE FROM cart_sell_line WHERE line_id = ? AND plan_id = ?")
+        .bind(line_id.to_string())
+        .bind(plan_id.to_string())
+        .execute(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+    scenario_get(pool, scenario_id).await
+}
+
+pub async fn sell_symbol_clear(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+    symbol: String,
+) -> Result<CartScenarioBody, PlatformError> {
+    let plan_id = plan_id_of(pool, scenario_id).await?;
+    sqlx::query(
+        "DELETE FROM cart_sell_line WHERE plan_id = ? AND upper(symbol) = upper(?)",
+    )
+    .bind(plan_id.to_string())
+    .bind(symbol.trim())
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    scenario_get(pool, scenario_id).await
+}
+
+pub async fn buy_line_remove(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+    line_id: Uuid,
+) -> Result<CartScenarioBody, PlatformError> {
+    sqlx::query("DELETE FROM cart_buy_line WHERE line_id = ? AND scenario_id = ?")
+        .bind(line_id.to_string())
         .bind(scenario_id.to_string())
+        .execute(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+    scenario_get(pool, scenario_id).await
+}
+
+pub async fn scenario_slot_add(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+) -> Result<CartScenarioBody, PlatformError> {
+    let src = scenario_get(pool, scenario_id).await?;
+    let plan_id = src
+        .plan_id
+        .ok_or_else(|| PlatformError::new("missing_plan", "cart plan not found"))?;
+    if let Some(existing) = sqlx::query_scalar::<_, String>(
+        "SELECT scenario_id FROM cart_scenario WHERE plan_id = ? AND slot = 'B'",
+    )
+    .bind(plan_id.to_string())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?
+    {
+        return scenario_get(pool, parse_uuid(&existing)?).await;
+    }
+    let id = Uuid::new_v4();
+    let created = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO cart_scenario (scenario_id, plan_id, slot, account_id, account_name, name, kind,
+            status, as_of, cash_yield_bps, funding_source, created_at)
+         VALUES (?, ?, 'B', ?, ?, ?, 'Swap', 'draft', ?, ?, 'sellLots', ?)",
+    )
+    .bind(id.to_string())
+    .bind(plan_id.to_string())
+    .bind(src.account_id.to_string())
+    .bind(&src.account_name)
+    .bind(&src.name)
+    .bind(&src.as_of)
+    .bind(src.cash_yield_bps)
+    .bind(created)
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    scenario_get(pool, id).await
+}
+
+pub async fn plan_deposit_set(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+    deposit_minor: i64,
+) -> Result<CartScenarioBody, PlatformError> {
+    if deposit_minor < 0 {
+        return Err(PlatformError::new(
+            "invalid_deposit",
+            "deposit cannot be negative",
+        ));
+    }
+    let plan_id = plan_id_of(pool, scenario_id).await?;
+    sqlx::query("UPDATE cart_plan SET deposit_minor = ? WHERE plan_id = ?")
+        .bind(deposit_minor)
+        .bind(plan_id.to_string())
         .execute(pool)
         .await
         .map_err(|e| map_err(e.into()))?;

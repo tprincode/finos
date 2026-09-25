@@ -272,6 +272,12 @@ pub struct CartScenarioBody {
     pub cash_yield_bps: i64,
     #[serde(default = "default_cart_funding_source")]
     pub funding_source: String,
+    #[serde(default)]
+    pub plan_id: Option<Uuid>,
+    #[serde(default = "default_cart_slot")]
+    pub slot: String,
+    #[serde(default)]
+    pub deposit_minor: i64,
     pub override_reason: Option<String>,
     pub sell_lines: Vec<CartSellLineBody>,
     pub buy_lines: Vec<CartBuyLineBody>,
@@ -280,6 +286,10 @@ pub struct CartScenarioBody {
 
 fn default_cart_funding_source() -> String {
     "sellLots".into()
+}
+
+fn default_cart_slot() -> String {
+    "A".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -697,6 +707,12 @@ pub struct TrendsWeekCaptureBody {
     pub suggested_profit_minor: i64,
     /// Week-aligned Income Plan paid actuals, else that week's Decl $.
     pub suggested_monthly_divs_minor: i64,
+    /// Income Plan Plan $ for the Sat–Fri week (plan_history × remaining qty).
+    #[serde(default)]
+    pub planned_weekly_income_minor: i64,
+    /// Paid brokerage actuals in the Sat–Fri week. 0 when none are stored.
+    #[serde(default)]
+    pub reported_weekly_income_minor: i64,
     /// Suggested Acct9 70% from last-price market value of non-cash lots.
     pub suggested_acct9_etf_proxy_minor: Option<i64>,
     #[serde(default)]
@@ -853,6 +869,14 @@ pub struct TrendsWeekPoint {
     pub roth_balance_minor: Option<i64>,
     pub speculation_balance_minor: Option<i64>,
     #[serde(default)]
+    pub car_cash_minor: Option<i64>,
+    #[serde(default)]
+    pub health_cash_minor: Option<i64>,
+    #[serde(default)]
+    pub roth_cash_minor: Option<i64>,
+    #[serde(default)]
+    pub speculation_cash_minor: Option<i64>,
+    #[serde(default)]
     pub fidelity_wk_change_minor: i64,
     #[serde(default)]
     pub schwab_wk_change_minor: i64,
@@ -903,6 +927,321 @@ pub struct HoldingQtyEventRecord {
     pub remaining_quantity_minor: i64,
     pub quantity_scale: u8,
     pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashElementRecord {
+    pub element_id: Uuid,
+    pub account: String,
+    pub kind: String,
+    pub cadence: String,
+    pub amount_minor: i64,
+    pub note: String,
+    pub weekday_or_month_day: String,
+    #[serde(default)]
+    pub start_on: String,
+    #[serde(default)]
+    pub stop_on: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRegisterLine {
+    pub line_id: Uuid,
+    pub source_row: Option<i64>,
+    pub pay_type: String,
+    pub occurred_on: Option<String>,
+    pub amount_minor: i64,
+    pub scale: u8,
+    pub category: String,
+    pub vendor: String,
+    pub description: String,
+    pub true_up_on: Option<String>,
+    #[serde(default)]
+    pub completed: bool,
+    #[serde(default)]
+    pub step_transfer: bool,
+    #[serde(default)]
+    pub step_billpay: bool,
+    #[serde(default)]
+    pub step_pay: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRegisterGetBody {
+    pub lines: Vec<ExternalRegisterLine>,
+    pub pay_types: Vec<String>,
+    pub categories: Vec<String>,
+    pub vendors: Vec<String>,
+    pub total_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedOccurrenceRecord {
+    pub occurrence_id: Uuid,
+    pub element_id: Uuid,
+    pub account: String,
+    pub kind: String,
+    pub occurred_on: String,
+    pub amount_minor: i64,
+    pub confirmed_at: Option<String>,
+    pub note: String,
+    #[serde(default)]
+    pub is_exception: bool,
+    #[serde(default)]
+    pub is_cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WeekAheadRow {
+    pub occurrence_id: Uuid,
+    pub element_id: Uuid,
+    pub occurred_on: String,
+    pub account: String,
+    pub transaction: String,
+    pub amount_minor: i64,
+    pub note: String,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WeekAheadBody {
+    pub period_start: String,
+    pub period_end: String,
+    pub rows: Vec<WeekAheadRow>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashRegisterRow {
+    pub occurred_on: String,
+    pub status: String,
+    pub transaction: String,
+    pub deposit_minor: i64,
+    pub withdrawal_minor: i64,
+    pub running_minor: Option<i64>,
+    pub label: String,
+    pub posted: bool,
+    pub source: String,
+    #[serde(default)]
+    pub occurrence_id: Option<Uuid>,
+    #[serde(default)]
+    pub element_id: Option<Uuid>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashRegisterSeriesPoint {
+    pub occurred_on: String,
+    pub net_minor: i64,
+    pub running_minor: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashRegisterBody {
+    pub account: String,
+    pub period: String,
+    pub period_start: String,
+    pub period_end: String,
+    pub as_of_date: String,
+    pub start_known: bool,
+    pub start_minor: Option<i64>,
+    pub rows: Vec<CashRegisterRow>,
+    pub series: Vec<CashRegisterSeriesPoint>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashElementListItem {
+    pub element_id: Uuid,
+    pub account: String,
+    pub kind: String,
+    pub cadence: String,
+    pub amount_minor: i64,
+    pub note: String,
+    pub weekday_or_month_day: String,
+    #[serde(default)]
+    pub start_on: String,
+    #[serde(default)]
+    pub stop_on: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_occurred_on: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_amount_minor: Option<i64>,
+    #[serde(default)]
+    pub exception_count: u32,
+    #[serde(default)]
+    pub exceptions: Vec<CashElementOccurrenceInput>,
+    #[serde(default)]
+    pub upcoming: Vec<CashElementOccurrenceInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashElementListBody {
+    pub account: String,
+    pub items: Vec<CashElementListItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashElementHistoryRow {
+    pub occurred_on: String,
+    pub element_id: Uuid,
+    pub occurrence_id: Uuid,
+    pub element_name: String,
+    pub account: String,
+    pub kind: String,
+    pub side: String,
+    pub amount_minor: i64,
+    pub status: String,
+    pub cadence: String,
+    pub activity_type: String,
+    pub posted_key: String,
+    pub is_exception: bool,
+    pub note: String,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CashElementHistoryTotals {
+    pub actual_count: u32,
+    pub actual_debit_minor: i64,
+    pub actual_credit_minor: i64,
+    pub actual_net_minor: i64,
+    pub planned_count: u32,
+    pub planned_debit_minor: i64,
+    pub planned_credit_minor: i64,
+    pub row_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashElementHistoryBody {
+    pub element_id: Uuid,
+    pub element_name: String,
+    pub account: String,
+    pub kind: String,
+    pub cadence: String,
+    pub amount_minor: i64,
+    pub start_on: String,
+    pub stop_on: String,
+    pub retired: bool,
+    pub duration: String,
+    pub period_start: String,
+    pub period_end: String,
+    pub as_of_date: String,
+    pub rows: Vec<CashElementHistoryRow>,
+    pub totals: CashElementHistoryTotals,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashYtdRow {
+    pub label: String,
+    pub actual_minor: i64,
+    pub remaining_minor: Option<i64>,
+    pub eoy_minor: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashYtdBody {
+    pub as_of_date: String,
+    pub view: String,
+    pub rows: Vec<CashYtdRow>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashCoverageRow {
+    pub account: String,
+    pub plan_income_minor: Option<i64>,
+    pub plan_expense_minor: Option<i64>,
+    pub plan_minor: Option<i64>,
+    pub average_minor: Option<i64>,
+    pub actual_income_minor: Option<i64>,
+    pub actual_expense_minor: Option<i64>,
+    pub actual_minor: Option<i64>,
+    pub declared_minor: Option<i64>,
+    pub lookback_plan_minor: Option<i64>,
+    pub delta_minor: Option<i64>,
+    pub variance_bps: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashCoverageIncomeLine {
+    pub account: String,
+    pub symbol: String,
+    pub per_period_minor: Option<i64>,
+    pub periods: Option<i64>,
+    pub year_minor: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashCoverageExpenseLine {
+    pub account: String,
+    pub name: String,
+    pub cadence: String,
+    pub per_period_minor: i64,
+    pub periods: i64,
+    pub year_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashCoverageBody {
+    pub as_of_date: String,
+    pub period: String,
+    pub period_start: String,
+    pub period_end: String,
+    pub lookback_start: String,
+    pub lookback_end: String,
+    pub rows: Vec<CashCoverageRow>,
+    pub income_lines: Vec<CashCoverageIncomeLine>,
+    pub expense_lines: Vec<CashCoverageExpenseLine>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashElementOccurrenceInput {
+    pub occurred_on: String,
+    pub amount_minor: i64,
+    #[serde(default)]
+    pub occurrence_id: Option<Uuid>,
+    #[serde(default)]
+    pub is_exception: bool,
+    #[serde(default)]
+    pub is_cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashElementSaveBody {
+    pub element: CashElementRecord,
+    pub occurrences: Vec<PlannedOccurrenceRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedOccurrenceSaveBody {
+    pub element_id: Uuid,
+    pub occurrences: Vec<PlannedOccurrenceRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1094,6 +1433,9 @@ pub struct AccountValueHomeBody {
     pub schwab: AccountValueSeriesBody,
     #[serde(default)]
     pub risk: RiskValueHomeBody,
+    /// Same week cash series TrendsGet builds. Home paints from this so it does not wait on Trends.
+    #[serde(default)]
+    pub weeks: Vec<TrendsWeekPoint>,
     pub note: String,
     pub scale: u8,
 }
@@ -1118,6 +1460,15 @@ pub struct DividendPlanHomeBody {
     pub rows: Vec<DividendPlanRowBody>,
     pub total: DividendPlanRowBody,
     pub scale: u8,
+}
+
+/// One `account_value_home_view` shared into Dividend Plan and DataSummary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeOpenBody {
+    pub summary: DataSummaryBody,
+    pub account_value: AccountValueHomeBody,
+    pub dividend_plan: DividendPlanHomeBody,
 }
 
 /// Individual importable workbooks written under raw-data/<as_of>/.
@@ -1971,6 +2322,7 @@ pub struct CashManagementSsaRecent {
     pub occurred_on: String,
     pub amount_minor: i64,
     pub account_name: String,
+    pub payee: String,
     pub extra_audit: bool,
 }
 
@@ -2021,6 +2373,10 @@ pub struct CarRocPlanBody {
     pub ytd_paid_minor: i64,
     pub ytd_ordinary_minor: Option<i64>,
     pub ytd_roc_minor: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ytd_roc_pct: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ytd_roc_unknown_reason: Option<String>,
     pub ytd_long_term_gain_minor: Option<i64>,
     pub ytd_short_term_gain_minor: Option<i64>,
     pub lot_sale_pl_minor: Option<i64>,
@@ -2031,6 +2387,41 @@ pub struct CarRocPlanBody {
     pub tax_note: String,
     pub lot_sale_note: String,
     pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaxPlanningRow {
+    pub key: String,
+    pub label: String,
+    pub ytd_minor: Option<i64>,
+    pub projected_minor: Option<i64>,
+    pub total_minor: Option<i64>,
+    pub magi_impact: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaxPlanningGroup {
+    pub label: String,
+    pub ytd_minor: Option<i64>,
+    pub projected_minor: Option<i64>,
+    pub total_minor: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaxPlanningBody {
+    pub as_of_date: String,
+    pub rows: Vec<TaxPlanningRow>,
+    pub magi_included: TaxPlanningGroup,
+    pub not_magi: TaxPlanningGroup,
+    pub all_sources: TaxPlanningGroup,
+    pub scale: u8,
+    #[serde(default)]
+    pub car: Option<CarRocPlanBody>,
+    #[serde(default)]
+    pub ytd: Option<CashYtdBody>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2128,6 +2519,33 @@ pub struct IssuerPayDateRecord {
     pub pay_on: String,
     pub source: String,
     pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssumedPayDateRecord {
+    pub assumed_pay_date_id: Uuid,
+    pub security_id: Uuid,
+    pub pay_on: String,
+    pub cadence: String,
+    pub provenance: String,
+    pub assumed_on: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanHorizonNameBody {
+    pub security_id: Uuid,
+    pub symbol: String,
+    pub holes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanHorizonGetBody {
+    pub assume_year: i32,
+    pub hole_count: u32,
+    pub names: Vec<PlanHorizonNameBody>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2588,6 +3006,8 @@ pub struct LastPriceRefreshBody {
 #[serde(rename_all = "camelCase")]
 pub struct LastPriceAutoWindowBody {
     pub allowed: bool,
+    /// Weekday 9–4 Eastern only. Collectors use this; last price also needs the 4-hour gate (`allowed`).
+    pub in_schedule: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<String>,
 }

@@ -2480,12 +2480,13 @@ fn live_cornerstone_distribution_body(
     source_url: Option<&str>,
 ) -> Option<(String, String)> {
     let mut pages = Vec::new();
+    // Quarterly PDFs live on the press-releases hub, not the fund home.
+    pages.extend(adapter_probe_urls("cornerstone", symbol));
     if let Some(stored) = source_url.map(str::trim).filter(|s| !s.is_empty()) {
         if financial_domain::div1::declaration_url_matches_source("cornerstone", stored) {
             pages.push(stored.to_string());
         }
     }
-    pages.extend(adapter_probe_urls("cornerstone", symbol));
     let mut seen_pages = std::collections::HashSet::new();
     let mut seen_pdfs = std::collections::HashSet::new();
     let mut cands = Vec::new();
@@ -2547,12 +2548,13 @@ fn live_gladstone_distribution_body(
     source_url: Option<&str>,
 ) -> Option<(String, String)> {
     let mut pages = Vec::new();
+    // Dividend-history is a JS widget; newsroom press has payable dates.
+    pages.extend(adapter_probe_urls("gladstone", symbol));
     if let Some(stored) = source_url.map(str::trim).filter(|s| !s.is_empty()) {
         if financial_domain::div1::declaration_url_matches_source("gladstone", stored) {
             pages.push(stored.to_string());
         }
     }
-    pages.extend(adapter_probe_urls("gladstone", symbol));
     let mut seen = std::collections::HashSet::new();
     let mut cands = Vec::new();
     let mut fetched_url = String::new();
@@ -3591,6 +3593,18 @@ pub fn collect_from_fetched_page(
     out
 }
 
+#[cfg(test)]
+fn collect_from_fetched_page_as_of(
+    target: &DeclarationTarget,
+    source: &str,
+    html: Option<&str>,
+    as_of: &str,
+) -> DeclarationCollectOutcome {
+    let mut out = DeclarationCollectOutcome::default();
+    apply_fetched_page_as_of(&mut out, target, source, html, "", None, as_of);
+    out
+}
+
 fn apply_mlp_sec_8k_empty(
     out: &mut DeclarationCollectOutcome,
     target: &DeclarationTarget,
@@ -3658,7 +3672,35 @@ fn apply_fetched_page(
     fetched_url: &str,
     payment_calendar_url: Option<&str>,
 ) {
-    apply_fetched_page_inner(out, target, source, html, fetched_url, payment_calendar_url);
+    apply_fetched_page_as_of(
+        out,
+        target,
+        source,
+        html,
+        fetched_url,
+        payment_calendar_url,
+        &Utc::now().date_naive().to_string(),
+    );
+}
+
+fn apply_fetched_page_as_of(
+    out: &mut DeclarationCollectOutcome,
+    target: &DeclarationTarget,
+    source: &str,
+    html: Option<&str>,
+    fetched_url: &str,
+    payment_calendar_url: Option<&str>,
+    as_of: &str,
+) {
+    apply_fetched_page_inner(
+        out,
+        target,
+        source,
+        html,
+        fetched_url,
+        payment_calendar_url,
+        as_of,
+    );
     stamp_declaration_run_if_quiet(out, target);
 }
 
@@ -3669,8 +3711,8 @@ fn apply_fetched_page_inner(
     html: Option<&str>,
     fetched_url: &str,
     payment_calendar_url: Option<&str>,
+    as_of: &str,
 ) {
-    let as_of = Utc::now().date_naive().to_string();
     let mlp = financial_domain::mlp_sec::is_adapter_kind(source)
         || financial_domain::mlp_sec::routes_fetch(source, Some(target.source_url.as_str()))
         || financial_domain::mlp_sec::is_sec_history_url(fetched_url);
@@ -3992,22 +4034,32 @@ fn apply_fetched_page_inner(
             }));
         }
         LookbackValidation::ShortWithInception { paid, expected } => {
-            out.misses.push(json!({
-                "securityId": target.security_id,
-                "symbol": target.symbol,
-                "declarationSource": source,
-                "reason": format!(
-                    "Stored paid count {paid} of {expected} expected since inception {} (this page parsed {page_paid_n}).",
-                    target.inception_on.trim()
-                ),
-                "contentHash": hash,
-                "code": "declaration_lookback_short",
-                "paidCount": paid,
-                "pagePaidCount": page_paid_n,
-                "requiredPaid": expected,
-                "inceptionOn": target.inception_on,
-                "inceptionApplied": true,
-            }));
+            let unpaid: Vec<&str> = cands
+                .iter()
+                .filter(|c| candidate_amount(c).is_none())
+                .filter_map(|c| c.get("paymentPeriod").and_then(|p| p.as_str()))
+                .collect();
+            if financial_domain::declaration_lookback::unpaid_current_month_covers_short(
+                paid, expected, &as_of, &unpaid,
+            ) {
+            } else {
+                out.misses.push(json!({
+                    "securityId": target.security_id,
+                    "symbol": target.symbol,
+                    "declarationSource": source,
+                    "reason": format!(
+                        "Stored paid count {paid} of {expected} expected since inception {} (this page parsed {page_paid_n}).",
+                        target.inception_on.trim()
+                    ),
+                    "contentHash": hash,
+                    "code": "declaration_lookback_short",
+                    "paidCount": paid,
+                    "pagePaidCount": page_paid_n,
+                    "requiredPaid": expected,
+                    "inceptionOn": target.inception_on,
+                    "inceptionApplied": true,
+                }));
+            }
         }
     }
 }
@@ -5491,13 +5543,101 @@ Amplify HACK Cybersecurity Covered Call ETF HAKY
             "expected complete short history, got {:?}",
             out.misses
         );
-        assert_eq!(
-            financial_domain::declaration_lookback::expected_declaration_lookback(
-                &inception.to_string(),
-                &as_of.to_string(),
-                "Monthly",
-            ),
-            6
+        let expected = financial_domain::declaration_lookback::expected_declaration_lookback(
+            &inception.to_string(),
+            &as_of.to_string(),
+            "Monthly",
+        );
+        assert!(
+            (5..=6).contains(&expected),
+            "six calendar months after launch is 5 or 6 completed month-ends, got {expected}"
+        );
+    }
+
+    fn haky_seven_paid_plus_sept_shell() -> String {
+        let mut rows = String::from(
+            "<table><tr><th>Ex-Date</th><th>Record Date</th><th>Payable Date</th><th>Amount (USD)</th></tr>",
+        );
+        for (pay, amt) in [
+            ("02/27/2026", "$0.32051"),
+            ("03/31/2026", "$0.39351"),
+            ("04/30/2026", "$0.36195"),
+            ("05/29/2026", "$0.41895"),
+            ("06/30/2026", "$0.4615"),
+            ("07/31/2026", "$0.38826"),
+            ("08/31/2026", "$0.3936"),
+            ("09/30/2026", "-"),
+        ] {
+            rows.push_str(&format!(
+                "<tr><td>{pay}</td><td>{pay}</td><td>{pay}</td><td>{amt}</td></tr>"
+            ));
+        }
+        rows.push_str("</table>");
+        rows
+    }
+
+    #[test]
+    fn haky_inception_anniversary_is_not_lookback_short() {
+        let rows = haky_seven_paid_plus_sept_shell();
+        let out = collect_from_fetched_page_as_of(
+            &DeclarationTarget {
+                inception_on: "2026-01-21".into(),
+                payment_frequency: "Monthly".into(),
+                paid_count: 7,
+                known_payment_periods: vec![
+                    "2026-02-27".into(),
+                    "2026-03-31".into(),
+                    "2026-04-30".into(),
+                    "2026-05-29".into(),
+                    "2026-06-30".into(),
+                    "2026-07-31".into(),
+                    "2026-08-31".into(),
+                ],
+                ..target("HAKY", "amplify", "")
+            },
+            "amplify",
+            Some(&rows),
+            "2026-09-21",
+        );
+        assert!(
+            out.misses
+                .iter()
+                .all(|m| m["code"] != "declaration_lookback_short"),
+            "21 Sep is inception anniversary, not a missing Sep pay: {:?}",
+            out.misses
+        );
+        assert_eq!(out.page_paid.len(), 7, "{:?}", out.page_paid);
+    }
+
+    #[test]
+    fn haky_month_end_unpaid_shell_is_not_lookback_short() {
+        let rows = haky_seven_paid_plus_sept_shell();
+        let out = collect_from_fetched_page_as_of(
+            &DeclarationTarget {
+                inception_on: "2026-01-21".into(),
+                payment_frequency: "Monthly".into(),
+                paid_count: 7,
+                known_payment_periods: vec![
+                    "2026-02-27".into(),
+                    "2026-03-31".into(),
+                    "2026-04-30".into(),
+                    "2026-05-29".into(),
+                    "2026-06-30".into(),
+                    "2026-07-31".into(),
+                    "2026-08-31".into(),
+                ],
+                ..target("HAKY", "amplify", "")
+            },
+            "amplify",
+            Some(&rows),
+            "2026-09-30",
+        );
+        assert!(
+            out.misses
+                .iter()
+                .all(|m| m["code"] != "declaration_lookback_short"),
+            "30 Sep shell with no amount is not a paid miss: {:?}",
+            out.misses
         );
     }
 

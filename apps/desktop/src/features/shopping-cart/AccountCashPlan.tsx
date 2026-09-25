@@ -7,13 +7,11 @@ export function AccountCashPlan({
   buyLines,
   agreed,
   filled,
-  depositAmount,
+  fillBlocked,
   fills,
   busy,
   writesBlocked,
-  onDepositAmount,
   onFill,
-  onDeposit,
   onConfirmFill,
 }: {
   pile: CashPileGet | null;
@@ -21,16 +19,13 @@ export function AccountCashPlan({
   buyLines: CartBuyLine[];
   agreed: boolean;
   filled: boolean;
-  depositAmount: string;
+  fillBlocked?: boolean;
   fills: Record<string, string>;
   busy?: boolean;
   writesBlocked?: boolean;
-  onDepositAmount: (value: string) => void;
   onFill: (lineId: string, value: string) => void;
-  onDeposit: () => void;
   onConfirmFill: () => void;
 }) {
-  const dollars = pile?.found ? pile.dollarsMinor : null;
   return (
     <section aria-label="Account cash pile">
       <p aria-label="Cart cash pile">
@@ -58,29 +53,6 @@ export function AccountCashPlan({
           </tbody>
         </table>
       ) : null}
-      {dollars != null && !agreed ? (
-        <div className="form-grid">
-          <label>
-            Deposit to cover
-            <input
-              aria-label="Cart cash deposit"
-              value={depositAmount}
-              onChange={(e) => onDepositAmount(e.target.value)}
-              disabled={busy || writesBlocked}
-            />
-          </label>
-          <div className="buttons">
-            <button
-              type="button"
-              aria-label="Post cash deposit"
-              disabled={busy || writesBlocked || !depositAmount.trim()}
-              onClick={onDeposit}
-            >
-              Post deposit
-            </button>
-          </div>
-        </div>
-      ) : null}
       {agreed && buyLines.length > 0 ? (
         <div aria-label="Confirm fill prices">
           <p>Confirm the price paid. Cost is deducted from {pile?.symbol ?? "cash"} only after this.</p>
@@ -99,7 +71,7 @@ export function AccountCashPlan({
             <button
               type="button"
               aria-label="Confirm fill"
-              disabled={busy || writesBlocked || filled}
+              disabled={busy || writesBlocked || filled || fillBlocked}
               onClick={onConfirmFill}
             >
               Confirm fill

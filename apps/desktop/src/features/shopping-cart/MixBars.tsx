@@ -1,4 +1,8 @@
-const TIERS = ["Foundation", "Core", "Risk On"] as const;
+const TIERS = [
+  ["Foundation", "foundation"],
+  ["Core", "core"],
+  ["Risk On", "riskOn"],
+] as const;
 
 export type MixSlice = {
   foundation: number;
@@ -11,11 +15,24 @@ function pct(part: number, total: number): string {
   return `${((part / total) * 100).toFixed(1)}%`;
 }
 
+function points(before: number, after: number, beforeTotal: number, afterTotal: number): string {
+  if (beforeTotal <= 0 || afterTotal <= 0) return "unknown";
+  const gap = (after / afterTotal - before / beforeTotal) * 100;
+  const sign = gap > 0 ? "+" : "";
+  return `${sign}${gap.toFixed(1)} pp`;
+}
+
 function dollars(minor: number): string {
   return (minor / 100).toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
   });
+}
+
+function signedDollars(minor: number): string {
+  if (minor === 0) return dollars(0);
+  const body = dollars(Math.abs(minor));
+  return minor > 0 ? `+${body}` : `-${body}`;
 }
 
 export function MixBars({
@@ -32,19 +49,42 @@ export function MixBars({
   const curTotal = current.foundation + current.core + current.riskOn;
   const afterTotal = after.foundation + after.core + after.riskOn;
   return (
-    <section aria-label="Mix">
-      <h3>Mix (cash off the bar)</h3>
-      <p>
-        Current: Foundation {pct(current.foundation, curTotal)} · Core{" "}
-        {pct(current.core, curTotal)} · Risk On {pct(current.riskOn, curTotal)}
-        <span className="cart-cash-label"> · Cash {dollars(cashCurrentMinor)} (off mix)</span>
+    <section aria-label="Allocation gap">
+      <h3>Allocation gap</h3>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Tier</th>
+            <th scope="col">Before</th>
+            <th scope="col">After</th>
+            <th scope="col">Gap</th>
+          </tr>
+        </thead>
+        <tbody>
+          {TIERS.map(([label, key]) => {
+            const before = current[key];
+            const next = after[key];
+            return (
+              <tr key={key}>
+                <th scope="row">{label}</th>
+                <td>
+                  {dollars(before)} · {pct(before, curTotal)}
+                </td>
+                <td>
+                  {dollars(next)} · {pct(next, afterTotal)}
+                </td>
+                <td>
+                  {signedDollars(next - before)} · {points(before, next, curTotal, afterTotal)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="cart-mix-note">
+        Cash {dollars(cashCurrentMinor)} before · {dollars(cashAfterMinor)} after. Cash stays off
+        the mix.
       </p>
-      <p>
-        After: Foundation {pct(after.foundation, afterTotal)} · Core {pct(after.core, afterTotal)} ·
-        Risk On {pct(after.riskOn, afterTotal)}
-        <span className="cart-cash-label"> · Cash {dollars(cashAfterMinor)} (off mix)</span>
-      </p>
-      <p className="cart-mix-note">Tiers: {TIERS.join(", ")}. Cash is a label beside the bar, not a slice.</p>
     </section>
   );
 }

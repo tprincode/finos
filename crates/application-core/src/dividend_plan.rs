@@ -192,6 +192,14 @@ pub async fn dividend_plan_home_view(
     as_of: &str,
 ) -> Result<DividendPlanHomeBody, PlatformError> {
     let home = crate::account_value::account_value_home_view(canonical, as_of).await?;
+    dividend_plan_from_home(canonical, as_of, &home).await
+}
+
+pub async fn dividend_plan_from_home(
+    canonical: &dyn Canonical,
+    _as_of: &str,
+    home: &crate::contracts::AccountValueHomeBody,
+) -> Result<DividendPlanHomeBody, PlatformError> {
     let accounts = canonical.account_list().await?;
     let basis = canonical.basis_get().await?;
     let securities = canonical.security_list().await?;
@@ -276,6 +284,14 @@ pub async fn home_avg_monthly_income(
     as_of: &str,
 ) -> Result<(Option<i64>, Option<i64>), PlatformError> {
     let plan = dividend_plan_home_view(canonical, as_of).await?;
+    home_avg_monthly_from_plan(canonical, as_of, &plan).await
+}
+
+pub async fn home_avg_monthly_from_plan(
+    canonical: &dyn Canonical,
+    as_of: &str,
+    plan: &DividendPlanHomeBody,
+) -> Result<(Option<i64>, Option<i64>), PlatformError> {
     let plan_monthly = avg_monthly_plan_from_annuals(plan.rows.iter().filter_map(|row| {
         is_avg_monthly_income_account(&row.account_name).then_some(row.annual_dividend_minor)
     }));
@@ -288,18 +304,31 @@ pub async fn home_avg_monthly_income(
         .filter(|a| is_avg_monthly_income_account(&a.name))
         .map(|a| a.account_id)
         .collect();
-    let dividend = canonical.dividend_get().await?;
-    let total = dividend
-        .actuals
+    let actuals = canonical
+        .dividend_list_in_range(None, &start, &end)
+        .await
+        .unwrap_or_default();
+    let total = actuals
         .iter()
-        .filter(|a| {
-            allowed.contains(&a.account_id)
-                && a.occurred_on.as_str() >= start.as_str()
-                && a.occurred_on.as_str() <= end.as_str()
-        })
+        .filter(|a| allowed.contains(&a.account_id))
         .map(|a| financial_domain::money::to_usd_cents(a.amount_minor, a.scale))
         .sum::<i64>();
     Ok((plan_monthly, Some(total / 12)))
+}
+
+pub async fn home_open_bundle(
+    canonical: &dyn Canonical,
+    as_of: &str,
+) -> Result<crate::contracts::HomeOpenBody, PlatformError> {
+    let home = crate::account_value::account_value_home_view(canonical, as_of).await?;
+    let plan = dividend_plan_from_home(canonical, as_of, &home).await?;
+    let avgs = home_avg_monthly_from_plan(canonical, as_of, &plan).await?;
+    let summary = crate::queries::data_summary_view_with_avgs(canonical, as_of, Some(avgs)).await?;
+    Ok(crate::contracts::HomeOpenBody {
+        summary,
+        account_value: home,
+        dividend_plan: plan,
+    })
 }
 
 #[cfg(test)]

@@ -50,7 +50,10 @@ pub async fn connect(path: &Path) -> Result<SqlitePool, StorageError> {
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(Duration::from_secs(5));
+        // WAL readers share pages; 4 stays after open-path indexes (writers still serialize).
+        .busy_timeout(Duration::from_secs(15))
+        .pragma("cache_size", "-65536")
+        .pragma("mmap_size", "268435456");
     let pool = SqlitePoolOptions::new()
         .max_connections(4)
         .connect_with(options)
@@ -282,5 +285,82 @@ mod tests {
         let second = get_or_create_device(&db.pool).await.unwrap();
         assert_eq!(first.device_id, second.device_id);
         assert_eq!(first.database_id, second.database_id);
+    }
+
+    #[tokio::test]
+    async fn open_path_indexes_and_pragmas() {
+        use sqlx::Row;
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDatabase::open(dir.path().join("finos.sqlite"))
+            .await
+            .unwrap();
+        let cache: i64 = sqlx::query_scalar("PRAGMA cache_size")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(cache, -65536, "64 MiB page cache");
+        let mmap: i64 = sqlx::query_scalar("PRAGMA mmap_size")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert!(mmap >= 268435456, "mmap_size {mmap}");
+        let plan = sqlx::query(
+            "EXPLAIN QUERY PLAN
+             SELECT activity_id FROM activity_event
+             WHERE account_id = 'acct' AND occurred_on >= '2026-01-01' AND occurred_on <= '2026-12-31'",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        let detail = plan
+            .iter()
+            .map(|row| row.try_get::<String, _>("detail").unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            detail.contains("idx_activity_event_account_on"),
+            "activity account+date must use open-path index: {detail}"
+        );
+        let div = sqlx::query(
+            "EXPLAIN QUERY PLAN
+             SELECT actual_id FROM dividend_actual
+             WHERE account_id = 'acct' AND occurred_on >= '2026-01-01' AND occurred_on <= '2026-12-31'",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        let div_detail = div
+            .iter()
+            .map(|row| row.try_get::<String, _>("detail").unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            div_detail.contains("idx_dividend_actual_account_on"),
+            "dividend account+date must use open-path index: {div_detail}"
+        );
+        let orphans: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM lot l
+             LEFT JOIN account a ON a.account_id = l.account_id
+             WHERE a.account_id IS NULL",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(orphans, 0, "lot.account_id must have a parent on a clean migrate");
+        let plan_orphans: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM plan_history p
+             LEFT JOIN security s ON s.security_id = p.security_id
+             WHERE s.security_id IS NULL",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            plan_orphans, 0,
+            "plan_history.security_id must have a parent on a clean migrate"
+        );
+        // After indexes, keep 4 WAL readers; writers still serialize (busy_timeout 15s).
+        assert!(db.pool.size() <= 4);
+        assert_eq!(db.pool.options().get_max_connections(), 4);
     }
 }

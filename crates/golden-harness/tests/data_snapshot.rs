@@ -58,15 +58,35 @@ async fn data_snapshot_writes_importable_individual_workbooks() {
         "Template_Transactions_Yield.xlsx",
         "Template_Transactions_Disbursement.xlsx",
         "Template_Trends_Weekly.xlsx",
+        "Template_Account_Week_Cash.xlsx",
+        "Template_Cash_Elements.xlsx",
+        "Template_Planned_Occurrences.xlsx",
+        "Template_PlanHistory.xlsx",
+        "Template_PaymentPatterns.xlsx",
+        "Template_PayDateOverrides.xlsx",
+        "Template_RocObservations.xlsx",
+        "Template_RetrieveRuns.xlsx",
+        "Template_WorkTickets.xlsx",
+        "Template_Exceptions.xlsx",
+        "Template_HoldingQtyEvents.xlsx",
+        "Template_LotAssignments.xlsx",
+        "Template_TaxProfiles.xlsx",
+        "Template_MarketValueDaily.xlsx",
+        "Template_DividendActuals.xlsx",
         "Template_Declarations.xlsx",
         "Template_PayDates.xlsx",
         "Template_LastPrices.xlsx",
         "Template_RetrievalTemplates.xlsx",
         "calculator-plan-seed.yaml",
+        "local.sqlite",
         "MANIFEST.md",
     ] {
         assert!(expected.join(name).is_file(), "missing {name}");
     }
+    assert!(
+        expected.join("local.sqlite").metadata().unwrap().len() > 0,
+        "copied local.sqlite is empty"
+    );
 
     let doc = parse_production_templates(&expected).expect("parse snapshot folder");
     assert!(

@@ -330,6 +330,31 @@ impl Platform for LocalPlatform {
             .unwrap_or(self.db_path.as_path())
             .to_path_buf()
     }
+
+    async fn sqlite_vacuum_into(&self, dest_sqlite: String) -> Result<(), PlatformError> {
+        let dest = PathBuf::from(&dest_sqlite);
+        if dest.exists() {
+            std::fs::remove_file(&dest).map_err(|e| {
+                PlatformError::new("snapshot_write_failed", format!("remove {}: {e}", dest.display()))
+            })?;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                PlatformError::new(
+                    "snapshot_write_failed",
+                    format!("create {}: {e}", parent.display()),
+                )
+            })?;
+        }
+        let pool = self.pool.read().await;
+        checkpoint(&*pool).await.map_err(map_err)?;
+        let dest_sql = dest.to_string_lossy().replace('\\', "/").replace('\'', "''");
+        sqlx::query(&format!("VACUUM INTO '{dest_sql}'"))
+            .execute(&*pool)
+            .await
+            .map_err(|e| PlatformError::new("snapshot_write_failed", format!("VACUUM INTO: {e}")))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

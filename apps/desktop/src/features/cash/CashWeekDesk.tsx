@@ -20,6 +20,13 @@ export type CashWeekOverview = {
   scale: number;
 };
 
+export type OpenWeekIncome = {
+  start: string;
+  end: string;
+  plannedMinor: number | null;
+  reportedMinor: number | null;
+};
+
 /** Every Sat–Fri from the first saved week through today, including unsaved gaps. */
 export function trendsTableSaturdays(
   weeks: TrendsWeekPoint[],
@@ -31,11 +38,10 @@ export function trendsTableSaturdays(
   return saturdaysFromTo(first, today);
 }
 
-export function weekIncomeMinor(
+export function reportedWeekIncomeMinor(
   start: string,
   end: string,
   points: TrendIncomePoint[] | undefined,
-  perf: DividendPerformanceGet | null | undefined,
 ): number | null {
   let paid = 0;
   let anyPaid = false;
@@ -47,11 +53,31 @@ export function weekIncomeMinor(
     }
   }
   if (anyPaid && paid !== 0) return paid;
+  return null;
+}
+
+export function plannedWeekIncomeMinor(
+  start: string,
+  end: string,
+  perf: DividendPerformanceGet | null | undefined,
+): number | null {
   const row = perf?.weeks.find((w) => w.start === start || w.end === end);
-  if (row?.declarationKnown && (row.declarationMinor ?? 0) !== 0) {
-    return row.declarationMinor ?? 0;
+  if (row?.planKnown) {
+    return row.plannedMinor ?? 0;
   }
   return null;
+}
+
+/** Paid actuals when present, else Income Plan Plan $ for that week. */
+export function weekIncomeMinor(
+  start: string,
+  end: string,
+  points: TrendIncomePoint[] | undefined,
+  perf: DividendPerformanceGet | null | undefined,
+): number | null {
+  const reported = reportedWeekIncomeMinor(start, end, points);
+  if (reported != null) return reported;
+  return plannedWeekIncomeMinor(start, end, perf);
 }
 
 function moneyOrBlank(
@@ -67,11 +93,16 @@ export function CashWeekDesk({
   points,
   dividendPerf,
   overview,
+  openWeek,
+  incomePlanWeek,
 }: {
   weeks: TrendsWeekPoint[] | null | undefined;
   points?: TrendIncomePoint[];
   dividendPerf?: DividendPerformanceGet | null;
   overview?: CashWeekOverview | null;
+  openWeek?: OpenWeekIncome | null;
+  /** Income Plan Plan $ for the Sat–Fri week currently on Income Plan. */
+  incomePlanWeek?: OpenWeekIncome | null;
 }) {
   const todayIso = new Date().toISOString().slice(0, 10);
   const tableSaturdays = useMemo(
@@ -109,7 +140,8 @@ export function CashWeekDesk({
             <thead>
               <tr>
                 <th>Week</th>
-                <th className="numeric">Week income</th>
+                <th className="numeric">Planned weekly income</th>
+                <th className="numeric">Reported weekly income</th>
                 <th className="numeric">Cash</th>
                 <th className="numeric">Fidelity</th>
                 <th className="numeric">Schwab</th>
@@ -121,19 +153,29 @@ export function CashWeekDesk({
                 const id = weekIdContaining(start);
                 const saved = savedByStart.get(id.start);
                 const rowScale = saved?.scale ?? scale;
-                const income = weekIncomeMinor(
-                  id.start,
-                  id.end,
-                  points,
-                  dividendPerf,
-                );
+                const isIncomePlanWeek =
+                  incomePlanWeek != null &&
+                  (incomePlanWeek.start === id.start ||
+                    incomePlanWeek.end === id.end);
+                const isOpenWeek =
+                  openWeek != null &&
+                  (openWeek.start === id.start || openWeek.end === id.end);
+                const planned = isIncomePlanWeek
+                  ? incomePlanWeek.plannedMinor
+                  : isOpenWeek
+                    ? openWeek.plannedMinor
+                    : plannedWeekIncomeMinor(id.start, id.end, dividendPerf);
+                const reported = isOpenWeek
+                  ? openWeek.reportedMinor
+                  : reportedWeekIncomeMinor(id.start, id.end, points);
                 return (
                   <tr key={id.end}>
                     <td>
                       {formatWeekNumber(id)} · {formatFridayEnding(id.start)} –{" "}
                       {formatFridayEnding(id.end)}
                     </td>
-                    <td className="numeric">{moneyOrBlank(income, rowScale)}</td>
+                    <td className="numeric">{moneyOrBlank(planned, rowScale)}</td>
+                    <td className="numeric">{moneyOrBlank(reported, rowScale)}</td>
                     <td className="numeric">
                       {saved ? formatUsd(saved.totalCashMinor, rowScale) : ""}
                     </td>

@@ -144,15 +144,21 @@ pub async fn sell_line_add(
     let (original_cost, perf_cost, tax_cost, perf_gain, tax_gain) = if cash {
         (None, None, None, None, None)
     } else {
-        let perf_cost = financial_domain::lot::proportional_basis(
-            lot.remaining_performance_minor,
-            lot.remaining_quantity_minor,
-            qty_minor,
+        let perf_cost = financial_domain::money::to_usd_cents(
+            financial_domain::lot::proportional_basis(
+                lot.remaining_performance_minor,
+                lot.remaining_quantity_minor,
+                qty_minor,
+            ),
+            lot.scale,
         );
-        let tax_cost = financial_domain::lot::proportional_basis(
-            lot.remaining_tax_minor,
-            lot.remaining_quantity_minor,
-            qty_minor,
+        let tax_cost = financial_domain::money::to_usd_cents(
+            financial_domain::lot::proportional_basis(
+                lot.remaining_tax_minor,
+                lot.remaining_quantity_minor,
+                qty_minor,
+            ),
+            lot.scale,
         );
         let (pg, tg) = financial_domain::lot::lifetime_gains(proceeds_minor, perf_cost, tax_cost);
         (
@@ -375,14 +381,11 @@ pub async fn agree(
             "evaluate before agree",
         ));
     };
-    if eval.insufficient_lot_qty {
-        let code = if evaluated.funding_source == "accountCash" {
-            "insufficient_account_cash"
-        } else {
-            "insufficient_lot_qty"
-        };
+    let account_cash = evaluated.funding_source == "accountCash";
+    // A cash plan may exceed the pile until execution. The fill checks the last quote.
+    if !account_cash && eval.insufficient_lot_qty {
         return Err(PlatformError::new(
-            code,
+            "insufficient_lot_qty",
             "named remaining does not cover spend",
         ));
     }
@@ -403,13 +406,14 @@ pub async fn agree(
             "agree exactly one draft on this account",
         ));
     }
-    if eval.leftover_minor < 0 {
+    if !account_cash && eval.leftover_minor < 0 {
         return Err(PlatformError::new(
             "negative_cash",
             "spend exceeds proceeds",
         ));
     }
-    let needs_reason = eval.cash_floor_warn || mix_worsens;
+    let needs_reason = (eval.cash_floor_warn && !(account_cash && eval.leftover_minor < 0))
+        || mix_worsens;
     if needs_reason && override_reason.as_deref().unwrap_or("").trim().is_empty() {
         return Err(PlatformError::new(
             if eval.cash_floor_warn {
@@ -474,6 +478,49 @@ pub async fn execute_sell(
 
 pub async fn discard(canonical: &dyn Canonical, scenario_id: Uuid) -> Result<(), PlatformError> {
     canonical.cart_scenario_discard(scenario_id).await
+}
+
+pub async fn sell_line_remove(
+    canonical: &dyn Canonical,
+    scenario_id: Uuid,
+    line_id: Uuid,
+) -> Result<CartScenarioBody, PlatformError> {
+    canonical.cart_sell_line_remove(scenario_id, line_id).await
+}
+
+pub async fn sell_symbol_clear(
+    canonical: &dyn Canonical,
+    scenario_id: Uuid,
+    symbol: String,
+) -> Result<CartScenarioBody, PlatformError> {
+    canonical
+        .cart_sell_symbol_clear(scenario_id, symbol)
+        .await
+}
+
+pub async fn buy_line_remove(
+    canonical: &dyn Canonical,
+    scenario_id: Uuid,
+    line_id: Uuid,
+) -> Result<CartScenarioBody, PlatformError> {
+    canonical.cart_buy_line_remove(scenario_id, line_id).await
+}
+
+pub async fn scenario_slot_add(
+    canonical: &dyn Canonical,
+    scenario_id: Uuid,
+) -> Result<CartScenarioBody, PlatformError> {
+    canonical.cart_scenario_slot_add(scenario_id).await
+}
+
+pub async fn plan_deposit_set(
+    canonical: &dyn Canonical,
+    scenario_id: Uuid,
+    deposit_minor: i64,
+) -> Result<CartScenarioBody, PlatformError> {
+    canonical
+        .cart_plan_deposit_set(scenario_id, deposit_minor)
+        .await
 }
 
 pub async fn list(
