@@ -21,6 +21,7 @@ export const SCREEN_ORDER = [
   "task-manager",
   "interest-rate",
   "contract-positions",
+  "field-intent",
   "components",
   "screen-atlas",
 ] as const;
@@ -46,6 +47,7 @@ export const SCREEN_LABEL: Record<(typeof SCREEN_ORDER)[number], string> = {
   "task-manager": "Task Manager",
   "interest-rate": "Interest rate calculator",
   "contract-positions": "Contract positions",
+  "field-intent": "Field intent",
   components: "Components",
   "screen-atlas": "Screen Atlas",
 };
@@ -57,6 +59,7 @@ export const DESK_ORDER = [
   "car",
   "coverage",
   "external",
+  "manager",
 ] as const;
 
 export const DESK_LABEL: Record<(typeof DESK_ORDER)[number], string> = {
@@ -66,6 +69,7 @@ export const DESK_LABEL: Record<(typeof DESK_ORDER)[number], string> = {
   car: "Tax Planning",
   coverage: "Income vs Expense planner",
   external: "External accounts",
+  manager: "Debt planner",
 };
 
 export type ScreenKeyed = {

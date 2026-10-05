@@ -1492,8 +1492,8 @@ fn calculator_unknowns_that_stay_unknown() {
         "YOC, FWD, MC FWD, TVAL, and cost recovery stay unknown when the bps figure is missing"
     );
     assert!(
-        sheet.contains("return avg == null ? \"unknown\" : formatUsd(avg, 2);"),
-        "Avg 6 stays unknown until six paid declarations exist"
+        sheet.contains("avg6Label(row.recentPays)"),
+        "Avg 6 shows the mean of up to six newest pays and the count"
     );
     assert!(
         sheet.contains("cell.amountPerShareMinor == null")

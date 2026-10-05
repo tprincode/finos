@@ -2210,6 +2210,7 @@ pub fn run() {
                     | "task-manager"
                     | "interest-rate"
                     | "contract-positions"
+                    | "field-intent"
                     | "components"
                     | "screen-atlas"
                     | "settings"

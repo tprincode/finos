@@ -467,7 +467,8 @@ async fn declaration_history_grid_filters_by_cadence_and_friday_columns() {
         }),
     )
     .await;
-    assert_eq!(default_window["startOn"], "2026-07-04");
+    assert_eq!(default_window["startOn"], "2025-09-02");
+    assert_eq!(default_window["weekEnds"].as_array().unwrap().len(), 52);
     assert_eq!(default_window["weekEnds"][0], "2026-09-04");
     assert_eq!(default_window["weekEnds"][4], "2026-08-07");
 
@@ -1290,4 +1291,493 @@ async fn calculate_window(
         }),
     )
     .await;
+}
+
+/// A short Period still returns the last six stored pays, newest first.
+#[tokio::test]
+async fn short_period_keeps_the_last_six_stored_pays() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let (security_id, _) = open_named(&platform, "AVGX", "Monthly").await;
+    let pays = [
+        ("2026-04-01", 100),
+        ("2026-05-01", 200),
+        ("2026-06-01", 300),
+        ("2026-07-01", 400),
+        ("2026-08-01", 500),
+        ("2026-09-01", 600),
+        ("2026-10-01", 700),
+    ];
+    for (period, minor) in pays {
+        must_ok(
+            &platform,
+            "IssuerDeclarationRecord",
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": minor,
+                "amountScale": 2,
+                "paymentPeriod": period,
+                "source": "import",
+                "enteredAt": "2026-10-01"
+            }),
+        )
+        .await;
+    }
+    let history = query_json(
+        &platform,
+        "DeclarationHistoryGet",
+        serde_json::json!({
+            "asOfDate": "2026-10-05",
+            "cadence": "all",
+            "startOn": "2026-09-20",
+            "endOn": "2026-10-05"
+        }),
+    )
+    .await;
+    let row = history["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["symbol"] == "AVGX")
+        .unwrap();
+    let filled: Vec<i64> = row["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|cell| cell["amountPerShareMinor"].as_i64())
+        .collect();
+    assert_eq!(filled, vec![700], "the short Period grid holds only the October pay");
+    let recent: Vec<i64> = row["recentPays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pay| pay["amountPerShareMinor"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        recent,
+        vec![700, 600, 500, 400, 300, 200],
+        "Avg 6 reads the last six stored pays, not the Period columns"
+    );
+    let ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/ui-components/src/index.tsx"),
+    )
+    .unwrap();
+    let sheet = ui
+        .split("export function CalculatorReturnSheet")
+        .nth(1)
+        .unwrap()
+        .split("function MonthPerThousandChart")
+        .next()
+        .unwrap();
+    assert!(sheet.contains("avg6Label(row.recentPays)"));
+    assert!(sheet.contains("meanNewestPays(pays, 3)"));
+    assert!(sheet.contains("newestStoredPay(row.recentPays)"));
+    assert!(
+        sheet.contains("dividendScore(master, row.cells, undefined, row.inForcePays).threeYield"),
+        "3-pay yield reads the newest in-force declarations"
+    );
+    assert!(
+        !ui.contains("const three = lastPaidCents(cells, 3);"),
+        "3-pay yield does not walk the older end of the week grid"
+    );
+    assert!(
+        ui.contains("export function avg6Label"),
+        "Avg 6 shows the mean of up to six pays and the count"
+    );
+    assert!(sheet.contains("planCheck(\n                inForce,"));
+    let check = ui
+        .split("export function planCheck(")
+        .nth(1)
+        .expect("planCheck")
+        .split("export function parseTypedPlan")
+        .next()
+        .expect("planCheck body");
+    assert!(
+        check.contains("atOrAbove: below === 0"),
+        "the Plan check cell is green when none of the counted pays is below Plan"
+    );
+    assert!(check.contains("text: \"unknown\""));
+    let filter = ui
+        .split("export function matchesCalculatorPerformanceView(")
+        .nth(1)
+        .expect("performance filter")
+        .split("function calculatorEligibleMaster")
+        .next()
+        .expect("performance filter body");
+    assert!(
+        filter.contains("check.abovePct == null || check.abovePct < 80"),
+        "the Performance filter keeps a row when Above % is 80 or higher"
+    );
+    assert!(!filter.contains(".atOrAbove"));
+}
+
+/// 00:30 UTC on 6 Oct is still 5 Oct in New York. Business today must not roll at 8:00 p.m. Eastern.
+#[test]
+fn eight_pm_eastern_is_still_today() {
+    let utc = chrono::DateTime::parse_from_rfc3339("2026-10-06T00:30:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(
+        application_core::last_price_window::business_date(utc).to_string(),
+        "2026-10-05"
+    );
+    let queries = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/queries.rs"),
+    )
+    .unwrap();
+    let today = queries
+        .split("fn today_iso()")
+        .nth(1)
+        .expect("today_iso")
+        .split("fn calculator_row_visible")
+        .next()
+        .expect("today_iso body");
+    assert!(
+        !today.contains("Utc::now().date_naive()"),
+        "today is the New York calendar date"
+    );
+    assert!(today.contains("business_date"));
+    let history = queries
+        .split("async fn declaration_history_view(")
+        .nth(1)
+        .expect("declaration_history_view")
+        .split("async fn plan_review_view(")
+        .next()
+        .expect("declaration history body");
+    assert!(
+        !history.contains("2026, 9, 2"),
+        "a bad as-of must not invent 2026-09-02"
+    );
+    assert!(history.contains("bad_as_of"));
+}
+
+/// A stored zero is a declaration. The short Period grid does not choose Most current.
+#[tokio::test]
+async fn stored_zero_is_the_newest_in_force_pay() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let (security_id, _) = open_named(&platform, "ZERO", "Monthly").await;
+    for (period, minor) in [("2026-08-01", 200), ("2026-09-01", 100), ("2026-10-01", 0)] {
+        must_ok(
+            &platform,
+            "IssuerDeclarationRecord",
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": minor,
+                "amountScale": 2,
+                "paymentPeriod": period,
+                "source": "import",
+                "enteredAt": "2026-10-01"
+            }),
+        )
+        .await;
+    }
+    let history = query_json(
+        &platform,
+        "DeclarationHistoryGet",
+        serde_json::json!({
+            "asOfDate": "2026-10-05",
+            "cadence": "all",
+            "startOn": "2026-09-20",
+            "endOn": "2026-10-05"
+        }),
+    )
+    .await;
+    let row = history["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["symbol"] == "ZERO")
+        .unwrap();
+    let recent: Vec<i64> = row["recentPays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pay| pay["amountPerShareMinor"].as_i64().unwrap())
+        .collect();
+    assert_eq!(recent, vec![0, 100, 200]);
+    let in_force: Vec<i64> = row["inForcePays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pay| pay["amountPerShareMinor"].as_i64().unwrap())
+        .collect();
+    assert_eq!(in_force, vec![0, 100, 200]);
+    let filled: Vec<i64> = row["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|cell| cell["amountPerShareMinor"].as_i64())
+        .collect();
+    assert_eq!(filled, vec![0], "the dated column shows the stored zero");
+}
+
+#[test]
+fn field_intent_stores_the_calculator_column_contract() {
+    let root = golden_harness::repo_root();
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    assert!(app.contains("navButton(\"field-intent\", \"Field intent\")"));
+    assert!(app.contains("<FieldIntentScreen />"));
+    assert!(app.contains("useState(\"year\")"));
+    assert!(!app.contains("useState(\"60\")"));
+    assert!(app.contains("addUtcDays(asOf, -365)"));
+    let catalog = std::fs::read_to_string(root.join("docs/architecture/ui-modules.json")).unwrap();
+    assert!(
+        catalog.contains("\"id\": \"field-intent\"")
+            && catalog.contains("apps/desktop/src/features/field-intent/")
+            && catalog.contains("\"status\": \"extracted\"")
+    );
+    let columns = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/field-intent/calculatorColumns.ts"),
+    )
+    .unwrap();
+    for name in [
+        "Symbol",
+        "MC FWD",
+        "3-pay yield",
+        "Most current",
+        "Avg 3",
+        "Avg 6",
+        "Paid",
+        "Plan check",
+        "Week columns (dated)",
+    ] {
+        assert!(columns.contains(&format!("name: \"{name}\"")), "missing {name}");
+    }
+    let names = columns.matches("name: \"").count();
+    let matched = columns.matches("status: \"matches\"").count();
+    assert_eq!(names, matched);
+    assert!(names >= 40);
+    assert!(!columns.contains("status: \"still wrong\""));
+    let ui = std::fs::read_to_string(root.join("packages/ui-components/src/index.tsx")).unwrap();
+    assert!(!ui.contains("Default window is the last 60 days"));
+    assert!(!ui.contains("Plan check counts weeks on this row"));
+    assert!(ui.contains("trailing year"));
+    let week = std::fs::read_to_string(root.join("crates/financial-domain/src/week.rs")).unwrap();
+    assert!(week.contains("Duration::days(365)"));
+    assert!(!week.contains("Duration::days(60)"));
+}
+
+/// Cash is one calculator row. Dividend columns are N/A, week cells stay blank, and the performance views skip it.
+#[tokio::test]
+async fn cash_calculator_row_is_a_balance_and_a_yield() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let (div_id, _) = open_named(&platform, "AMDW", "Weekly").await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": div_id,
+            "amountPerShareMinor": 50,
+            "amountScale": 2,
+            "paymentPeriod": "2026-09-04",
+            "source": "import",
+            "enteredAt": "2026-09-04"
+        }),
+    )
+    .await;
+
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income-SPAXX", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "SPAXX", "name": "SPAXX"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": "SPAXX",
+            "declarationSource": "fidelity",
+            "sourceUrl": "https://fundresearch.fidelity.com/mutual-funds/performance-and-risk/31617H102",
+            "calendarPolicy": "issuer_calendar",
+            "collectorEnabled": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "replaceCadence": true,
+            "divType": "CASH",
+            "provider": "Fidelity",
+            "isActive": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-01-15",
+            "quantityMinor": 10000,
+            "quantityScale": 0,
+            "performanceCostMinor": 1000000,
+            "taxCostMinor": 1000000,
+            "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "SPAXX",
+            "declarationSource": "fidelity",
+            "divType": "CASH",
+            "candidates": [{
+                "kind": "cash_rate",
+                "planOnly": true,
+                "amountPerShareMinor": 2783,
+                "amountScale": 6,
+                "annualYieldBps": 334,
+                "sevenDayYield": "3.34",
+                "paymentPeriod": "2026-09-07",
+                "source": "fidelity"
+            }]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 100,
+            "amountScale": 2,
+            "paymentPeriod": "2026-09-04",
+            "source": "import",
+            "enteredAt": "2026-09-04"
+        }),
+    )
+    .await;
+
+    let master = query_json(&platform, "PositionMasterGet", serde_json::json!({})).await;
+    let spaxx = master["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["symbol"] == "SPAXX")
+        .expect("SPAXX stays on the position master");
+    assert_eq!(spaxx["cashPar"], true);
+    assert_eq!(spaxx["cashAnnualYieldBps"], 334);
+    assert_eq!(spaxx["lastPriceMinor"], 100);
+    assert_eq!(spaxx["divType"], "CASH");
+    let amdw = master["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["symbol"] == "AMDW")
+        .unwrap();
+    assert_eq!(amdw["cashPar"], false);
+    assert!(amdw["cashAnnualYieldBps"].is_null());
+
+    let history = query_json(
+        &platform,
+        "DeclarationHistoryGet",
+        serde_json::json!({
+            "asOfDate": "2026-10-05",
+            "cadence": "all",
+            "startOn": "2026-01-01",
+            "endOn": "2026-10-05"
+        }),
+    )
+    .await;
+    let cash_row = history["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["symbol"] == "SPAXX")
+        .expect("a cash row stays on the calculator");
+    let filled: Vec<_> = cash_row["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|cell| !cell["amountPerShareMinor"].is_null())
+        .collect();
+    assert!(filled.is_empty(), "cash week cells stay blank: {cash_row}");
+    assert!(cash_row["recentPays"].as_array().unwrap().is_empty());
+    assert!(cash_row["inForcePays"].as_array().unwrap().is_empty());
+    let div_row = history["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["symbol"] == "AMDW")
+        .unwrap();
+    assert!(
+        div_row["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|cell| cell["amountPerShareMinor"] == 50),
+        "a dividend week cell is unchanged"
+    );
+
+    let ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/ui-components/src/index.tsx"),
+    )
+    .unwrap();
+    let sheet = ui
+        .split("export function CalculatorReturnSheet")
+        .nth(1)
+        .unwrap()
+        .split("function MonthPerThousandChart")
+        .next()
+        .unwrap();
+    assert!(sheet.contains("Cash rate"));
+    assert!(sheet.contains("cashAnnualInterestCents("));
+    assert!(sheet.contains("aria-label={cash ? `${row.symbol} balance` : undefined}"));
+    assert!(sheet.contains("{cash ? \"N/A\" : check.text}"));
+    assert!(sheet.contains("!cash && check.atOrAbove"));
+    assert!(sheet.contains("cash || cell.amountPerShareMinor == null"));
+    assert!(sheet.contains("Dividend columns on that row are N/A"));
+    let filter = ui
+        .split("export function matchesCalculatorPerformanceView(")
+        .nth(1)
+        .unwrap()
+        .split("function calculatorEligibleMaster")
+        .next()
+        .unwrap();
+    assert!(filter.contains("master?.cashPar"));
+    assert!(filter.contains("cadence === \"all\" && performance === \"all\""));
+    assert!(ui.contains("calculatorHouseholdExCashCents"));
+    let parser = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/import-engine/src/retrieve/adapters/moneymarket.rs"),
+    )
+    .unwrap();
+    assert!(!parser.contains("parse_generic_distributions"));
+    let follow = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/queries.rs"),
+    )
+    .unwrap();
+    let followup = follow
+        .split("async fn apply_cash_moneymarket_followups(")
+        .nth(1)
+        .unwrap()
+        .split("fn declarations_for_security(")
+        .next()
+        .unwrap();
+    assert!(!followup.contains("dividend_actual_record"));
 }

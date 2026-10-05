@@ -760,6 +760,8 @@ export type PositionMasterRowView = {
   carShareOfDataBps?: number | null;
   rocResearchStatus?: string;
   declarationFreshness?: string;
+  cashPar?: boolean;
+  cashAnnualYieldBps?: number | null;
 };
 
 function unknownOrBps(value: number | null | undefined): string {
@@ -3862,6 +3864,16 @@ export type DeclarationHistoryView = {
       amountPerShareMinor: number | null;
       amountScale: number;
     }>;
+    /** Last six in-force pays, newest first. A stored zero counts. The Period grid does not choose these. */
+    recentPays?: Array<{
+      amountPerShareMinor: number | null;
+      amountScale: number;
+    }>;
+    /** Every in-force declaration with a stored amount, newest first. A stored zero counts. */
+    inForcePays?: Array<{
+      amountPerShareMinor: number | null;
+      amountScale: number;
+    }>;
   }>;
 };
 
@@ -3936,34 +3948,82 @@ type CalculatorViewMaster = {
   planScale?: number;
   rocPct2025ActualMinor?: number | null;
   rocScale?: number | null;
+  cashPar?: boolean;
+  cashAnnualYieldBps?: number | null;
+  quantityScale?: number;
+  marketValueMinor?: number | null;
 };
+
+/** Quantity at $1, in cents. */
+export function cashBalanceCents(quantityMinor: number, quantityScale: number): number {
+  if (quantityScale <= 2) return Math.round(quantityMinor * 10 ** (2 - quantityScale));
+  return Math.round(quantityMinor / 10 ** (quantityScale - 2));
+}
+
+/** Balance times the annualized 7-day yield. A missing rate is unknown. */
+export function cashAnnualInterestCents(
+  quantityMinor: number,
+  quantityScale: number,
+  yieldBps: number | null | undefined,
+): number | null {
+  if (yieldBps == null) return null;
+  return Math.round((cashBalanceCents(quantityMinor, quantityScale) * yieldBps) / 10_000);
+}
+
+/** Household market value with cash balances left out. */
+export function calculatorHouseholdExCashCents(
+  masters: Iterable<{ cashPar?: boolean; marketValueMinor?: number | null }>,
+): number | null {
+  let sum = 0;
+  let any = false;
+  for (const row of masters) {
+    if (row.cashPar || row.marketValueMinor == null) continue;
+    sum += row.marketValueMinor;
+    any = true;
+  }
+  return any && sum > 0 ? sum : null;
+}
+
+/** Calculator Port %. A cash row is not a weight. */
+export function calculatorPortBps(
+  marketValueMinor: number | null | undefined,
+  householdExCashCents: number | null,
+  cashPar: boolean,
+): number | null {
+  if (cashPar) return null;
+  if (marketValueMinor == null || householdExCashCents == null || householdExCashCents <= 0) {
+    return null;
+  }
+  return Math.round((marketValueMinor * 10_000) / householdExCashCents);
+}
 
 /** Same membership as the Calculator Performance filter. Cadence All keeps every frequency. */
 export function matchesCalculatorPerformanceView(
   row: {
     paymentFrequency: string;
     cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>;
+    inForcePays?: Array<{ amountPerShareMinor: number | null; amountScale: number }>;
   },
   master: CalculatorViewMaster | undefined,
   performance: string,
   cadence: string,
 ): boolean {
+  if (master?.cashPar) {
+    return cadence === "all" && performance === "all";
+  }
   if (!cadenceMatchesFilter(row.paymentFrequency, cadence)) return false;
   if (performance === "all") return true;
   const held = (master?.remainingQuantityMinor ?? 0) > 0;
   if (held && (master?.unrealizedPnlBps == null || master.unrealizedPnlBps < 0)) {
     return false;
   }
-  if (
-    !planCheck(
-      row.cells,
-      master?.planKnown ?? false,
-      master?.planPerShareMinor ?? 0,
-      master?.planScale ?? 2,
-    ).atOrAbove
-  ) {
-    return false;
-  }
+  const check = planCheck(
+    row.inForcePays ?? [],
+    master?.planKnown ?? false,
+    master?.planPerShareMinor ?? 0,
+    master?.planScale ?? 2,
+  );
+  if (check.abovePct == null || check.abovePct < 80) return false;
   if (performance === "pl-green-roc") {
     if (!master || master.rocPct2025ActualMinor == null || master.rocScale == null) return false;
     if (master.rocPct2025ActualMinor / 10 ** master.rocScale < 90) return false;
@@ -4032,6 +4092,7 @@ export function DeclarationHistoryPanel({
             value={period}
             onChange={(e) => onPeriodChange(e.target.value)}
           >
+            <option value="year">Trailing year</option>
             <option value="60">Last 60 days</option>
             <option value="month">This month</option>
             <option value="90">Last 90 days</option>
@@ -4060,7 +4121,7 @@ export function DeclarationHistoryPanel({
       </div>
       <p>
         Columns are Saturday-start weeks (Wnn · Sat start). Amounts group into the Sat–Fri
-        week that contains the vendor pay date. Default window is the last 60 days. Empty is
+        week that contains the vendor pay date. Default window is a trailing year. Empty is
         unknown, not $0.00 — a blank cell means no stored paid declaration for that week.
       </p>
       <div className="table-wrap decl-history-wrap">
@@ -4172,6 +4233,45 @@ export function minPaidDeclaration(
   return Math.min(...paid);
 }
 
+type PayCell = { amountPerShareMinor: number | null; amountScale: number };
+
+/** First of a newest-first pay list. Empty stays blank. */
+export function newestStoredPay(pays: PayCell[] | undefined): PayCell | null {
+  for (const pay of pays ?? []) {
+    if (pay?.amountPerShareMinor != null) return pay;
+  }
+  return null;
+}
+
+/**
+ * Mean of the first `count` newest pays, in cents.
+ * Fewer than `count` stays unknown unless `allowShort` is set, in which case one or more still averages.
+ */
+export function meanNewestPays(
+  pays: PayCell[] | undefined,
+  count: number,
+  allowShort = false,
+): number | null {
+  const cents: number[] = [];
+  for (const pay of pays ?? []) {
+    const value = cellCents(pay);
+    if (value == null) continue;
+    cents.push(value);
+    if (cents.length === count) break;
+  }
+  if (cents.length === 0) return null;
+  if (!allowShort && cents.length < count) return null;
+  return Math.round(cents.reduce((sum, value) => sum + value, 0) / cents.length);
+}
+
+/** Avg 6 label: the mean, and how many pays were used. Nothing stored stays unknown. */
+export function avg6Label(pays: PayCell[] | undefined): string {
+  const found = (pays ?? []).filter((pay) => cellCents(pay) != null).length;
+  const avg = meanNewestPays(pays, 6, true);
+  if (avg == null) return "unknown";
+  return `${formatUsd(avg, 2)} (${Math.min(found, 6)} of 6)`;
+}
+
 function meanPaidCents(
   cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
   count: number,
@@ -4232,7 +4332,7 @@ function moneyUnits(minor: number, scale: number): number {
   return Math.round(minor / 10 ** (scale - 6));
 }
 
-/** Excel New Plan check: blanks are not counted. Above % is above / counted weeks. */
+/** In-force declarations versus Plan. Blanks are not counted. Green when none of the counted pays is below Plan. Nothing counted is unknown, not 0%. */
 export function planCheck(
   cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
   planKnown: boolean,
@@ -4251,12 +4351,15 @@ export function planCheck(
     if (amount > plan) above += 1;
     else if (amount < plan) below += 1;
   }
+  if (total === 0) {
+    return { text: "unknown", abovePct: null, atOrAbove: false };
+  }
   const equal = total - above - below;
-  const percentage = total === 0 ? "0%" : `${Math.round((above / total) * 100)}%`;
+  const abovePct = Math.round((above / total) * 100);
   return {
-    text: `Above=${above} ${percentage},Equal=${equal},Below=${below}`,
-    abovePct: total === 0 ? 0 : Math.round((above / total) * 100),
-    atOrAbove: total > 0 && below === 0,
+    text: `Above=${above} ${abovePct}%,Equal=${equal},Below=${below}`,
+    abovePct,
+    atOrAbove: below === 0,
   };
 }
 
@@ -4378,6 +4481,8 @@ type DividendScore = {
 export function dividendScore(
   master: PositionMasterRowView | undefined,
   cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
+  newestPay?: { amountPerShareMinor: number | null; amountScale: number } | null,
+  newestPays?: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
 ): DividendScore {
   const empty: DividendScore = {
     annualShare: null,
@@ -4402,7 +4507,10 @@ export function dividendScore(
         amountScale: master.planScale,
       })
     : null;
-  const recent = lastPaidCents(cells, 1)[0] ?? null;
+  const recent =
+    newestPay !== undefined
+      ? cellCents(newestPay ?? { amountPerShareMinor: null, amountScale: 0 })
+      : (lastPaidCents(cells, 1)[0] ?? null);
   const annualShare = planCents != null && periods > 0 ? planCents * periods : null;
   const recentShare = recent != null && periods > 0 ? recent * periods : null;
   const recentTotal = recentShare != null ? Math.round(recentShare * qty) : null;
@@ -4421,7 +4529,13 @@ export function dividendScore(
           amountPerShareMinor: master.lastPriceMinor,
           amountScale: master.lastPriceScale ?? 2,
         });
-  const three = lastPaidCents(cells, 3);
+  const three: number[] = [];
+  for (const pay of newestPays ?? []) {
+    const cents = cellCents(pay);
+    if (cents == null) continue;
+    three.push(cents);
+    if (three.length === 3) break;
+  }
   const threeYield =
     three.length === 3 && priceCents != null && priceCents > 0 && periods > 0
       ? Math.round(
@@ -4486,6 +4600,7 @@ export function CalculatorReturnSheet({
   if (!history) return <p>Loading distribution history…</p>;
   if (!rows) return <p>Loading Calculator…</p>;
   const masterBySymbol = new Map(rows.map((row) => [row.symbol, row]));
+  const householdExCash = calculatorHouseholdExCashCents(masterBySymbol.values());
   const listed = history.rows.filter((row) =>
     matchesCalculatorPerformanceView(row, masterBySymbol.get(row.symbol), performance, cadence),
   );
@@ -4501,13 +4616,37 @@ export function CalculatorReturnSheet({
   const shown = sortRows(listed, sort.sortKey, sort.sortDir, (row, key) => {
     const master = masterBySymbol.get(row.symbol);
     const paid = paidInViewCents(row.cells);
+    if (master?.cashPar) {
+      switch (key) {
+        case "symbol":
+          return row.symbol;
+        case "price":
+          return master.lastPriceMinor ?? null;
+        case "account":
+          return accountsBySymbol?.[row.symbol] ?? "";
+        case "qty":
+          return master.remainingQuantityMinor ?? null;
+        case "div":
+          return master.divType ?? "";
+        case "cashRate":
+          return master.cashAnnualYieldBps ?? null;
+        case "annual":
+          return cashAnnualInterestCents(
+            master.remainingQuantityMinor,
+            master.quantityScale,
+            master.cashAnnualYieldBps,
+          );
+        default:
+          return null;
+      }
+    }
     switch (key) {
       case "symbol":
         return row.symbol;
       case "price":
         return master?.lastPriceMinor ?? null;
       case "alloc":
-        return master?.allocationBps ?? null;
+        return calculatorPortBps(master?.marketValueMinor, householdExCash, false);
       case "risk":
         return master?.riskTier ?? "";
       case "account":
@@ -4528,6 +4667,8 @@ export function CalculatorReturnSheet({
         return master?.planYocBps ?? null;
       case "fwd":
         return master?.planFwdYieldBps ?? null;
+      case "cashRate":
+        return null;
       case "mcFwd":
         return master?.mostCurrentFwdYieldBps ?? null;
       case "annual":
@@ -4569,15 +4710,15 @@ export function CalculatorReturnSheet({
       case "decls":
         return master?.declarationCount ?? null;
       case "most":
-        return newestDeclaration(row.cells)?.amountPerShareMinor ?? null;
+        return newestStoredPay(row.recentPays)?.amountPerShareMinor ?? null;
       case "annShare":
-        return dividendScore(master, row.cells).annualShare;
+        return dividendScore(master, row.cells, newestStoredPay(row.recentPays)).annualShare;
       case "recentShare":
-        return dividendScore(master, row.cells).recentShare;
+        return dividendScore(master, row.cells, newestStoredPay(row.recentPays)).recentShare;
       case "recentTotal":
-        return dividendScore(master, row.cells).recentTotal;
+        return dividendScore(master, row.cells, newestStoredPay(row.recentPays)).recentTotal;
       case "threeYield":
-        return dividendScore(master, row.cells).threeYield;
+        return dividendScore(master, row.cells, undefined, row.inForcePays).threeYield;
       case "tval":
         return dividendScore(master, row.cells).tval;
       case "mcTval":
@@ -4585,22 +4726,22 @@ export function CalculatorReturnSheet({
       case "tvalDelta":
         return dividendScore(master, row.cells).tvalDelta;
       case "planDelta":
-        return dividendScore(master, row.cells).planDelta;
+        return dividendScore(master, row.cells, newestStoredPay(row.recentPays)).planDelta;
       case "overUnder":
-        return dividendScore(master, row.cells).overUnder;
+        return dividendScore(master, row.cells, newestStoredPay(row.recentPays)).overUnder;
       case "planPay":
         return dividendScore(master, row.cells).planPay;
       case "currentPay":
-        return dividendScore(master, row.cells).currentPay;
+        return dividendScore(master, row.cells, newestStoredPay(row.recentPays)).currentPay;
       case "avg3":
-        return avg3Declaration(row.cells);
+        return meanNewestPays(row.recentPays, 3);
       case "avg6":
-        return avg6Declaration(row.cells);
+        return meanNewestPays(row.recentPays, 6, true);
       case "paid":
         return paid;
       case "planCheck":
         return planCheck(
-          row.cells,
+          row.inForcePays ?? [],
           master?.planKnown ?? false,
           master?.planPerShareMinor ?? 0,
           master?.planScale ?? 2,
@@ -4650,6 +4791,7 @@ export function CalculatorReturnSheet({
             value={period}
             onChange={(e) => onPeriodChange(e.target.value)}
           >
+            <option value="year">Trailing year</option>
             <option value="60">Last 60 days</option>
             <option value="month">This month</option>
             <option value="90">Last 90 days</option>
@@ -4683,10 +4825,11 @@ export function CalculatorReturnSheet({
         </p>
       ) : null}
       <p className="calculator-sheet-note">
-        MC FWD = Most Current forward yield (latest paid dividend annualized ÷ last
-        price). FWD uses Plan / share instead. Default sort is MC FWD high→low — click
-        any column head to change. Plan check counts weeks on this row above / equal /
-        below Plan; blanks are not counted.
+        Paid is the sum of the week columns in this window. The default window is a
+        trailing year, capped at 52 weeks. Plan check counts every in-force declaration,
+        not the weeks on this row. Blank is not $0. A cash row shows the balance and the
+        7-day yield. Dividend columns on that row are N/A, and its week cells stay blank.
+        Default sort is MC FWD high→low — click any column head to change.
       </p>
       <div className="table-wrap calculator-sheet-wrap">
         <table aria-label="Distribution history">
@@ -4704,6 +4847,7 @@ export function CalculatorReturnSheet({
               {sortHead(sort, "Gain %", "pnl", true)}
               {sortHead(sort, "YOC", "yoc", true)}
               {sortHead(sort, "FWD", "fwd", true)}
+              {sortHead(sort, "Cash rate", "cashRate", true)}
               {sortHead(sort, "MC FWD", "mcFwd", true)}
               {sortHead(sort, "Annual", "annual", true)}
               {sortHead(sort, "Plan", "plan", true)}
@@ -4745,11 +4889,18 @@ export function CalculatorReturnSheet({
           <tbody>
             {shown.map((row) => {
               const master = masterBySymbol.get(row.symbol);
+              const cash = master?.cashPar === true;
               const scale = master?.scale ?? 2;
               const paid = paidInViewCents(row.cells);
-              const score = dividendScore(master, row.cells);
-              const check = planCheck(
+              const inForce = row.inForcePays ?? [];
+              const score = dividendScore(
+                master,
                 row.cells,
+                newestStoredPay(row.recentPays),
+                inForce,
+              );
+              const check = planCheck(
+                inForce,
                 master?.planKnown ?? false,
                 master?.planPerShareMinor ?? 0,
                 master?.planScale ?? 2,
@@ -4778,95 +4929,150 @@ export function CalculatorReturnSheet({
                       ? "unknown"
                       : formatUsd(master.lastPriceMinor, master.lastPriceScale ?? 2)}
                   </td>
-                  <td className="numeric">{formatBps(master?.allocationBps)}</td>
-                  <td>{master?.riskTier || "—"}</td>
+                  <td className="numeric">
+                    {cash ? "N/A" : formatBps(calculatorPortBps(master?.marketValueMinor, householdExCash, false))}
+                  </td>
+                  <td>{cash ? "N/A" : master?.riskTier || "—"}</td>
                   <td>{accountsBySymbol?.[row.symbol] || "unknown"}</td>
-                  <td className="numeric">
-                    {master
-                      ? formatScaled(master.remainingQuantityMinor, master.quantityScale)
-                      : "unknown"}
+                  <td className="numeric" aria-label={cash ? `${row.symbol} balance` : undefined}>
+                    {cash
+                      ? master
+                        ? formatUsd(
+                            cashBalanceCents(master.remainingQuantityMinor, master.quantityScale),
+                            2,
+                          )
+                        : "unknown"
+                      : master
+                        ? formatScaled(master.remainingQuantityMinor, master.quantityScale)
+                        : "unknown"}
                   </td>
-                  <td className="numeric">{money(master?.remainingPerformanceMinor, scale)}</td>
                   <td className="numeric">
-                    {master?.unitCostMinor == null ? "unknown" : formatUsd(master.unitCostMinor, 2)}
+                    {cash ? "N/A" : money(master?.remainingPerformanceMinor, scale)}
                   </td>
-                  <td className="numeric">{money(pnl, scale)}</td>
-                  <td className="numeric">{formatBps(master?.unrealizedPnlBps)}</td>
-                  <td className="numeric">{formatBps(master?.planYocBps)}</td>
-                  <td className="numeric">{formatBps(master?.planFwdYieldBps)}</td>
-                  <td className="numeric">{formatBps(master?.mostCurrentFwdYieldBps)}</td>
-                  <td className="numeric">{money(master?.annualPlanMinor, scale)}</td>
                   <td className="numeric">
-                    {master?.planKnown
-                      ? `$${formatScaled(master.planPerShareMinor, master.planScale)}`
-                      : "N/A"}
+                    {cash
+                      ? "N/A"
+                      : master?.unitCostMinor == null
+                        ? "unknown"
+                        : formatUsd(master.unitCostMinor, 2)}
+                  </td>
+                  <td className="numeric">{cash ? "N/A" : money(pnl, scale)}</td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(master?.unrealizedPnlBps)}</td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(master?.planYocBps)}</td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(master?.planFwdYieldBps)}</td>
+                  <td className="numeric">
+                    {cash
+                      ? master?.cashAnnualYieldBps == null
+                        ? "unknown"
+                        : formatBps(master.cashAnnualYieldBps)
+                      : ""}
+                  </td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(master?.mostCurrentFwdYieldBps)}</td>
+                  <td className="numeric">
+                    {cash
+                      ? (() => {
+                          const interest = master
+                            ? cashAnnualInterestCents(
+                                master.remainingQuantityMinor,
+                                master.quantityScale,
+                                master.cashAnnualYieldBps,
+                              )
+                            : null;
+                          return interest == null ? "unknown" : formatUsd(interest, 2);
+                        })()
+                      : money(master?.annualPlanMinor, scale)}
+                  </td>
+                  <td className="numeric">
+                    {cash
+                      ? "N/A"
+                      : master?.planKnown
+                        ? `$${formatScaled(master.planPerShareMinor, master.planScale)}`
+                        : "N/A"}
                   </td>
                   <td>{master?.divType || "—"}</td>
-                  <td>{row.paymentFrequency || "—"}</td>
+                  <td>{cash ? "N/A" : row.paymentFrequency || "—"}</td>
                   <td className="numeric">
-                    {master?.distributionsScope === "incomplete" ||
-                    master?.totalDistributionsReceivedMinor == null
-                      ? "unknown"
-                      : formatUsd(master.totalDistributionsReceivedMinor, scale)}
+                    {cash
+                      ? "N/A"
+                      : master?.distributionsScope === "incomplete" ||
+                          master?.totalDistributionsReceivedMinor == null
+                        ? "unknown"
+                        : formatUsd(master.totalDistributionsReceivedMinor, scale)}
                   </td>
                   <td className="numeric">
-                    {master?.distributionsScope === "incomplete" ||
-                    master?.rocDistributionsMinor == null
-                      ? "unknown"
-                      : formatUsd(master.rocDistributionsMinor, scale)}
+                    {cash
+                      ? "N/A"
+                      : master?.distributionsScope === "incomplete" ||
+                          master?.rocDistributionsMinor == null
+                        ? "unknown"
+                        : formatUsd(master.rocDistributionsMinor, scale)}
                   </td>
-                  <td className="numeric">{formatBps(master?.costRecoveryBps)}</td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(master?.costRecoveryBps)}</td>
                   <td className="numeric">
-                    {(() => {
-                      const roc = calculatorRocPercent(master);
-                      return roc == null ? "N/A" : formatPercentScaled(roc.minor, roc.scale);
-                    })()}
+                    {cash
+                      ? "N/A"
+                      : (() => {
+                          const roc = calculatorRocPercent(master);
+                          return roc == null ? "N/A" : formatPercentScaled(roc.minor, roc.scale);
+                        })()}
                   </td>
-                  <td>{master?.declarationWeekday || "—"}</td>
-                  <td>{master?.exdateWeekday || "—"}</td>
-                  <td>{master?.paydayWeekday || "—"}</td>
-                  <td>{master?.declarationFreshness || "unknown"}</td>
+                  <td>{cash ? "N/A" : master?.declarationWeekday || "—"}</td>
+                  <td>{cash ? "N/A" : master?.exdateWeekday || "—"}</td>
+                  <td>{cash ? "N/A" : master?.paydayWeekday || "—"}</td>
+                  <td>{cash ? "N/A" : master?.declarationFreshness || "unknown"}</td>
                   <td className="numeric">
-                    {master == null ? "unknown" : formatCount(master.declarationCount)}
+                    {cash ? "N/A" : master == null ? "unknown" : formatCount(master.declarationCount)}
                   </td>
-                  <td className="numeric">{money(score.annualShare, 2)}</td>
-                  <td className="numeric">{money(score.recentShare, 2)}</td>
-                  <td className="numeric">{money(score.recentTotal, 2)}</td>
-                  <td className="numeric">{formatBps(master?.costRecoveryBps)}</td>
-                  <td className="numeric">{formatBps(score.tval)}</td>
-                  <td className="numeric">{formatBps(score.mcTval)}</td>
-                  <td className="numeric">{formatBps(score.tvalDelta)}</td>
-                  <td className="numeric">{formatBps(score.threeYield)}</td>
-                  <td className="numeric">{money(score.planDelta, 2)}</td>
-                  <td className="numeric">{formatBps(score.overUnder)}</td>
-                  <td className="numeric">{money(score.planPay, 2)}</td>
-                  <td className="numeric">{money(score.currentPay, 2)}</td>
+                  <td className="numeric">{cash ? "N/A" : money(score.annualShare, 2)}</td>
+                  <td className="numeric">{cash ? "N/A" : money(score.recentShare, 2)}</td>
+                  <td className="numeric">{cash ? "N/A" : money(score.recentTotal, 2)}</td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(master?.costRecoveryBps)}</td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(score.tval)}</td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(score.mcTval)}</td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(score.tvalDelta)}</td>
                   <td className="numeric">
-                    {(() => {
-                      const current = newestDeclaration(row.cells);
-                      return current == null
-                        ? ""
-                        : `$${formatScaled(current.amountPerShareMinor, current.amountScale)}`;
-                    })()}
+                    {cash
+                      ? "N/A"
+                      : (() => {
+                          const found = inForce.filter((pay) => pay.amountPerShareMinor != null).length;
+                          if (found < 3) return `${found} of 3, unknown`;
+                          return formatBps(score.threeYield);
+                        })()}
+                  </td>
+                  <td className="numeric">{cash ? "N/A" : money(score.planDelta, 2)}</td>
+                  <td className="numeric">{cash ? "N/A" : formatBps(score.overUnder)}</td>
+                  <td className="numeric">{cash ? "N/A" : money(score.planPay, 2)}</td>
+                  <td className="numeric">{cash ? "N/A" : money(score.currentPay, 2)}</td>
+                  <td className="numeric">
+                    {cash
+                      ? "N/A"
+                      : (() => {
+                          const current = newestStoredPay(row.recentPays);
+                          return current == null
+                            ? ""
+                            : `$${formatScaled(current.amountPerShareMinor, current.amountScale)}`;
+                        })()}
                   </td>
                   <td className="numeric">
-                    {(() => {
-                      const avg3 = avg3Declaration(row.cells);
-                      const found = lastPaidDeclarations(row.cells, 3).length;
-                      return avg3 == null ? `${found} of 3, unknown` : formatUsd(avg3, 2);
-                    })()}
+                    {cash
+                      ? "N/A"
+                      : (() => {
+                          const pays = row.recentPays ?? [];
+                          const avg3 = meanNewestPays(pays, 3);
+                          const found = pays.filter((pay) => cellCents(pay) != null).length;
+                          return avg3 == null
+                            ? `${Math.min(found, 3)} of 3, unknown`
+                            : formatUsd(avg3, 2);
+                        })()}
                   </td>
-                  <td className="numeric">
-                    {(() => {
-                      const avg = avg6Declaration(row.cells);
-                      return avg == null ? "unknown" : formatUsd(avg, 2);
-                    })()}
+                  <td className="numeric">{cash ? "N/A" : avg6Label(row.recentPays)}</td>
+                  <td className="numeric">{cash || paid == null ? "" : formatUsd(paid, 2)}</td>
+                  <td className={!cash && check.atOrAbove ? "plan-check-met" : undefined}>
+                    {cash ? "N/A" : check.text}
                   </td>
-                  <td className="numeric">{paid == null ? "" : formatUsd(paid, 2)}</td>
-                  <td className={check.atOrAbove ? "plan-check-met" : undefined}>{check.text}</td>
                   {row.cells.map((cell, i) => (
                     <td key={history.weekEnds[i] ?? i} className="numeric">
-                      {cell.amountPerShareMinor == null
+                      {cash || cell.amountPerShareMinor == null
                         ? ""
                         : `$${formatScaled(cell.amountPerShareMinor, cell.amountScale)}`}
                     </td>
@@ -4893,7 +5099,7 @@ function MonthPerThousandChart({
   const bars = rows.flatMap((row) => {
     const master = masterBySymbol.get(row.symbol);
     const bps = master?.planFwdYieldBps;
-    if (!master || bps == null) return [];
+    if (!master || master.cashPar || bps == null) return [];
     const monthly = bps / 120;
     const roc = calculatorRocPercent(master);
     const rocKnown = roc != null;

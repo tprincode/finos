@@ -62,7 +62,8 @@ fn m1_top_level_cash_management_has_five_children() {
             && group.contains("Week ahead planner")
             && group.contains("Tax Planning")
             && group.contains("Income vs Expense planner")
-            && group.contains("External accounts"),
+            && group.contains("External accounts")
+            && group.contains("Debt planner"),
         "M1: in-app child labels: {group}"
     );
     let elements_at = group.find("Element Management").unwrap_or(usize::MAX);
@@ -73,12 +74,14 @@ fn m1_top_level_cash_management_has_five_children() {
     let car_at = group.find("Tax Planning").unwrap_or(usize::MAX);
     let coverage_at = group.find("Income vs Expense planner").unwrap_or(usize::MAX);
     let external_at = group.find("External accounts").unwrap_or(usize::MAX);
+    let manager_at = group.find("Debt planner").unwrap_or(usize::MAX);
     assert!(
         elements_at < cashflow_at
             && cashflow_at < weekly_at
             && weekly_at < car_at
             && car_at < coverage_at
-            && coverage_at < external_at,
+            && coverage_at < external_at
+            && external_at < manager_at,
         "M1: in-app child order"
     );
     assert!(

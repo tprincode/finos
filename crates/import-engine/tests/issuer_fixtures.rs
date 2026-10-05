@@ -382,24 +382,23 @@ fn globalx_table_parses_paid_and_blank() {
 }
 
 #[test]
-fn fidelity_spaxx_parses_monthly_rates() {
+fn fidelity_spaxx_html_without_a_yield_is_not_a_declaration() {
     let html = fixture("fidelity_spaxx.html");
     let parsed = parse_moneymarket_distributions("fidelity", &html);
-    assert!(parsed.len() >= 12);
-    assert_eq!(parsed[0]["amountPerShareMinor"], 280);
-    assert_eq!(parsed[0]["amountScale"], 5);
+    assert!(parsed.is_empty(), "no 7-day yield means no row: {parsed:?}");
     let out = collect_from_fetched_page(&target("SPAXX", "fidelity"), "fidelity", Some(&html));
-    assert_eq!(out.candidates.len(), 12);
-    assert!(out.misses.is_empty());
+    assert!(out.candidates.is_empty(), "{:?}", out.candidates);
+    assert!(
+        !out.misses.is_empty(),
+        "a page with no 7-day yield stays unknown"
+    );
 }
 
 #[test]
-fn schwab_swvxx_parses_monthly_rates() {
+fn schwab_swvxx_html_without_a_yield_is_not_a_declaration() {
     let html = fixture("schwab_swvxx.html");
     let parsed = parse_moneymarket_distributions("schwab", &html);
-    assert_eq!(parsed.len(), 4);
-    assert_eq!(parsed[0]["amountPerShareMinor"], 150);
-    assert_eq!(parsed[0]["amountScale"], 5);
+    assert!(parsed.is_empty(), "no 7-day yield means no row: {parsed:?}");
 }
 
 #[test]

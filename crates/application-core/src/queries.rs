@@ -1059,7 +1059,7 @@ fn is_cash_rate_candidate(row: &Value) -> bool {
             .unwrap_or(false)
 }
 
-/// CASH-only: rate change â†’ new PlanHistory; paid months â†’ actuals when broker yield is absent.
+/// CASH-only: a 7-day yield confirms PlanHistory. It does not post a dividend actual.
 async fn apply_cash_moneymarket_followups(
     canonical: &dyn Canonical,
     security_id: Uuid,
@@ -1155,70 +1155,6 @@ async fn apply_cash_moneymarket_followups(
         }
     }
 
-    let existing = canonical.dividend_get().await.ok();
-    let lots = canonical
-        .basis_get()
-        .await
-        .map(|b| b.lots)
-        .unwrap_or_default();
-    for cand in paid {
-        if is_cash_rate_candidate(cand) {
-            continue;
-        }
-        let Some(amount_minor) = ji64(cand, "amountPerShareMinor").filter(|a| *a > 0) else {
-            continue;
-        };
-        let amount_scale = ju8(cand, "amountScale", 5);
-        let occurred_on = jstr(cand, "paymentPeriod")
-            .or_else(|| jstr(cand, "payOn"))
-            .unwrap_or_default();
-        if occurred_on.is_empty() {
-            continue;
-        }
-        let broker_exists = existing
-            .as_ref()
-            .map(|d| {
-                d.actuals
-                    .iter()
-                    .any(|a| a.security_id == Some(security_id) && a.occurred_on == occurred_on)
-            })
-            .unwrap_or(false);
-        if broker_exists {
-            continue;
-        }
-        for lot in lots
-            .iter()
-            .filter(|l| l.security_id == security_id && l.remaining_quantity_minor > 0)
-        {
-            let cents = financial_domain::calculator::plan_payment_cents(
-                lot.remaining_quantity_minor,
-                lot.quantity_scale,
-                amount_minor,
-                amount_scale,
-            );
-            if cents <= 0 {
-                continue;
-            }
-            let key = format!(
-                "mm-{}-{}-{}-{}",
-                security_id, lot.account_id, occurred_on, cents
-            );
-            if canonical
-                .dividend_actual_record(
-                    lot.account_id,
-                    Some(security_id),
-                    occurred_on.clone(),
-                    Some(cents),
-                    2,
-                    Some(key),
-                )
-                .await
-                .is_ok()
-            {
-                posted += 1;
-            }
-        }
-    }
     posted
 }
 
@@ -2845,7 +2781,7 @@ pub(crate) fn is_data_account(name: &str) -> bool {
 }
 
 fn today_iso() -> String {
-    chrono::Utc::now().date_naive().to_string()
+    crate::last_price_window::business_date(chrono::Utc::now()).to_string()
 }
 
 fn calculator_row_visible(symbol: &str, div_type: &str, payment_frequency: &str) -> bool {
@@ -6094,6 +6030,37 @@ fn cadence_sort_rank(freq: &str) -> u8 {
     }
 }
 
+/// Every in-force declaration with a stored amount, newest pay date first.
+/// A stored zero counts. A blank amount does not. The Period grid does not choose this list.
+fn in_force_pays_newest_first(
+    decls: &[crate::contracts::IssuerDeclarationRecord],
+) -> Vec<DeclarationHistoryCellBody> {
+    let mut pays: Vec<(String, i64, u8)> = decls
+        .iter()
+        .filter_map(|decl| {
+            let amount = decl.amount_per_share_minor?;
+            let day = financial_domain::week::parse_iso_day(&decl.payment_period)?;
+            Some((day.to_string(), amount, decl.amount_scale))
+        })
+        .collect();
+    pays.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    pays.into_iter()
+        .map(|(_, amount, scale)| DeclarationHistoryCellBody {
+            amount_per_share_minor: Some(amount),
+            amount_scale: scale,
+        })
+        .collect()
+}
+
+/// First six of [`in_force_pays_newest_first`]. A short Period does not drop an older pay.
+fn recent_pays_newest_first(
+    decls: &[crate::contracts::IssuerDeclarationRecord],
+) -> Vec<DeclarationHistoryCellBody> {
+    let mut pays = in_force_pays_newest_first(decls);
+    pays.truncate(6);
+    pays
+}
+
 async fn declaration_history_view(
     canonical: &dyn Canonical,
     as_of: &str,
@@ -6104,7 +6071,9 @@ async fn declaration_history_view(
 ) -> Result<DeclarationHistoryGetBody, PlatformError> {
     let as_of_date = parse_iso_date(as_of)
         .or_else(|| parse_iso_date(&today_iso()))
-        .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(2026, 9, 2).unwrap());
+        .ok_or_else(|| {
+            PlatformError::new("bad_as_of", "as-of date is not a calendar day")
+        })?;
     let end_date = end_on.and_then(parse_iso_date).unwrap_or(as_of_date);
     let start_date = start_on.and_then(parse_iso_date).unwrap_or_else(|| {
         if let Some(n) = week_count {
@@ -6167,14 +6136,32 @@ async fn declaration_history_view(
         if !cadence_filter_matches(freq, cadence_filter) {
             continue;
         }
+        if financial_domain::current_price::uses_cash_par(div_type, &security.symbol) {
+            rows.push(DeclarationHistoryRowBody {
+                symbol: security.symbol.clone(),
+                payment_frequency: freq.to_string(),
+                cells: week_ends
+                    .iter()
+                    .map(|_| DeclarationHistoryCellBody {
+                        amount_per_share_minor: None,
+                        amount_scale: 0,
+                    })
+                    .collect(),
+                recent_pays: Vec::new(),
+                in_force_pays: Vec::new(),
+            });
+            continue;
+        }
         let decls = canonical
             .issuer_declaration_list(security.security_id)
             .await
             .unwrap_or_default();
+        let in_force_pays = in_force_pays_newest_first(&decls);
+        let recent_pays = recent_pays_newest_first(&decls);
         let mut by_week: std::collections::HashMap<String, (String, i64, u8)> =
             std::collections::HashMap::new();
-        for d in decls {
-            let Some(amt) = d.amount_per_share_minor.filter(|a| *a > 0) else {
+        for d in &decls {
+            let Some(amt) = d.amount_per_share_minor else {
                 continue;
             };
             let Some(pay_on) = financial_domain::week::parse_iso_day(&d.payment_period) else {
@@ -6206,6 +6193,8 @@ async fn declaration_history_view(
             symbol: security.symbol.clone(),
             payment_frequency: freq.to_string(),
             cells,
+            recent_pays,
+            in_force_pays,
         });
     }
     rows.sort_by(|a, b| {
@@ -7656,6 +7645,17 @@ async fn position_master_view(
             if roc_known { "known" } else { "unknown" },
             if period_dated { "dated" } else { "none" },
         );
+        let cash_par = financial_domain::current_price::uses_cash_par(
+            ch.map(|c| c.div_type.as_str()).unwrap_or(""),
+            &security.symbol,
+        );
+        let cash_annual_yield_bps = if cash_par {
+            plan.and_then(|p| {
+                financial_domain::current_price::cash_yield_bps_from_plan_reason(&p.decision_reason)
+            })
+        } else {
+            None
+        };
         rows.push(PositionMasterRowBody {
             security_id,
             symbol: security.symbol.clone(),
@@ -7731,6 +7731,8 @@ async fn position_master_view(
             car_share_of_data_bps: car_share_data,
             roc_research_status,
             declaration_freshness,
+            cash_par,
+            cash_annual_yield_bps,
             scale: 2,
         });
     }
@@ -12008,6 +12010,10 @@ pub async fn execute_command_on(
                     security_id,
                     ji64(&json, "qtyWhole").unwrap_or(0),
                     ji64(&json, "lastMinor").unwrap_or(0),
+                    json.get("priceScale")
+                        .and_then(|v| v.as_u64())
+                        .map(|s| s as u8)
+                        .unwrap_or(4),
                     ji64(&json, "planAnnualMinor"),
                 )
                 .await,
@@ -13932,7 +13938,9 @@ pub async fn execute_command_on(
                         skipped += 1;
                         continue;
                     }
-                    if is_cash_rate_candidate(decl) {
+                    if financial_domain::current_price::uses_cash_par(&div_type, &symbol)
+                        || is_cash_rate_candidate(decl)
+                    {
                         skipped += 1;
                         continue;
                     }

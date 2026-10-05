@@ -1202,18 +1202,23 @@ export function ShoppingCartScreen({
         }));
         loadedFacts.current.add(row.securityId);
       }
-      let lastMinor = lastOf(calculator, positionMaster, row.symbol);
-      if (lastMinor == null) {
+      let quoteMinor = lastOf(calculator, positionMaster, row.symbol);
+      let quoteScale = 2;
+      if (quoteMinor == null) {
         const priced = await client.executeQuery("CurrentPriceGet", { securityId: row.securityId });
         if (priced.ok && priced.bodyJson) {
           const price = JSON.parse(priced.bodyJson) as CurrentPriceGet;
-          if (price.priceMinor != null && price.priceMinor > 0) lastMinor = price.priceMinor;
+          if (price.priceMinor != null && price.priceMinor > 0) {
+            quoteMinor = price.priceMinor;
+            quoteScale = price.scale ?? 2;
+          }
         }
       }
-      if (lastMinor == null) {
+      if (quoteMinor == null || quoteMinor <= 0) {
         onMessage("Last price unknown — will not invent $0.");
         return;
       }
+      const lastMinor = rescaleMinor(quoteMinor, quoteScale, CART_UNIT_SCALE);
       const planAnnual =
         planAnnualForSymbol(calculator, positionMaster, row.symbol, qtyWhole) ??
         factsAnnual(known, qtyWhole);
@@ -1227,6 +1232,7 @@ export function ShoppingCartScreen({
         securityId: row.securityId,
         qtyWhole,
         lastMinor,
+        priceScale: CART_UNIT_SCALE,
         planAnnualMinor: planAnnual,
       });
       if (!next) return;

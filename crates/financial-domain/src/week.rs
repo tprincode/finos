@@ -85,9 +85,10 @@ pub fn friday_week_ends_in_range(from: NaiveDate, to: NaiveDate) -> Vec<NaiveDat
     out
 }
 
-/// Start of the default Calculator history window: 60 calendar days before `as_of`.
+/// Start of the default Calculator history window: one trailing year before `as_of`.
+/// The week grid still caps at 52 Fridays, so older history stays off the columns.
 pub fn history_window_start(as_of: NaiveDate) -> NaiveDate {
-    as_of - Duration::days(60)
+    as_of - Duration::days(365)
 }
 
 /// Friday that owns this pay date in the Saturday–Friday week.
@@ -131,16 +132,20 @@ mod tests {
     }
 
     #[test]
-    fn sixty_day_window_includes_owner_amdw_fridays() {
+    fn trailing_year_window_caps_at_fifty_two_fridays() {
         let as_of = NaiveDate::from_ymd_opt(2026, 9, 2).unwrap();
         let from = history_window_start(as_of);
-        assert_eq!(from, NaiveDate::from_ymd_opt(2026, 7, 4).unwrap());
+        assert_eq!(from, NaiveDate::from_ymd_opt(2025, 9, 2).unwrap());
         let ends = friday_week_ends_in_range(from, as_of);
+        assert_eq!(ends.len(), 52);
         assert_eq!(ends[0], NaiveDate::from_ymd_opt(2026, 9, 4).unwrap());
         assert!(ends.contains(&NaiveDate::from_ymd_opt(2026, 8, 7).unwrap()));
         assert!(ends.contains(&NaiveDate::from_ymd_opt(2026, 8, 14).unwrap()));
         assert!(ends.contains(&NaiveDate::from_ymd_opt(2026, 8, 21).unwrap()));
-        assert_eq!(ends.last().copied(), Some(NaiveDate::from_ymd_opt(2026, 7, 10).unwrap()));
+        assert_eq!(
+            ends.last().copied(),
+            Some(NaiveDate::from_ymd_opt(2025, 9, 12).unwrap())
+        );
     }
 
     #[test]

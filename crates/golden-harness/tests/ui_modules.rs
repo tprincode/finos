@@ -80,6 +80,7 @@ fn desktop_sources() -> String {
         "apps/desktop/src/features/collectors/CollectorsScreen.tsx",
         "apps/desktop/src/features/collectors/CollectorEstablishScreen.tsx",
         "apps/desktop/src/features/interest-rate/InterestRateCalculator.tsx",
+        "apps/desktop/src/features/field-intent/FieldIntentScreen.tsx",
         "apps/desktop/src/features/contracts/ContractPositions.tsx",
         "apps/desktop/src/features/task-manager/TaskManager.tsx",
         "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",

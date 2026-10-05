@@ -97,7 +97,11 @@ pub fn line_matches(line: &RegisterMatch, account: &AccountMatch) -> bool {
     let category = line.category.trim().to_lowercase();
     let vendor = line.vendor.trim().to_lowercase();
     if account.kind == "credit" {
-        return category == key;
+        if category == key {
+            return true;
+        }
+        // Medical-mom is a Mom charge. It debits the Mom credit by the line amount.
+        return key == "mom" && category == "medical-mom";
     }
     if category == key || vendor == key {
         return true;
@@ -372,6 +376,14 @@ mod tests {
                 category: "Mom".to_string(),
                 vendor: "Walmart".to_string(),
                 amount_minor: 100,
+            },
+            &mom,
+        ));
+        assert!(line_matches(
+            &RegisterMatch {
+                category: "Medical-mom".to_string(),
+                vendor: "CVS".to_string(),
+                amount_minor: 2500,
             },
             &mom,
         ));

@@ -266,6 +266,11 @@ pub fn parse_broker_csv_detail(
         }
         let activity_type = if drip_class == CrfDripClass::Drip {
             "drip".to_string()
+        } else if symbol
+            .as_deref()
+            .is_some_and(financial_domain::current_price::is_cash_par_symbol)
+        {
+            "interest".to_string()
         } else {
             "dividend".to_string()
         };
@@ -449,6 +454,8 @@ Run Date,Account,Account Number,Action,Symbol,Description,Type,Price ($),Quantit
             .find(|c| c.symbol.as_deref() == Some("SPAXX"))
             .unwrap();
         assert_eq!(spaxx.amount_minor, Some(112));
+        assert_eq!(spaxx.activity_type, "interest");
+        assert_eq!(nvdw.activity_type, "dividend");
         assert_eq!(resolve_account_name("For the CAR", None), "Car");
         assert_eq!(
             classify_action("REINVESTMENT FIDELITY GOVERNMENT MONEY MARKET (SPAXX)"),

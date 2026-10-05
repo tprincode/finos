@@ -190,8 +190,6 @@ import type { WorkTicketRecord } from "@finos/app-contracts";
 import {
   SymbolLotsTable,
   WorkTicketQueue,
-  avg3Declaration,
-  avg6Declaration,
   dividendScore,
   formatCount,
   formatPercentScaled,
@@ -200,8 +198,9 @@ import {
   formatScale6,
   formatWeekColumnHeader,
   lastPaidDeclarations,
+  meanNewestPays,
   minPaidDeclaration,
-  newestDeclaration,
+  newestStoredPay,
   parseTypedPlan,
   planCheck,
   planDecisionImpact,
@@ -554,15 +553,17 @@ export function PositionDetailsScreen({
                   (row) => row.symbol === investment.symbol,
                 );
                 const cells = historyRow?.cells ?? [];
+                const pays = historyRow?.recentPays ?? [];
+                const inForce = historyRow?.inForcePays ?? [];
                 const weekStarts = declHistory?.weekStarts;
                 const weekEnds = declHistory?.weekEnds ?? [];
                 const paid = lastPaidDeclarations(cells, 6);
-                const paid3 = lastPaidDeclarations(cells, 3);
-                const avg = avg6Declaration(cells);
-                const avg3 = avg3Declaration(cells);
+                const payCount = pays.filter((pay) => pay.amountPerShareMinor != null).length;
+                const avg = meanNewestPays(pays, 6, true);
+                const avg3 = meanNewestPays(pays, 3);
                 const low = minPaidDeclaration(cells);
-                const current = newestDeclaration(cells);
-                const score = dividendScore(master, cells);
+                const current = newestStoredPay(pays);
+                const score = dividendScore(master, cells, current, inForce);
                 const holdingQty = (positionDetails?.positions ?? [])
                   .filter((row) => row.symbol === investment.symbol)
                   .reduce(
@@ -576,7 +577,7 @@ export function PositionDetailsScreen({
                 const planKnown = master?.planKnown ?? investment.planKnown;
                 const planMinor = master?.planPerShareMinor ?? investment.planPerShareMinor ?? 0;
                 const planScale = master?.planScale ?? investment.planScale ?? 2;
-                const check = planCheck(cells, planKnown, planMinor, planScale);
+                const check = planCheck(inForce, planKnown, planMinor, planScale);
                 const typed = parseTypedPlan(pdDraft?.plan ?? "");
                 const periods =
                   master?.planningPeriodsPerYear ?? investment.planningPeriodsPerYear ?? 0;
@@ -596,7 +597,7 @@ export function PositionDetailsScreen({
                   quantityMinor: sharesMinor,
                   quantityScale: master?.quantityScale ?? investment.quantityScale ?? 0,
                   periods,
-                  cells,
+                  cells: inForce,
                 });
                 const money = (cents) =>
                   cents == null ? "unknown" : formatUsd(cents, 2);
@@ -695,7 +696,7 @@ export function PositionDetailsScreen({
                       <div>
                         <span className="fact-label">Most current</span>
                         <span className="fact-value">
-                          {current == null
+                          {current?.amountPerShareMinor == null
                             ? "unknown"
                             : `$${formatScaled(current.amountPerShareMinor, current.amountScale)}`}
                         </span>
@@ -703,13 +704,17 @@ export function PositionDetailsScreen({
                       <div>
                         <span className="fact-label">Avg 3</span>
                         <span className="fact-value">
-                          {avg3 == null ? `${paid3.length} of 3, unknown` : formatUsd(avg3, 2)}
+                          {avg3 == null
+                            ? `${Math.min(payCount, 3)} of 3, unknown`
+                            : formatUsd(avg3, 2)}
                         </span>
                       </div>
                       <div>
                         <span className="fact-label">Avg 6</span>
                         <span className="fact-value">
-                          {avg == null ? `${paid.length} of 6, unknown` : formatUsd(avg, 2)}
+                          {avg == null
+                            ? "unknown"
+                            : `${formatUsd(avg, 2)} (${Math.min(payCount, 6)} of 6)`}
                         </span>
                       </div>
                       <div>

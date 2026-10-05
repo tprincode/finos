@@ -987,6 +987,7 @@ const UI_SCREEN_ORDER: &[&str] = &[
     "task-manager",
     "interest-rate",
     "contract-positions",
+    "field-intent",
     "components",
     "screen-atlas",
 ];
@@ -998,6 +999,7 @@ const UI_DESK_ORDER: &[&str] = &[
     "car",
     "coverage",
     "external",
+    "manager",
 ];
 
 fn screen_rank(screen: &str) -> usize {

@@ -213,6 +213,7 @@ pub async fn buy_line_add(
     security_id: Uuid,
     qty_whole: i64,
     last_minor: i64,
+    price_scale: u8,
     plan_annual_minor: Option<i64>,
 ) -> Result<CartScenarioBody, PlatformError> {
     if qty_whole <= 0 {
@@ -221,8 +222,13 @@ pub async fn buy_line_add(
             "buy qty must be whole shares",
         ));
     }
+    if last_minor <= 0 {
+        return Err(PlatformError::new(
+            "last_unknown",
+            "last price unknown — will not invent $0",
+        ));
+    }
     let security = canonical.security_get(security_id).await?;
-    let price_scale = 2_u8;
     let spend_minor = spend_cents_from_price(qty_whole, last_minor, price_scale);
     canonical
         .cart_buy_line_add(
@@ -962,7 +968,7 @@ pub async fn execute_fill(
                 "confirm the price paid for each buy",
             ));
         }
-        spend_minor += buy.qty_whole * fill;
+        spend_minor += spend_cents_from_price(buy.qty_whole, fill, buy.price_scale);
     }
     let Some(pile) = crate::cash_pile::pile_for_account(canonical, scene.account_id).await? else {
         return Err(PlatformError::new(
@@ -986,7 +992,11 @@ pub async fn execute_fill(
     for buy in &scene.buy_lines {
         if let Some((_, fill)) = fills.iter().find(|(id, _)| *id == buy.line_id) {
             canonical
-                .cart_buy_line_price_set(buy.line_id, *fill, buy.qty_whole * *fill)
+                .cart_buy_line_price_set(
+                    buy.line_id,
+                    *fill,
+                    spend_cents_from_price(buy.qty_whole, *fill, buy.price_scale),
+                )
                 .await?;
         }
     }

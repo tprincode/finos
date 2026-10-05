@@ -57,6 +57,7 @@ pub fn normalize_category(raw: &str) -> String {
         "cash acct" => "Cash acct".into(),
         "bill acct" => "Bill acct".into(),
         "medical" | "med" => "Medical".into(),
+        "medical-mom" | "medical mom" | "medicalmom" => "Medical-mom".into(),
         "pets" => "Pets".into(),
         "mom" => "Mom".into(),
         "home" => "Home".into(),
@@ -371,6 +372,8 @@ mod tests {
     fn names_collapse_to_one_spelling() {
         assert_eq!(normalize_category("food"), "Food");
         assert_eq!(normalize_category("Food"), "Food");
+        assert_eq!(normalize_category("medical-mom"), "Medical-mom");
+        assert_eq!(normalize_category("Medical mom"), "Medical-mom");
         assert_eq!(normalize_vendor("amz"), "AMZ");
         assert_eq!(normalize_vendor("Amazon"), "AMZ");
         assert_eq!(normalize_pay_type("ucard"), "UCARD");

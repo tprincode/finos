@@ -1,6 +1,8 @@
 //! Individual-workbook snapshot under raw-data/<date>/.
 
-use application_core::contracts::{CommandRequest, FINANCE_CLIENT_CONTRACT_VERSION};
+use application_core::contracts::{
+    CommandRequest, FINANCE_CLIENT_CONTRACT_VERSION, SCHEMA_VERSION,
+};
 use application_core::queries::execute_command_on;
 use import_engine::parse_production_templates;
 use storage_sqlite::LocalPlatform;
@@ -100,4 +102,42 @@ async fn data_snapshot_writes_importable_individual_workbooks() {
         "HAKY missing: {:?}",
         doc.securities
     );
+}
+
+/// The stamp on a new snapshot is the highest SQLite migration number, not the August "28".
+#[tokio::test]
+async fn snapshot_stamp_matches_the_latest_sqlite_migration() {
+    let latest = latest_sqlite_migration_number();
+    assert_eq!(
+        SCHEMA_VERSION,
+        latest.to_string(),
+        "SCHEMA_VERSION must be the highest crates/storage-sqlite/migrations number"
+    );
+    assert_ne!(SCHEMA_VERSION, "28");
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .expect("open sqlite");
+    let created = must_ok(&platform, "SnapshotCreate", serde_json::json!({})).await;
+    assert_eq!(created["schemaVersion"].as_str().unwrap(), SCHEMA_VERSION);
+}
+
+fn latest_sqlite_migration_number() -> u32 {
+    let dir = golden_harness::repo_root().join("crates/storage-sqlite/migrations");
+    let mut highest = 0_u32;
+    for entry in std::fs::read_dir(&dir).expect("migrations dir") {
+        let entry = entry.expect("migration entry");
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.ends_with(".sql") {
+            continue;
+        }
+        let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let number: u32 = digits
+            .parse()
+            .unwrap_or_else(|_| panic!("migration file has no number: {name}"));
+        highest = highest.max(number);
+    }
+    assert!(highest > 0, "no sqlite migrations");
+    highest
 }

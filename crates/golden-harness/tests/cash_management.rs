@@ -1128,6 +1128,26 @@ fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
     assert!(cm.contains("Long Term Capital Gains"));
     assert!(cm.contains("Short Term Capital Gains"));
     assert!(cm.contains("formatCarUsd"));
+    let car_usd = cm
+        .split("function formatCarUsd(")
+        .nth(1)
+        .expect("formatCarUsd")
+        .split("function formatRocCell(")
+        .next()
+        .expect("formatCarUsd body");
+    assert!(
+        !car_usd.contains("?? 0") && car_usd.contains("\"unknown\""),
+        "a null car amount shows the reason or unknown, not $0"
+    );
+    assert!(!cm.contains("ytdOrdinaryMinor ?? 0"));
+    assert!(!cm.contains("remainingOrdinaryMinor ?? 0"));
+    assert!(!cm.contains("ytdLongTermGainMinor ?? 0"));
+    assert!(!cm.contains("ytdShortTermGainMinor ?? 0"));
+    assert!(cm.contains("addKnown(plan.ytdOrdinaryMinor, plan.remainingOrdinaryMinor)"));
+    assert!(cm.contains("addKnown(longYtd, longPlanned)"));
+    assert!(cm.contains("addKnown(shortYtd, shortPlanned)"));
+    assert!(cm.contains("longYtd == null ? null : 0"));
+    assert!(cm.contains("shortYtd == null ? null : 0"));
     assert!(cm.contains("ytdRocUnknownReason"));
     assert!(!cm.contains("ytdRocMinor ?? 0"));
     assert!(!cm.contains("remainingRocMinor ?? 0"));
@@ -1150,6 +1170,37 @@ fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
         cm.contains("This week confirmed transactions"),
         "confirmed week table stays on the System update week desk"
     );
+}
+
+/// A missing ordinary, long-term, or short-term cell stays unknown. A real zero still prints.
+#[test]
+fn car_tax_null_is_unknown_not_zero() {
+    let cm = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/CashManagement.tsx"),
+    )
+    .unwrap();
+    let car_usd = cm
+        .split("function formatCarUsd(")
+        .nth(1)
+        .expect("formatCarUsd")
+        .split("function formatRocCell(")
+        .next()
+        .expect("formatCarUsd body");
+    assert!(
+        !car_usd.contains("?? 0") && car_usd.contains("\"unknown\""),
+        "a null car amount shows the reason or unknown, not $0"
+    );
+    assert!(cm.contains("function formatRocCell("));
+    assert!(!cm.contains("ytdOrdinaryMinor ?? 0"));
+    assert!(!cm.contains("remainingOrdinaryMinor ?? 0"));
+    assert!(!cm.contains("ytdLongTermGainMinor ?? 0"));
+    assert!(!cm.contains("ytdShortTermGainMinor ?? 0"));
+    assert!(cm.contains("addKnown(plan.ytdOrdinaryMinor, plan.remainingOrdinaryMinor)"));
+    assert!(cm.contains("addKnown(longYtd, longPlanned)"));
+    assert!(cm.contains("addKnown(shortYtd, shortPlanned)"));
+    assert!(cm.contains("longYtd == null ? null : 0"));
+    assert!(cm.contains("shortYtd == null ? null : 0"));
+    assert!(cm.contains("plan.lotSaleNote"));
 }
 
 #[test]
@@ -1325,5 +1376,109 @@ fn tax_planning_forecast_stays_visible_when_indeterminate() {
     assert!(
         !report.contains("MagiFactRecord") && !report.contains("magi_fact"),
         "this patch does not write APTC into magi_fact"
+    );
+}
+
+/// Medical-mom stays its own category and debits Mom shopping by the line amount once transfer is marked.
+#[tokio::test]
+async fn medical_mom_debits_the_mom_credit() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let mom_id = "a1000001-0000-4000-8000-000000000008";
+    must_ok(
+        &platform,
+        "ExternalAccountManagerSave",
+        serde_json::json!({
+            "accounts": [{
+                "accountId": mom_id,
+                "name": "Mom shopping",
+                "startingMinor": 100000,
+                "currentMinor": 100000,
+                "paymentMinor": null,
+                "reductionMinor": null,
+                "financeMinor": null,
+                "paidThrough": null,
+                "payProcess": "register",
+                "registerKey": "Mom"
+            }]
+        }),
+    )
+    .await;
+    let medical_mom = Uuid::new_v4();
+    let medical = Uuid::new_v4();
+    let mom = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [
+                {
+                    "lineId": medical_mom,
+                    "payType": "Checking",
+                    "occurredOn": "2026-10-05",
+                    "amountMinor": 2500,
+                    "scale": 2,
+                    "category": "medical-mom",
+                    "vendor": "CVS",
+                    "description": "visit"
+                },
+                {
+                    "lineId": medical,
+                    "payType": "Checking",
+                    "occurredOn": "2026-10-05",
+                    "amountMinor": 1000,
+                    "scale": 2,
+                    "category": "Medical",
+                    "vendor": "Paytient",
+                    "description": "not mom"
+                },
+                {
+                    "lineId": mom,
+                    "payType": "Checking",
+                    "occurredOn": "2026-10-04",
+                    "amountMinor": 400,
+                    "scale": 2,
+                    "category": "Mom",
+                    "vendor": "Walmart",
+                    "description": "shopping"
+                }
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ExternalRegisterMarkStep",
+        serde_json::json!({
+            "lineIds": [medical_mom, medical, mom],
+            "step": "transfer",
+            "tickedOn": "2026-10-05"
+        }),
+    )
+    .await;
+    let body = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let account = body["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["accountId"] == mom_id)
+        .expect("Mom shopping");
+    assert_eq!(
+        account["currentMinor"], 97100,
+        "Medical-mom $25.00 and Mom $4.00 debit Mom; Medical $10.00 does not: {account}"
+    );
+    let categories: Vec<_> = account["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["category"].as_str().unwrap().to_string())
+        .collect();
+    assert!(categories.contains(&"Medical-mom".to_string()), "{categories:?}");
+    assert!(categories.contains(&"Mom".to_string()), "{categories:?}");
+    assert!(
+        !categories.iter().any(|category| category == "Medical"),
+        "{categories:?}"
     );
 }

@@ -79,8 +79,13 @@ const WITHDRAW_STEPS = ["Account", "Amount", "Review"] as const;
 function formatCarUsd(
   minor: number | null | undefined,
   scale: number,
+  reason?: string | null,
 ): string {
-  return formatUsd(minor ?? 0, scale);
+  if (minor == null) {
+    const text = reason?.trim();
+    return text ? text : "unknown";
+  }
+  return formatUsd(minor, scale);
 }
 
 function formatRocCell(
@@ -105,17 +110,25 @@ function CarTaxPlanTable({ plan }: { plan: CarRocPlanGet }) {
   const rocReason = plan.ytdRocUnknownReason;
   const rocYtd = plan.ytdRocMinor;
   const rocPlanned = plan.remainingRocMinor;
+  const ordinaryYtd = plan.ytdOrdinaryMinor;
+  const ordinaryPlanned = plan.remainingOrdinaryMinor;
+  const longYtd = plan.ytdLongTermGainMinor;
+  const shortYtd = plan.ytdShortTermGainMinor;
+  const longPlanned = longYtd == null ? null : 0;
+  const shortPlanned = shortYtd == null ? null : 0;
+  const gainReason = plan.lotSaleNote;
   const rows = [
     {
       key: "ordinary",
       label: "Ordinary",
-      ytd: plan.ytdOrdinaryMinor ?? 0,
-      planned: plan.remainingOrdinaryMinor ?? 0,
-      ytdText: formatCarUsd(plan.ytdOrdinaryMinor ?? 0, scale),
-      plannedText: formatCarUsd(plan.remainingOrdinaryMinor ?? 0, scale),
+      ytd: ordinaryYtd,
+      planned: ordinaryPlanned,
+      ytdText: formatCarUsd(ordinaryYtd, scale, rocReason),
+      plannedText: formatCarUsd(ordinaryPlanned, scale, rocReason),
       totalText: formatCarUsd(
-        (plan.ytdOrdinaryMinor ?? 0) + (plan.remainingOrdinaryMinor ?? 0),
+        addKnown(plan.ytdOrdinaryMinor, plan.remainingOrdinaryMinor),
         scale,
+        rocReason,
       ),
     },
     {
@@ -130,20 +143,20 @@ function CarTaxPlanTable({ plan }: { plan: CarRocPlanGet }) {
     {
       key: "lt",
       label: "Long Term Capital Gains",
-      ytd: plan.ytdLongTermGainMinor ?? 0,
-      planned: 0,
-      ytdText: formatCarUsd(plan.ytdLongTermGainMinor ?? 0, scale),
-      plannedText: formatCarUsd(0, scale),
-      totalText: formatCarUsd(plan.ytdLongTermGainMinor ?? 0, scale),
+      ytd: longYtd,
+      planned: longPlanned,
+      ytdText: formatCarUsd(longYtd, scale, gainReason),
+      plannedText: formatCarUsd(longPlanned, scale, gainReason),
+      totalText: formatCarUsd(addKnown(longYtd, longPlanned), scale, gainReason),
     },
     {
       key: "st",
       label: "Short Term Capital Gains",
-      ytd: plan.ytdShortTermGainMinor ?? 0,
-      planned: 0,
-      ytdText: formatCarUsd(plan.ytdShortTermGainMinor ?? 0, scale),
-      plannedText: formatCarUsd(0, scale),
-      totalText: formatCarUsd(plan.ytdShortTermGainMinor ?? 0, scale),
+      ytd: shortYtd,
+      planned: shortPlanned,
+      ytdText: formatCarUsd(shortYtd, scale, gainReason),
+      plannedText: formatCarUsd(shortPlanned, scale, gainReason),
+      totalText: formatCarUsd(addKnown(shortYtd, shortPlanned), scale, gainReason),
     },
   ];
   const knownYtd = rows.every((row) => row.ytd != null)

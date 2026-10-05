@@ -548,6 +548,16 @@ export type DeclarationHistoryGet = {
       amountPerShareMinor: number | null;
       amountScale: number;
     }>;
+    /** Last six in-force pays, newest first. A stored zero counts. The Period grid does not choose these. */
+    recentPays?: Array<{
+      amountPerShareMinor: number | null;
+      amountScale: number;
+    }>;
+    /** Every in-force declaration with a stored amount, newest first. A stored zero counts. */
+    inForcePays?: Array<{
+      amountPerShareMinor: number | null;
+      amountScale: number;
+    }>;
   }>;
 };
 
@@ -1437,6 +1447,8 @@ export type PositionMasterGet = {
     carShareOfDataBps?: number | null;
     rocResearchStatus?: string;
     declarationFreshness?: string;
+    cashPar?: boolean;
+    cashAnnualYieldBps?: number | null;
   }>;
   dataMarketValueMinor: number | null;
   marketValueComplete: boolean;

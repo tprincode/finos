@@ -64,6 +64,21 @@ pub fn seven_day_yield_to_monthly_plan(yield_percent: &str) -> Option<(i64, u8, 
     Some((monthly_minor, CASH_PLAN_SCALE, bps))
 }
 
+/// Annualized 7-day yield already stored on a cash plan reason.
+/// `money-market 7-day yield 3.34% from fidelity` is 334 bps. No percent is unknown.
+pub fn cash_yield_bps_from_plan_reason(reason: &str) -> Option<i64> {
+    let lower = reason.to_ascii_lowercase();
+    let marker = "7-day yield ";
+    let idx = lower.find(marker)?;
+    let rest = reason[idx + marker.len()..].trim();
+    let token = rest.split_whitespace().next()?.trim_end_matches('%').trim();
+    if token.is_empty() || !token.chars().next()?.is_ascii_digit() {
+        return None;
+    }
+    let (_minor, _scale, bps) = seven_day_yield_to_monthly_plan(token)?;
+    Some(bps)
+}
+
 fn parse_yield_percent_to_bps(raw: &str) -> Option<i64> {
     let t = raw.trim().trim_start_matches('+').trim_end_matches('%').trim();
     if t.is_empty() {
@@ -269,5 +284,13 @@ mod tests {
         assert_eq!((minor, bps), (2942, 353));
         assert!(seven_day_yield_to_monthly_plan("0").is_none());
         assert!(seven_day_yield_to_monthly_plan("").is_none());
+        assert_eq!(
+            cash_yield_bps_from_plan_reason("money-market 7-day yield 3.34% from fidelity"),
+            Some(334)
+        );
+        assert_eq!(
+            cash_yield_bps_from_plan_reason("money-market 7-day yield from fidelity"),
+            None
+        );
     }
 }

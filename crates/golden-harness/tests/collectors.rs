@@ -607,7 +607,7 @@ async fn moneymarket_retrieve_updates_plan_and_actuals() {
     )
     .await;
     assert_eq!(retrieved["ok"], true);
-    assert!(retrieved["recorded"].as_u64().unwrap() >= 2);
+    assert!(retrieved["recorded"].as_u64().unwrap() >= 1);
 
     let inv = query_json(
         &platform,
@@ -626,14 +626,14 @@ async fn moneymarket_retrieve_updates_plan_and_actuals() {
     let div = query_json(&platform, "DividendGet", serde_json::json!({})).await;
     let actuals = div["actuals"].as_array().cloned().unwrap_or_default();
     assert!(
-        actuals.iter().any(|a| a["occurredOn"] == "2026-07-31"),
-        "expected MM actual for July: {div}"
+        actuals.iter().all(|a| a["occurredOn"] != "2026-07-31"),
+        "a money-market rate must not post a dividend actual: {div}"
     );
     let june: Vec<_> = actuals
         .iter()
         .filter(|a| a["occurredOn"] == "2026-06-30")
         .collect();
-    assert_eq!(june.len(), 1, "broker June must not be duplicated: {div}");
+    assert_eq!(june.len(), 1, "broker June stays the stored interest row: {div}");
     assert_eq!(june[0]["amountMinor"], 999);
 }
 

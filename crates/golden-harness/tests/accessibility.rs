@@ -84,7 +84,7 @@ fn accessibility_primary_actions_have_accessible_names() {
     .expect("SymbolWindowRow.tsx");
     assert!(
         position_details.contains("aria-label=\"Plan Management\"")
-            && position_details.contains("avg6Declaration(")
+            && position_details.contains("meanNewestPays(")
             && position_details.contains("lastPaidDeclarations("),
         "Plan Management shows Avg 6 from the calculator helper, not a second average"
     );
@@ -904,14 +904,14 @@ fn plan_management_shows_typed_change_and_shares_are_not_a_missing_lot() {
     assert!(plan.contains("aria-label=\"Plan amount\""));
     assert!(plan.contains("FWD at this amount"));
     assert!(plan.contains("planFwdAtAmountBps("));
-    assert!(plan.contains("avg3Declaration("));
-    assert!(plan.contains("${paid3.length} of 3, unknown"));
+    assert!(plan.contains("meanNewestPays(pays, 3)"));
+    assert!(plan.contains("${Math.min(payCount, 3)} of 3, unknown"));
     assert!(plan.contains("minPaidDeclaration("));
     assert!(plan.contains("planDecisionImpact("));
     assert!(plan.contains("formatScale6(impact.perShareDeltaUnits)"));
     assert!(plan.contains("formatScale6(impact.paymentDeltaUnits)"));
     assert!(plan.contains("formatScale6(impact.annualDeltaUnits)"));
-    assert!(plan.contains("${paid.length} of 6, unknown"));
+    assert!(plan.contains("${formatUsd(avg, 2)} (${Math.min(payCount, 6)} of 6)"));
     let plan_section = plan.split("id=\"hub-identity\"").next().unwrap();
     assert!(plan_section.contains("aria-label=\"Stored Plan decision reason\""));
     assert!(plan_section.contains("planReason === \"Match Most Current\""));

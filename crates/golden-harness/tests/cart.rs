@@ -260,6 +260,7 @@ async fn leftover_keeps_yield_and_draft_does_not_change_books() {
             "securityId": haky_id,
             "qtyWhole": 2,
             "lastMinor": 2_995,
+            "priceScale": 2,
             "planAnnualMinor": 912
         }),
     )
@@ -457,6 +458,7 @@ async fn over_remaining_evaluate_shows_intent_agree_blocked() {
             "securityId": haky_id,
             "qtyWhole": 11,
             "lastMinor": 2_995,
+            "priceScale": 2,
             "planAnnualMinor": 5_016
         }),
     )
@@ -879,6 +881,7 @@ async fn leftover_yield_comes_from_collector_plan_not_typed_bps() {
             "securityId": haky_id,
             "qtyWhole": 2,
             "lastMinor": 2_995,
+            "priceScale": 2,
             "planAnnualMinor": 912
         }),
     )
@@ -968,6 +971,7 @@ async fn missing_cash_plan_leaves_leftover_yield_unknown() {
             "securityId": haky_id,
             "qtyWhole": 2,
             "lastMinor": 2_995,
+            "priceScale": 2,
             "planAnnualMinor": 912
         }),
     )
@@ -1150,6 +1154,7 @@ async fn account_cash_approve_checks_live_qty_fill_deducts() {
             "securityId": haky_id,
             "qtyWhole": 2,
             "lastMinor": 2_995,
+            "priceScale": 2,
             "planAnnualMinor": 912
         }),
     )
@@ -1357,6 +1362,7 @@ async fn cart_buy_qty_set_scales_plan_and_allows_over_budget() {
             "securityId": haky_id,
             "qtyWhole": 2,
             "lastMinor": 2_995,
+            "priceScale": 2,
             "planAnnualMinor": 912
         }),
     )
@@ -1418,6 +1424,7 @@ async fn cart_scale4_last_is_dollars_not_ten_thousand() {
             "securityId": amdw_id,
             "qtyWhole": 6,
             "lastMinor": 10_147,
+            "priceScale": 2,
             "planAnnualMinor": 17_160
         }),
     )
@@ -1520,6 +1527,7 @@ async fn cart_execute_buy_rejects_lot_not_on_buy_list() {
             "securityId": haky_id,
             "qtyWhole": 1,
             "lastMinor": 3_181,
+            "priceScale": 2,
             "planAnnualMinor": 456
         }),
     )
@@ -1532,6 +1540,7 @@ async fn cart_execute_buy_rejects_lot_not_on_buy_list() {
             "securityId": muib_id,
             "qtyWhole": 20,
             "lastMinor": 3_272,
+            "priceScale": 2,
             "planAnnualMinor": 5_520
         }),
     )
@@ -2077,6 +2086,7 @@ async fn executed_cart_archive_uses_actual_dollars_and_plan_income() {
             "securityId": muib_id,
             "qtyWhole": 20,
             "lastMinor": 3_272,
+            "priceScale": 2,
             "planAnnualMinor": 11_040
         }),
     )
@@ -2488,6 +2498,136 @@ fn scenario_dropdown_opens_calculator_filter_views() {
         screen.contains("matchesCalculatorPerformanceView"),
         "the popup uses the shared membership test"
     );
+}
+
+/// $32.72 at scale 4 is minor 327200. Ten shares spend 32720 cents, and that fill fits a pile of $400.
+#[tokio::test]
+async fn scale4_fill_spends_cents_not_the_raw_minor() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = account["accountId"].as_str().unwrap();
+    research_and_open(&platform, account_id, "SPAXX", 40_000, 2, 40_000).await;
+    let (security_id, _) = research_and_open(&platform, account_id, "BUY4", 1, 0, 100).await;
+    let scene = must_ok(
+        &platform,
+        "CartScenarioCreate",
+        serde_json::json!({
+            "accountId": account_id,
+            "asOf": "2026-10-05",
+            "name": "scale 4 fill",
+            "fundingSource": "accountCash"
+        }),
+    )
+    .await;
+    let scenario_id = scene["scenarioId"].as_str().unwrap();
+    let added = must_ok(
+        &platform,
+        "CartBuyLineAdd",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "securityId": security_id,
+            "qtyWhole": 10,
+            "lastMinor": 327_200,
+            "priceScale": 4,
+            "planAnnualMinor": 1_000
+        }),
+    )
+    .await;
+    let line = &added["buyLines"][0];
+    assert_eq!(line["lastMinor"].as_i64().unwrap(), 327_200);
+    assert_ne!(line["lastMinor"].as_i64().unwrap(), 3_272);
+    assert_eq!(line["priceScale"].as_u64().unwrap(), 4);
+    assert_eq!(line["spendMinor"].as_i64().unwrap(), 32_720);
+    must_ok(
+        &platform,
+        "CartScenarioAgree",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "overrideReason": "pile covers the scale-4 fill"
+        }),
+    )
+    .await;
+    let line_id = line["lineId"].as_str().unwrap();
+    let filled = must_ok(
+        &platform,
+        "CartExecuteFill",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "occurredOn": "2026-10-05",
+            "fills": [{ "lineId": line_id, "fillMinor": 327_200 }]
+        }),
+    )
+    .await;
+    assert_eq!(filled["buyLines"][0]["spendMinor"].as_i64().unwrap(), 32_720);
+    let blank = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "CartBuyLineAdd",
+            serde_json::json!({
+                "scenarioId": scenario_id,
+                "securityId": security_id,
+                "qtyWhole": 1,
+                "lastMinor": 0,
+                "priceScale": 4
+            }),
+        ),
+    )
+    .await;
+    assert!(!blank.ok);
+    assert_eq!(blank.error_code.as_deref(), Some("last_unknown"));
+}
+
+/// A missing add-lot scale stays blank. Scale 2 of minor 3272 is $32.72, not $0.3272.
+#[test]
+fn add_lot_uses_the_stored_price_scale() {
+    let root = golden_harness::repo_root();
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    let price = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/shopping-cart/cartPrice.ts"),
+    )
+    .unwrap();
+    assert!(
+        !app.contains("priceScale ?? 4"),
+        "a missing scale must not be invented as 4"
+    );
+    assert!(
+        app.contains("prefill.priceScale == null")
+            && app.contains("cartPriceInput(prefill.lastMinor, prefill.priceScale)"),
+        "add lot uses the stored scale and leaves a missing scale blank"
+    );
+    assert!(
+        price.contains("const s = Math.max(0, Math.trunc(scale));"),
+        "the price text uses the scale it was given"
+    );
+    assert_eq!(cart_price_text(3_272, 2), "32.72");
+    assert_eq!(cart_price_text(3_272, 4), "0.3272");
+}
+
+fn cart_price_text(minor: i64, scale: u32) -> String {
+    let digits = minor.unsigned_abs().to_string();
+    let width = (scale as usize) + 1;
+    let digits = if digits.len() < width {
+        format!("{:0>width$}", digits, width = width)
+    } else {
+        digits
+    };
+    let split = digits.len() - scale as usize;
+    let whole = &digits[..split];
+    let frac = &digits[split..];
+    if scale == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{frac}")
+    }
 }
 
 /// Accounts come back as a bare JSON array, not `{items:[…]}`. Getting that wrong made a guard

@@ -86,6 +86,7 @@ import { MagiDrawHead } from "./features/task-manager/MagiCliffPanel";
 import { useMagiCliffNav } from "./features/task-manager/magiCutNav";
 import { MarketImpactPlanner } from "./features/market-impact/MarketImpactPlanner";
 import { InterestRateCalculator } from "./features/interest-rate/InterestRateCalculator";
+import { FieldIntentScreen } from "./features/field-intent/FieldIntentScreen";
 import { ComponentRegistry } from "./features/components/ComponentRegistry";
 import { ContractPositions } from "./features/contracts/ContractPositions";
 import {
@@ -94,6 +95,7 @@ import {
 } from "./features/shared/backgroundReads";
 import { CashYtdPanel } from "./features/cash/CashYtd";
 import { CashCoveragePanel, type CoveragePeriod } from "./features/cash/CashCoverage";
+import { ExternalAccountManager } from "./features/cash/ExternalAccountManager";
 import { ExternalRegister } from "./features/cash/ExternalRegister";
 import { HomeAccountCharts } from "./features/graphing/HomeAccountCharts";
 import { AccountCashFlow } from "./features/cash/AccountCashFlow";
@@ -729,7 +731,7 @@ type HealthView = {
   contractVersion: string;
   error?: string;
 };
-type CmDesk = "elements" | "cashflow" | "weekly" | "car" | "coverage" | "external";
+type CmDesk = "elements" | "cashflow" | "weekly" | "car" | "coverage" | "external" | "manager";
 type Screen =
   | "home"
   | "income-plan"
@@ -751,6 +753,7 @@ type Screen =
   | "task-manager"
   | "interest-rate"
   | "contract-positions"
+  | "field-intent"
   | "components"
   | "screen-atlas";
 
@@ -775,6 +778,7 @@ const SCREENS: readonly Screen[] = [
   "task-manager",
   "interest-rate",
   "contract-positions",
+  "field-intent",
   "components",
   "screen-atlas",
 ];
@@ -853,13 +857,17 @@ function historyBounds(
       return { startOn: addUtcDays(asOf, -90), endOn: asOf };
     case "ytd":
       return { startOn: `${asOf.slice(0, 4)}-01-01`, endOn: asOf };
+    case "60":
+      return { startOn: addUtcDays(asOf, -60), endOn: asOf };
+    case "year":
+      return { startOn: addUtcDays(asOf, -365), endOn: asOf };
     case "custom":
       return {
-        startOn: startOn || addUtcDays(asOf, -60),
+        startOn: startOn || addUtcDays(asOf, -365),
         endOn: endOn || asOf,
       };
     default:
-      return { startOn: addUtcDays(asOf, -60), endOn: asOf };
+      return { startOn: addUtcDays(asOf, -365), endOn: asOf };
   }
 }
 
@@ -985,6 +993,8 @@ export default function App() {
   const [elementDirty, setElementDirty] = useState(false);
   const [externalDirty, setExternalDirty] = useState(false);
   const [externalReset, setExternalReset] = useState(0);
+  const [managerDirty, setManagerDirty] = useState(false);
+  const [managerReset, setManagerReset] = useState(0);
   const [menuWorking, setMenuWorking] = useState<string | null>(null);
   const [catalogBook, setCatalogBook] = useState("all");
   const [cashYtdAccount, setCashYtdAccount] = useState<CashYtdGet | null>(null);
@@ -1042,7 +1052,7 @@ export default function App() {
   const [calculator, setCalculator] = useState<CalculatorGet | null>(null);
   const [declHistory, setDeclHistory] = useState<DeclarationHistoryGet | null>(null);
   const [histCadence, setHistCadence] = useState("all");
-  const [histPeriod, setHistPeriod] = useState("60");
+  const [histPeriod, setHistPeriod] = useState("year");
   const [histStartOn, setHistStartOn] = useState("");
   const [histEndOn, setHistEndOn] = useState("");
   const histPeriodRef = useRef(histPeriod);
@@ -1330,7 +1340,6 @@ export default function App() {
         client.executeQuery("DeclarationHistoryGet", {
           asOfDate: asOf || "2026-08-26",
           cadence: "all",
-          period: "60",
         }),
       ]);
       if (!setResult.ok) {
@@ -3527,7 +3536,7 @@ export default function App() {
     } else if (screen === "cash-management") {
       if (cmDesk === "elements") {
         void loadElementsPack(asOfDate);
-      } else if (cmDesk !== "external") {
+      } else if (cmDesk !== "external" && cmDesk !== "manager") {
         void loadCashPack(asOfDate);
         // Week capture (account totals + cash) lives on the weekly desk. Without the
         // trends pack TrendsWeekGet never runs and the grid renders nothing.
@@ -5502,7 +5511,9 @@ export default function App() {
     ...(pdDirty ? (["position-details"] as const) : []),
     ...(wizDirty ? (["new-investment"] as const) : []),
     ...(addLotDirty ? (["add-lot"] as const) : []),
-    ...(cashDirty || elementDirty || externalDirty ? (["cash-management"] as const) : []),
+    ...(cashDirty || elementDirty || externalDirty || managerDirty
+      ? (["cash-management"] as const)
+      : []),
     ...(cartDirty ? (["shopping-cart"] as const) : []),
     ...(marketImpactDirty
       ? screen === "position-details"
@@ -5518,7 +5529,7 @@ export default function App() {
       : null,
     wizDirty ? "Add Investment" : null,
     addLotDirty ? "Add Lot" : null,
-    cashDirty || elementDirty || externalDirty ? "Cash Management" : null,
+    cashDirty || elementDirty || externalDirty || managerDirty ? "Cash Management" : null,
     cartDirty ? "Shopping Cart" : null,
     marketImpactDirty && screen !== "position-details" ? "Market impact planner" : null,
   ]
@@ -5561,6 +5572,10 @@ export default function App() {
     if (externalDirty) {
       setExternalDirty(false);
       setExternalReset((n) => n + 1);
+    }
+    if (managerDirty) {
+      setManagerDirty(false);
+      setManagerReset((n) => n + 1);
     }
     if (marketImpactDirty) {
       setMarketImpactDirty(false);
@@ -5739,6 +5754,13 @@ export default function App() {
       );
       return;
     }
+    if (managerDirty && !(ontoCm && dest === "manager")) {
+      setMenuWorking(null);
+      setActionMessage(
+        "Save or Cancel before leaving. Navigation stays blocked while edits are unsaved.",
+      );
+      return;
+    }
     if (cashDirty && !(ontoCm && dest === "weekly")) {
       setMenuWorking(null);
       setActionMessage(
@@ -5753,6 +5775,7 @@ export default function App() {
         cashDirty ||
         elementDirty ||
         externalDirty ||
+        managerDirty ||
         marketImpactDirty) &&
       (target == null || !dirtyTargets.includes(target))
     ) {
@@ -5794,6 +5817,7 @@ export default function App() {
       cashDirty ||
       elementDirty ||
       externalDirty ||
+      managerDirty ||
       marketImpactDirty ||
       weekWizardActive
     ) {
@@ -5835,6 +5859,7 @@ export default function App() {
     cashDirty,
     elementDirty,
     externalDirty,
+    managerDirty,
     marketImpactDirty,
     weekWizardActive,
   ]);
@@ -5957,6 +5982,17 @@ export default function App() {
               },
               "cash-management",
               "external",
+            );
+            return;
+          }
+          if (id === "cash-external-manager") {
+            leaveWithoutSavingRef.current(
+              () => {
+                setCmDesk("manager");
+                setScreen("cash-management");
+              },
+              "cash-management",
+              "manager",
             );
             return;
           }
@@ -8397,6 +8433,7 @@ export default function App() {
           ((weekWizardActive && desk !== "weekly") ||
             (elementDirty && desk !== "elements") ||
             (externalDirty && desk !== "external") ||
+            (managerDirty && desk !== "manager") ||
             (cashDirty && desk !== "weekly") ||
             ((pdDirty || wizDirty || addLotDirty || marketImpactDirty) &&
               !dirtyTargets.includes("cash-management"))))
@@ -8425,6 +8462,7 @@ export default function App() {
               cashDirty ||
               elementDirty ||
               externalDirty ||
+              managerDirty ||
               marketImpactDirty) &&
               !dirtyTargets.includes(id))))
       }
@@ -8567,6 +8605,7 @@ export default function App() {
               {cmDeskButton("car", "Tax Planning")}
               {cmDeskButton("coverage", "Income vs Expense planner")}
               {cmDeskButton("external", "External accounts")}
+              {cmDeskButton("manager", "Debt planner")}
             </>,
           )}
           {menuGroup(
@@ -8607,6 +8646,7 @@ export default function App() {
               {navButton("task-manager", "Task Manager")}
               {navButton("interest-rate", "Interest rate calculator")}
               {navButton("contract-positions", "Contract positions")}
+              {navButton("field-intent", "Field intent")}
               {navButton("components", "Components")}
               {navButton("screen-atlas", "Screen Atlas")}
               {navButton("settings", "Settings")}
@@ -9150,6 +9190,7 @@ export default function App() {
       cashDirty ||
       elementDirty ||
       externalDirty ||
+      managerDirty ||
       marketImpactDirty ? (
         <div className="blocked unsaved-bar" role="alert">
           <p>
@@ -9167,7 +9208,13 @@ export default function App() {
                   onClick={() => {
                     if (id === "cash-management") {
                       setCmDesk(
-                        externalDirty ? "external" : elementDirty ? "elements" : "weekly",
+                        managerDirty
+                          ? "manager"
+                          : externalDirty
+                            ? "external"
+                            : elementDirty
+                              ? "elements"
+                              : "weekly",
                       );
                     }
                     setScreen(id);
@@ -9308,7 +9355,7 @@ export default function App() {
               setHistPeriod("custom");
               const start =
                 histStartOn ||
-                historyBounds("60", asOfDate, "", "").startOn;
+                historyBounds("year", asOfDate, "", "").startOn;
               setHistStartOn(start);
               setHistEndOn(iso);
               void loadDeclHistory(asOfDate, "custom", start, iso);
@@ -9522,8 +9569,11 @@ export default function App() {
                   : prefill.symbol,
               );
               setAddLotQty(String(prefill.qtyWhole));
-              // Cart lastMinor is scale 4 (1/10000 USD). Never divide by 100 — that shows $3272 for $32.72.
-              const unitCost = cartPriceInput(prefill.lastMinor, prefill.priceScale ?? 4);
+              // Use the stored scale. A missing scale is unknown, not a guessed 4.
+              const unitCost =
+                prefill.priceScale == null
+                  ? ""
+                  : cartPriceInput(prefill.lastMinor, prefill.priceScale);
               setAddLotCost(unitCost);
               setAddLotOpenedOn(prefill.openedOn);
               setAddLotTaxCost("");
@@ -9557,6 +9607,8 @@ export default function App() {
             <h2 aria-label="Tax Planning">Tax Planning</h2>
           ) : cmDesk === "external" ? (
             <h2 aria-label="External accounts">External accounts</h2>
+          ) : cmDesk === "manager" ? (
+            <h2 aria-label="Debt planner">Debt planner</h2>
           ) : cmDesk === "coverage" ? null : (
             <h2 aria-label="Week ahead planner">Week ahead planner</h2>
           )}
@@ -9568,6 +9620,7 @@ export default function App() {
           ) : null}
           {cmDesk === "cashflow"
           || cmDesk === "external"
+          || cmDesk === "manager"
           || cmDesk === "weekly"
           || cmDesk === "coverage" ? null : (
           <p>
@@ -9613,7 +9666,13 @@ export default function App() {
               onDirtyChange={setExternalDirty}
             />
           ) : null}
-          {cmDesk === "coverage" || cmDesk === "external" ? null : (
+          {cmDesk === "manager" ? (
+            <ExternalAccountManager
+              resetToken={managerReset}
+              onDirtyChange={setManagerDirty}
+            />
+          ) : null}
+          {cmDesk === "coverage" || cmDesk === "external" || cmDesk === "manager" ? null : (
           <CashManagementPanel
             desk={cmDesk}
             week={cashWeek}
@@ -12061,6 +12120,8 @@ export default function App() {
       {screen === "interest-rate" ? <InterestRateCalculator /> : null}
 
       {screen === "contract-positions" ? <ContractPositions client={client} /> : null}
+
+      {screen === "field-intent" ? <FieldIntentScreen /> : null}
 
       {screen === "components" ? (
         <ComponentRegistry modules={coreFunctions?.modules} />

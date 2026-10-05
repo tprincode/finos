@@ -509,3 +509,34 @@ fn cash_ytd_home_passes_account_and_tax() {
         "applyCashNav writes both YTD views"
     );
 }
+
+/// Desktop startup opens SQLite. Server boot must not migrate Postgres as the live book.
+#[test]
+fn desktop_startup_does_not_migrate_postgres() {
+    let root = repo_root();
+    let startup =
+        std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
+    let cargo =
+        std::fs::read_to_string(root.join("apps/desktop/src-tauri/Cargo.toml")).unwrap();
+    assert!(
+        startup.contains("LocalPlatform::open_with_advisory"),
+        "desktop startup opens the SQLite book"
+    );
+    for (name, file) in [("startup", &startup), ("cargo", &cargo)] {
+        assert!(
+            !file.contains("storage-postgres")
+                && !file.contains("PostgresPlatform")
+                && !file.contains("sqlx::migrate!"),
+            "{name} must not call the Postgres migrate"
+        );
+    }
+    let server = std::fs::read_to_string(root.join("services/server/src/main.rs")).unwrap();
+    assert!(
+        server.contains("not the household book"),
+        "server boot names that Postgres is not the household book"
+    );
+    assert!(
+        !server.contains("PostgresPlatform::connect"),
+        "server boot must not migrate Postgres"
+    );
+}

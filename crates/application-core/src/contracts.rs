@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 pub const FINANCE_CLIENT_CONTRACT_VERSION: &str = "1.0.0-draft";
 
-/// Must equal the latest SQLite migration id (currently 0028_issuer_declaration_dedupe).
-pub const SCHEMA_VERSION: &str = "28";
+/// Must equal the latest SQLite migration number (currently 0065_window_comparison).
+pub const SCHEMA_VERSION: &str = "65";
 /// Marketplace MAGI 2026.1 after owner-approved oracles.
 pub const CALCULATION_VERSION: &str = "magi-2026.1";
 pub const APP_VERSION: &str = "0.1.0";
@@ -2496,6 +2496,12 @@ pub struct PositionMasterRowBody {
     pub roc_research_status: String,
     #[serde(default)]
     pub declaration_freshness: String,
+    /// Money-market balance. Dividend columns on the calculator are N/A.
+    #[serde(default)]
+    pub cash_par: bool,
+    /// Annualized 7-day yield in basis points, from the cash plan reason. Missing is unknown.
+    #[serde(default)]
+    pub cash_annual_yield_bps: Option<i64>,
     pub scale: u8,
 }
 
@@ -2769,6 +2775,12 @@ pub struct DeclarationHistoryRowBody {
     pub symbol: String,
     pub payment_frequency: String,
     pub cells: Vec<DeclarationHistoryCellBody>,
+    /// In-force pays, newest first, at most six. A stored zero counts. The Period week grid does not choose these.
+    #[serde(default)]
+    pub recent_pays: Vec<DeclarationHistoryCellBody>,
+    /// Every in-force declaration with a stored amount, newest pay date first. A stored zero counts.
+    #[serde(default)]
+    pub in_force_pays: Vec<DeclarationHistoryCellBody>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

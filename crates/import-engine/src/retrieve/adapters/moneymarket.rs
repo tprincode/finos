@@ -1,10 +1,10 @@
 //! Fidelity / Schwab money-market rate pages.
 //! NAV stays par $1 elsewhere. This adapter parses the published 7-day yield
-//! and converts it to monthly Plan $ (yield ÷ 12). Dividend tables are fallback only.
+//! and converts it to monthly Plan $ (yield ÷ 12). No yield means no row.
 
 use serde_json::{json, Value};
 
-use super::generic::{generic_fund_page, parse_generic_distributions};
+use super::generic::generic_fund_page;
 use financial_domain::current_price::seven_day_yield_to_monthly_plan;
 
 pub fn parse_moneymarket_distributions(source: &str, html: &str) -> Vec<Value> {
@@ -12,10 +12,7 @@ pub fn parse_moneymarket_distributions(source: &str, html: &str) -> Vec<Value> {
 }
 
 pub fn parse_moneymarket_distributions_for(source: &str, html: &str, symbol: &str) -> Vec<Value> {
-    if let Some(row) = cash_rate_candidate(source, html, symbol) {
-        return vec![row];
-    }
-    parse_generic_distributions(source, html)
+    cash_rate_candidate(source, html, symbol).into_iter().collect()
 }
 
 pub fn is_cash_rate_candidate(row: &Value) -> bool {

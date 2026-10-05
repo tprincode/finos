@@ -21,6 +21,7 @@ export type AtlasScreen =
   | "task-manager"
   | "interest-rate"
   | "contract-positions"
+  | "field-intent"
   | "components"
   | "screen-atlas";
 
@@ -30,7 +31,8 @@ export type AtlasCmDesk =
   | "weekly"
   | "car"
   | "coverage"
-  | "external";
+  | "external"
+  | "manager";
 
 export type AtlasTarget = {
   /** File stem under the dated atlas folder. */
@@ -121,6 +123,14 @@ export const ATLAS_TARGETS: readonly AtlasTarget[] = [
     cmDesk: "external",
     menuPath: "Cash Management → External accounts",
     label: "External accounts",
+    settleMs: 3000,
+  },
+  {
+    id: "cm-debt-planner",
+    screen: "cash-management",
+    cmDesk: "manager",
+    menuPath: "Cash Management → Debt planner",
+    label: "Debt planner",
     settleMs: 3000,
   },
   {
@@ -222,6 +232,12 @@ export const ATLAS_TARGETS: readonly AtlasTarget[] = [
     label: "Contract positions",
   },
   {
+    id: "field-intent",
+    screen: "field-intent",
+    menuPath: "Tools → Field intent",
+    label: "Field intent",
+  },
+  {
     id: "components",
     screen: "components",
     menuPath: "Tools → Components",
@@ -262,6 +278,7 @@ export const ATLAS_SCREEN_IDS: readonly AtlasScreen[] = [
   "task-manager",
   "interest-rate",
   "contract-positions",
+  "field-intent",
   "components",
   "screen-atlas",
 ];
@@ -273,4 +290,5 @@ export const ATLAS_CM_DESKS: readonly AtlasCmDesk[] = [
   "car",
   "coverage",
   "external",
+  "manager",
 ];

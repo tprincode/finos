@@ -191,6 +191,17 @@
       "host": "queries.rs"
     },
     {
+      "id": "cm-debt-planner",
+      "title": "Debt planner",
+      "folder": "apps/desktop/src/features/cash/ExternalAccountManager.tsx",
+      "status": "extracted",
+      "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "manager",
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
       "id": "home",
       "title": "Home",
       "folder": "apps/desktop/src/App.tsx",
@@ -323,6 +334,16 @@
       "status": "extracted",
       "menuAreas": ["Tools"],
       "screen": "contract-positions",
+      "coreFunctionIds": [],
+      "host": ""
+    },
+    {
+      "id": "field-intent",
+      "title": "Field intent",
+      "folder": "apps/desktop/src/features/field-intent/",
+      "status": "extracted",
+      "menuAreas": ["Tools"],
+      "screen": "field-intent",
       "coreFunctionIds": [],
       "host": ""
     },

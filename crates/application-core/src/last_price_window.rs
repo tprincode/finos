@@ -3,7 +3,7 @@
 //! (ok, fail, or started — Restart must not start another auto fetch).
 //! Collectors use the same clock and run once per local date (not the 4-hour gate).
 
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, TimeZone, Timelike, Weekday};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::America::New_York;
 use chrono_tz::Tz;
 
@@ -28,6 +28,11 @@ impl LastPriceAutoSkip {
 
 pub fn now_eastern() -> DateTime<Tz> {
     chrono::Utc::now().with_timezone(&New_York)
+}
+
+/// Calendar date in America/New_York. 8:00 p.m. Eastern is still that day, not tomorrow UTC.
+pub fn business_date(now_utc: DateTime<Utc>) -> NaiveDate {
+    now_utc.with_timezone(&New_York).date_naive()
 }
 
 pub fn parse_run_stamp_et(stamp: &str) -> Option<DateTime<Tz>> {
