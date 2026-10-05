@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import ReactECharts from "echarts-for-react";
+import { DefaultTick, initialChartDefault } from "./chartDefault";
 
 export type DeclarationPaymentPoint = {
   paymentPeriod: string;
@@ -60,7 +61,13 @@ export function DeclarationPaymentsChart({
   declarations: DeclarationPaymentPoint[];
   asOfDate: string;
 }) {
-  const [period, setPeriod] = useState<GraphPeriod>("1y");
+  const [period, setPeriod] = useState<GraphPeriod>(() =>
+    initialChartDefault(
+      "declaration-period",
+      "1y",
+      PERIOD_OPTIONS.map((opt) => opt.value),
+    ),
+  );
   const paid = useMemo(
     () =>
       declarations
@@ -120,17 +127,20 @@ export function DeclarationPaymentsChart({
       <div className="trends-period-bar">
         <span className="trends-period-label">
           Period
-          <select
-            aria-label="Declaration graphing period"
-            value={period}
-            onChange={(e) => setPeriod(e.target.value as GraphPeriod)}
-          >
-            {PERIOD_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          <span className="chart-default-choice">
+            <select
+              aria-label="Declaration graphing period"
+              value={period}
+              onChange={(e) => setPeriod(e.target.value as GraphPeriod)}
+            >
+              {PERIOD_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <DefaultTick storageKey="declaration-period" value={period} />
+          </span>
         </span>
         <span>
           {formatCount(filtered.length)} of {formatCount(paid.length)} payments shown

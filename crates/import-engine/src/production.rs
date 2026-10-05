@@ -62,7 +62,7 @@ fn as_iso_date(raw: &str) -> String {
     raw.to_string()
 }
 
-fn read_data_rows(path: &Path) -> Result<Vec<HashMap<String, String>>, String> {
+pub fn read_data_rows(path: &Path) -> Result<Vec<HashMap<String, String>>, String> {
     let mut workbook: Xlsx<_> =
         open_workbook(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let range = workbook
@@ -695,7 +695,7 @@ mod tests {
         }
         assert!(
             bad.is_empty(),
-            "seed payment_frequency must be Weekly/Monthly/Quarterly/None: {bad:?}"
+            "seed payment_frequency must be Weekly/Twice monthly/Monthly/Quarterly/None: {bad:?}"
         );
         assert_eq!(
             doc.characteristics

@@ -476,59 +476,87 @@ pub async fn cash_management_month(
     })
 }
 
+fn week_start_on(period_end: &str) -> String {
+    let day = if period_end.len() >= 10 {
+        &period_end[..10]
+    } else {
+        period_end
+    };
+    let Ok(end) = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
+        return day.to_string();
+    };
+    (end - chrono::Duration::days(6))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+fn cash_leaving_type(activity_type: &str) -> bool {
+    activity_type.eq_ignore_ascii_case("Withdrawal")
+        || financial_domain::cash_management::is_etf_purchase(activity_type)
+        || matches!(
+            activity_type,
+            "IRA_Distribution" | "Roth_Distribution" | "HSA_Withdrawal"
+        )
+}
+
+/// Expected cash for the week: last saved cash + this week's dividends − withdrawals.
+/// No prior cash means there is no expected balance yet.
 pub async fn reference_cash_minor(
     canonical: &dyn Canonical,
     account_id: uuid::Uuid,
-    account_name: &str,
-    cash_symbol_column: Option<&str>,
+    _account_name: &str,
+    _cash_symbol_column: Option<&str>,
     period_end: &str,
 ) -> Result<Option<i64>, PlatformError> {
-    let Some(symbol) =
-        financial_domain::cash_management::resolve_cash_symbol(account_name, cash_symbol_column)
-    else {
-        return Ok(None);
+    let end = if period_end.len() >= 10 {
+        &period_end[..10]
+    } else {
+        period_end
     };
-    let basis = canonical.basis_get().await?;
-    let securities = canonical.security_list().await?;
-    let mut lot_sum: Option<i64> = None;
-    for lot in &basis.lots {
-        if lot.account_id != account_id || lot.remaining_quantity_minor <= 0 {
-            continue;
-        }
-        let Some(sec) = securities.iter().find(|s| s.security_id == lot.security_id) else {
-            continue;
-        };
-        if !sec.symbol.eq_ignore_ascii_case(&symbol) {
-            continue;
-        }
-        let dollars =
-            financial_domain::cart::cash_dollars_minor(lot.remaining_quantity_minor, lot.quantity_scale);
-        lot_sum = Some(lot_sum.unwrap_or(0) + dollars);
-    }
-    if lot_sum.is_some() {
-        return Ok(lot_sum);
-    }
     let snaps = canonical.account_balance_snapshot_list().await?;
-    let mut best: Option<(String, i64)> = None;
+    let mut prior: Option<(String, i64)> = None;
     for snap in &snaps {
-        if snap.account_id != account_id {
-            continue;
-        }
-        if snap.period_end.as_str() >= period_end {
+        if snap.account_id != account_id || snap.period_end.as_str() >= end {
             continue;
         }
         let Some(cash) = snap.cash_minor else {
             continue;
         };
-        let take = best
+        let take = prior
             .as_ref()
             .map(|(pe, _)| snap.period_end.as_str() > pe.as_str())
             .unwrap_or(true);
         if take {
-            best = Some((snap.period_end.clone(), cash));
+            prior = Some((snap.period_end.clone(), cash));
         }
     }
-    Ok(best.map(|(_, c)| c))
+    let Some((_, prior_cash)) = prior else {
+        return Ok(None);
+    };
+    let start = week_start_on(end);
+    let dividends = canonical
+        .dividend_list_in_range(Some(account_id), &start, end)
+        .await
+        .unwrap_or_default();
+    let dividend_minor: i64 = dividends
+        .iter()
+        .map(|row| financial_domain::money::to_usd_cents(row.amount_minor, row.scale))
+        .sum();
+    let activity = canonical
+        .activity_list_in_range(Some(account_id), &start, end)
+        .await
+        .unwrap_or_default();
+    let mut leaving_minor = 0_i64;
+    let mut etf_sale_minor = 0_i64;
+    for row in &activity {
+        let cents = financial_domain::money::to_usd_cents(row.amount_minor, row.scale);
+        if cash_leaving_type(&row.activity_type) {
+            leaving_minor += cents;
+        } else if financial_domain::cash_management::is_etf_sale(&row.activity_type) {
+            etf_sale_minor += cents;
+        }
+    }
+    Ok(Some(prior_cash + dividend_minor + etf_sale_minor - leaving_minor))
 }
 
 pub async fn cash_references_for_week(
@@ -551,6 +579,8 @@ pub async fn cash_references_for_week(
             period_end,
         )
         .await?;
+        let pile = crate::cash_pile::pile_get(canonical, account.account_id).await?;
+        let pile_minor = pile.found.then_some(pile.dollars_minor);
         let display_name = if *name == "9" {
             "Account 9".into()
         } else {
@@ -562,6 +592,7 @@ pub async fn cash_references_for_week(
             display_name,
             cash_symbol: symbol,
             reference_minor,
+            pile_minor,
         });
     }
     Ok(out)

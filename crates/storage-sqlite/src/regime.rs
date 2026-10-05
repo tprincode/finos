@@ -15,6 +15,51 @@ pub async fn period_record(
     pool: &SqlitePool,
     record: BacktestPeriodRecord,
 ) -> Result<BacktestPeriodRecord, PlatformError> {
+    if !record.name.trim().is_empty() {
+        let matches = sqlx::query(
+            "SELECT period_id, benchmark_symbol
+             FROM backtest_period
+             WHERE lower(kind) = lower(?) AND lower(name) = lower(?)
+             ORDER BY recorded_at, period_id",
+        )
+        .bind(&record.kind)
+        .bind(&record.name)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+        if !matches.is_empty() {
+            let stored_benchmark: String = matches[0]
+                .try_get("benchmark_symbol")
+                .map_err(|e| map_err(e.into()))?;
+            let benchmark = if record.benchmark_symbol.trim().is_empty() {
+                stored_benchmark
+            } else {
+                record.benchmark_symbol.clone()
+            };
+            for row in &matches {
+                let id: String = row.try_get("period_id").map_err(|e| map_err(e.into()))?;
+                sqlx::query(
+                    "UPDATE backtest_period
+                     SET start_on = ?, end_on = ?, benchmark_symbol = ?
+                     WHERE period_id = ?",
+                )
+                .bind(&record.start_on)
+                .bind(&record.end_on)
+                .bind(&benchmark)
+                .bind(&id)
+                .execute(pool)
+                .await
+                .map_err(|e| map_err(e.into()))?;
+            }
+            let period_id = Uuid::parse_str(
+                &matches[0]
+                    .try_get::<String, _>("period_id")
+                    .map_err(|e| map_err(e.into()))?,
+            )
+            .map_err(|e| PlatformError::new("parse_error", e.to_string()))?;
+            return period_get(pool, period_id).await;
+        }
+    }
     sqlx::query(
         "INSERT INTO backtest_period (
             period_id, kind, name, start_on, end_on, benchmark_symbol,
@@ -75,8 +120,9 @@ pub async fn result_record(
             result_id, security_id, period_id, price_return_bps, total_return_bps,
             cushion_bps, max_drawdown_bps, recovery_ratio_bps, recovery_days,
             income_reliability_bps, bear_relative_bps, downside_capture_bps,
-            upside_capture_bps, completeness, source, calculated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            upside_capture_bps, completeness, source, calculated_at,
+            underlying_symbol, underlying_return_bps, spy_return_bps, nasdaq_return_bps
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(record.result_id.to_string())
     .bind(record.security_id.to_string())
@@ -94,6 +140,10 @@ pub async fn result_record(
     .bind(&record.completeness)
     .bind(&record.source)
     .bind(&record.calculated_at)
+    .bind(&record.underlying_symbol)
+    .bind(record.underlying_return_bps)
+    .bind(record.spy_return_bps)
+    .bind(record.nasdaq_return_bps)
     .execute(pool)
     .await
     .map_err(|e| map_err(e.into()))?;
@@ -108,10 +158,11 @@ pub async fn result_list_for_security(
         "SELECT result_id, security_id, period_id, price_return_bps, total_return_bps,
                 cushion_bps, max_drawdown_bps, recovery_ratio_bps, recovery_days,
                 income_reliability_bps, bear_relative_bps, downside_capture_bps,
-                upside_capture_bps, completeness, source, calculated_at
+                upside_capture_bps, completeness, source, calculated_at,
+                underlying_symbol, underlying_return_bps, spy_return_bps, nasdaq_return_bps
          FROM position_backtest_result
          WHERE security_id = ?
-         ORDER BY calculated_at, result_id",
+         ORDER BY calculated_at, rowid",
     )
     .bind(security_id.to_string())
     .fetch_all(pool)
@@ -185,5 +236,15 @@ fn result_from_row(
         completeness: row.try_get("completeness").map_err(|e| map_err(e.into()))?,
         source: row.try_get("source").map_err(|e| map_err(e.into()))?,
         calculated_at: row.try_get("calculated_at").map_err(|e| map_err(e.into()))?,
+        underlying_symbol: row
+            .try_get("underlying_symbol")
+            .map_err(|e| map_err(e.into()))?,
+        underlying_return_bps: row
+            .try_get("underlying_return_bps")
+            .map_err(|e| map_err(e.into()))?,
+        spy_return_bps: row.try_get("spy_return_bps").map_err(|e| map_err(e.into()))?,
+        nasdaq_return_bps: row
+            .try_get("nasdaq_return_bps")
+            .map_err(|e| map_err(e.into()))?,
     })
 }

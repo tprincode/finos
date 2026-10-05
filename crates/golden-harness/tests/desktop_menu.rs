@@ -58,6 +58,11 @@ const MENU_QUERIES: &[&str] = &[
 #[test]
 fn app_execute_query_names_are_registered() {
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let nav = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/fetchCashNav.ts"),
+    )
+    .unwrap();
+    let desktop = format!("{app}\n{nav}");
     let queries = std::fs::read_to_string(
         repo_root().join("crates/application-core/src/queries.rs"),
     )
@@ -68,8 +73,8 @@ fn app_execute_query_names_are_registered() {
         .expect("execute_query_on");
     for name in MENU_QUERIES {
         assert!(
-            app.contains(&format!("executeQuery(\"{name}\"")),
-            "App.tsx must call {name}"
+            desktop.contains(&format!("executeQuery(\"{name}\"")),
+            "desktop must call {name}"
         );
         assert!(
             on.contains(&format!("\"{name}\"")),
@@ -184,8 +189,11 @@ fn last_prices_summary_replaces_refresh_banner() {
         !app.contains("Stale still displays. Missing stays unknown."),
         "stale/unknown copy must not sit under Last prices"
     );
+    // Owner treats "Income through" and "Income reported through" as the same tile, so either
+    // wording passes. The Home board order is locked elsewhere; this only checks the tile exists.
     assert!(
-        app.contains("<dt>Income through</dt>"),
+        app.contains("<dt>Income through</dt>")
+            || app.contains("<dt>Income reported through</dt>"),
         "Home grid must show income current through date"
     );
     assert!(
@@ -252,23 +260,28 @@ fn native_and_in_app_menus_list_screens() {
     let week =
         std::fs::read_to_string(root.join("packages/ui-components/src/week.ts")).unwrap();
     for needle in [
+        "SubmenuBuilder::new(app, \"File\")",
+        ".text(\"home\", \"Home\")",
+        ".text(\"data-snapshot\", \"Save data snapshot\")",
+        ".text(\"app-restart\", \"Restart Application\")",
+        ".text(\"app-exit\", \"Exit\")",
+        "finos-navigate",
+    ] {
+        assert!(lib.contains(needle), "native File menu missing {needle}");
+    }
+    for gone in [
         "SubmenuBuilder::new(app, \"Income Plan\")",
         "SubmenuBuilder::new(app, \"Trends\")",
+        "SubmenuBuilder::new(app, \"Cash Management\")",
         "SubmenuBuilder::new(app, \"Plan\")",
         "SubmenuBuilder::new(app, \"Positions\")",
         "SubmenuBuilder::new(app, \"Data\")",
         "SubmenuBuilder::new(app, \"Tools\")",
-        ".text(\"home\", \"Home\")",
-        ".text(\"income-plan\", \"Income Plan\")",
-        ".text(\"data-snapshot\", \"Save data snapshot\")",
-        ".text(\"app-restart\", \"Restart Application\")",
-        ".text(\"tickets\", \"Tickets\")",
-        ".text(\"cash-management\", \"Cash Management\")",
-        ".text(\"collector-establish\", \"Reevaluate collector\")",
-        ".text(\"components\", \"Components\")",
-        "finos-navigate",
     ] {
-        assert!(lib.contains(needle), "native menu missing {needle}");
+        assert!(
+            !lib.contains(gone),
+            "native bar must not repeat the in-app menus: {gone}"
+        );
     }
     assert!(
         app.contains("aria-label=\"Home\""),
@@ -331,6 +344,14 @@ fn native_and_in_app_menus_list_screens() {
         "Restart must fail if the data file did not close"
     );
     assert!(
+        app.contains("navButton(\"interest-rate\", \"Interest rate calculator\")"),
+        "in-app Tools must include Interest rate calculator"
+    );
+    assert!(
+        app.contains("navButton(\"task-manager\", \"Task Manager\")"),
+        "in-app Tools must include Task Manager"
+    );
+    assert!(
         app.contains("navButton(\"collector-establish\", \"Reevaluate collector\")"),
         "in-app Tools must include Reevaluate collector"
     );
@@ -342,14 +363,9 @@ fn native_and_in_app_menus_list_screens() {
         !app.contains("navButton(\"trends\", \"Trends\")"),
         "Trends is a top-level menubar item, not under Plan"
     );
-    let plan_native = lib
-        .split("SubmenuBuilder::new(app, \"Plan\")")
-        .nth(1)
-        .and_then(|rest| rest.split("SubmenuBuilder::new(app, \"Positions\")").next())
-        .unwrap_or("");
     assert!(
-        !plan_native.contains(".text(\"trends\""),
-        "native Plan must not list Trends"
+        !lib.contains("SubmenuBuilder::new(app, \"Plan\")"),
+        "Plan lives on the in-app bar only"
     );
     assert!(
         app.contains("formatMenuWeek"),
@@ -444,5 +460,52 @@ async fn settings_config_set_is_registered() {
         settings.ok,
         "Settings ConfigSet failed: {:?}",
         settings.error_code
+    );
+}
+
+/// Cash YTD is two tables, Account and Tax type. The screen used to pass a `ytd` prop the
+/// panel no longer accepts, so both tables rendered empty.
+#[test]
+fn cash_ytd_home_passes_account_and_tax() {
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    assert!(
+        app.contains("account={cashYtdAccount}") && app.contains("tax={cashYtdTax}"),
+        "CashYtdPanel must receive both views"
+    );
+    assert!(
+        !app.contains("ytd={cashYtd}") && !app.contains("ytdViewRef"),
+        "the single-view toggle is gone"
+    );
+    assert!(
+        app.contains("weekAheadTaskHandlers"),
+        "Week Ahead resolve, ignore, and loan confirm must be wired"
+    );
+    assert!(
+        app.contains("aria-label=\"Apply suggested tier\""),
+        "Add Investment must be able to apply the suggested tier"
+    );
+    let cash = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/CashManagement.tsx"),
+    )
+    .unwrap();
+    for label in [
+        "Confirm Tom Social Security",
+        "Enter a distribution",
+        "Enter a withdrawal",
+    ] {
+        assert!(
+            cash.contains(&format!("aria-label=\"{label}\"")),
+            "cash week follow-up is missing {label}"
+        );
+    }
+    let nav = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/fetchCashNav.ts"),
+    )
+    .unwrap();
+    assert!(
+        nav.contains("export function applyCashNav")
+            && nav.contains("ytdAccount")
+            && nav.contains("ytdTax"),
+        "applyCashNav writes both YTD views"
     );
 }

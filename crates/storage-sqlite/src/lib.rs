@@ -8,6 +8,7 @@ mod backtest;
 mod cart;
 mod classification;
 mod distribution;
+mod external_account;
 mod external_register;
 mod canonical;
 mod wizard;
@@ -23,6 +24,8 @@ mod pd_settings;
 mod payment_dates;
 mod platform;
 mod store;
+mod task;
+mod option_contract;
 mod trends;
 
 pub use platform::LocalPlatform;

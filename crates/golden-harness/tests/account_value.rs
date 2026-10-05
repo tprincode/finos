@@ -3,6 +3,7 @@
 use application_core::contracts::{
     CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
 };
+use application_core::ports::canonical::Canonical;
 use application_core::queries::{execute_command_on, execute_query_on};
 use storage_sqlite::LocalPlatform;
 use uuid::Uuid;
@@ -429,6 +430,15 @@ fn home_charts_legend_replaces_sentence() {
         golden_harness::repo_root().join("apps/desktop/src/features/graphing/HomeAccountCharts.tsx"),
     )
     .unwrap();
+    assert!(ui.contains("chartAsOfIncludingLatest"));
+    let cash = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/AccountCashFlow.tsx"),
+    )
+    .unwrap();
+    assert!(
+        cash.contains("name: \"ETF Purchase\"") && cash.contains("588_471 - 60_649"),
+        "the cash projection keeps an ETF Purchase on the newest week"
+    );
     assert!(ui.contains("aria-label=\"Account value legend\""));
     assert!(ui.contains("home-av-card-head"));
     assert!(ui.contains("aria-label=\"Home graphing period\""));
@@ -439,6 +449,11 @@ fn home_charts_legend_replaces_sentence() {
     assert!(ui.contains("legend:"));
     assert!(ui.contains("right: 8"));
     assert!(ui.contains("aria-label=\"Symbol totals\""));
+    assert!(ui.contains("aria-label=\"Sort symbol list\""));
+    assert!(ui.contains("useState<\"amount\" | \"name\">(\"amount\")"));
+    assert!(ui.contains("<option value=\"amount\">$ amount</option>"));
+    assert!(ui.contains("<option value=\"name\">Name</option>"));
+    assert!(ui.contains("return b.marketValueMinor - a.marketValueMinor"));
     assert!(ui.contains("aria-label=\"Exit symbol totals\""));
     assert!(ui.contains("role=\"dialog\""));
     assert!(ui.contains("dblclick"));
@@ -551,8 +566,8 @@ fn home_graphing_period_includes_one_and_two_months() {
     let app = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.tsx"))
         .unwrap();
     assert!(
-        home.contains("useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD)")
-            && trends.contains("useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD)")
+        home.contains("DEFAULT_GRAPH_PERIOD")
+            && trends.contains("DEFAULT_GRAPH_PERIOD")
             && app.contains("useRef<GraphPeriod>(DEFAULT_GRAPH_PERIOD)"),
         "Home and Trends open on the 6 month graphing period"
     );
@@ -583,13 +598,17 @@ fn home_graphing_period_includes_one_and_two_months() {
             && focus.contains("periodStart: window.start")
             && focus.contains("includeUnconfirmedPast: true")
             && focus.contains("hitsOnly: true")
-            && focus.contains("weeks == null")
+            && focus.contains("cashHitsRequestId")
+            && !focus.contains("weeks == null")
+            && !focus.contains("[book, asOf, weeks,")
+            && focus.contains("[book, asOf, period, selected.key, window.start, axisEnd]")
             && focus.contains("Income Plan planned dividends")
             && focus.contains("Skip Adjust only")
             && focus.contains("type: \"time\"")
             && focus.contains("projectHomeCashPoints")
             && focus.contains("eventProjectedCashY")
-            && focus.contains("HOME_REGISTER_TIMEOUT_MS = 30_000")
+            && !focus.contains("withTimeout")
+            && !focus.contains("HOME_REGISTER_TIMEOUT_MS")
             && focus.contains("lastKnownCashY")
             && focus.contains("combineLikeColorDots")
             && focus.contains("Total ${formatUsd(totalMinor, scale)}")
@@ -1288,4 +1307,121 @@ async fn dividend_plan_home_rolls_annual_and_buckets_monthly() {
         2_000,
         "in-window Income 24000 ÷ 12; Health and out-of-window excluded: {summary}"
     );
+}
+
+#[tokio::test]
+async fn september_live_survives_a_later_symbol() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .expect("open sqlite");
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = income["accountId"].as_str().unwrap();
+    open_priced_lot(&platform, account_id, "HAKY", "Core", 10, 2_500, "2026-09-09").await;
+    must_ok(
+        &platform,
+        "AccountValueSnapshotRecord",
+        serde_json::json!({"asOfDate": "2026-09-09"}),
+    )
+    .await;
+
+    let october_id =
+        open_priced_lot(&platform, account_id, "MUIB", "Core", 4, 3_000, "2026-10-01").await;
+    platform
+        .holding_qty_event_upsert(
+            Uuid::parse_str(&october_id).unwrap(),
+            "2026-10-01".into(),
+            4,
+            0,
+            "open".into(),
+        )
+        .await
+        .expect("october open qty");
+    let after_october = query(
+        &platform,
+        "AccountValueHomeGet",
+        serde_json::json!({"asOfDate": "2026-10-04"}),
+    )
+    .await;
+    let september = after_october["fidelity"]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["asOf"] == "2026-09-09")
+        .expect("September live stays after an October-only name");
+    assert_eq!(september["marketValueMinor"], 25_000);
+    assert_eq!(after_october["fidelity"]["scale"], 2);
+
+    let unpriced = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "CONY", "name": "CONY"}),
+    )
+    .await;
+    let unpriced_id = unpriced["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": unpriced_id,
+            "priceSource": "public",
+            "sourceSymbol": "CONY",
+            "declarationSource": "issuer",
+            "sourceUrl": "https://example.test/cony/distributions",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot(&platform, unpriced_id, "CONY")
+        .await
+        .expect("complete collector");
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": unpriced_id,
+            "openedOn": "2026-01-05",
+            "origin": "purchase",
+            "quantityMinor": 5,
+            "quantityScale": 0,
+            "performanceBasisMinor": 5_000,
+            "taxBasisMinor": 5_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": unpriced_id,
+            "paymentFrequency": "Monthly",
+            "riskTier": "Risk On",
+            "provider": "Test"
+        }),
+    )
+    .await;
+    let kept = query(
+        &platform,
+        "AccountValueHomeGet",
+        serde_json::json!({"asOfDate": "2026-10-04"}),
+    )
+    .await;
+    let still = kept["fidelity"]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["asOf"] == "2026-09-09")
+        .expect("stored September snapshot stays when a held name has no price");
+    assert_eq!(still["marketValueMinor"], 25_000);
+    assert_eq!(kept["fidelity"]["scale"], 2);
 }

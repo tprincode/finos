@@ -226,6 +226,9 @@ fn risk_idx_for(tier: &str) -> usize {
 }
 
 fn mark_line_on_day(line: &QuoteLine, day: &str) -> Option<i64> {
+    if line.qty_on(day) == 0 {
+        return Some(0);
+    }
     let (px, scale) = if line.cash_par {
         (
             financial_domain::current_price::CASH_PAR_MINOR,
@@ -353,9 +356,25 @@ fn live_days_from_quotes(
     days.into_iter().collect()
 }
 
+fn stored_complete_minor(
+    history: &[AccountMarketValueDailyRecord],
+    series_id: &str,
+    day: &str,
+) -> Option<i64> {
+    history
+        .iter()
+        .filter(|row| {
+            row.account_id == series_id && row.as_of == day && row.market_value_complete
+        })
+        .max_by(|a, b| a.captured_at.cmp(&b.captured_at))
+        .and_then(|row| row.market_value_minor)
+}
+
 fn points_from_quote_marks(
     lines: &[QuoteLine],
     days: &[String],
+    history: &[AccountMarketValueDailyRecord],
+    series_id: &str,
     as_of: &str,
     current: Option<i64>,
     include: impl Fn(&QuoteLine) -> bool,
@@ -371,8 +390,16 @@ fn points_from_quote_marks(
             continue;
         }
         let (mv, ok) = financial_domain::account_value::risk_bucket_total(&values);
-        // Incomplete historical marks are cash/known names only — not the account total.
+        // A name you did not hold cannot blank the day. A name you did hold, with no
+        // price, stays unknown — unless that day already has a complete stored total.
         if !ok && day.as_str() != as_of {
+            if let Some(stored) = stored_complete_minor(history, series_id, day) {
+                points.push(AccountValuePointBody {
+                    as_of: day.clone(),
+                    market_value_minor: Some(stored),
+                    market_value_complete: true,
+                });
+            }
             continue;
         }
         points.push(AccountValuePointBody {
@@ -771,9 +798,15 @@ pub(crate) async fn account_value_home_view(
             .unwrap_or(Some(0));
         live_rows.push((acct.name.clone(), current));
         let account_id = acct.account_id.to_string();
-        let points = points_from_quote_marks(&quote_lines, &mark_days, as_of, current, |line| {
-            line.account_id == account_id
-        });
+        let points = points_from_quote_marks(
+            &quote_lines,
+            &mark_days,
+            &history,
+            &account_id,
+            as_of,
+            current,
+            |line| line.account_id == account_id,
+        );
         series.push(AccountValueSeriesBody {
             account_id: acct.account_id.to_string(),
             account_name: acct.name.clone(),
@@ -810,6 +843,8 @@ pub(crate) async fn account_value_home_view(
             points: points_from_quote_marks(
                 &quote_lines,
                 &mark_days,
+                &history,
+                financial_domain::account_value::FIDELITY_TOTAL_ID,
                 as_of,
                 fid_mv,
                 |line| financial_domain::account_value::is_fidelity_holdings_account(&line.account_name),
@@ -830,6 +865,8 @@ pub(crate) async fn account_value_home_view(
             points: points_from_quote_marks(
                 &quote_lines,
                 &mark_days,
+                &history,
+                financial_domain::account_value::SCHWAB_TOTAL_ID,
                 as_of,
                 sch_mv,
                 |line| financial_domain::account_value::is_schwab_holdings_account(&line.account_name),

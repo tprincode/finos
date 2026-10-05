@@ -136,6 +136,59 @@ async fn finance_command(
                 .map_err(|e| e.to_string())?;
                 request.body_json = Some(filled.to_string());
             }
+        } else if name == "RocResearchRetrieve" {
+            let force_roc = body
+                .get("forceRoc")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let as_of = body
+                .get("asOfDate")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| chrono::Utc::now().date_naive().to_string());
+            let has_candidates = body
+                .get("candidates")
+                .and_then(|c| c.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+            let security_id = body.get("securityId").and_then(|v| v.as_str());
+            let last_roc = if let Some(sid) = security_id.and_then(|s| Uuid::parse_str(s).ok()) {
+                platform
+                    .inner()
+                    .retrieve_run_list(Some(sid), 20)
+                    .await
+                    .ok()
+                    .and_then(|runs| {
+                        runs.into_iter()
+                            .find(|r| r.kind == "roc-19a1")
+                            .map(|r| r.requested_at)
+                    })
+            } else {
+                None
+            };
+            let due = has_candidates
+                || financial_domain::roc::roc_monthly_fetch_due(
+                    last_roc.as_deref(),
+                    &as_of,
+                    force_roc,
+                );
+            if due {
+                let filled = tauri::async_runtime::spawn_blocking(move || {
+                    if !has_candidates {
+                        import_engine::enrich_retrieve_body(&name, &mut body);
+                    }
+                    body
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                request.body_json = Some(filled.to_string());
+            } else {
+                body["candidates"] = serde_json::json!([]);
+                body["rocSkippedMonthly"] = serde_json::json!(true);
+                request.body_json = Some(body.to_string());
+            }
         } else {
             let filled = tauri::async_runtime::spawn_blocking(move || {
                 import_engine::enrich_retrieve_body(&name, &mut body);
@@ -452,34 +505,73 @@ async fn run_position_research_refresh(
 
     emit_position_research_progress(app, 2, "retrieving 19a-1");
     {
-        let name = "RocResearchRetrieve".to_string();
-        let filled = tauri::async_runtime::spawn_blocking({
-            let mut roc_body = serde_json::json!({
-                "securityId": security_id,
-                "symbol": symbol,
-                "declarationSource": declaration_source,
-                "sourceUrl": source_url,
-                "asOfDate": chrono::Utc::now().date_naive().to_string(),
-            });
-            move || {
-                import_engine::enrich_retrieve_body(&name, &mut roc_body);
-                roc_body
-            }
-        })
-        .await
-        .unwrap_or_else(|_| {
-            serde_json::json!({
-                "securityId": security_id,
-                "symbol": symbol,
-                "declarationSource": declaration_source,
-                "sourceUrl": source_url,
+        let as_of = chrono::Utc::now().date_naive().to_string();
+        let force_roc = work
+            .get("forceRoc")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || work.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+        let last_roc = if security_id.is_empty() {
+            None
+        } else if let Ok(sid) = Uuid::parse_str(&security_id) {
+            platform
+                .retrieve_run_list(Some(sid), 20)
+                .await
+                .ok()
+                .and_then(|runs| {
+                    runs.into_iter()
+                        .find(|r| r.kind == "roc-19a1")
+                        .map(|r| r.requested_at)
+                })
+        } else {
+            None
+        };
+        let due = financial_domain::roc::roc_monthly_fetch_due(
+            last_roc.as_deref(),
+            &as_of,
+            force_roc,
+        );
+        if due {
+            let name = "RocResearchRetrieve".to_string();
+            let filled = tauri::async_runtime::spawn_blocking({
+                let mut roc_body = serde_json::json!({
+                    "securityId": security_id,
+                    "symbol": symbol,
+                    "declarationSource": declaration_source,
+                    "sourceUrl": source_url,
+                    "asOfDate": as_of,
+                    "forceRoc": force_roc,
+                });
+                if let Some(url) = work
+                    .get("rocSourceUrl")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    roc_body["sourceUrl"] = serde_json::json!(url);
+                    roc_body["rocSourceUrl"] = serde_json::json!(url);
+                }
+                move || {
+                    import_engine::enrich_retrieve_body(&name, &mut roc_body);
+                    roc_body
+                }
             })
-        });
-        if let Some(c) = filled.get("candidates") {
-            work["rocCandidates"] = c.clone();
-        }
-        if let Some(p) = filled.get("rocProbes") {
-            work["rocProbes"] = p.clone();
+            .await
+            .unwrap_or_else(|_| {
+                serde_json::json!({
+                    "securityId": security_id,
+                    "symbol": symbol,
+                    "declarationSource": declaration_source,
+                    "sourceUrl": source_url,
+                })
+            });
+            if let Some(c) = filled.get("candidates") {
+                work["rocCandidates"] = c.clone();
+            }
+            if let Some(p) = filled.get("rocProbes") {
+                work["rocProbes"] = p.clone();
+            }
+        } else {
+            work["rocSkippedMonthly"] = serde_json::json!(true);
         }
     }
 
@@ -1237,7 +1329,7 @@ async fn fill_collector_retrieve(platform: &LocalPlatform, body: &mut serde_json
                 last = import_engine::with_decl_get_timeout(secs, || {
                     import_engine::collect_declarations_for(vec![target.clone()])
                 });
-                if !last.misses.iter().any(import_engine::miss_is_timeout) {
+                if !last.misses.iter().any(import_engine::miss_is_retriable_transient) {
                     break;
                 }
             }
@@ -1500,7 +1592,7 @@ async fn fill_declaration_refresh(
             })
             .await
             .unwrap_or_default();
-            if one.misses.iter().any(import_engine::miss_is_timeout)
+            if one.misses.iter().any(import_engine::miss_is_retriable_transient)
                 && pass + 1 < import_engine::DECL_GET_TIMEOUT_SECS.len()
             {
                 pending.push(target);
@@ -1591,16 +1683,226 @@ fn open_exception_log(
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Owner downloads: Excel exports and snapshot folders. Not the database.
+fn download_dir() -> PathBuf {
+    PathBuf::from(r"C:\Users\EVTom\Documents\Financial")
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("URL is empty".into());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err("Only http and https URLs are allowed".into());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", trimmed])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn save_local_bytes(default_file_name: String, bytes: Vec<u8>) -> Result<String, String> {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let dir = resolve_app_data_dir(local.join("finos-exports"));
+    let dir = download_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(default_file_name);
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+fn screen_atlas_root_dir() -> Result<PathBuf, String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
+    let dir = local
+        .join("com.finos.desktop")
+        .join("evidence")
+        .join("screen-atlas");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn screen_atlas_day_dir(day: &str) -> Result<PathBuf, String> {
+    let day = day.trim();
+    if day.len() != 10 || !day.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+        return Err(format!("invalid atlas day: {day}"));
+    }
+    let dir = screen_atlas_root_dir()?.join(day);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Docs Screen Atlas PNG under `%LOCALAPPDATA%\com.finos.desktop\evidence\screen-atlas\<day>\`.
+#[tauri::command]
+fn screen_atlas_save(day: String, file_name: String, bytes: Vec<u8>) -> Result<String, String> {
+    let name = file_name.trim();
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
+        return Err("invalid atlas file name".into());
+    }
+    let dir = screen_atlas_day_dir(&day)?;
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn screen_atlas_save_text(day: String, file_name: String, text: String) -> Result<String, String> {
+    screen_atlas_save(day, file_name, text.into_bytes())
+}
+
+/// Newest dated folder under evidence/screen-atlas, if any.
+#[tauri::command]
+fn screen_atlas_latest_day() -> Result<Option<String>, String> {
+    let root = screen_atlas_root_dir()?;
+    let mut days: Vec<String> = std::fs::read_dir(&root)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.len() == 10 && name.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+    days.sort();
+    Ok(days.pop())
+}
+
+/// Absolute path for a day folder (creates it). Empty day → root screen-atlas dir.
+#[tauri::command]
+fn screen_atlas_folder_path(day: String) -> Result<String, String> {
+    let path = if day.trim().is_empty() {
+        screen_atlas_root_dir()?
+    } else {
+        screen_atlas_day_dir(day.trim())?
+    };
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// PNG file names in a day folder (sorted).
+#[tauri::command]
+fn screen_atlas_list_pngs(day: String) -> Result<Vec<String>, String> {
+    let dir = screen_atlas_day_dir(day.trim())?;
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.to_ascii_lowercase().ends_with(".png")
+                && !name.contains("..")
+                && !name.contains('/')
+                && !name.contains('\\')
+            {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+#[tauri::command]
+fn screen_atlas_read_png(day: String, file_name: String) -> Result<Vec<u8>, String> {
+    let name = file_name.trim();
+    if name.is_empty()
+        || !name.to_ascii_lowercase().ends_with(".png")
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+    {
+        return Err("invalid atlas png name".into());
+    }
+    let path = screen_atlas_day_dir(day.trim())?.join(name);
+    std::fs::read(&path).map_err(|e| e.to_string())
+}
+
+/// Open the day folder in the OS file manager (Explorer on Windows).
+#[tauri::command]
+fn screen_atlas_open_folder(day: String) -> Result<String, String> {
+    let path = if day.trim().is_empty() {
+        screen_atlas_root_dir()?
+    } else {
+        screen_atlas_day_dir(day.trim())?
+    };
+    let path_s = path.to_string_lossy().into_owned();
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&path_s)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path_s)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path_s)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(path_s)
+}
+
+/// True when `screen-atlas.run` exists (does not delete).
+#[tauri::command]
+fn screen_atlas_has_run_token() -> Result<bool, String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
+    Ok(local
+        .join("com.finos.desktop")
+        .join("screen-atlas.run")
+        .is_file())
+}
+
+/// Delete `screen-atlas.run` after the UI has claimed the auto-start.
+#[tauri::command]
+fn screen_atlas_clear_run_token() -> Result<(), String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
+    let path = local.join("com.finos.desktop").join("screen-atlas.run");
+    if path.is_file() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1612,6 +1914,50 @@ fn app_exit(app: AppHandle) {
         let _ = window.destroy();
     }
     app.exit(0);
+}
+
+/// Home committed. Append `page loaded Home <stamp>` so a restart can tell a
+/// painted window from a process that only answered on port 1420.
+#[tauri::command]
+fn page_loaded(screen: String, detail: Option<String>) -> Result<(), String> {
+    let screen = screen.trim();
+    if screen.is_empty()
+        || screen.len() > 40
+        || !screen
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-')
+    {
+        return Err("page name".into());
+    }
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
+    let dir = local.join("com.finos.desktop");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("page loaded dir: {e}"))?;
+    let stamp = chrono::Utc::now().to_rfc3339();
+    let detail = detail
+        .unwrap_or_default()
+        .replace(['\r', '\n'], " ")
+        .chars()
+        .take(500)
+        .collect::<String>();
+    let line = if detail.is_empty() {
+        format!("page loaded {screen} {stamp}\n")
+    } else {
+        format!("page loaded {screen} {stamp} {detail}\n")
+    };
+    let console = dir.join("dev-console.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&console)
+    {
+        use std::io::Write;
+        let _ = file.write_all(line.as_bytes());
+    }
+    std::fs::write(dir.join("page-loaded.log"), line.as_bytes())
+        .map_err(|e| format!("page-loaded.log: {e}"))?;
+    Ok(())
 }
 
 /// Coding launch serves the UI from Vite on localhost:1420. The host writes
@@ -1766,6 +2112,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            std::env::set_var(
+                "FINOS_DOWNLOAD_DIR",
+                r"C:\Users\EVTom\Documents\Financial",
+            );
             let preferred = app.path().app_local_data_dir()?;
             let dir = resolve_app_data_dir(preferred);
             std::fs::create_dir_all(&dir)?;
@@ -1780,59 +2130,35 @@ pub fn run() {
             ))
             .map_err(|e| e.to_string())?;
             app.manage(Arc::new(platform));
+            // Owner eliminated the duplicate menu: navigation lives in the in-app menu bar in
+            // App.tsx, and the native bar is File only. `native_and_in_app_menus_list_screens`
+            // fails if a Plan/Data/Tools/Positions/Cash Management submenu comes back here.
+            // The `finos-navigate` match below stays wide because the in-app bar emits it too.
             let file_menu = SubmenuBuilder::new(app, "File")
                 .text("home", "Home")
                 .text("data-snapshot", "Save data snapshot")
+                .text("mobile-publish", "Force publish mobile head")
+                .text("mobile-outbox-drain", "Apply mobile outbox")
                 .text("app-restart", "Restart Application")
                 .text("app-exit", "Exit")
                 .build()?;
-            let income_menu = SubmenuBuilder::new(app, "Income Plan")
-                .text("income-plan", "Income Plan")
-                .build()?;
-            let trends_menu = SubmenuBuilder::new(app, "Trends")
-                .text("trends", "Trends")
-                .build()?;
-            let cash_menu = SubmenuBuilder::new(app, "Cash Management")
-                .text("cash-elements", "Element Management")
-                .text("cash-cashflow", "Cashflow Manager")
-                .text("cash-weekly", "System update tasks and confirmations")
-                .text("cash-car-tax", "Tax Planning")
-                .text("cash-coverage", "Coverage")
-                .text("cash-external", "External accounts")
-                .build()?;
-            let plan_menu = SubmenuBuilder::new(app, "Plan")
-                .text("calculator", "Calculator")
-                .text("dashboard", "Dashboard")
-                .text("cash-management", "Cash Management")
-                .text("shopping-cart", "Shopping Cart")
-                .build()?;
-            let positions_menu = SubmenuBuilder::new(app, "Positions")
-                .text("position-details", "Position Details")
-                .text("holdings", "Holdings")
-                .text("new-investment", "Add Position")
-                .text("add-lot", "Add Lot")
-                .build()?;
-            let data_menu = SubmenuBuilder::new(app, "Data")
-                .text("import", "Import")
-                .text("collectors", "Collectors")
-                .text("tickets", "Tickets")
-                .build()?;
-            let tools_menu = SubmenuBuilder::new(app, "Tools")
-                .text("collector-establish", "Reevaluate collector")
-                .text("components", "Components")
-                .text("settings", "Settings")
-                .build()?;
-            let menu = MenuBuilder::new(app)
-                .item(&file_menu)
-                .item(&income_menu)
-                .item(&trends_menu)
-                .item(&cash_menu)
-                .item(&plan_menu)
-                .item(&positions_menu)
-                .item(&data_menu)
-                .item(&tools_menu)
-                .build()?;
+            let menu = MenuBuilder::new(app).item(&file_menu).build()?;
             app.set_menu(menu)?;
+            // Docs Screen Atlas auto-run: if token file exists, emit after UI can listen.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(2500));
+                let local = match std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+                    Some(p) => p,
+                    None => return,
+                };
+                let token = local.join("com.finos.desktop").join("screen-atlas.run");
+                if !token.is_file() {
+                    return;
+                }
+                let _ = std::fs::remove_file(&token);
+                let _ = handle.emit("finos-screen-atlas", ());
+            });
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -1842,6 +2168,14 @@ pub fn run() {
             }
             if event.id() == "data-snapshot" {
                 let _ = app.emit("finos-data-snapshot", "export");
+                return;
+            }
+            if event.id() == "mobile-publish" {
+                let _ = app.emit("finos-mobile-publish", "publish");
+                return;
+            }
+            if event.id() == "mobile-outbox-drain" {
+                let _ = app.emit("finos-mobile-outbox-drain", "drain");
                 return;
             }
             if event.id() == "app-restart" {
@@ -1863,6 +2197,7 @@ pub fn run() {
                     | "cash-car-tax"
                     | "cash-coverage"
                     | "cash-external"
+                    | "cash-external-manager"
                     | "shopping-cart"
                     | "position-details"
                     | "holdings"
@@ -1872,7 +2207,11 @@ pub fn run() {
                     | "collectors"
                     | "tickets"
                     | "collector-establish"
+                    | "task-manager"
+                    | "interest-rate"
+                    | "contract-positions"
                     | "components"
+                    | "screen-atlas"
                     | "settings"
             ) {
                 let _ = app.emit("finos-navigate", id);
@@ -1882,9 +2221,20 @@ pub fn run() {
             finance_query,
             finance_command,
             open_exception_log,
+            open_external_url,
             save_local_bytes,
+            screen_atlas_save,
+            screen_atlas_save_text,
+            screen_atlas_latest_day,
+            screen_atlas_folder_path,
+            screen_atlas_list_pngs,
+            screen_atlas_read_png,
+            screen_atlas_open_folder,
+            screen_atlas_has_run_token,
+            screen_atlas_clear_run_token,
             app_exit,
-            app_restart
+            app_restart,
+            page_loaded
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

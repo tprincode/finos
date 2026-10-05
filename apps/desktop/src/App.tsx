@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -31,7 +33,6 @@ import {
   type InvestmentGet,
   type LookthroughResearch,
   type PositionDetailsGet,
-  type PositionDetailsCoverageGet,
   type PositionMasterGet,
   type PlanReviewGet,
   type RemainingYearIncomeGet,
@@ -54,24 +55,39 @@ import {
   type DividendPlanHomeGet,
   type HomeOpenGet,
   type DataSnapshotExport,
+  ACCOUNT_CASH_SYMBOL,
+  CASH_PAR_SYMBOLS,
 } from "@finos/app-contracts";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import { LocalTauriFinanceClient } from "./financeClient";
 import { TrendsChartsPanel } from "./features/graphing/TrendsCharts";
 import { DEFAULT_GRAPH_PERIOD, type GraphPeriod } from "./features/graphing/graphPeriod";
-import { DeclarationPaymentsChart } from "./features/graphing/DeclarationPaymentsChart";
 import { TrendsCapturePanel, type TrendsWeekCapture } from "./features/graphing/TrendsCapture";
 import { CashManagementPanel } from "./CashManagement";
 import { WeekAheadPanel } from "./features/cash/WeekAhead";
+import { weekAheadTaskHandlers } from "./features/cash/weekAheadActions";
 import { CashRegisterPanel } from "./features/cash/CashRegister";
 import { CashElementsCatalog } from "./features/cash/CashElementsCatalog";
+import { ReturnToPrevious } from "./features/navigation/ReturnToPrevious";
+import { HomePaintMark } from "./features/shell/HomePaintMark";
+import { peekNav, popNav, pushNav } from "./features/navigation/navStack";
 import {
+  applyCashNav,
   fetchCashNav,
+  fetchCashYtdBoth,
   fetchElementList,
   magiQualifyingType,
 } from "./features/cash/fetchCashNav";
 import { scheduleIdleWarm } from "./features/shared/idleWarm";
+import { ReadinessChecklist } from "./features/new-investment/ReadinessChecklist";
+import { TaskManager } from "./features/task-manager/TaskManager";
+import { MagiDrawHead } from "./features/task-manager/MagiCliffPanel";
+import { useMagiCliffNav } from "./features/task-manager/magiCutNav";
+import { MarketImpactPlanner } from "./features/market-impact/MarketImpactPlanner";
+import { InterestRateCalculator } from "./features/interest-rate/InterestRateCalculator";
+import { ComponentRegistry } from "./features/components/ComponentRegistry";
+import { ContractPositions } from "./features/contracts/ContractPositions";
 import {
   incomeGridMemoryMatches,
   runBackgroundReads,
@@ -107,6 +123,14 @@ import {
   type IncomeTxPeriod,
 } from "./incomeTxPeriod";
 import { ShoppingCartScreen } from "./features/shopping-cart";
+import { cartPriceInput } from "./features/shopping-cart/cartPrice";
+import { writeCartResume } from "./features/shopping-cart/cartResume";
+import { PositionDetailsScreen } from "./features/position-details";
+import {
+  atlasPinnedAsOf,
+  claimAtlasAutoStart,
+  isAtlasFrozen,
+} from "./features/screen-atlas/atlasSession";
 import {
   AccountSelect,
   LotCostTable,
@@ -119,25 +143,52 @@ import {
   CalculatorReturnSheet,
   type CollectorCompletionProof,
   DashboardBurndownPanel,
-  ExceptionList,
   WorkTicketQueue,
   HoldingsPanel,
   INCOME_PLAN_DEFAULT_ACCOUNTS,
-  PositionDetailsTable,
-  PositionMasterTable,
-  SymbolLotsTable,
   formatCount,
   formatPerShare,
   formatScaled,
   formatUsd,
-  formatPercentScaled,
   addUtcDays,
   saturdayOfWeek,
   formatMenuWeek,
 } from "@finos/ui-components";
 import "./App.css";
 
+const ScreenAtlasScreen = lazy(async () => {
+  const m = await import("./features/screen-atlas/ScreenAtlasScreen");
+  return { default: m.ScreenAtlasScreen };
+});
+
 const RISK_TIERS = ["Foundation", "Core", "Risk On"];
+/** Locked collector investment types (CASH stays CASH — DIV-2 rename is parked). */
+const DIV_TYPES = ["DIV-1", "CASH"] as const;
+const PROCESS_A_DRAFT_KEY = "finos.process-a.active-draft";
+
+/**
+ * A refused lot tells the owner what to do about it. An error code or a UUID is not a
+ * sentence anyone can act on, and it is the lot screen's only failure surface.
+ */
+function lotOpenOwnerMessage(result: { ok: boolean; errorCode?: string | null }): string {
+  switch (result.errorCode) {
+    case "position_not_established":
+      return "Symbol is not on Position Details. Finish research first. Add a collector only if this symbol needs price or dividend retrieve.";
+    case "collector_incomplete":
+      return "Collector research is not complete for this symbol. Finish the Establish checklist on Add Investment, then add the lot. Fields kept — fix and retry.";
+    case "payment_cadence_required":
+      return "Pick the payment cadence first: Weekly, Twice monthly, Monthly, Quarterly, or None. There is no default. Fields kept — fix and retry.";
+    default:
+      return "Lot not stored. Fields kept — fix and retry.";
+  }
+}
+
+function normalizeDivType(raw: string): string {
+  const n = raw.trim().toUpperCase().replace(/\s+/g, "-");
+  if (n === "DIV1" || n === "DIV-1") return "DIV-1";
+  if (n === "CASH" || n === "DIV-2" || n === "DIV2") return "CASH";
+  return "";
+}
 
 /** Preview/print tables get grid + color even if the host printHtml is stale. */
 function styleIncomePrintHtml(html: string): string {
@@ -286,6 +337,7 @@ const PLAN_REASONS = [
 ];
 
 const INCOMPLETE_REASONS = [
+  "Recent inception date",
   "Fewer than 6 observations",
   "New issue / short history",
   "Retrieve miss — owner paste incomplete",
@@ -594,11 +646,24 @@ function calendarPolicyLabel(policy: string | null | undefined): string {
 function dateProvenanceLabel(provenance: string | null | undefined): string {
   const p = (provenance || "").trim();
   if (!p) return "—";
-  if (p === "issuer_calendar" || p.includes("issuer_calendar")) {
-    return "Issuer published date";
+  if (
+    p === "vendor_payable" ||
+    p.includes("vendor_payable") ||
+    p === "issuer_calendar" ||
+    p.includes("issuer_calendar") ||
+    p === "issuer" ||
+    p === "sec_8k"
+  ) {
+    return "Vendor published date";
   }
-  if (p === "derived_walk" || p.includes("derived_walk") || /\bwalk\b/i.test(p)) {
-    return "Cadence from last pay";
+  if (
+    p === "derived_walk" ||
+    p.includes("derived_walk") ||
+    p === "derived_template" ||
+    p.includes("derived_template") ||
+    /\bwalk\b/i.test(p)
+  ) {
+    return "Derived (projection — overwritten when vendor posts)";
   }
   if (p === "owner_override" || p.includes("owner")) return "Owner override";
   return p;
@@ -669,6 +734,7 @@ type Screen =
   | "home"
   | "income-plan"
   | "calculator"
+  | "market-impact"
   | "dashboard"
   | "trends"
   | "cash-management"
@@ -682,12 +748,17 @@ type Screen =
   | "collectors"
   | "tickets"
   | "collector-establish"
-  | "components";
+  | "task-manager"
+  | "interest-rate"
+  | "contract-positions"
+  | "components"
+  | "screen-atlas";
 
 const SCREENS: readonly Screen[] = [
   "home",
   "income-plan",
   "calculator",
+  "market-impact",
   "dashboard",
   "trends",
   "cash-management",
@@ -701,7 +772,11 @@ const SCREENS: readonly Screen[] = [
   "collectors",
   "tickets",
   "collector-establish",
+  "task-manager",
+  "interest-rate",
+  "contract-positions",
   "components",
+  "screen-atlas",
 ];
 
 function isScreen(id: string): id is Screen {
@@ -859,6 +934,10 @@ function blankManualDividendRow(): ManualDividendRow {
 export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
   const [cmDesk, setCmDesk] = useState<CmDesk>("weekly");
+  const magiNav = useMagiCliffNav(
+    (next) => setScreen(next),
+    (desk) => setCmDesk(desk),
+  );
   const screenRef = useRef(screen);
   screenRef.current = screen;
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -873,6 +952,7 @@ export default function App() {
   const [asOfDate, setAsOfDate] = useState(() =>
     saturdayOfWeek(new Date().toISOString().slice(0, 10)),
   );
+  const [atlasAutoStart, setAtlasAutoStart] = useState(false);
   const [incomeWeek, setIncomeWeek] = useState<IncomePlanWeekGet | null>(null);
   const [incomeWeekLoading, setIncomeWeekLoading] = useState(false);
   const [incomeWeekNav, setIncomeWeekNav] = useState<"prev" | "next" | null>(null);
@@ -907,8 +987,8 @@ export default function App() {
   const [externalReset, setExternalReset] = useState(0);
   const [menuWorking, setMenuWorking] = useState<string | null>(null);
   const [catalogBook, setCatalogBook] = useState("all");
-  const [cashYtd, setCashYtd] = useState<CashYtdGet | null>(null);
-  const [ytdView, setYtdView] = useState<"account" | "tax">("account");
+  const [cashYtdAccount, setCashYtdAccount] = useState<CashYtdGet | null>(null);
+  const [cashYtdTax, setCashYtdTax] = useState<CashYtdGet | null>(null);
   const [cashCoverage, setCashCoverage] = useState<CashCoverageGet | null>(null);
   const [coveragePeriod, setCoveragePeriod] = useState<CoveragePeriod>("week");
   const coveragePeriodRef = useRef<CoveragePeriod>("week");
@@ -920,7 +1000,6 @@ export default function App() {
   const registerFetchSeq = useRef(0);
   const catalogFetchSeq = useRef(0);
   const [registerBusy, setRegisterBusy] = useState(false);
-  const ytdViewRef = useRef<"account" | "tax">("account");
   const loadRegisterMonth = useCallback(async (monthEnd: string) => {
     const monthStart = `${monthEnd.slice(0, 8)}01`;
     const now = new Date();
@@ -939,8 +1018,15 @@ export default function App() {
   }, []);
   const [cashDirty, setCashDirty] = useState(false);
   const [cartDirty, setCartDirty] = useState(false);
+  const [marketImpactDirty, setMarketImpactDirty] = useState(false);
+  const [marketImpactDiscard, setMarketImpactDiscard] = useState(0);
+  const [cartRefreshKey, setCartRefreshKey] = useState(0);
   const [holdingsLotSort, setHoldingsLotSort] = useState<LotSortMode>("lowest-cost");
   const pendingCartBuyRef = useRef<{ scenarioId: string } | null>(null);
+  /** Keeps the executing scenario id across Add Lot remount (ShoppingCartScreen unmounts). */
+  const [cartResumeScenarioId, setCartResumeScenarioId] = useState<string | null>(null);
+  /** After Confirm, leave Add Lot for this screen (cart buys always force shopping-cart). */
+  const addLotReturnScreenRef = useRef<Screen>("holdings");
   const [cashMagi, setCashMagi] = useState<MagiProjection | null>(null);
   const [accountValues, setAccountValues] = useState<AccountValueHomeGet | null>(null);
   const [dividendPlan, setDividendPlan] = useState<DividendPlanHomeGet | null>(null);
@@ -972,7 +1058,7 @@ export default function App() {
   const [ticketFocusSymbol, setTicketFocusSymbol] = useState("");
   const [fleetDetailId, setFleetDetailId] = useState<string | null>(null);
   const [positionFocusPanel, setPositionFocusPanel] = useState<
-    "lots" | "income" | "declarations" | "ledger" | ""
+    "lots" | "income" | "declarations" | "ledger" | "plan" | "tickets" | ""
   >("");
   const [pdLedger, setPdLedger] = useState<DividendGet | null>(null);
   const [pendingBatchId, setPendingBatchId] = useState<string | null>(null);
@@ -1005,6 +1091,7 @@ export default function App() {
   const [wizUnderlying, setWizUnderlying] = useState("");
   const [wizLookthrough, setWizLookthrough] = useState<LookthroughResearch>(emptyLookthrough);
   const [wizRisk, setWizRisk] = useState("");
+  const [wizDivType, setWizDivType] = useState("");
   const [wizFreq, setWizFreq] = useState("");
   const [wizSecurityId, setWizSecurityId] = useState("");
   const [wizPrice, setWizPrice] = useState("");
@@ -1025,6 +1112,11 @@ export default function App() {
   >([]);
   const [, setWizMiss] = useState("");
   const [wizSourceUrl, setWizSourceUrl] = useState("");
+  /** Last auto-offered Template Dividend / ROC so owner edits are not overwritten. */
+  const wizOfferedTemplatesRef = useRef({ sourceUrl: "", rocUrl: "" });
+  const wizTemplateLookupSeq = useRef(0);
+  const [wizStoredUrlOffer, setWizStoredUrlOffer] = useState("");
+  const processADraftRestoredRef = useRef(false);
   const [wizCalendarPolicy, setWizCalendarPolicy] = useState("");
   const [wizUpcomingPays, setWizUpcomingPays] = useState<
     Array<{ payOn: string; amountPerShareMinor?: number | null; amountScale?: number }>
@@ -1064,7 +1156,6 @@ export default function App() {
   const [wizNextPay, setWizNextPay] = useState("");
   const [positionDetails, setPositionDetails] = useState<PositionDetailsGet | null>(null);
   const [positionMaster, setPositionMaster] = useState<PositionMasterGet | null>(null);
-  const [issuerCoverage, setIssuerCoverage] = useState<PositionDetailsCoverageGet | null>(null);
   const [pdRemaining, setPdRemaining] = useState<RemainingYearIncomeGet | null>(null);
   const [positionSymbol, setPositionSymbol] = useState("");
   const [positionSymbolQuery, setPositionSymbolQuery] = useState("");
@@ -1091,6 +1182,11 @@ export default function App() {
   const [wizResearchDone, setWizResearchDone] = useState(false);
   const [wizCollectorComplete, setWizCollectorComplete] = useState(false);
   const [wizCollectorGaps, setWizCollectorGaps] = useState<string[]>([]);
+  const [wizEstablishChecklist, setWizEstablishChecklist] = useState<
+    Array<{ id: string; label: string; status: string; blocksComplete: boolean }>
+  >([]);
+  const [wizEstablishComplete, setWizEstablishComplete] = useState(false);
+  const [wizEstablishOpenLabels, setWizEstablishOpenLabels] = useState<string[]>([]);
   const [wizSecondUrl, setWizSecondUrl] = useState("");
   const [wizAskSecondUrl, setWizAskSecondUrl] = useState(false);
   const [wizSecondUrlTried, setWizSecondUrlTried] = useState(false);
@@ -1102,7 +1198,7 @@ export default function App() {
   const [wizFieldDecision, setWizFieldDecision] = useState<Record<string, string>>({});
   /** Process A: owner Save → explicit completion screen (not a blank wizard). */
   const [wizProcessASaved, setWizProcessASaved] = useState(false);
-  /** Shared long-action indicator for Complete research / Add Position / Fill gaps. */
+  /** Shared long-action indicator for Complete research / Add Investment / Fill gaps. */
   const [researchActivity, setResearchActivity] = useState<{
     running: boolean;
     step: number;
@@ -1156,6 +1252,7 @@ export default function App() {
   const loadedCashRef = useRef(false);
   const loadedElementsRef = useRef(false);
   const elementsWarmAsOfRef = useRef("");
+  const weekAheadWarmAsOfRef = useRef("");
   const incomeGridRef = useRef(incomeGrid);
   incomeGridRef.current = incomeGrid;
   const dividendPerfRef = useRef(dividendPerf);
@@ -1868,6 +1965,7 @@ export default function App() {
         rocSourceUrl: row.rocSourceUrl ?? "",
         sourceUrl: row.sourceUrl ?? "",
         declarationSource: row.declarationSource,
+        forceRoc: true,
       });
       if (!research.ok) {
         setActionMessage(
@@ -2100,6 +2198,27 @@ export default function App() {
     }
   };
 
+  const fixRemainingYearTicket = async (ticket: WorkTicketRecord) => {
+    setBusy(true);
+    try {
+      // Heal via collect overwrite (derived → vendor for posted periods). Never rebuild the year.
+      const result = await client.executeCommand("WorkTicketResolve", {
+        ticketId: ticket.ticketId,
+        tool: "fix_remaining_year",
+      });
+      setActionMessage(
+        result.ok
+          ? `${ticket.symbol}: vendor dates overwrote derived for posted periods.`
+          : `Fix remaining year failed: ${result.errorCode ?? "error"}`,
+      );
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const resolveEnterDeclaredAmount = async (
     ticket: WorkTicketRecord,
     amount: string,
@@ -2176,6 +2295,135 @@ export default function App() {
       setTicketDecision(null);
       setBusy(false);
     }
+  };
+
+  const resolveTicketRocContext = (ticket: WorkTicketRecord) => {
+    const row = collectorItems.find(
+      (r) =>
+        (ticket.securityId && r.securityId === ticket.securityId) ||
+        r.symbol.trim().toUpperCase() === ticket.symbol.trim().toUpperCase(),
+    );
+    if (!row) {
+      return { rocSourceUrl: "", rocEstimateMinor: null, rocScale: 2 };
+    }
+    return {
+      rocSourceUrl: row.rocSourceUrl ?? "",
+      rocEstimateMinor: row.rocEstimateMinor ?? null,
+      rocScale: row.rocScale || 2,
+    };
+  };
+
+  const storeTicketRocUrl = async (
+    ticket: WorkTicketRecord,
+    url: string,
+  ): Promise<{ ok: boolean; parsedPct?: string; message: string }> => {
+    if (!url.trim()) {
+      const message = "Paste a Template ROC URL first.";
+      setActionMessage(message);
+      return { ok: false, message };
+    }
+    setBusy(true);
+    setActionMessage(`${ticket.symbol}: storing ROC URL and parsing…`);
+    try {
+      const result = await client.executeCommand("PositionResearchRefresh", {
+        securityId: ticket.securityId,
+        symbol: ticket.symbol,
+        rocSourceUrl: url.trim(),
+        forceRoc: true,
+      });
+      if (!result.ok) {
+        const message = `${ticket.symbol}: ROC URL failed: ${result.errorCode ?? "error"}`;
+        setActionMessage(message);
+        return { ok: false, message };
+      }
+      let body: {
+        rocPctMinor?: number | null;
+        rocScale?: number;
+        rocSourceUrl?: string;
+        rocEstablishedHow?: string;
+      } = {};
+      try {
+        body = result.bodyJson
+          ? (JSON.parse(result.bodyJson) as typeof body)
+          : {};
+      } catch {
+        body = {};
+      }
+      const scale =
+        body.rocScale && body.rocScale > 0 ? body.rocScale : 2;
+      const minor =
+        typeof body.rocPctMinor === "number" ? body.rocPctMinor : null;
+      await refreshCollectors(asOfDate, ticket.symbol);
+      await refreshData(asOfDate);
+      if (minor == null || minor < 0 || minor > 10_000) {
+        const message = `${ticket.symbol}: URL stored but 19a-1 ROC % was not read (unknown, not 0%).`;
+        setActionMessage(message);
+        return { ok: false, message };
+      }
+      const parsedPct = (minor / 10 ** scale).toFixed(scale);
+      const message = `${ticket.symbol}: parsed ${parsedPct}% ROC from the notice. Review Notice ROC, then Accept or Reject.`;
+      setActionMessage(message);
+      return { ok: true, parsedPct, message };
+    } catch (err: unknown) {
+      const message = String(err);
+      setActionMessage(message);
+      return { ok: false, message };
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const storeTicketManualRoc = async (ticket: WorkTicketRecord, pct: string) => {
+    const trimmed = pct.trim();
+    const rocPctMinor = Math.round(Number(trimmed) * 100);
+    if (!Number.isFinite(rocPctMinor) || rocPctMinor < 0 || rocPctMinor > 10000) {
+      setActionMessage("ROC percent must be a number from 0 to 100.");
+      return;
+    }
+    setBusy(true);
+    setActionMessage(`${ticket.symbol}: storing manual ROC…`);
+    try {
+      const ctx = resolveTicketRocContext(ticket);
+      const result = await client.executeCommand("RocPlanConfirm", {
+        securityId: ticket.securityId,
+        symbol: ticket.symbol,
+        rocPctMinor,
+        rocScale: 2,
+        source: "owner-override",
+        sourceUrl: ctx.rocSourceUrl ?? "",
+        method: "owner-override",
+        kind: "estimate",
+        establishedHow: "owner typed percent on ticket",
+        ownerOverride: true,
+        asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
+      });
+      if (!result.ok) {
+        setActionMessage(
+          `${ticket.symbol}: manual ROC failed: ${result.errorCode ?? "error"}`,
+        );
+        return;
+      }
+      if (ticket.tool === "roc_confirm") {
+        await client.executeCommand("WorkTicketResolve", {
+          ticketId: ticket.ticketId,
+          tool: ticket.tool,
+          action: "accept",
+        });
+      }
+      setActionMessage(
+        `${ticket.symbol}: stored manual ROC ${(rocPctMinor / 100).toFixed(2)}%.`,
+      );
+      await refreshCollectors(asOfDate, ticket.symbol);
+      await refreshData(asOfDate);
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openTicketRocResearch = (ticket: WorkTicketRecord) => {
+    openRecreateAdapter(ticket);
   };
 
   const resolveConfirmTicket = (
@@ -2401,12 +2649,16 @@ export default function App() {
       }
     }
     const syncTickets = await client.executeCommand("WorkTicketSyncMisses", {});
+    let syncedOpen: number | null = null;
     if (syncTickets.ok && syncTickets.bodyJson) {
       try {
         const body = JSON.parse(syncTickets.bodyJson) as {
           raised?: number;
           openCount?: number;
         };
+        if (typeof body.openCount === "number") {
+          syncedOpen = body.openCount;
+        }
         if ((body.raised ?? 0) > 0) {
           setActionMessage(
             `Opened ${formatCount(body.raised ?? 0)} collector tickets (${formatCount(body.openCount ?? 0)} open).`,
@@ -2420,12 +2672,26 @@ export default function App() {
     if (ticketResult.ok && ticketResult.bodyJson) {
       try {
         const body = JSON.parse(ticketResult.bodyJson) as WorkTicketList;
-        setWorkTickets(Array.isArray(body.items) ? body.items : []);
+        const items = Array.isArray(body.items) ? body.items : [];
+        setWorkTickets(items);
+        const openFromList =
+          typeof body.openCount === "number"
+            ? body.openCount
+            : items.filter((t) => t.status === "open").length;
+        const openCount = syncedOpen ?? openFromList;
+        setSummary((prev) =>
+          prev ? { ...prev, openTicketCount: openCount } : prev,
+        );
       } catch {
         setWorkTickets([]);
       }
     } else {
       setWorkTickets([]);
+      if (syncedOpen != null) {
+        setSummary((prev) =>
+          prev ? { ...prev, openTicketCount: syncedOpen } : prev,
+        );
+      }
     }
   }, []);
 
@@ -2513,7 +2779,8 @@ export default function App() {
         setCarRocPlan(plan.car);
       }
       if (plan?.ytd) {
-        setCashYtd(plan.ytd);
+        // TaxPlanningGet embeds the account view of YTD, not the tax-type view.
+        setCashYtdAccount(plan.ytd);
       }
     } else {
       setTaxPlanning(null);
@@ -2539,13 +2806,9 @@ export default function App() {
     if (cashElementsResult.ok) {
       setCashElements(parseQuery<CashElementListGet>(cashElementsResult.bodyJson));
     }
-    const cashYtdResult = await client.executeQuery("CashYtdGet", {
-      asOfDate: asOf,
-      view: ytdViewRef.current,
-    });
-    if (cashYtdResult.ok) {
-      setCashYtd(parseQuery<CashYtdGet>(cashYtdResult.bodyJson));
-    }
+    const ytdBoth = await fetchCashYtdBoth(client, asOf);
+    setCashYtdAccount(ytdBoth.ytdAccount);
+    setCashYtdTax(ytdBoth.ytdTax);
     const cashCoverageResult = await client.executeQuery("CashCoverageGet", {
       asOfDate: asOf,
       period: coveragePeriodRef.current,
@@ -2566,19 +2829,15 @@ export default function App() {
 
   const loadPositionsPack = useCallback(async (asOf: string) => {
     loadedPositionsRef.current = true;
-    const [positionResult, masterResult, coverageResult] = await Promise.all([
+    const [positionResult, masterResult] = await Promise.all([
       client.executeQuery("PositionDetailsGet", { asOfDate: asOf }),
       client.executeQuery("PositionMasterGet"),
-      client.executeQuery("PositionDetailsCoverageGet"),
     ]);
     if (positionResult.ok) {
       setPositionDetails(parseQuery<PositionDetailsGet>(positionResult.bodyJson));
     }
     if (masterResult.ok) {
       setPositionMaster(parseQuery<PositionMasterGet>(masterResult.bodyJson));
-    }
-    if (coverageResult.ok) {
-      setIssuerCoverage(parseQuery<PositionDetailsCoverageGet>(coverageResult.bodyJson));
     }
   }, []);
 
@@ -2821,6 +3080,9 @@ export default function App() {
   runDataSnapshotRef.current = runDataSnapshot;
 
   const refreshLastPrices = useCallback(async (force = false) => {
+    if (isAtlasFrozen()) {
+      return;
+    }
     if (!force) {
       let allowed = false;
       try {
@@ -2879,6 +3141,9 @@ export default function App() {
   }, [asOfDate, refreshHomeData]);
 
   const refreshDeclarations = useCallback(async (force = false) => {
+    if (isAtlasFrozen()) {
+      return;
+    }
     if (!force) {
       let inSchedule = false;
       try {
@@ -2911,6 +3176,10 @@ export default function App() {
         );
         return;
       }
+      // All-cadence standing-book heal (Weekly/Twice monthly/Monthly/Quarterly) after fleet refresh.
+      await client.executeCommand("CollectorCadenceHeal", {
+        asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
+      });
       await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
@@ -2973,6 +3242,7 @@ export default function App() {
       setPdPeriodBaseline(JSON.stringify(emptyPeriod()));
       setSavedPeriodId("");
       setPdRemaining(null);
+      setOwnerRiskChoice("");
       return;
     }
     const asOf = asOfDate || new Date().toISOString().slice(0, 10);
@@ -3019,6 +3289,9 @@ export default function App() {
                 source: "stored notes",
               },
         );
+      }
+      if (RISK_TIERS.includes(body.riskTier)) {
+        setOwnerRiskChoice(body.riskTier);
       }
     };
     let body = await fetchInvestment();
@@ -3256,6 +3529,14 @@ export default function App() {
         void loadElementsPack(asOfDate);
       } else if (cmDesk !== "external") {
         void loadCashPack(asOfDate);
+        // Week capture (account totals + cash) lives on the weekly desk. Without the
+        // trends pack TrendsWeekGet never runs and the grid renders nothing.
+        if (cmDesk === "weekly") {
+          void loadTrendsPack(asOfDate).catch(() => {
+            setTrendsCapture(null);
+          });
+          void loadIncomePack(asOfDate);
+        }
       }
     } else if (screen === "position-details" || screen === "holdings") {
       void loadPositionsPack(asOfDate);
@@ -3324,21 +3605,34 @@ export default function App() {
           haveTax: taxPlanningRef.current?.asOfDate === asOfDate,
         },
         () => cancelled,
-      ).then((memory) => {
-        if (cancelled) return;
-        if (memory.grid) setIncomeGrid(memory.grid);
-        if (memory.perf) setDividendPerf(memory.perf);
-        if (memory.elements) {
-          setCashElements(memory.elements);
-          elementsWarmAsOfRef.current = asOfDate;
-          loadedElementsRef.current = true;
-        }
-        if (memory.tax) {
-          setTaxPlanning(memory.tax);
-          if (memory.tax.car) setCarRocPlan(memory.tax.car);
-          if (memory.tax.ytd) setCashYtd(memory.tax.ytd);
-        }
-      });
+      )
+        .then(async (memory) => {
+          if (cancelled) return;
+          if (memory.grid) setIncomeGrid(memory.grid);
+          if (memory.perf) setDividendPerf(memory.perf);
+          if (memory.elements) {
+            setCashElements(memory.elements);
+            elementsWarmAsOfRef.current = asOfDate;
+            loadedElementsRef.current = true;
+          }
+          if (memory.tax) {
+            setTaxPlanning(memory.tax);
+            if (memory.tax.car) setCarRocPlan(memory.tax.car);
+            if (memory.tax.ytd) setCashYtdAccount(memory.tax.ytd);
+          }
+          // Week Ahead idle warm (App-only; not backgroundReads). Early horizon accepted.
+          if (cancelled || weekAheadWarmAsOfRef.current === asOfDate) return;
+          const ahead = await client.executeQuery("WeekAheadGet", {
+            asOfDate,
+          });
+          if (cancelled || !ahead.ok || !ahead.bodyJson) return;
+          try {
+            setWeekAhead(JSON.parse(ahead.bodyJson) as WeekAheadGet);
+            weekAheadWarmAsOfRef.current = asOfDate;
+          } catch {
+            /* ignore */
+          }
+        });
     });
     return () => {
       cancelled = true;
@@ -3666,6 +3960,8 @@ export default function App() {
   });
   const addLotDirty = JSON.stringify(currentAddLot()) !== addLotBaseline;
   const cancelAddLotEdits = () => {
+    const fromCart = pendingCartBuyRef.current != null;
+    pendingCartBuyRef.current = null;
     const draft = JSON.parse(addLotBaseline) as AddLotDraft;
     setAddLotSecurityId(draft.securityId);
     const sec = securities.find((s) => s.securityId === draft.securityId);
@@ -3677,12 +3973,25 @@ export default function App() {
     setAddLotTaxCost(draft.taxCost ?? "");
     setAddLotTaxDifferent(Boolean(draft.taxCostDifferent));
     setAddLotOrigin(draft.origin || "purchase");
-    setActionMessage("Edits discarded.");
+    setActionMessage(fromCart ? "Purchase cancelled — back to Shopping Cart." : "Edits discarded.");
+    if (fromCart) {
+      setScreen("shopping-cart");
+    }
   };
 
   const parseCadence = (raw: string) => {
     const key = raw.trim().toLowerCase();
     if (key === "weekly" || key === "52") return { label: "Weekly", periods: 52 as const };
+    if (
+      key === "twice monthly" ||
+      key === "twice-monthly" ||
+      key === "semimonthly" ||
+      key === "semi-monthly" ||
+      key === "semi monthly" ||
+      key === "24"
+    ) {
+      return { label: "Twice monthly", periods: 24 as const };
+    }
     if (key === "monthly" || key === "12") return { label: "Monthly", periods: 12 as const };
     if (key === "quarterly" || key === "4") return { label: "Quarterly", periods: 4 as const };
     if (key === "none") return { label: "None", periods: 0 as const };
@@ -3966,7 +4275,7 @@ export default function App() {
     const cadence = parseCadence(wizFreq);
     if (!cadence) {
       setActionMessage(
-        "Choose Weekly (52), Monthly (12), Quarterly (4), or None (does not pay). Cadence is required to add the position; there is no default.",
+        "Choose Weekly (52), Twice monthly (24), Monthly (12), Quarterly (4), or None (does not pay). Cadence is required to add the position; there is no default.",
       );
       return;
     }
@@ -4137,24 +4446,44 @@ export default function App() {
       setActionMessage("Run Research first.");
       return;
     }
+    if (!wizPlan.trim() || !Number.isFinite(Number(wizPlan))) {
+      setActionMessage("Enter Plan / share as a number, then Confirm Plan.");
+      return;
+    }
     if (!wizPlanReason) {
-      setActionMessage("Choose a Plan reason.");
+      setActionMessage("Choose a Plan reason, then Confirm Plan.");
+      return;
+    }
+    if (!parseCadence(wizFreq)) {
+      setActionMessage(
+        "Choose and Accept payment frequency (Weekly / Twice monthly / Monthly / Quarterly) before Confirm Plan.",
+      );
       return;
     }
     if (wizReview?.confirmBlocked || (wizReview?.observationCount ?? 0) < 1) {
       setActionMessage("Confirm Plan stays disabled until declaration research exists.");
       return;
     }
+    const obs =
+      wizReview?.observationCount ??
+      wizDecls.filter((d) => d.amountPerShareMinor > 0).length;
+    const inceptionCoversIncomplete = Boolean(wizInceptionOn.trim());
+    const incompleteReason =
+      wizIncomplete.trim() ||
+      (inceptionCoversIncomplete ? "Recent inception date" : "");
+    if (
+      (wizReview?.incompleteReasonRequired || (obs > 0 && obs < 6)) &&
+      !incompleteReason
+    ) {
+      setActionMessage(
+        `Fewer than 6 paid observations (${obs}) — choose Incomplete analysis reason, or store inception first.`,
+      );
+      return;
+    }
     setBusy(true);
     setActionMessage(null);
     try {
-      const cadence = parseCadence(wizFreq);
-      if (!cadence) {
-        setActionMessage(
-          "Confirm Plan stays disabled until payment frequency research exists.",
-        );
-        return;
-      }
+      const cadence = parseCadence(wizFreq)!;
       const planScale = 4;
       const planMinor = Math.round(Number(wizPlan) * 10 ** planScale);
       const result = await client.executeCommand("PlanHistoryConfirm", {
@@ -4164,18 +4493,42 @@ export default function App() {
         planningPeriodsPerYear: cadence.periods,
         effectiveFrom: new Date().toISOString().slice(0, 10),
         decisionReason: wizPlanReason,
-        incompleteAnalysisReason: wizIncomplete,
+        incompleteAnalysisReason: incompleteReason,
       });
       if (!result.ok) {
-        setActionMessage(`Plan not stored: ${result.errorCode ?? "error"}`);
+        const code = result.errorCode ?? "error";
+        if (code === "incomplete_analysis_required") {
+          setActionMessage(
+            `Plan not stored: ${wizSymbol.trim().toUpperCase() || "this symbol"} has fewer than 6 paid declarations — type Incomplete analysis reason (Owner actions), then Confirm Plan again. Typed Plan in the box is not enough until it says Plan confirmed.`,
+          );
+        } else if (code === "plan_confirm_blocked") {
+          setActionMessage(
+            "Plan not stored: need at least one paid declaration before Confirm Plan.",
+          );
+        } else {
+          setActionMessage(`Plan not stored: ${code}`);
+        }
         return;
       }
       setWizPlanStored(true);
       snapshotWiz();
       setWizStoredPlan({ minor: planMinor, scale: planScale });
-      setActionMessage(
-        `Stored Plan ${formatPerShare(planMinor, planScale)}/share (${wizPlanReason}). Confirm Plan wrote Plan / share only. Add lots from Add Lot when ready — not on this screen.`,
-      );
+      const stillNeedInception =
+        (wizReview?.observationCount ??
+          wizDecls.filter((d) => d.amountPerShareMinor > 0).length) > 0 &&
+        (wizReview?.observationCount ??
+          wizDecls.filter((d) => d.amountPerShareMinor > 0).length) < 12 &&
+        !wizInceptionOn.trim();
+      if (stillNeedInception) {
+        setWizAskInception(true);
+        setActionMessage(
+          `Stored Plan ${formatPerShare(planMinor, planScale)}/share (${wizPlanReason}). Shopping Cart can use this Plan. Paid history is still under 12 — answer Inception Yes/No below (or type the fund start date).`,
+        );
+      } else {
+        setActionMessage(
+          `Stored Plan ${formatPerShare(planMinor, planScale)}/share (${wizPlanReason}). Confirm Plan wrote Plan / share only. Calculator lists it at 0 shares; Add lots (or Cart execute) for Income Plan and P/L.`,
+        );
+      }
       await refreshData(asOfDate);
     } catch (err: unknown) {
       setActionMessage(String(err));
@@ -4353,6 +4706,7 @@ export default function App() {
       setWizUnderlying(inv.underlying || "");
       setWizFreq(seed.paymentFrequency || inv.paymentFrequency || "");
       setWizRisk(inv.riskTier || "");
+      setWizDivType(normalizeDivType(inv.divType || "") || "DIV-1");
       setWizLookthrough(mergeLookthrough(inv.lookthrough));
       setWizReview(inv.review);
       setWizPriceState(inv.price);
@@ -4387,14 +4741,11 @@ export default function App() {
         });
         setWizPlan(formatPerShare(inv.planPerShareMinor, inv.planScale));
         if (inv.planReason) setWizPlanReason(inv.planReason);
-      } else if (inv.review?.mostCurrentMinor != null) {
-        setWizStoredPlan(null);
-        setWizPlan(
-          formatPerShare(inv.review.mostCurrentMinor, inv.review.amountScale),
-        );
-        if (!wizPlanReason) setWizPlanReason("Match Most Current");
       } else {
+        // Plan is owner-entered — do not seed Most Current into the Plan field.
         setWizStoredPlan(null);
+        setWizPlan("");
+        setWizPlanReason("");
       }
       if (inv.suggestion?.suggestedTier) {
         setWizTierSuggestion(inv.suggestion);
@@ -4532,6 +4883,11 @@ export default function App() {
           ? (seed.collectorGaps ?? [])
           : (inv.collectorGaps ?? []),
       );
+      applyEstablishFromInvestment(inv);
+      if (seed.recertified) {
+        setWizCollectorComplete(Boolean(seed.collectorComplete));
+        setWizCollectorGaps(seed.collectorGaps ?? []);
+      }
       setWizAskSecondUrl(Boolean(seed.needsSecondUrl) && !seed.secondUrlTried);
       setWizSecondUrlTried(Boolean(seed.secondUrlTried || seed.adapterFailed));
       setWizAskInception(Boolean(seed.needsInceptionConfirm || seed.inceptionSearchMiss));
@@ -4552,9 +4908,7 @@ export default function App() {
         calendarPolicy: seed.calendarPolicy || "",
         plan: inv.planKnown
           ? formatPerShare(inv.planPerShareMinor, inv.planScale)
-          : inv.review?.mostCurrentMinor != null
-            ? formatPerShare(inv.review.mostCurrentMinor, inv.review.amountScale)
-            : "",
+          : "",
       });
       const filledBits = [
         inv.provider ? `provider ${inv.provider}` : null,
@@ -4617,6 +4971,8 @@ export default function App() {
     listenProgress?: boolean;
     /** When true, leave researchActivity.running for the caller (Fill research gaps). */
     keepActivityRunning?: boolean;
+    /** Bypass once-per-month ROC gate (Reevaluate / establish ROC hole). */
+    forceRoc?: boolean;
   }) => {
     const symbol = opts.symbol.trim().toUpperCase();
     if (!opts.securityId || !symbol) {
@@ -4661,6 +5017,7 @@ export default function App() {
       const result = await client.executeCommand("PositionResearchRefresh", {
         securityId: opts.securityId,
         symbol,
+        forceRoc: Boolean(opts.forceRoc),
       });
       if (!result.ok || !result.bodyJson) {
         const fail = `Complete research failed: ${result.errorCode ?? "error"}`;
@@ -4713,8 +5070,7 @@ export default function App() {
       if (invResult.ok && invResult.bodyJson) {
         inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
         if (opts.securityId === wizSecurityId) {
-          setWizCollectorComplete(Boolean(inv.collectorComplete));
-          setWizCollectorGaps(inv.collectorGaps ?? []);
+          applyEstablishFromInvestment(inv);
         }
       }
 
@@ -4811,8 +5167,13 @@ export default function App() {
           "Suggestion only — owner sets risk.",
         source: "issuer page + AiAnalyze draft",
       });
+      const storedTier = inv?.riskTier || "";
       setOwnerRiskChoice(
-        RISK_TIERS.includes(nextSuggested) ? nextSuggested : "",
+        RISK_TIERS.includes(storedTier)
+          ? storedTier
+          : RISK_TIERS.includes(nextSuggested)
+            ? nextSuggested
+            : "",
       );
       setWizAiThesis(overview);
 
@@ -4904,6 +5265,9 @@ export default function App() {
       const body = await completePositionResearch({
         securityId: wizSecurityId,
         symbol: wizSymbol,
+        forceRoc:
+          wizCollectorGaps.includes("roc_estimate") ||
+          wizRoc?.rocPctMinor == null,
       });
       if (!body) return;
       const asOf = asOfDate || new Date().toISOString().slice(0, 10);
@@ -4934,18 +5298,23 @@ export default function App() {
         const scale = body.rocScale ?? 2;
         setWizRoc({
           securityId: wizSecurityId,
-          accountId: wizAccountId || null,
           rocPctMinor: body.rocPctMinor,
           scale,
           complete: false,
           source: "19a-1",
+          reason: "",
           sourceUrl: body.rocSourceUrl || "",
           method: "19a-1-current-year",
           kind: "estimate",
           systemRocPctMinor: body.rocPctMinor,
           candidates: [],
           observations: [],
-        } as RocResearchGet);
+          remainingPeriods: null,
+          remainingTotalMinor: null,
+          remainingOrdinaryMinor: null,
+          remainingRocMinor: null,
+          magiEligible: false,
+        });
         setWizRocPct((body.rocPctMinor / 10 ** scale).toFixed(scale));
       }
     } catch (err: unknown) {
@@ -5038,7 +5407,7 @@ export default function App() {
         isOpen: true,
       });
       if (!result.ok) {
-        setActionMessage(`Lot not stored: ${result.errorCode ?? "error"}`);
+        setActionMessage(lotOpenOwnerMessage(result));
         return;
       }
       setWizLotStored(true);
@@ -5135,13 +5504,23 @@ export default function App() {
     ...(addLotDirty ? (["add-lot"] as const) : []),
     ...(cashDirty || elementDirty || externalDirty ? (["cash-management"] as const) : []),
     ...(cartDirty ? (["shopping-cart"] as const) : []),
+    ...(marketImpactDirty
+      ? screen === "position-details"
+        ? pdDirty
+          ? []
+          : (["position-details"] as const)
+        : (["market-impact"] as const)
+      : []),
   ];
   const dirtyScreenNames = [
-    pdDirty ? "Position Details" : null,
-    wizDirty ? "Add Position" : null,
+    pdDirty || (marketImpactDirty && screen === "position-details")
+      ? "Position Details"
+      : null,
+    wizDirty ? "Add Investment" : null,
     addLotDirty ? "Add Lot" : null,
     cashDirty || elementDirty || externalDirty ? "Cash Management" : null,
     cartDirty ? "Shopping Cart" : null,
+    marketImpactDirty && screen !== "position-details" ? "Market impact planner" : null,
   ]
     .filter((name): name is string => name != null)
     .join(" and ");
@@ -5183,22 +5562,32 @@ export default function App() {
       setExternalDirty(false);
       setExternalReset((n) => n + 1);
     }
+    if (marketImpactDirty) {
+      setMarketImpactDirty(false);
+      setMarketImpactDiscard((n) => n + 1);
+    }
   };
 
   const saveOwnerPeriod = async () => {
+    if (!investment) {
+      setActionMessage("Choose a symbol first.");
+      return;
+    }
     if (!periodReady) {
       setActionMessage("Period needs kind and dates.");
       return;
     }
+    const storedName = `${pdPeriod.kind} ${investment.symbol}`;
+    const stored = { ...pdPeriod, name: storedName };
     setBusy(true);
     setActionMessage(null);
     try {
       const result = await client.executeCommand("BacktestPeriodRecord", {
-        kind: pdPeriod.kind,
-        name: pdPeriod.name.trim() || `${pdPeriod.kind} ${pdPeriod.startOn}`,
-        startOn: pdPeriod.startOn,
-        endOn: pdPeriod.endOn,
-        benchmarkSymbol: pdPeriod.benchmark.trim(),
+        kind: stored.kind,
+        name: storedName,
+        startOn: stored.startOn,
+        endOn: stored.endOn,
+        benchmarkSymbol: stored.benchmark.trim(),
       });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Period not stored: ${result.errorCode ?? "error"}`);
@@ -5208,7 +5597,8 @@ export default function App() {
       if (body.periodId) {
         setSavedPeriodId(body.periodId);
       }
-      setPdPeriodBaseline(JSON.stringify(pdPeriod));
+      setPdPeriod(stored);
+      setPdPeriodBaseline(JSON.stringify(stored));
       setActionMessage("Owner period stored. Calculate window when ready.");
       if (investment) {
         await loadInvestment(investment.symbol);
@@ -5306,16 +5696,17 @@ export default function App() {
     }
   };
 
-  const setOwnerRisk = async () => {
+  const setOwnerRisk = async (tier?: string) => {
     if (!investment) {
       return;
     }
-    if (!RISK_TIERS.includes(ownerRiskChoice)) {
+    const chosen = (tier ?? ownerRiskChoice).trim();
+    if (!RISK_TIERS.includes(chosen)) {
       setActionMessage("Choose Foundation, Core, or Risk On. Risk is mandatory.");
       return;
     }
-    await applySuggestedTier(ownerRiskChoice);
-    setPdDraft((prev) => (prev ? { ...prev, risk: ownerRiskChoice } : prev));
+    await applySuggestedTier(chosen);
+    setPdDraft((prev) => (prev ? { ...prev, risk: chosen } : prev));
   };
 
   jobsBusyRef.current = busy || lastPriceBusy || declarationBusy;
@@ -5356,7 +5747,13 @@ export default function App() {
       return;
     }
     if (
-      (pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty) &&
+      (pdDirty ||
+        wizDirty ||
+        addLotDirty ||
+        cashDirty ||
+        elementDirty ||
+        externalDirty ||
+        marketImpactDirty) &&
       (target == null || !dirtyTargets.includes(target))
     ) {
       setMenuWorking(null);
@@ -5371,11 +5768,35 @@ export default function App() {
   const leaveWithoutSavingRef = useRef(leaveWithoutSaving);
   leaveWithoutSavingRef.current = leaveWithoutSaving;
 
+  const rememberMenu = () => {
+    const place = { screen, cmDesk };
+    pushNav({
+      screen: place.screen,
+      cmDesk: place.cmDesk,
+      restore: () => {
+        setScreen(place.screen);
+        setCmDesk(place.cmDesk);
+        setElementEditorOpen(false);
+        setEditorElement(null);
+        setEditorOccurrenceId(null);
+      },
+    });
+  };
+
   const runAppRestart = useCallback(async () => {
     if (restartingRef.current) {
       return;
     }
-    if (pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty || weekWizardActive) {
+    if (
+      pdDirty ||
+      wizDirty ||
+      addLotDirty ||
+      cashDirty ||
+      elementDirty ||
+      externalDirty ||
+      marketImpactDirty ||
+      weekWizardActive
+    ) {
       setActionMessage(
         weekWizardActive
           ? "Finish the week on Review → Accept before restarting."
@@ -5407,9 +5828,59 @@ export default function App() {
       setRestarting(false);
       setActionMessage(`Restart failed: ${String(err)}`);
     }
-  }, [pdDirty, wizDirty, addLotDirty, cashDirty, elementDirty, externalDirty, weekWizardActive]);
+  }, [
+    pdDirty,
+    wizDirty,
+    addLotDirty,
+    cashDirty,
+    elementDirty,
+    externalDirty,
+    marketImpactDirty,
+    weekWizardActive,
+  ]);
   const runAppRestartRef = useRef(runAppRestart);
   runAppRestartRef.current = runAppRestart;
+
+  /** Fire-and-report for native File menu items that are one command and a sentence. */
+  const runMenuCommand = useCallback(
+    async (command: string, okMessage: string) => {
+      const result = await client.executeCommand(command, {});
+      setActionMessage(
+        result.ok ? okMessage : `${command} failed: ${result.errorCode ?? "error"}`,
+      );
+    },
+    [client],
+  );
+  const runMenuCommandRef = useRef(runMenuCommand);
+  runMenuCommandRef.current = runMenuCommand;
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const stop = await listen("finos-screen-atlas", () => {
+          if (!claimAtlasAutoStart()) {
+            return;
+          }
+          setAtlasAutoStart(true);
+          setScreen("screen-atlas");
+        });
+        if (cancelled) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+      } catch {
+        /* browser / non-tauri */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -5498,6 +5969,14 @@ export default function App() {
         const stopRestart = await listen<string>("finos-app-restart", () => {
           void runAppRestartRef.current();
         });
+        // The native File menu emits these; without a listener both items looked live and
+        // did nothing.
+        const stopMobilePublish = await listen<string>("finos-mobile-publish", () => {
+          void runMenuCommandRef.current("MobilePublish", "Mobile head published");
+        });
+        const stopMobileDrain = await listen<string>("finos-mobile-outbox-drain", () => {
+          void runMenuCommandRef.current("MobileOutboxDrain", "Mobile outbox applied");
+        });
         const stopDeclProgress = await listen<{
           current?: number;
           total?: number;
@@ -5522,21 +6001,20 @@ export default function App() {
             symbol: p.symbol ?? "",
           });
         });
+        const stops = [
+          stop,
+          stopSnapshot,
+          stopRestart,
+          stopMobilePublish,
+          stopMobileDrain,
+          stopDeclProgress,
+          stopPriceProgress,
+        ];
         if (cancelled) {
-          stop();
-          stopSnapshot();
-          stopRestart();
-          stopDeclProgress();
-          stopPriceProgress();
+          stops.forEach((off) => off());
           return;
         }
-        unlisten = () => {
-          stop();
-          stopSnapshot();
-          stopRestart();
-          stopDeclProgress();
-          stopPriceProgress();
-        };
+        unlisten = () => stops.forEach((off) => off());
       } catch {
         /* browser preview without Tauri events */
       }
@@ -5574,7 +6052,7 @@ export default function App() {
 
   const openPositionHub = (
     symbol: string,
-    focus: "lots" | "income" | "declarations" | "ledger" | "" = "",
+    focus: "lots" | "income" | "declarations" | "ledger" | "plan" | "tickets" | "" = "",
   ) => {
     leaveWithoutSaving(() => {
       setPositionFocusPanel(focus);
@@ -5596,7 +6074,7 @@ export default function App() {
     const cadence = parseCadence(pdDraft.freq);
     if (!cadence) {
       setActionMessage(
-        "Choose Weekly (52), Monthly (12), Quarterly (4), or None (does not pay). Cadence is required; there is no default.",
+        "Choose Weekly (52), Twice monthly (24), Monthly (12), Quarterly (4), or None (does not pay). Cadence is required; there is no default.",
       );
       return;
     }
@@ -5715,7 +6193,7 @@ export default function App() {
         const cadence = parseCadence(pdDraft.freq || investment.paymentFrequency);
         if (!cadence) {
           setActionMessage(
-            "Choose Weekly (52), Monthly (12), Quarterly (4), or None before Confirm Plan. There is no default.",
+            "Choose Weekly (52), Twice monthly (24), Monthly (12), Quarterly (4), or None before Confirm Plan. There is no default.",
           );
           return;
         }
@@ -5954,7 +6432,12 @@ export default function App() {
         return;
       }
       const gaps = JSON.parse(gapsResult.bodyJson) as {
-        items: { securityId: string; symbol: string }[];
+        items: {
+          securityId: string;
+          symbol: string;
+          rocEstimateBlank?: boolean;
+          rocObservationBlank?: boolean;
+        }[];
       };
       const targets = gaps.items ?? [];
       if (targets.length === 0) {
@@ -6023,6 +6506,7 @@ export default function App() {
             symbol: row.symbol,
             listenProgress: true,
             keepActivityRunning: true,
+            forceRoc: Boolean(row.rocEstimateBlank || row.rocObservationBlank),
           });
           if (!body) {
             miss += 1;
@@ -6170,9 +6654,7 @@ export default function App() {
         isOpen: true,
       });
       if (!result.ok) {
-        setActionMessage(
-          `LotOpen failed: ${result.errorCode ?? "error"}. Fields kept — fix and retry.`,
-        );
+        setActionMessage(lotOpenOwnerMessage(result));
         await refreshHandoff();
         return;
       }
@@ -6180,7 +6662,9 @@ export default function App() {
         ? (JSON.parse(result.bodyJson) as { lotId?: string })
         : {};
       const pending = pendingCartBuyRef.current;
+      let fromCart = false;
       if (pending && opened.lotId) {
+        fromCart = true;
         const step = await client.executeCommand("CartExecuteBuyStep", {
           scenarioId: pending.scenarioId,
           lotId: opened.lotId,
@@ -6190,34 +6674,39 @@ export default function App() {
           setActionMessage(
             `Lot opened; cart buy step not recorded: ${step.errorCode ?? "error"}`,
           );
+        } else {
+          setCartRefreshKey((n) => n + 1);
         }
+      } else if (pending) {
+        // Lot opened without lotId in body — still leave Add Lot so cart execute is not stuck.
+        fromCart = true;
+        pendingCartBuyRef.current = null;
       }
-      // Success: keep symbol (and account/origin); clear qty/cost/date so submit is not a duplicate.
-      setAddLotOpenedOn("");
-      setAddLotQty("");
-      setAddLotCost("");
-      setAddLotTaxCost("");
-      setAddLotTaxDifferent(false);
-      const cleared: AddLotDraft = {
-        securityId: addLotSecurityId,
-        accountId: addLotAccountId,
-        openedOn: "",
-        qty: "",
-        cost: "",
-        taxCost: "",
-        taxCostDifferent: false,
-        origin: addLotOrigin,
-      };
+      const cleared = emptyAddLot();
+      setAddLotSecurityId(cleared.securityId);
+      setAddLotAccountId(cleared.accountId);
+      setAddLotOpenedOn(cleared.openedOn);
+      setAddLotQty(cleared.qty);
+      setAddLotCost(cleared.cost);
+      setAddLotTaxCost(cleared.taxCost);
+      setAddLotTaxDifferent(cleared.taxCostDifferent);
+      setAddLotOrigin(cleared.origin);
+      setAddLotQuery("");
       setAddLotBaseline(JSON.stringify(cleared));
+      const lotLine =
+        `Confirmed ${symbol} in ${accountName}: ${qtyLabel} × $${unitOrigLabel} = $${lotOrigLabel}` +
+        (addLotTaxDifferent
+          ? `; tax $${unitTaxLabel} → $${lotTaxLabel}`
+          : "");
       setActionMessage(
-        `Opened lot: ${symbol} in ${accountName}, qty ${qtyLabel} × $${unitOrigLabel} = $${lotOrigLabel} lot orig` +
-          (addLotTaxDifferent
-            ? `; unit tax $${unitTaxLabel} → lot tax $${lotTaxLabel}`
-            : "") +
-          `. Enter qty and unit $ again for another lot on ${symbol}.`,
+        fromCart
+          ? `${lotLine}. Leftover cash aligns when every purchase is recorded.`
+          : lotLine,
       );
       await refreshHandoff();
       await refreshData(asOfDate);
+      // Cart buys must return to Shopping Cart (Confirm cash). Do not stay on Add Lot.
+      setScreen(fromCart ? "shopping-cart" : addLotReturnScreenRef.current || "holdings");
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -6635,6 +7124,42 @@ export default function App() {
         l.remainingQuantityMinor > 0,
     ).length ?? 0;
 
+  const processAPlanBlockReason = (() => {
+    if (!wizSecurityId) return "Run Research first.";
+    if (!wizPlan.trim() || !Number.isFinite(Number(wizPlan))) {
+      return "Enter Plan / share as a number.";
+    }
+    if (!wizPlanReason) return "Choose a Plan reason.";
+    if (!parseCadence(wizFreq)) {
+      return "Choose and Accept payment frequency (Weekly / Twice monthly / Monthly / Quarterly).";
+    }
+    const obs =
+      wizReview?.observationCount ??
+      wizDecls.filter((d) => d.amountPerShareMinor > 0).length;
+    if (wizReview?.confirmBlocked || obs < 1) {
+      return "Need paid declarations from Research.";
+    }
+    const inceptionCoversIncomplete = Boolean(wizInceptionOn.trim());
+    if (
+      (wizReview?.incompleteReasonRequired || (obs > 0 && obs < 6)) &&
+      !inceptionCoversIncomplete &&
+      !wizIncomplete.trim()
+    ) {
+      return `Fewer than 6 pays (${formatCount(obs)}) — choose Incomplete analysis reason (or store inception first).`;
+    }
+    if (
+      processALotCount > 0 &&
+      wizPlanStored &&
+      wizStoredPlan != null &&
+      Number.isFinite(Number(wizPlan)) &&
+      formatPerShare(wizStoredPlan.minor, wizStoredPlan.scale) ===
+        formatPerShare(Math.round(Number(wizPlan) * 10 ** 4), 4)
+    ) {
+      return "Plan unchanged — nothing to Confirm.";
+    }
+    return "";
+  })();
+
   const processAFieldStatus = {
     frequency: Boolean(parseCadence(wizFreq)),
     declarations: wizDecls.length > 0,
@@ -6643,12 +7168,36 @@ export default function App() {
       wizPriceState?.priceMinor != null && wizPriceState.priceMinor > 0,
   };
 
+  const processANeedsInception =
+    wizDecls.filter((d) => d.amountPerShareMinor > 0).length > 0 &&
+    wizDecls.filter((d) => d.amountPerShareMinor > 0).length < 12 &&
+    !wizInceptionOn.trim();
+  const processANeedsRemaining =
+    !wizPlanStored || processANeedsInception || !processAFieldStatus.frequency;
+
   const saveProcessAResearch = () => {
     if (!wizSecurityId || !wizResearchDone) {
       setActionMessage("Run Research before Save.");
       return;
     }
     snapshotWiz();
+    if (processANeedsRemaining) {
+      setWizProcessASaved(false);
+      setWizAskInception(processANeedsInception || wizAskInception);
+      const bits = [
+        !wizPlanStored
+          ? "Confirm Plan (Incomplete analysis reason required when paid history is under 6)"
+          : null,
+        processANeedsInception
+          ? "answer Inception Yes/No (or type the fund start date)"
+          : null,
+        !processAFieldStatus.frequency ? "Accept payment frequency" : null,
+      ].filter(Boolean);
+      setActionMessage(
+        `Not finished yet — do this on Add Investment before shopping cart or lots: ${bits.join("; ")}.`,
+      );
+      return;
+    }
     setWizProcessASaved(true);
     setActionMessage(
       wizCollectorComplete
@@ -6662,6 +7211,34 @@ export default function App() {
             }.`,
     );
     void refreshData(asOfDate || new Date().toISOString().slice(0, 10));
+    // Keep draft + research form on screen — Save must not look like a wipe.
+  };
+
+  const continueProcessARemaining = () => {
+    setWizProcessASaved(false);
+    setWizAskInception(processANeedsInception || wizAskInception);
+    setActionMessage(
+      !wizPlanStored
+        ? "Finish on this screen: type Incomplete analysis reason if under 6 pays, then Confirm Plan. Shopping Cart reads stored Plan only."
+        : processANeedsInception
+          ? "Paid history is under 12 — store inception (Yes) or say No. Then Confirm Plan if it is still unstored."
+          : "Review Owner actions on this screen.",
+    );
+  };
+
+  const applyEstablishFromInvestment = (inv: InvestmentGet) => {
+    setWizCollectorComplete(Boolean(inv.collectorComplete));
+    setWizCollectorGaps(inv.collectorGaps ?? []);
+    setWizEstablishChecklist(
+      (inv.establishChecklist ?? []).map((r) => ({
+        id: r.id,
+        label: r.label,
+        status: r.status,
+        blocksComplete: Boolean(r.blocksComplete),
+      })),
+    );
+    setWizEstablishComplete(Boolean(inv.establishComplete));
+    setWizEstablishOpenLabels(inv.establishOpenLabels ?? []);
   };
 
   const resetProcessAForm = () => {
@@ -6669,6 +7246,9 @@ export default function App() {
     setWizResearchDone(false);
     setWizCollectorComplete(false);
     setWizCollectorGaps([]);
+    setWizEstablishChecklist([]);
+    setWizEstablishComplete(false);
+    setWizEstablishOpenLabels([]);
     setWizSecondUrl("");
     setWizAskSecondUrl(false);
     setWizSecondUrlTried(false);
@@ -6691,7 +7271,122 @@ export default function App() {
     setWizPlanStored(false);
     setWizStoredPlan(null);
     setWizRisk("");
+    setWizDivType("");
     setWizDeclSource("");
+    setWizStoredUrlOffer("");
+    wizOfferedTemplatesRef.current = { sourceUrl: "", rocUrl: "" };
+  };
+
+  /** When Symbol is entered, offer Template Dividend / ROC URLs already on file.
+   *  If the identity was already researched, reload stored facts — do not blank the form. */
+  const offerStoredTemplatesForSymbol = async (rawSymbol: string) => {
+    const symbol = rawSymbol.trim().toUpperCase();
+    const seq = ++wizTemplateLookupSeq.current;
+    if (!symbol) {
+      setWizStoredUrlOffer("");
+      return;
+    }
+    let sourceUrl = "";
+    let rocUrl = "";
+    let declSource = "";
+    const row = collectorItems.find(
+      (r) => r.symbol.trim().toUpperCase() === symbol,
+    );
+    if (row) {
+      sourceUrl = (row.sourceUrl || "").trim();
+      rocUrl = (row.rocSourceUrl || "").trim();
+      declSource = (row.declarationSource || "").trim();
+    }
+    const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+    const invResult = await client.executeQuery("InvestmentGet", {
+      symbol,
+      asOfDate: asOf,
+    });
+    if (seq !== wizTemplateLookupSeq.current) return;
+    let inv: InvestmentGet | null = null;
+    if (invResult.ok && invResult.bodyJson) {
+      inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+      sourceUrl = sourceUrl || (inv.template?.sourceUrl || "").trim();
+      rocUrl = rocUrl || (inv.template?.rocSourceUrl || "").trim();
+      declSource =
+        declSource || (inv.template?.declarationSource || "").trim();
+    }
+    const prevOffer = wizOfferedTemplatesRef.current;
+    setWizSourceUrl((cur) => {
+      const trimmed = cur.trim();
+      if (!trimmed || trimmed === prevOffer.sourceUrl) {
+        return sourceUrl || (trimmed ? cur : "");
+      }
+      return cur;
+    });
+    setWizRocUrl((cur) => {
+      const trimmed = cur.trim();
+      if (!trimmed || trimmed === prevOffer.rocUrl) {
+        return rocUrl || (trimmed ? cur : "");
+      }
+      return cur;
+    });
+    if (declSource) {
+      setWizDeclSource((cur) => (cur.trim() ? cur : declSource));
+    }
+    wizOfferedTemplatesRef.current = { sourceUrl, rocUrl };
+
+    const alreadyResearched = Boolean(
+      inv?.securityId &&
+        (inv.planKnown ||
+          (inv.declarations?.length ?? 0) > 0 ||
+          (inv.paymentFrequency || "").trim() ||
+          (inv.provider || "").trim()),
+    );
+    if (alreadyResearched && inv?.securityId) {
+      await hydrateProcessAStoredFacts(inv.securityId, symbol);
+      if (seq !== wizTemplateLookupSeq.current) return;
+      const decisions: Record<string, string> = {};
+      if ((inv.provider || "").trim()) decisions.provider = "accept";
+      if ((inv.underlying || "").trim()) decisions.underlying = "accept";
+      if ((inv.paymentFrequency || "").trim()) decisions.frequency = "accept";
+      if ((inv.riskTier || "").trim()) decisions.risk_tier = "accept";
+      if (normalizeDivType(inv.divType || "")) decisions.div_type = "accept";
+      if (inv.rocPct2026EstimateMinor != null) decisions.roc_estimate = "accept";
+      setWizFieldDecision((prev) => ({ ...decisions, ...prev }));
+      if (inv.collectorComplete && inv.planKnown) {
+        setWizProcessASaved(true);
+        setWizStoredUrlOffer(
+          inv.remainingQuantityMinor > 0
+            ? `On file for ${symbol}: research and Plan complete (open lot on file).`
+            : `On file for ${symbol}: research and Plan complete. Calculator lists 0 shares; Add lots for Income Plan.`,
+        );
+        setActionMessage(
+          `${symbol} is already researched — stored facts loaded. Do not re-enter Accept / Confirm Plan unless you are changing them.`,
+        );
+      } else {
+        setWizStoredUrlOffer(
+          `On file for ${symbol}: stored research loaded. Finish any open Owner actions, then Save.`,
+        );
+        setActionMessage(
+          `${symbol} already has stored research — form refilled from the book. Complete only what is still missing.`,
+        );
+      }
+      return;
+    }
+
+    if (sourceUrl && rocUrl) {
+      setWizStoredUrlOffer(
+        `On file for ${symbol}: Template Dividend and ROC URL offered as default.`,
+      );
+    } else if (sourceUrl) {
+      setWizStoredUrlOffer(
+        `On file for ${symbol}: Template Dividend offered as default.`,
+      );
+    } else if (rocUrl) {
+      setWizStoredUrlOffer(
+        `ROC notice on file for ${symbol} offered as default. Paste Template Dividend if empty.`,
+      );
+    } else {
+      setWizStoredUrlOffer(
+        `No Template Dividend on file for ${symbol}. Paste the issuer URL.`,
+      );
+    }
   };
 
   const startAnotherProcessA = () => {
@@ -6699,6 +7394,11 @@ export default function App() {
     setWizSymbol("");
     setWizSourceUrl("");
     setWizBaseline(JSON.stringify(emptyWizEdit()));
+    try {
+      localStorage.removeItem(PROCESS_A_DRAFT_KEY);
+    } catch {
+      /* ignore */
+    }
   };
 
   const openRecreateAdapter = (ticket: WorkTicketRecord) => {
@@ -6778,12 +7478,26 @@ export default function App() {
     });
     if (!invResult.ok || !invResult.bodyJson) return;
     const inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
-    setWizCollectorComplete(Boolean(inv.collectorComplete));
-    setWizCollectorGaps(inv.collectorGaps ?? []);
+    applyEstablishFromInvestment(inv);
     setWizProvider(inv.provider || "");
     setWizUnderlying(inv.underlying || "");
     setWizFreq(inv.paymentFrequency || wizFreq);
     setWizRisk(inv.riskTier || wizRisk);
+    setWizDivType(normalizeDivType(inv.divType || "") || wizDivType);
+    setWizReview(inv.review);
+    setWizPriceState(inv.price);
+    if (inv.planKnown) {
+      setWizStoredPlan({
+        minor: inv.planPerShareMinor,
+        scale: inv.planScale,
+      });
+      setWizPlanStored(true);
+      setWizPlan(formatPerShare(inv.planPerShareMinor, inv.planScale));
+      if (inv.planReason) setWizPlanReason(inv.planReason);
+    } else {
+      setWizStoredPlan(null);
+      setWizPlanStored(false);
+    }
     if (inv.template?.sourceUrl) setWizSourceUrl(inv.template.sourceUrl);
     if (inv.template?.rocSourceUrl) setWizRocUrl(inv.template.rocSourceUrl);
     if (inv.template?.inceptionOn) setWizInceptionOn(inv.template.inceptionOn);
@@ -6797,6 +7511,12 @@ export default function App() {
     }
     if (inv.rocPct2026EstimateMinor != null) {
       setWizRocPct((inv.rocPct2026EstimateMinor / 100).toFixed(2));
+    }
+    const paidN = (inv.declarations ?? []).filter(
+      (d) => d.amountPerShareMinor != null && (d.amountPerShareMinor as number) > 0,
+    ).length;
+    if (paidN > 0 && paidN < 12 && !(inv.template?.inceptionOn || "").trim()) {
+      setWizAskInception(true);
     }
     await refreshData(asOf);
   };
@@ -6818,6 +7538,7 @@ export default function App() {
     setWizUnderlying(inv.underlying || "");
     setWizFreq(inv.paymentFrequency || "");
     setWizRisk(inv.riskTier || "");
+    setWizDivType(normalizeDivType(inv.divType || ""));
     setWizLookthrough(mergeLookthrough(inv.lookthrough));
     setWizReview(inv.review);
     setWizPriceState(inv.price);
@@ -6846,12 +7567,20 @@ export default function App() {
       });
       setWizPlan(formatPerShare(inv.planPerShareMinor, inv.planScale));
       if (inv.planReason) setWizPlanReason(inv.planReason);
+    } else {
+      setWizStoredPlan(null);
+      setWizPlan("");
+      setWizPlanReason("");
     }
     setWizPlanStored(Boolean(inv.planKnown));
-    setWizCollectorComplete(Boolean(inv.collectorComplete));
-    setWizCollectorGaps(inv.collectorGaps ?? []);
+    applyEstablishFromInvestment(inv);
     if (inv.rocPct2026EstimateMinor != null) {
       setWizRocPct((inv.rocPct2026EstimateMinor / 100).toFixed(2));
+    }
+    const paidCount = decls.length;
+    const inception = (inv.template?.inceptionOn || "").trim();
+    if (paidCount > 0 && paidCount < 12 && !inception) {
+      setWizAskInception(true);
     }
     const rem = await client.executeQuery("RemainingYearIncomeGet", {
       securityId,
@@ -6879,6 +7608,150 @@ export default function App() {
     });
     return inv;
   };
+
+  // Persist Add Investment session across restart. Only "Research another" clears it.
+  useEffect(() => {
+    if (screen !== "new-investment") return;
+    if (!wizSymbol.trim() && !wizSecurityId) return;
+    try {
+      localStorage.setItem(
+        PROCESS_A_DRAFT_KEY,
+        JSON.stringify({
+          screen: "new-investment",
+          symbol: wizSymbol.trim().toUpperCase(),
+          sourceUrl: wizSourceUrl,
+          rocUrl: wizRocUrl,
+          securityId: wizSecurityId,
+          underlying: wizUnderlying,
+          provider: wizProvider,
+          freq: wizFreq,
+          risk: wizRisk,
+          plan: wizPlan,
+          planReason: wizPlanReason,
+          incomplete: wizIncomplete,
+          researchDone: wizResearchDone,
+          processASaved: wizProcessASaved,
+          fieldDecision: wizFieldDecision,
+          declSource: wizDeclSource,
+          rocPct: wizRocPct,
+          savedAt: new Date().toISOString(),
+        }),
+      );
+    } catch {
+      /* ignore quota */
+    }
+  }, [
+    screen,
+    wizProcessASaved,
+    wizSymbol,
+    wizSourceUrl,
+    wizRocUrl,
+    wizSecurityId,
+    wizUnderlying,
+    wizProvider,
+    wizFreq,
+    wizRisk,
+    wizPlan,
+    wizPlanReason,
+    wizIncomplete,
+    wizResearchDone,
+    wizFieldDecision,
+    wizDeclSource,
+    wizRocPct,
+  ]);
+
+  useEffect(() => {
+    if (processADraftRestoredRef.current) return;
+    processADraftRestoredRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = localStorage.getItem(PROCESS_A_DRAFT_KEY);
+        if (!raw) return;
+        const draft = JSON.parse(raw) as {
+          screen?: string;
+          symbol?: string;
+          sourceUrl?: string;
+          rocUrl?: string;
+          securityId?: string;
+          underlying?: string;
+          provider?: string;
+          freq?: string;
+          risk?: string;
+          plan?: string;
+          planReason?: string;
+          incomplete?: string;
+          researchDone?: boolean;
+          fieldDecision?: Record<string, string>;
+          declSource?: string;
+          rocPct?: string;
+        };
+        if (draft.screen !== "new-investment" || !draft.symbol?.trim()) return;
+        const symbol = draft.symbol.trim().toUpperCase();
+        const draftSaved = Boolean(
+          (draft as { processASaved?: boolean }).processASaved,
+        );
+        // Do not force-navigate on launch when research was already Saved —
+        // but keep the draft so opening Add Investment still reloads that symbol.
+        if (draftSaved && draft.securityId) {
+          const asOf = asOfDate || new Date().toISOString().slice(0, 10);
+          const invResult = await client.executeQuery("InvestmentGet", {
+            securityId: draft.securityId,
+            asOfDate: asOf,
+          });
+          if (cancelled) return;
+          if (invResult.ok && invResult.bodyJson) {
+            const inv = JSON.parse(invResult.bodyJson) as InvestmentGet;
+            if (inv.collectorComplete && inv.planKnown) {
+              return;
+            }
+          }
+        }
+        setScreen("new-investment");
+        setWizSymbol(symbol);
+        setWizSourceUrl(draft.sourceUrl || "");
+        setWizRocUrl(draft.rocUrl || "");
+        setWizUnderlying(draft.underlying || "");
+        setWizProvider(draft.provider || "");
+        setWizFreq(draft.freq || "");
+        setWizRisk(draft.risk || "");
+        setWizPlan(draft.plan || "");
+        setWizPlanReason(draft.planReason || "");
+        setWizIncomplete(draft.incomplete || "");
+        setWizDeclSource(draft.declSource || "");
+        setWizRocPct(draft.rocPct || "");
+        setWizFieldDecision(draft.fieldDecision || {});
+        if (draft.securityId) {
+          const inv = await hydrateProcessAStoredFacts(draft.securityId, symbol);
+          if (cancelled) return;
+          // Overlay owner-typed values that may not be stored yet.
+          if (draft.underlying) setWizUnderlying(draft.underlying);
+          if (draft.provider) setWizProvider(draft.provider);
+          if (draft.freq) setWizFreq(draft.freq);
+          if (draft.risk) setWizRisk(draft.risk);
+          if (draft.plan) setWizPlan(draft.plan);
+          if (draft.planReason) setWizPlanReason(draft.planReason);
+          if (draft.incomplete) setWizIncomplete(draft.incomplete);
+          if (draft.rocUrl) setWizRocUrl(draft.rocUrl);
+          if (draft.rocPct) setWizRocPct(draft.rocPct);
+          if (draft.fieldDecision) setWizFieldDecision(draft.fieldDecision);
+          if (draft.researchDone || inv) setWizResearchDone(true);
+          if (draftSaved) setWizProcessASaved(true);
+          setActionMessage(`Restored Add Investment for ${symbol} after restart.`);
+        } else {
+          setActionMessage(
+            `Restored ${symbol} draft — click Research to continue.`,
+          );
+        }
+      } catch {
+        /* ignore corrupt draft */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot restore after host restart
+  }, []);
 
   const validateRecreateFromStored = async (opts: {
     symbol: string;
@@ -6971,7 +7844,8 @@ export default function App() {
         resultLine,
       });
       if (inv) {
-        setWizCollectorComplete(recertComplete || Boolean(inv.collectorComplete));
+        applyEstablishFromInvestment(inv);
+        if (recertComplete) setWizCollectorComplete(true);
         if (recertGaps.length) setWizCollectorGaps(recertGaps);
       }
       await refreshData(asOf);
@@ -7053,6 +7927,115 @@ export default function App() {
     }
   };
 
+  const submitProcessAManualRoc = async () => {
+    if (!wizSecurityId) {
+      setActionMessage("Save Part 1 first.");
+      return;
+    }
+    const trimmed = wizRocPct.trim();
+    if (trimmed === "") {
+      setActionMessage("Type a ROC percent (e.g. 80 or 99.70), or leave blank and Accept a proposed estimate.");
+      return;
+    }
+    const rocPctMinor = Math.round(Number(trimmed) * 100);
+    if (!Number.isFinite(rocPctMinor) || rocPctMinor < 0 || rocPctMinor > 10000) {
+      setActionMessage("ROC percent must be a number from 0 to 100.");
+      return;
+    }
+    setBusy(true);
+    setActionMessage(null);
+    try {
+      const systemMinor = wizRoc?.rocPctMinor ?? null;
+      const ownerOverride =
+        systemMinor == null || systemMinor !== rocPctMinor;
+      const result = await client.executeCommand("RocPlanConfirm", {
+        securityId: wizSecurityId,
+        accountId: wizAccountId || undefined,
+        rocPctMinor,
+        rocScale: 2,
+        source: ownerOverride ? "owner-override" : wizRoc?.source || "owner-confirmed",
+        sourceUrl: wizRocUrl.trim() || wizRoc?.sourceUrl || "",
+        method: ownerOverride ? "owner-override" : wizRoc?.method || "owner-confirmed",
+        asOf: wizRoc?.asOf,
+        kind: "estimate",
+        establishedHow: ownerOverride
+          ? "owner typed percent"
+          : wizRoc?.establishedHow || "owner accepted estimate",
+        systemRocPctMinor: systemMinor,
+        ownerOverride,
+        asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
+      });
+      if (!result.ok || !result.bodyJson) {
+        setActionMessage(`Manual ROC not stored: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      const body = JSON.parse(result.bodyJson) as RocResearchGet;
+      setWizRoc(body);
+      setWizRocPct((rocPctMinor / 100).toFixed(2));
+      await client.executeCommand("CollectorFieldDecisionSet", {
+        securityId: wizSecurityId,
+        field: "roc_estimate",
+        decision: "accept",
+      });
+      setWizFieldDecision((prev) => ({ ...prev, roc_estimate: "accept" }));
+      await reloadProcessAFacts();
+      setActionMessage(
+        `Stored manual ROC ${(rocPctMinor / 100).toFixed(2)}%. Collector checklist updated.`,
+      );
+    } catch (err: unknown) {
+      setActionMessage(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const acceptProcessARoc = async () => {
+    if (wizRocPct.trim() !== "") {
+      await submitProcessAManualRoc();
+      return;
+    }
+    if (wizRoc && wizRoc.rocPctMinor != null) {
+      setBusy(true);
+      try {
+        const scale = wizRoc.scale || 2;
+        const result = await client.executeCommand("RocPlanConfirm", {
+          securityId: wizSecurityId,
+          accountId: wizAccountId || undefined,
+          rocPctMinor: wizRoc.rocPctMinor,
+          rocScale: scale,
+          source: wizRoc.source || "19a-1",
+          sourceUrl: wizRoc.sourceUrl || wizRocUrl.trim(),
+          method: wizRoc.method || "19a-1-current-year",
+          asOf: wizRoc.asOf,
+          kind: wizRoc.kind || "estimate",
+          establishedHow:
+            wizRoc.establishedHow || "current distribution 19a-1 estimate",
+          systemRocPctMinor: wizRoc.systemRocPctMinor ?? wizRoc.rocPctMinor,
+          ownerOverride: false,
+          asOfDate: asOfDate || new Date().toISOString().slice(0, 10),
+        });
+        if (!result.ok) {
+          setActionMessage(`Accept ROC failed: ${result.errorCode ?? "error"}`);
+          return;
+        }
+        await client.executeCommand("CollectorFieldDecisionSet", {
+          securityId: wizSecurityId,
+          field: "roc_estimate",
+          decision: "accept",
+        });
+        setWizFieldDecision((prev) => ({ ...prev, roc_estimate: "accept" }));
+        await reloadProcessAFacts();
+        setActionMessage(
+          `Accepted ROC ${((wizRoc.rocPctMinor as number) / 10 ** scale).toFixed(scale)}%.`,
+        );
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    await decideProcessAField("roc_estimate", "accept");
+  };
+
   const submitProcessARocUrl = async () => {
     if (!wizSecurityId || !wizRocUrl.trim()) {
       setActionMessage("Paste a 19a-1 / ROC notice URL.");
@@ -7064,6 +8047,7 @@ export default function App() {
         securityId: wizSecurityId,
         sourceUrl: wizSourceUrl.trim(),
         rocSourceUrl: wizRocUrl.trim(),
+        forceRoc: true,
       });
       if (!result.ok) {
         setActionMessage(`ROC URL failed: ${result.errorCode ?? "error"}`);
@@ -7077,9 +8061,79 @@ export default function App() {
   };
 
   const decideProcessAField = async (field: string, decision: "accept" | "skip") => {
-    if (!wizSecurityId) return;
+    if (!wizSecurityId) {
+      setActionMessage("Run Research first so Accept can store the field.");
+      return;
+    }
     setBusy(true);
     try {
+      if (decision === "accept") {
+        if (field === "underlying" && !wizUnderlying.trim()) {
+          setActionMessage("Type an underlying before Accept, or Skip.");
+          return;
+        }
+        if (field === "provider" && !wizProvider.trim()) {
+          setActionMessage("Type a provider before Accept, or Skip.");
+          return;
+        }
+        if (field === "frequency" && !parseCadence(wizFreq)) {
+          setActionMessage("Choose Weekly, Twice monthly, Monthly, or Quarterly before Accept frequency.");
+          return;
+        }
+        if (field === "risk_tier" && !RISK_TIERS.includes(wizRisk.trim())) {
+          setActionMessage(
+            "Choose Foundation, Core, or Risk On in Owner actions before Accept risk.",
+          );
+          return;
+        }
+        if (field === "div_type" && !normalizeDivType(wizDivType)) {
+          setActionMessage("Choose DIV-1 or CASH before Accept investment type.");
+          return;
+        }
+        if (
+          field === "provider" ||
+          field === "underlying" ||
+          field === "frequency" ||
+          field === "risk_tier" ||
+          field === "div_type"
+        ) {
+          const cadence = parseCadence(wizFreq);
+          const upsertBody: Record<string, unknown> = {
+            securityId: wizSecurityId,
+            lookthrough: wizLookthrough,
+          };
+          if (cadence) upsertBody.paymentFrequency = cadence.label;
+          if (wizProvider.trim()) upsertBody.provider = wizProvider.trim();
+          if (wizUnderlying.trim()) upsertBody.underlying = wizUnderlying.trim();
+          if (RISK_TIERS.includes(wizRisk.trim())) {
+            upsertBody.riskTier = wizRisk.trim();
+          }
+          const div = normalizeDivType(wizDivType);
+          if (div) upsertBody.divType = div;
+          const upsert = await client.executeCommand(
+            "PositionCharacteristicUpsert",
+            upsertBody,
+          );
+          if (!upsert.ok) {
+            setActionMessage(
+              `Could not store ${field}: ${upsert.errorCode ?? "error"}. Fix the value and Accept again.`,
+            );
+            return;
+          }
+          if (field === "risk_tier") {
+            const apply = await client.executeCommand("ClassificationApply", {
+              securityId: wizSecurityId,
+              riskTier: wizRisk.trim(),
+            });
+            if (!apply.ok) {
+              setActionMessage(
+                `Stored risk text but Apply failed: ${apply.errorCode ?? "error"}`,
+              );
+              return;
+            }
+          }
+        }
+      }
       const result = await client.executeCommand("CollectorFieldDecisionSet", {
         securityId: wizSecurityId,
         field,
@@ -7095,9 +8149,158 @@ export default function App() {
         decision === "skip" && field !== "backtest"
           ? `Skipped ${field} — ticket opened, collector incomplete.`
           : decision === "accept"
-            ? `Accepted ${field}.`
+            ? `Accepted ${field}${field === "underlying" && wizUnderlying.trim() ? ` (${wizUnderlying.trim()})` : ""}${field === "risk_tier" ? ` (${wizRisk.trim()})` : ""}.`
             : `Backtest skipped — does not block complete.`,
       );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveProcessAOwnerIdentity = async () => {
+    if (!wizSecurityId) {
+      setActionMessage("Run Research first.");
+      return;
+    }
+    if (
+      !wizUnderlying.trim() &&
+      !wizProvider.trim() &&
+      !RISK_TIERS.includes(wizRisk.trim()) &&
+      !parseCadence(wizFreq) &&
+      !normalizeDivType(wizDivType)
+    ) {
+      setActionMessage(
+        "Enter underlying, provider, frequency, investment type, and/or risk tier, then Save identity.",
+      );
+      return;
+    }
+    setBusy(true);
+    try {
+      const cadence = parseCadence(wizFreq);
+      const upsertBody: Record<string, unknown> = {
+        securityId: wizSecurityId,
+        lookthrough: wizLookthrough,
+      };
+      if (cadence) upsertBody.paymentFrequency = cadence.label;
+      if (wizProvider.trim()) upsertBody.provider = wizProvider.trim();
+      if (wizUnderlying.trim()) upsertBody.underlying = wizUnderlying.trim();
+      if (RISK_TIERS.includes(wizRisk.trim())) {
+        upsertBody.riskTier = wizRisk.trim();
+      }
+      const div = normalizeDivType(wizDivType);
+      if (div) upsertBody.divType = div;
+      const upsert = await client.executeCommand(
+        "PositionCharacteristicUpsert",
+        upsertBody,
+      );
+      if (!upsert.ok) {
+        setActionMessage(`Save identity failed: ${upsert.errorCode ?? "error"}`);
+        return;
+      }
+      if (RISK_TIERS.includes(wizRisk.trim())) {
+        const apply = await client.executeCommand("ClassificationApply", {
+          securityId: wizSecurityId,
+          riskTier: wizRisk.trim(),
+        });
+        if (!apply.ok) {
+          setActionMessage(
+            `Identity stored; Apply tier failed: ${apply.errorCode ?? "error"}`,
+          );
+          return;
+        }
+        await client.executeCommand("CollectorFieldDecisionSet", {
+          securityId: wizSecurityId,
+          field: "risk_tier",
+          decision: "accept",
+        });
+        setWizFieldDecision((prev) => ({ ...prev, risk_tier: "accept" }));
+      }
+      if (div) {
+        await client.executeCommand("CollectorFieldDecisionSet", {
+          securityId: wizSecurityId,
+          field: "div_type",
+          decision: "accept",
+        });
+        setWizFieldDecision((prev) => ({ ...prev, div_type: "accept" }));
+      }
+      if (wizUnderlying.trim()) {
+        await client.executeCommand("CollectorFieldDecisionSet", {
+          securityId: wizSecurityId,
+          field: "underlying",
+          decision: "accept",
+        });
+        setWizFieldDecision((prev) => ({ ...prev, underlying: "accept" }));
+      }
+      if (wizProvider.trim()) {
+        await client.executeCommand("CollectorFieldDecisionSet", {
+          securityId: wizSecurityId,
+          field: "provider",
+          decision: "accept",
+        });
+        setWizFieldDecision((prev) => ({ ...prev, provider: "accept" }));
+      }
+      if (cadence) {
+        await client.executeCommand("CollectorFieldDecisionSet", {
+          securityId: wizSecurityId,
+          field: "frequency",
+          decision: "accept",
+        });
+        setWizFieldDecision((prev) => ({ ...prev, frequency: "accept" }));
+      }
+      await reloadProcessAFacts();
+      snapshotWiz();
+      setActionMessage(
+        `Saved identity${wizUnderlying.trim() ? ` · underlying ${wizUnderlying.trim()}` : ""}${
+          div ? ` · ${div}` : ""
+        }${RISK_TIERS.includes(wizRisk.trim()) ? ` · ${wizRisk.trim()}` : ""}.`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyOwnerRiskTier = async () => {
+    if (!wizSecurityId) {
+      setActionMessage("Run Research first.");
+      return;
+    }
+    if (!RISK_TIERS.includes(wizRisk.trim())) {
+      setActionMessage("Choose Foundation, Core, or Risk On, then Apply tier.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const upsert = await client.executeCommand("PositionCharacteristicUpsert", {
+        securityId: wizSecurityId,
+        riskTier: wizRisk.trim(),
+        ...(parseCadence(wizFreq)
+          ? { paymentFrequency: parseCadence(wizFreq)!.label }
+          : {}),
+        ...(wizUnderlying.trim() ? { underlying: wizUnderlying.trim() } : {}),
+        ...(wizProvider.trim() ? { provider: wizProvider.trim() } : {}),
+        lookthrough: wizLookthrough,
+      });
+      if (!upsert.ok) {
+        setActionMessage(`Could not store tier: ${upsert.errorCode ?? "error"}`);
+        return;
+      }
+      const result = await client.executeCommand("ClassificationApply", {
+        securityId: wizSecurityId,
+        riskTier: wizRisk.trim(),
+      });
+      if (!result.ok) {
+        setActionMessage(`Apply failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      await client.executeCommand("CollectorFieldDecisionSet", {
+        securityId: wizSecurityId,
+        field: "risk_tier",
+        decision: "accept",
+      });
+      setWizFieldDecision((prev) => ({ ...prev, risk_tier: "accept" }));
+      snapshotWiz({ risk: wizRisk.trim() });
+      await reloadProcessAFacts();
+      setActionMessage(`Applied ${wizRisk.trim()}.`);
     } finally {
       setBusy(false);
     }
@@ -7121,6 +8324,7 @@ export default function App() {
           ? `${row.symbol}${row.name ? ` — ${row.name}` : ""}`
           : wizSymbol.trim().toUpperCase(),
       );
+      addLotReturnScreenRef.current = "new-investment";
       setScreen("add-lot");
     }, "add-lot");
   };
@@ -7147,6 +8351,7 @@ export default function App() {
   const goHome = () => {
     setOpenMenu(null);
     leaveWithoutSaving(() => {
+      if (screen !== "home") rememberMenu();
       setScreen("home");
     }, "home");
   };
@@ -7164,6 +8369,7 @@ export default function App() {
     setMenuWorking(label);
     leaveWithoutSaving(
       () => {
+        if (screen !== "cash-management" || cmDesk !== desk) rememberMenu();
         setCmDesk(desk);
         setScreen("cash-management");
         if (screen === "cash-management" && cmDesk === desk) {
@@ -7192,7 +8398,7 @@ export default function App() {
             (elementDirty && desk !== "elements") ||
             (externalDirty && desk !== "external") ||
             (cashDirty && desk !== "weekly") ||
-            ((pdDirty || wizDirty || addLotDirty) &&
+            ((pdDirty || wizDirty || addLotDirty || marketImpactDirty) &&
               !dirtyTargets.includes("cash-management"))))
       }
       onClick={() => goCmDesk(desk, label)}
@@ -7213,7 +8419,13 @@ export default function App() {
         busy ||
         (screen !== id &&
           ((weekWizardActive && id !== "cash-management") ||
-            ((pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty) &&
+            ((pdDirty ||
+              wizDirty ||
+              addLotDirty ||
+              cashDirty ||
+              elementDirty ||
+              externalDirty ||
+              marketImpactDirty) &&
               !dirtyTargets.includes(id))))
       }
       onClick={() => {
@@ -7221,6 +8433,15 @@ export default function App() {
         setMenuWorking(label);
         leaveWithoutSaving(
           () => {
+            if (
+              screen !== id ||
+              (id === "cash-management" && cmDesk !== "weekly")
+            ) {
+              rememberMenu();
+            }
+            if (id === "add-lot" && screen !== "add-lot") {
+              addLotReturnScreenRef.current = screen;
+            }
             if (id === "cash-management") {
               setCmDesk("weekly");
             }
@@ -7263,14 +8484,7 @@ export default function App() {
     </div>
   );
 
-  const accountCashRows = [
-    ["Income", "SPAXX"],
-    ["FI Roth", "SPAXX"],
-    ["Speculation", "SPAXX"],
-    ["Health", "FDRXX"],
-    ["Car", "SPAXX"],
-    ["9", "SWVXX"],
-  ].map(([account, symbol]) => {
+  const accountCashRows = Object.entries(ACCOUNT_CASH_SYMBOL).map(([account, symbol]) => {
     const cents = (holdings?.lots ?? [])
       .filter(
         (lot) =>
@@ -7320,7 +8534,10 @@ export default function App() {
             aria-current={screen === "income-plan" ? "page" : undefined}
             onClick={() => {
               setOpenMenu(null);
-              leaveWithoutSaving(() => setScreen("income-plan"), "income-plan");
+              leaveWithoutSaving(() => {
+                if (screen !== "income-plan") rememberMenu();
+                setScreen("income-plan");
+              }, "income-plan");
             }}
           >
             Income Plan
@@ -7332,7 +8549,10 @@ export default function App() {
             aria-current={screen === "trends" ? "page" : undefined}
             onClick={() => {
               setOpenMenu(null);
-              leaveWithoutSaving(() => setScreen("trends"), "trends");
+              leaveWithoutSaving(() => {
+                if (screen !== "trends") rememberMenu();
+                setScreen("trends");
+              }, "trends");
             }}
           >
             Trends
@@ -7343,9 +8563,9 @@ export default function App() {
             <>
               {cmDeskButton("elements", "Element Management")}
               {cmDeskButton("cashflow", "Cashflow Manager")}
-              {cmDeskButton("weekly", "System update tasks and confirmations")}
+              {cmDeskButton("weekly", "Week ahead planner")}
               {cmDeskButton("car", "Tax Planning")}
-              {cmDeskButton("coverage", "Coverage")}
+              {cmDeskButton("coverage", "Income vs Expense planner")}
               {cmDeskButton("external", "External accounts")}
             </>,
           )}
@@ -7354,6 +8574,7 @@ export default function App() {
             "Plan",
             <>
               {navButton("calculator", "Calculator")}
+              {navButton("market-impact", "Market impact planner")}
               {navButton("dashboard", "Dashboard")}
               {navButton("cash-management", "Cash Management")}
               {navButton("shopping-cart", "Shopping Cart")}
@@ -7365,7 +8586,7 @@ export default function App() {
             <>
               {navButton("position-details", "Position Details")}
               {navButton("holdings", "Holdings")}
-              {navButton("new-investment", "Add Position")}
+              {navButton("new-investment", "Add Investment")}
               {navButton("add-lot", "Add Lot")}
             </>,
           )}
@@ -7383,7 +8604,11 @@ export default function App() {
             "Tools",
             <>
               {navButton("collector-establish", "Reevaluate collector")}
+              {navButton("task-manager", "Task Manager")}
+              {navButton("interest-rate", "Interest rate calculator")}
+              {navButton("contract-positions", "Contract positions")}
               {navButton("components", "Components")}
+              {navButton("screen-atlas", "Screen Atlas")}
               {navButton("settings", "Settings")}
             </>,
           )}
@@ -7419,12 +8644,24 @@ export default function App() {
         </div>
       ) : null}
       <main className="container" aria-label="finos">
+      <ReturnToPrevious
+        onReturn={() => {
+          const dest = peekNav();
+          leaveWithoutSaving(
+            () => popNav(),
+            (dest?.screen as Screen | undefined) ?? screen,
+            (dest?.cmDesk as CmDesk | undefined) ?? cmDesk,
+          );
+        }}
+      />
       {screen === "home" ? (
         <>
+        <HomePaintMark />
         <div className="home-top-row">
         {summary ? (
         <section className="home-portfolio-pane" aria-label="Portfolio summary">
           <dl className="portfolio-summary">
+            <div className="ps-head-row">
             <div className="ps-cell ps-mv">
               <dt>Market value</dt>
               <dd>
@@ -7462,6 +8699,7 @@ export default function App() {
                     )}
               </dd>
             </div>
+            </div>
             <div className="ps-cell ps-cash" aria-label="Account cash balances">
               <dt>
                 Cash
@@ -7493,40 +8731,28 @@ export default function App() {
               </dd>
               <p className="ps-note">Lifetime paid dividends (cash)</p>
             </div>
-            <div className="ps-cell ps-coverage">
-              <dt>Last Price all symbols</dt>
+            <div className="ps-cell ps-date">
+              <dt>Income through</dt>
               <dd>
-                {formatCount(summary.lastPriceCount ?? 0)} of{" "}
-                {formatCount(summary.symbolCount ?? 0)}
-              </dd>
-              <p className="ps-note">
-                Last refresh{" "}
-                {lastPriceBusy
-                  ? "…"
-                  : summary.lastPriceRefreshedOn?.trim().slice(0, 10) || "none"}
-              </p>
-              <button
-                type="button"
-                aria-label="Refresh last prices"
-                aria-busy={lastPriceBusy}
-                disabled={lastPriceBusy || busy}
-                onClick={() => {
-                  void refreshLastPrices(true);
-                }}
-              >
-                {lastPriceBusy ? (
-                  <span
-                    className="ps-refresh-count"
-                    role="status"
-                    aria-live="polite"
-                    aria-label="Last price refresh progress"
+                {incomeThroughOn ? (
+                  <button
+                    type="button"
+                    className="ps-date-link"
+                    aria-label="Income through transactions"
+                    onClick={() => setIncomeTxOpen(true)}
                   >
-                    {lastPriceRefreshLabel(lastPriceProgress)}
-                  </span>
+                    {incomeThroughOn}
+                  </button>
                 ) : (
-                  "Refresh last prices"
+                  "none"
                 )}
-              </button>
+              </dd>
+              {incomeWeekTotal == null ? null : (
+                <p className="ps-note">
+                  {incomeWeekDeclared == null ? "This week imported" : "This week declared"}{" "}
+                  {formatUsd(incomeWeekTotal, 2)}
+                </p>
+              )}
             </div>
             <div className="ps-pair" aria-label="Average monthly income">
               <div className="ps-cell ps-income">
@@ -7619,30 +8845,40 @@ export default function App() {
                 Work Tickets
               </button>
             </div>
-            <div className="ps-cell ps-date">
-              <dt>Income through</dt>
+            <div className="ps-cell ps-coverage">
+              <dt>Last Price all symbols</dt>
               <dd>
-                {incomeThroughOn ? (
-                  <button
-                    type="button"
-                    className="ps-date-link"
-                    aria-label="Income through transactions"
-                    onClick={() => setIncomeTxOpen(true)}
-                  >
-                    {incomeThroughOn}
-                  </button>
-                ) : (
-                  "none"
-                )}
-                {incomeWeekTotal == null ? null : (
-                  <span className="ps-week-declared">
-                    {formatUsd(incomeWeekTotal, 2)}
-                  </span>
-                )}
+                {formatCount(summary.lastPriceCount ?? 0)} of{" "}
+                {formatCount(summary.symbolCount ?? 0)}
               </dd>
               <p className="ps-note">
-                {incomeWeekDeclared == null ? "This week imported" : "This week declared"}
+                Last refresh{" "}
+                {lastPriceBusy
+                  ? "…"
+                  : summary.lastPriceRefreshedOn?.trim().slice(0, 10) || "none"}
               </p>
+              <button
+                type="button"
+                aria-label="Refresh last prices"
+                aria-busy={lastPriceBusy}
+                disabled={lastPriceBusy || busy}
+                onClick={() => {
+                  void refreshLastPrices(true);
+                }}
+              >
+                {lastPriceBusy ? (
+                  <span
+                    className="ps-refresh-count"
+                    role="status"
+                    aria-live="polite"
+                    aria-label="Last price refresh progress"
+                  >
+                    {lastPriceRefreshLabel(lastPriceProgress)}
+                  </span>
+                ) : (
+                  "Refresh last prices"
+                )}
+              </button>
             </div>
           </dl>
         </section>
@@ -7908,7 +9144,13 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      {pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty ? (
+      {pdDirty ||
+      wizDirty ||
+      addLotDirty ||
+      cashDirty ||
+      elementDirty ||
+      externalDirty ||
+      marketImpactDirty ? (
         <div className="blocked unsaved-bar" role="alert">
           <p>
             Unsaved edits on {dirtyScreenNames}. Save or Cancel. Other screens stay
@@ -7935,10 +9177,12 @@ export default function App() {
                   {id === "position-details"
                     ? "Position Details"
                     : id === "new-investment"
-                      ? "Add Position"
+                      ? "Add Investment"
                       : id === "cash-management"
                         ? "Cash Management"
-                        : "Add Lot"}
+                        : id === "market-impact"
+                          ? "Market impact planner"
+                          : "Add Lot"}
                 </button>
               ))}
             <button
@@ -7955,6 +9199,11 @@ export default function App() {
       {(screen !== "home" ||
         /snapshot|Saved |Restart/i.test(actionMessage ?? "")) &&
       actionMessage &&
+      !(screen === "trends" && actionMessage.startsWith("Opened Import for ")) &&
+      // Screen Atlas completion is only meaningful on that tool — do not sticky it on Tickets etc.
+      !(
+        actionMessage.startsWith("Screen Atlas") && screen !== "screen-atlas"
+      ) &&
       !restarting ? (
         <p>{actionMessage}</p>
       ) : null}
@@ -8070,2276 +9319,109 @@ export default function App() {
       ) : null}
 
       {screen === "position-details" ? (
-        <section aria-label="Position Details">
-          <h2>Position Details</h2>
-          <p>
-            Open a symbol for the position hub: Calculator metrics, Plan payment summary,
-            future pay dates, declarations, and holdings by account. Fleet compare stays
-            below. Save or Cancel; other screens stay blocked while edits are unsaved.
-          </p>
-          <div className="buttons">
-            <button
-              type="button"
-              aria-label="Refresh last prices"
-              aria-busy={lastPriceBusy}
-              disabled={lastPriceBusy || busy}
-              onClick={() => void refreshLastPrices(true)}
-            >
-              {lastPriceBusy
-                ? lastPriceRefreshLabel(lastPriceProgress)
-                : "Refresh last prices"}
-            </button>
-            <button
-              type="button"
-              aria-label="Apply issuer sources from provider"
-              disabled={busy || writesBlocked}
-              onClick={() => void applyIssuerSources()}
-            >
-              Apply issuer sources from provider
-            </button>
-          </div>
-          <label className="symbol-combobox">
-            Symbol
-            <input
-              aria-label="Position symbol"
-              aria-expanded={positionSymbolOpen}
-              aria-controls="position-symbol-list"
-              aria-autocomplete="list"
-              role="combobox"
-              value={positionSymbolQuery}
-              onChange={(e) => {
-                setPositionSymbolQuery(e.target.value.toUpperCase());
-                setPositionSymbolOpen(true);
-              }}
-              onFocus={() => setPositionSymbolOpen(true)}
-              onBlur={() => {
-                window.setTimeout(() => setPositionSymbolOpen(false), 150);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && filteredPositionSymbols[0]) {
-                  e.preventDefault();
-                  selectPositionSymbol(filteredPositionSymbols[0]);
-                }
-                if (e.key === "Escape") {
-                  setPositionSymbolOpen(false);
-                }
-              }}
-            />
-            {positionSymbolOpen && filteredPositionSymbols.length > 0 ? (
-              <ul
-                id="position-symbol-list"
-                className="symbol-combobox-list"
-                role="listbox"
-                aria-label="Position symbols"
-              >
-                {filteredPositionSymbols.slice(0, 30).map((sym) => (
-                  <li
-                    key={sym}
-                    role="option"
-                    aria-selected={sym === positionSymbol}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      selectPositionSymbol(sym);
-                    }}
-                  >
-                    {sym}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </label>
-          {investment && pdDraft ? (
-            <>
-              {pdDirty ? (
-                <p className="blocked" role="status">
-                  Unsaved edits. Save or Cancel — other screens stay blocked.
-                </p>
-              ) : null}
-              <div className="buttons dossier-actions">
-                <button
-                  type="button"
-                  aria-label="Save stored facts"
-                  className={pdDirty ? "is-unsaved" : undefined}
-                  disabled={busy || writesBlocked || !pdDirty}
-                  onClick={() => void saveStoredFacts()}
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  aria-label="Cancel position edits"
-                  disabled={busy || !pdDirty}
-                  onClick={() => cancelPositionEdits()}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  aria-label="Use Most Current as Plan"
-                  disabled={
-                    busy || writesBlocked || investment.review.mostCurrentMinor == null
-                  }
-                  onClick={() => {
-                    if (investment.review.mostCurrentMinor == null) return;
-                    patchDraft({
-                      plan: scaledDollars(
-                        investment.review.mostCurrentMinor,
-                        investment.review.amountScale,
-                      ),
-                      planReason: "Match Most Current",
-                    });
-                  }}
-                >
-                  Use Most Current as Plan
-                </button>
-                <button
-                  type="button"
-                  aria-label="Use Avg 6 as Plan"
-                  disabled={busy || writesBlocked || investment.review.avg6Minor == null}
-                  onClick={() => {
-                    if (investment.review.avg6Minor == null) return;
-                    patchDraft({
-                      plan: scaledDollars(
-                        investment.review.avg6Minor,
-                        investment.review.amountScale,
-                      ),
-                      planReason: "Match Avg 6 (owner typed)",
-                    });
-                  }}
-                >
-                  Use Avg 6 as Plan
-                </button>
-                <button
-                  type="button"
-                  aria-label="Refresh last price for this symbol"
-                  disabled={busy || writesBlocked}
-                  onClick={() => void refreshPdLastPrice()}
-                >
-                  Refresh last price
-                </button>
-                <button
-                  type="button"
-                  aria-label="Retrieve declarations for this symbol"
-                  disabled={busy || writesBlocked}
-                  onClick={() => void refreshPdDeclarations()}
-                >
-                  Retrieve declarations
-                </button>
-                <button
-                  type="button"
-                  aria-label="Complete research"
-                  disabled={
-                    busy ||
-                    writesBlocked ||
-                    !investment.securityId ||
-                    Boolean(researchActivity?.running)
-                  }
-                  onClick={() => void researchPdRoc()}
-                >
-                  {researchActivity?.running ? "Completing research…" : "Complete research"}
-                </button>
-              </div>
-              {researchActivity?.running ? (
-                <section
-                  className="process-a-research-progress"
-                  aria-label="Research progress"
-                  aria-busy="true"
-                >
-                  <p role="status" aria-live="polite">
-                    {researchActivity.label}
-                  </p>
-                  {researchActivity.total > 0 ? (
-                    <progress
-                      max={researchActivity.total}
-                      value={Math.min(
-                        researchActivity.step,
-                        researchActivity.total,
-                      )}
-                    />
-                  ) : (
-                    <div
-                      className="process-a-research-spinner"
-                      aria-hidden="true"
-                    />
-                  )}
-                </section>
-              ) : null}
-              {researchActivity?.resultLine && !researchActivity.running ? (
-                <p role="status" aria-label="Research result">
-                  {researchActivity.resultLine}
-                </p>
-              ) : null}
-              {(() => {
-                const finished =
-                  Boolean(researchActivity?.resultLine) &&
-                  !researchActivity?.running &&
-                  !(researchActivity?.resultLine || "").startsWith(
-                    "Complete research failed",
-                  );
-                const storedNotes = (
-                  pdDraft?.notes ||
-                  investment.notes ||
-                  ""
-                ).trim();
-                const suggested = (
-                  researchNotes?.suggestedTier ||
-                  investment.suggestion?.suggestedTier ||
-                  pdDraft?.lookthrough?.riskTierSuggestion ||
-                  ""
-                ).trim();
-                if (!researchNotes && !storedNotes && !finished) {
-                  return null;
-                }
-                return (
-                <section
-                  className="hub-panel research-notes-panel"
-                  aria-label="Research notes"
-                >
-                  <h3>Research notes</h3>
-                  <p className="research-notes-overview">
-                    {researchNotes?.overview ||
-                      pdDraft?.notes ||
-                      investment.notes}
-                  </p>
-                  {researchNotes?.source ? (
-                    <p className="muted">Source: {researchNotes.source}</p>
-                  ) : null}
-                  {finished || researchNotes ? (
-                    <fieldset
-                      className="research-risk-control"
-                      aria-label="Owner risk choice"
-                    >
-                      <legend>Risk (required)</legend>
-                      <label>
-                        Owner tier
-                        <select
-                          aria-label="Owner risk choice"
-                          value={ownerRiskChoice}
-                          onChange={(e) => setOwnerRiskChoice(e.target.value)}
-                          disabled={busy || writesBlocked}
-                        >
-                          <option value="">Choose owner tier</option>
-                          {RISK_TIERS.map((tier) => (
-                            <option key={tier} value={tier}>
-                              {suggested && tier === suggested
-                                ? `${tier} (suggestion)`
-                                : tier}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      {suggested ? (
-                        <p role="note" aria-label="Suggested risk tier">
-                          Suggested: {suggested}
-                          {researchNotes?.suggestedReason ||
-                          investment.suggestion?.reason
-                            ? ` — ${
-                                researchNotes?.suggestedReason ||
-                                investment.suggestion?.reason
-                              }`
-                            : ""}
-                          . Not applied until you Set risk.
-                        </p>
-                      ) : (
-                        <p role="note">
-                          No suggested tier. Choose Foundation, Core, or Risk On.
-                        </p>
-                      )}
-                      <div className="buttons">
-                        <button
-                          type="button"
-                          aria-label="Set risk"
-                          disabled={
-                            busy ||
-                            writesBlocked ||
-                            !RISK_TIERS.includes(ownerRiskChoice)
-                          }
-                          onClick={() => void setOwnerRisk()}
-                        >
-                          Set risk
-                        </button>
-                      </div>
-                    </fieldset>
-                  ) : null}
-                </section>
-                );
-              })()}
-              <dl className="hub-hero" aria-label="Position hub summary">
-                <div>
-                  <dt>Symbol</dt>
-                  <dd>{investment.symbol}</dd>
-                </div>
-                <div>
-                  <dt>Market value</dt>
-                  <dd>
-                    {investment.marketValueMinor == null
-                      ? "unknown"
-                      : formatUsd(investment.marketValueMinor, investment.scale)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Plan annual</dt>
-                  <dd>
-                    {investment.annualPlanMinor == null
-                      ? "unknown"
-                      : formatUsd(investment.annualPlanMinor, investment.scale)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Underlying</dt>
-                  <dd>{investment.underlying?.trim() || "—"}</dd>
-                </div>
-                <div>
-                  <dt>Plan YOC</dt>
-                  <dd>{formatBps(investment.planYocBps ?? null)}</dd>
-                </div>
-                <div>
-                  <dt>Price</dt>
-                  <dd>{formatHubPrice(investment.price, investment.scale)}</dd>
-                </div>
-                <div>
-                  <dt>Total distributions</dt>
-                  <dd>
-                    {investment.distributionsScope === "incomplete" ||
-                    investment.totalDistributionsReceivedMinor == null
-                      ? "unknown"
-                      : formatUsd(
-                          investment.totalDistributionsReceivedMinor,
-                          investment.scale,
-                        )}
-                  </dd>
-                </div>
-                <div>
-                  <dt>ROC component</dt>
-                  <dd>
-                    {investment.distributionsScope === "incomplete" ||
-                    investment.rocDistributionsMinor == null
-                      ? "unknown"
-                      : formatUsd(investment.rocDistributionsMinor, investment.scale)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Cost recovery</dt>
-                  <dd>{formatBps(investment.costRecoveryBps ?? null)}</dd>
-                </div>
-                {(() => {
-                  const master = (positionMaster?.rows ?? []).find(
-                    (r) => r.symbol === investment.symbol,
-                  );
-                  if (!master) return null;
-                  return (
-                    <div>
-                      <dt title="Share of total data portfolio market value">Portfolio %</dt>
-                      <dd>{formatBps(master.allocationBps)}</dd>
-                    </div>
-                  );
-                })()}
-              </dl>
-              <WorkTicketQueue
-                tickets={workTickets}
-                filterSymbol={investment.symbol}
-                retryingTicketId={retryingTicket?.ticketId}
-                retryingSymbol={retryingTicket?.symbol}
-                pendingTicketId={ticketDecision?.ticketId}
-                pendingAction={ticketDecision?.action}
-                onRetry={(t) => void resolveTicketRetry(t as WorkTicketRecord)}
-                onRecreateAdapter={(t) =>
-                  openRecreateAdapter(t as WorkTicketRecord)
-                }
-                onExcept={(t) =>
-                  resolveConfirmTicket(t as WorkTicketRecord, "positive")
-                }
-                onReject={(t) =>
-                  resolveConfirmTicket(t as WorkTicketRecord, "reject")
-                }
-                onEnterAmount={(t, amount) =>
-                  void resolveEnterDeclaredAmount(t as WorkTicketRecord, amount)
-                }
-                onFile={(t) => void fileWorkTicket(t as WorkTicketRecord)}
-              />
-              <nav className="hub-toc" aria-label="Position hub sections">
-                <a href="#hub-identity">Position information</a>
-                <a href="#hub-calculator">Calculator</a>
-                <a href="#hub-plan-yields">Plan</a>
-                <a href="#hub-income">Payment summary</a>
-                <a href="#hub-pay-dates">Pay dates</a>
-                <a href="#hub-received">Received</a>
-                <a href="#hub-declarations">Declarations</a>
-                <a href="#hub-accounts">By account</a>
-                <a href="#hub-lots">Lots</a>
-                <a href="#hub-ledger">Ledger</a>
-              </nav>
-              <section className="hub-panel" id="hub-identity" aria-label="Position information">
-                <h3>Position information</h3>
-                <p>
-                  Owner facts edit in this table. Risk is mandatory: Foundation, Core,
-                  or Risk On. Frequency is required. Save or Cancel.
-                </p>
-                <div className="table-wrap">
-                  <table aria-label="Position information">
-                    <thead>
-                      <tr>
-                        <th scope="col">Fact</th>
-                        <th scope="col">Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <th scope="row">Symbol</th>
-                        <td>{investment.symbol}</td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Name</th>
-                        <td>
-                          <input
-                            aria-label="Position name"
-                            value={pdDraft.name}
-                            onChange={(e) => patchDraft({ name: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          />
-                        </td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Provider</th>
-                        <td>
-                          <input
-                            aria-label="Position provider"
-                            value={pdDraft.provider}
-                            onChange={(e) => patchDraft({ provider: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          />
-                        </td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Underlying</th>
-                        <td>
-                          <input
-                            aria-label="Position underlying"
-                            value={pdDraft.underlying}
-                            onChange={(e) => patchDraft({ underlying: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          />
-                        </td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Risk</th>
-                        <td>
-                          <select
-                            aria-label="Position risk"
-                            value={pdDraft.risk}
-                            onChange={(e) => patchDraft({ risk: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          >
-                            <option value="">Choose owner tier</option>
-                            {RISK_TIERS.map((tier) => (
-                              <option key={tier} value={tier}>
-                                {tier}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Frequency</th>
-                        <td>
-                          <select
-                            aria-label="Position frequency"
-                            value={pdDraft.freq}
-                            onChange={(e) => patchDraft({ freq: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          >
-                            <option value="">Choose cadence</option>
-                            <option value="Weekly">Weekly (52)</option>
-                            <option value="Monthly">Monthly (12)</option>
-                            <option value="Quarterly">Quarterly (4)</option>
-                            <option value="None">None (does not pay)</option>
-                          </select>
-                        </td>
-                      </tr>
-                      <tr>
-                        <th scope="row">ROC research</th>
-                        <td aria-label="Position ROC research status">
-                          {rocResearchLabel(investment)}
-                        </td>
-                      </tr>
-                      <tr>
-                        <th scope="row">ROC last update</th>
-                        <td>{rocResearchUpdated(investment)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-              <section className="hub-panel" id="hub-calculator" aria-label="Calculator snapshot">
-                <h3>Calculator snapshot</h3>
-                {(() => {
-                  const calc = (calculator?.rows ?? []).find(
-                    (r) => r.symbol === investment.symbol,
-                  );
-                  if (!calc) {
-                    return (
-                      <p>
-                        No Calculator row yet (needs Plan + first lot). Holdings and
-                        remaining-year panels below still apply.
-                      </p>
-                    );
-                  }
-                  return (
-                    <div className="table-wrap">
-                      <table aria-label="Calculator snapshot">
-                        <thead>
-                          <tr>
-                            <th scope="col">Metric</th>
-                            <th className="numeric" scope="col">Value</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <th scope="row">Frequency</th>
-                            <td className="numeric">{calc.paymentFrequency || "—"}</td>
-                          </tr>
-                          <tr>
-                            <th scope="row">Plan / share</th>
-                            <td className="numeric">
-                              {calc.planKnown
-                                ? `$${formatScaled(calc.planPerShareMinor, calc.planScale)}`
-                                : "N/A"}
-                            </td>
-                          </tr>
-                          <tr>
-                            <th scope="row">Periods / year</th>
-                            <td className="numeric">
-                              {calc.planningPeriodsPerYear > 0
-                                ? formatCount(calc.planningPeriodsPerYear)
-                                : "N/A"}
-                            </td>
-                          </tr>
-                          <tr>
-                            <th scope="row">Open quantity</th>
-                            <td className="numeric">
-                              {formatScaled(calc.remainingQuantityMinor, calc.quantityScale)}
-                            </td>
-                          </tr>
-                          <tr>
-                            <th scope="row">Plan payment</th>
-                            <td className="numeric">
-                              {calc.planKnown
-                                ? formatUsd(calc.planPaymentMinor, calc.scale)
-                                : "N/A"}
-                            </td>
-                          </tr>
-                          <tr>
-                            <th scope="row">Original cost</th>
-                            <td className="numeric">
-                              {formatUsd(calc.remainingPerformanceMinor, calc.scale)}
-                            </td>
-                          </tr>
-                          <tr>
-                            <th scope="row">Last price</th>
-                            <td className="numeric">
-                              {calc.lastPriceMinor == null
-                                ? "unknown"
-                                : formatUsd(
-                                    calc.lastPriceMinor,
-                                    calc.lastPriceScale ?? calc.scale,
-                                  )}
-                            </td>
-                          </tr>
-                          <tr>
-                            <th scope="row">Price freshness</th>
-                            <td className="numeric">{calc.priceFreshness || "unavailable"}</td>
-                          </tr>
-                          <tr>
-                            <th scope="row">Market value</th>
-                            <td className="numeric">
-                              {calc.marketValueMinor == null
-                                ? "unknown"
-                                : formatUsd(calc.marketValueMinor, calc.scale)}
-                            </td>
-                          </tr>
-                          <tr>
-                            <th scope="row">ROC 2025</th>
-                            <td className="numeric">
-                              {rocActualUnavailable(
-                                investment.lots,
-                                2025,
-                                asOfDate,
-                              ) ??
-                                (calc.rocPct2025ActualMinor == null ||
-                                calc.rocScale == null
-                                  ? "missing-1099"
-                                  : formatPercentScaled(
-                                      calc.rocPct2025ActualMinor,
-                                      calc.rocScale,
-                                    ))}
-                            </td>
-                          </tr>
-                          <tr>
-                            <th scope="row">ROC 2026 estimate</th>
-                            <td className="numeric">
-                              {calc.rocPct2026EstimateMinor == null || calc.rocScale == null
-                                ? "unknown"
-                                : formatPercentScaled(
-                                    calc.rocPct2026EstimateMinor,
-                                    calc.rocScale,
-                                  )}
-                            </td>
-                          </tr>
-                          <tr>
-                            <th scope="row">ROC 2026 actual</th>
-                            <td className="numeric">
-                              {rocActualUnavailable(
-                                investment.lots,
-                                2026,
-                                asOfDate,
-                              ) ??
-                                (calc.rocPct2026ActualMinor == null ||
-                                calc.rocScale == null
-                                  ? "missing-1099"
-                                  : formatPercentScaled(
-                                      calc.rocPct2026ActualMinor,
-                                      calc.rocScale,
-                                    ))}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })()}
-              </section>
-              <section className="hub-panel" id="hub-plan-yields" aria-label="Plan and yields">
-                <h3>Plan and yields</h3>
-                <div className="table-wrap">
-                  <table aria-label="Plan and yields">
-                    <thead>
-                      <tr>
-                        <th scope="col">Metric</th>
-                        <th scope="col">Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(() => {
-                        const planShare = investment.planKnown
-                          ? `$${formatScaled(investment.planPerShareMinor, investment.planScale)}`
-                          : "unknown";
-                        const periods =
-                          investment.planningPeriodsPerYear > 0
-                            ? formatCount(investment.planningPeriodsPerYear)
-                            : "unknown";
-                        const qty = formatScaled(
-                          investment.remainingQuantityMinor,
-                          investment.quantityScale,
-                        );
-                        const cost = formatUsd(
-                          investment.remainingPerformanceMinor,
-                          investment.scale,
-                        );
-                        const price =
-                          investment.price?.priceMinor == null
-                            ? "unknown"
-                            : formatUsd(
-                                investment.price.priceMinor,
-                                investment.price.scale ?? investment.scale,
-                              );
-                        const mostCurrent =
-                          investment.review.mostCurrentMinor == null
-                            ? "unknown"
-                            : `$${formatScaled(
-                                investment.review.mostCurrentMinor,
-                                investment.review.amountScale,
-                              )}`;
-                        const annual =
-                          investment.annualPlanMinor == null
-                            ? "unknown"
-                            : formatUsd(investment.annualPlanMinor, investment.scale);
-                        return (
-                          <>
-                            <tr>
-                              <th
-                                scope="row"
-                                className="metric-hint"
-                                {...metricHint(
-                                  "Plan / share",
-                                  `Owner PlanHistory $/share (never auto from declarations). Last adjusted ${
-                                    investment.planEffectiveFrom?.trim() || "unknown"
-                                  }.`,
-                                )}
-                              >
-                                Plan / share
-                              </th>
-                              <td>
-                                {investment.planKnown
-                                  ? `$${formatScaled(investment.planPerShareMinor, investment.planScale)}`
-                                  : "unknown"}
-                                {investment.planEffectiveFrom?.trim()
-                                  ? ` — last adjusted ${investment.planEffectiveFrom}`
-                                  : ""}
-                              </td>
-                            </tr>
-                            <tr>
-                              <th
-                                scope="row"
-                                className="metric-hint"
-                                {...metricHint(
-                                  "Annual plan",
-                                  `Plan/share × open qty × periods/year. Inputs: ${planShare} × ${qty} × ${periods} → ${annual}.`,
-                                )}
-                              >
-                                Annual plan
-                              </th>
-                              <td>
-                                {investment.annualPlanMinor == null
-                                  ? "unknown"
-                                  : formatUsd(
-                                      investment.annualPlanMinor,
-                                      investment.scale,
-                                    )}
-                              </td>
-                            </tr>
-                            <tr>
-                              <th
-                                scope="row"
-                                className="metric-hint"
-                                {...metricHint(
-                                  "Plan YOC",
-                                  `Annual plan $ ÷ original economic cost. Inputs: ${annual} ÷ ${cost}.`,
-                                )}
-                              >
-                                Plan YOC
-                              </th>
-                              <td>{formatBps(investment.planYocBps ?? null)}</td>
-                            </tr>
-                            <tr>
-                              <th
-                                scope="row"
-                                className="metric-hint"
-                                {...metricHint(
-                                  "Plan FWD",
-                                  `(Plan/share × periods) ÷ last price. Inputs: (${planShare} × ${periods}) ÷ ${price}.`,
-                                )}
-                              >
-                                Plan FWD
-                              </th>
-                              <td>
-                                {formatBps(investment.planFwdYieldBps ?? null)}
-                              </td>
-                            </tr>
-                            <tr>
-                              <th
-                                scope="row"
-                                className="metric-hint"
-                                {...metricHint(
-                                  "Most Current",
-                                  `Latest paid issuer declaration $/share (Plan-review). This position: ${mostCurrent}.`,
-                                )}
-                              >
-                                Most Current
-                              </th>
-                              <td>
-                                {investment.review.mostCurrentMinor == null
-                                  ? "unknown"
-                                  : `$${formatScaled(
-                                      investment.review.mostCurrentMinor,
-                                      investment.review.amountScale,
-                                    )}`}
-                              </td>
-                            </tr>
-                            <tr>
-                              <th
-                                scope="row"
-                                className="metric-hint"
-                                {...metricHint(
-                                  "Avg 6",
-                                  "Mean of up to 6 most recent paid declarations (blank weeks are not $0).",
-                                )}
-                              >
-                                Avg 6
-                              </th>
-                              <td>
-                                {investment.review.avg6Minor == null
-                                  ? "unknown"
-                                  : `$${formatScaled(
-                                      investment.review.avg6Minor,
-                                      investment.review.amountScale,
-                                    )}`}
-                              </td>
-                            </tr>
-                            <tr>
-                              <th
-                                scope="row"
-                                className="metric-hint"
-                                {...metricHint(
-                                  "Most Current FWD",
-                                  `(Most Current × periods) ÷ last price. Inputs: (${mostCurrent} × ${periods}) ÷ ${price}.`,
-                                )}
-                              >
-                                Most Current FWD
-                              </th>
-                              <td>
-                                {formatBps(
-                                  investment.mostCurrentFwdYieldBps ?? null,
-                                )}
-                              </td>
-                            </tr>
-                            <tr>
-                              <th
-                                scope="row"
-                                className="metric-hint"
-                                {...metricHint(
-                                  "Most Current vs Plan",
-                                  `(Most Current − Plan) ÷ Plan → Above / Equal / Below. Inputs: (${mostCurrent} − ${planShare}) ÷ ${planShare}.`,
-                                )}
-                              >
-                                Most Current vs Plan
-                              </th>
-                              <td>
-                                {mostCurrentVsPlanFace(
-                                  investment.mostCurrentVsPlanBps ?? null,
-                                )}
-                              </td>
-                            </tr>
-                          </>
-                        );
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-              <section className="hub-panel" id="hub-accounts" aria-label="Holdings by account">
-                <h3>Holdings by account</h3>
-                <p>
-                  Open quantity and cost for this symbol by control account. Market value is
-                  qty × last price when the price is valid. P&amp;L is market value minus tax
-                  basis.
-                </p>
-                {(() => {
-                  const rows = (positionDetails?.positions ?? []).filter(
-                    (r) => r.symbol === investment.symbol,
-                  );
-                  if (rows.length === 0) {
-                    return <p>No open account splits for this symbol.</p>;
-                  }
-                  const price =
-                    investment.price?.priceDerivedValid && investment.price.priceMinor != null
-                      ? {
-                          minor: investment.price.priceMinor,
-                          scale: investment.price.scale ?? investment.scale,
-                        }
-                      : null;
-                  return (
-                    <div className="table-wrap">
-                      <table aria-label="Holdings by account">
-                        <thead>
-                          <tr>
-                            <th scope="col">Account</th>
-                            <th className="numeric" scope="col">Qty</th>
-                            <th className="numeric" scope="col">Lots</th>
-                            <th className="numeric" scope="col">Original cost</th>
-                            <th className="numeric" scope="col">Tax basis</th>
-                            <th className="numeric" scope="col">Market value</th>
-                            <th className="numeric" scope="col">P&amp;L</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {rows.map((row) => {
-                            let mv: string = "unknown";
-                            let pnl: string = "unknown";
-                            if (price && row.remainingQuantityMinor > 0) {
-                              const qScale = row.quantityScale ?? 0;
-                              const mvMinor = Math.trunc(
-                                (row.remainingQuantityMinor * price.minor) /
-                                  10 ** qScale,
-                              );
-                              mv = formatUsd(mvMinor, price.scale);
-                              pnl = formatUsd(
-                                mvMinor - row.remainingTaxMinor,
-                                row.scale,
-                              );
-                            }
-                            return (
-                              <tr key={`${row.accountId}-${row.symbol}`}>
-                                <td>{row.accountName}</td>
-                                <td className="numeric">
-                                  {formatScaled(
-                                    row.remainingQuantityMinor,
-                                    row.quantityScale,
-                                  )}
-                                </td>
-                                <td className="numeric">{formatCount(row.lotCount)}</td>
-                                <td className="numeric">
-                                  {formatUsd(row.remainingPerformanceMinor, row.scale)}
-                                </td>
-                                <td className="numeric">
-                                  {formatUsd(row.remainingTaxMinor, row.scale)}
-                                </td>
-                                <td className="numeric">{mv}</td>
-                                <td className="numeric">{pnl}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })()}
-              </section>
-              <details className="hub-panel" aria-label="Identity and holdings facts">
-              <summary>Identity and edit facts (name, provider, Plan edit, template)</summary>
-              <h3>Identity, economics, and Plan (edit)</h3>
-              <div className="table-wrap">
-                <table aria-label="Position dossier">
-                  <thead>
-                    <tr>
-                      <th scope="col">Fact</th>
-                      <th scope="col">Value</th>
-                      <th scope="col">Kind</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <th scope="row">Symbol</th>
-                      <td>{investment.symbol}</td>
-                      <td>identity</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Name</th>
-                      <td>
-                        <input
-                          aria-label="Position name"
-                          value={pdDraft.name}
-                          onChange={(e) => patchDraft({ name: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Provider</th>
-                      <td>
-                        <input
-                          aria-label="Position provider"
-                          value={pdDraft.provider}
-                          onChange={(e) => patchDraft({ provider: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Risk</th>
-                      <td>
-                        <select
-                          aria-label="Position risk"
-                          value={pdDraft.risk}
-                          onChange={(e) => patchDraft({ risk: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        >
-                          <option value="">Choose owner tier</option>
-                          {RISK_TIERS.map((tier) => (
-                            <option key={tier} value={tier}>
-                              {tier}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Frequency</th>
-                      <td>
-                        <select
-                          aria-label="Position frequency"
-                          value={pdDraft.freq}
-                          onChange={(e) => patchDraft({ freq: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        >
-                          <option value="">Choose cadence</option>
-                          <option value="Weekly">Weekly (52)</option>
-                          <option value="Monthly">Monthly (12)</option>
-                          <option value="Quarterly">Quarterly (4)</option>
-                          <option value="None">None (does not pay)</option>
-                        </select>
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Underlying</th>
-                      <td>
-                        <input
-                          aria-label="Position underlying"
-                          value={pdDraft.underlying}
-                          onChange={(e) => patchDraft({ underlying: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Strategy characteristics</th>
-                      <td aria-label="Strategy characteristics">
-                        {strategyCharacteristics(
-                          pdDraft.lookthrough,
-                          pdDraft.underlying,
-                        ) || "—"}
-                      </td>
-                      <td>
-                        {strategyCharacteristics(
-                          pdDraft.lookthrough,
-                          pdDraft.underlying,
-                        )
-                          ? "researched"
-                          : "unknown"}
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Theme / strategy</th>
-                      <td>
-                        <input
-                          aria-label="Position theme strategy"
-                          value={pdDraft.lookthrough.themeStrategy ?? ""}
-                          onChange={(e) =>
-                            patchDraft({
-                              lookthrough: {
-                                ...pdDraft.lookthrough,
-                                themeStrategy: e.target.value,
-                              },
-                            })
-                          }
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Primary risk driver</th>
-                      <td>
-                        <input
-                          aria-label="Position primary risk driver"
-                          value={pdDraft.lookthrough.primaryRiskDriver ?? ""}
-                          onChange={(e) =>
-                            patchDraft({
-                              lookthrough: {
-                                ...pdDraft.lookthrough,
-                                primaryRiskDriver: e.target.value,
-                              },
-                            })
-                          }
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Concentration</th>
-                      <td aria-label="Position concentration">
-                        {concentrationSummary(pdDraft.lookthrough)}
-                      </td>
-                      <td>
-                        {(pdDraft.lookthrough.concentrationStatus ?? "unknown") === "unknown"
-                          ? "unknown"
-                          : "researched"}
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Volatility / beta proxy</th>
-                      <td>
-                        <input
-                          aria-label="Position volatility proxy"
-                          value={pdDraft.lookthrough.volProxy ?? ""}
-                          onChange={(e) =>
-                            patchDraft({
-                              lookthrough: { ...pdDraft.lookthrough, volProxy: e.target.value },
-                            })
-                          }
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Tax character note</th>
-                      <td>
-                        <input
-                          aria-label="Position tax character"
-                          value={pdDraft.lookthrough.taxCharacter ?? ""}
-                          onChange={(e) =>
-                            patchDraft({
-                              lookthrough: {
-                                ...pdDraft.lookthrough,
-                                taxCharacter: e.target.value,
-                              },
-                            })
-                          }
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Type / div_type</th>
-                      <td>
-                        <input
-                          aria-label="Position div type"
-                          value={pdDraft.divType}
-                          onChange={(e) => patchDraft({ divType: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Needs ROC research</th>
-                      <td>
-                        <label>
-                          <input
-                            type="checkbox"
-                            aria-label="Needs ROC research"
-                            checked={pdDraft.needsRoc}
-                            onChange={(e) => patchDraft({ needsRoc: e.target.checked })}
-                            disabled={busy || writesBlocked}
-                          />{" "}
-                          flag for 19a-1 research
-                        </label>
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Active</th>
-                      <td>
-                        <label>
-                          <input
-                            type="checkbox"
-                            aria-label="Position is active"
-                            checked={pdDraft.isActive}
-                            onChange={(e) => patchDraft({ isActive: e.target.checked })}
-                            disabled={busy || writesBlocked}
-                          />{" "}
-                          include in daily last-price set
-                        </label>
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Expected tax handling</th>
-                      <td>
-                        <select
-                          aria-label="Expected tax handling"
-                          value={pdDraft.taxHandling}
-                          onChange={(e) => patchDraft({ taxHandling: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        >
-                          {TAX_HANDLING.map((item) => (
-                            <option key={item || "blank"} value={item}>
-                              {item || "unknown"}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Declaration weekday</th>
-                      <td>
-                        <select
-                          aria-label="Declaration weekday"
-                          value={pdDraft.declarationWeekday}
-                          onChange={(e) => patchDraft({ declarationWeekday: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        >
-                          {WEEKDAYS.map((day) => (
-                            <option key={day || "blank"} value={day}>
-                              {day || "unknown"}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Ex-date weekday</th>
-                      <td>
-                        <select
-                          aria-label="Ex-date weekday"
-                          value={pdDraft.exdateWeekday}
-                          onChange={(e) => patchDraft({ exdateWeekday: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        >
-                          {WEEKDAYS.map((day) => (
-                            <option key={day || "blank"} value={day}>
-                              {day || "unknown"}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Payday weekday</th>
-                      <td>
-                        <select
-                          aria-label="Payday weekday"
-                          value={pdDraft.paydayWeekday}
-                          onChange={(e) => patchDraft({ paydayWeekday: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        >
-                          {WEEKDAYS.map((day) => (
-                            <option key={day || "blank"} value={day}>
-                              {day || "unknown"}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Completeness</th>
-                      <td aria-label="Position completeness">
-                        {positionMaster?.rows.find(
-                          (row) => row.symbol.toUpperCase() === investment.symbol.toUpperCase(),
-                        )?.completeness ?? "unknown"}
-                      </td>
-                      <td>joined</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">CurrentPrice</th>
-                      <td>
-                        {investment.price.priceMinor != null
-                          ? `${formatUsd(investment.price.priceMinor, investment.price.scale)} (${investment.price.freshness})`
-                          : `unavailable (${investment.price.freshness})`}
-                      </td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Price-derived valid</th>
-                      <td>{investment.price.priceDerivedValid ? "yes" : "no"}</td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Open qty</th>
-                      <td>
-                        {formatScaled(
-                          investment.remainingQuantityMinor,
-                          investment.quantityScale,
-                        )}
-                      </td>
-                      <td>from lots</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Original cost</th>
-                      <td>
-                        {formatUsd(investment.remainingPerformanceMinor, investment.scale)}
-                      </td>
-                      <td>from lots</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Avg unit cost</th>
-                      <td>
-                        {investment.unitCostMinor == null
-                          ? "unknown"
-                          : formatUsd(investment.unitCostMinor, 2)}
-                      </td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Tax basis</th>
-                      <td>{formatUsd(investment.remainingTaxMinor, investment.scale)}</td>
-                      <td>from lots</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Market value</th>
-                      <td>
-                        {investment.marketValueMinor == null
-                          ? "unknown — needs a valid CurrentPrice"
-                          : formatUsd(investment.marketValueMinor, investment.scale)}
-                      </td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Unrealized vs cost</th>
-                      <td>
-                        {investment.unrealizedPerformanceMinor == null
-                          ? "unknown"
-                          : formatUsd(
-                              investment.unrealizedPerformanceMinor,
-                              investment.scale,
-                            )}
-                      </td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Unrealized %</th>
-                      <td>{formatBps(investment.unrealizedPnlBps)}</td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Plan / share</th>
-                      <td>
-                        <input
-                          aria-label="Stored Plan per share"
-                          value={pdDraft.plan}
-                          onChange={(e) => patchDraft({ plan: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Plan last adjusted</th>
-                      <td>
-                        {investment.planEffectiveFrom?.trim() || "unknown"}
-                      </td>
-                      <td>from PlanHistory</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Plan reason</th>
-                      <td>
-                        <select
-                          aria-label="Stored Plan decision reason"
-                          value={pdDraft.planReason}
-                          onChange={(e) => patchDraft({ planReason: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        >
-                          <option value="">Choose reason</option>
-                          {PLAN_REASONS.map((reason) => (
-                            <option key={reason} value={reason}>
-                              {reason}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    {investment.review.incompleteReasonRequired ? (
-                      <tr>
-                        <th scope="row">Incomplete analysis</th>
-                        <td>
-                          <select
-                            aria-label="Stored incomplete analysis reason"
-                            value={pdDraft.incomplete}
-                            onChange={(e) => patchDraft({ incomplete: e.target.value })}
-                            disabled={busy || writesBlocked}
-                          >
-                            <option value="">Choose why full analysis is not possible</option>
-                            {INCOMPLETE_REASONS.map((reason) => (
-                              <option key={reason} value={reason}>
-                                {reason}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td>editable</td>
-                      </tr>
-                    ) : null}
-                    <tr>
-                      <th scope="row">Annual Plan cash</th>
-                      <td>
-                        {investment.annualPlanMinor == null
-                          ? "unknown — confirm Plan"
-                          : formatUsd(investment.annualPlanMinor, investment.scale)}
-                      </td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Plan YOC</th>
-                      <td>{formatBps(investment.planYocBps)}</td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Plan FWD yield</th>
-                      <td>{formatBps(investment.planFwdYieldBps)}</td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Most Current FWD yield</th>
-                      <td>{formatBps(investment.mostCurrentFwdYieldBps)}</td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Most Current</th>
-                      <td>
-                        {investment.review.mostCurrentMinor == null
-                          ? "N/A"
-                          : `$${formatScaled(investment.review.mostCurrentMinor, investment.review.amountScale)}`}
-                      </td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Avg 6</th>
-                      <td>
-                        {investment.review.avg6Minor == null
-                          ? "incomplete"
-                          : `$${formatScaled(investment.review.avg6Minor, investment.review.amountScale)}`}
-                      </td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Min / max / 80% of avg</th>
-                      <td>
-                        {investment.review.minMinor == null
-                          ? "N/A"
-                          : `$${formatScaled(investment.review.minMinor, investment.review.amountScale)} / $${formatScaled(investment.review.maxMinor ?? 0, investment.review.amountScale)} / ${
-                              investment.review.eightyPctOfAvgMinor == null
-                                ? "N/A"
-                                : `$${formatScaled(investment.review.eightyPctOfAvgMinor, investment.review.amountScale)}`
-                            }`}
-                      </td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Most Current vs Plan</th>
-                      <td>
-                        {mostCurrentVsPlanFace(investment.mostCurrentVsPlanBps)}
-                      </td>
-                      <td>calculated</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Declarations</th>
-                      <td>{formatCount(investment.declarationCount)} / 12 stored</td>
-                      <td>observations</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">ROC 2024 actual %</th>
-                      <td>
-                        <input
-                          aria-label="ROC 2024 actual"
-                          value={pdDraft.roc2024}
-                          onChange={(e) => patchDraft({ roc2024: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">ROC 2025 actual %</th>
-                      <td>
-                        {rocActualUnavailable(investment.lots, 2025, asOfDate) ? (
-                          <p aria-label="ROC 2025 actual">
-                            {rocActualUnavailable(
-                              investment.lots,
-                              2025,
-                              asOfDate,
-                            )}
-                          </p>
-                        ) : (
-                          <input
-                            aria-label="ROC 2025 actual"
-                            value={pdDraft.roc2025}
-                            onChange={(e) =>
-                              patchDraft({ roc2025: e.target.value })
-                            }
-                            disabled={busy || writesBlocked}
-                          />
-                        )}
-                      </td>
-                      <td>
-                        {rocActualUnavailable(investment.lots, 2025, asOfDate) ||
-                          "editable after 2025 1099"}
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">ROC 2026 estimate %</th>
-                      <td>
-                        <input
-                          aria-label="ROC 2026 estimate"
-                          value={pdDraft.roc2026e}
-                          onChange={(e) => patchDraft({ roc2026e: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">ROC 2026 actual %</th>
-                      <td>
-                        {rocActualUnavailable(investment.lots, 2026, asOfDate) ? (
-                          <p aria-label="ROC 2026 actual">
-                            {rocActualUnavailable(
-                              investment.lots,
-                              2026,
-                              asOfDate,
-                            )}
-                          </p>
-                        ) : (
-                          <input
-                            aria-label="ROC 2026 actual"
-                            value={pdDraft.roc2026a}
-                            onChange={(e) =>
-                              patchDraft({ roc2026a: e.target.value })
-                            }
-                            disabled={busy || writesBlocked}
-                          />
-                        )}
-                      </td>
-                      <td>
-                        {rocActualUnavailable(investment.lots, 2026, asOfDate) ||
-                          "editable after 2026 1099"}
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Notes</th>
-                      <td>
-                        <input
-                          aria-label="Position notes"
-                          value={pdDraft.notes}
-                          onChange={(e) => patchDraft({ notes: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                      <td>editable</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Retrieval template</th>
-                      <td>
-                        <p aria-label="Adapter source">
-                          Adapter:{" "}
-                          {investment.template?.declarationSource ||
-                            "unassigned"}
-                        </p>
-                        <p>
-                          Schedule:{" "}
-                          {calendarPolicyLabel(
-                            investment.template?.calendarPolicy,
-                          )}
-                        </p>
-                        <p aria-label="Template Dividend">
-                          Template Dividend:{" "}
-                          {investment.template?.sourceUrl?.trim()
-                            ? investment.template.sourceUrl
-                            : "—"}
-                        </p>
-                        <p aria-label="Template ROC">
-                          Template ROC:{" "}
-                          {investment.template?.rocSourceUrl?.trim()
-                            ? investment.template.rocSourceUrl
-                            : "—"}
-                        </p>
-                        <p aria-label="Template content hash">
-                          Content hash:{" "}
-                          {investment.template?.lastContentHash?.trim()
-                            ? investment.template.lastContentHash
-                            : "—"}
-                        </p>
-                        <p>
-                          Lookback:{" "}
-                          {formatCount(
-                            investment.template?.lookbackCount ??
-                              DECLARATION_LOOKBACK_TARGET,
-                          )}
-                        </p>
-                        <p>
-                          Inception (optional):{" "}
-                          {investment.template?.inceptionOn?.trim()
-                            ? investment.template.inceptionOn
-                            : "— (only used when paid decls are under 12)"}
-                        </p>
-                        {investment.template?.lastRunAt ? (
-                          <p>
-                            Last run {investment.template.lastRunAt}
-                            {investment.template.lastRunOk == null
-                              ? ""
-                              : investment.template.lastRunOk
-                                ? " succeeded"
-                                : " missed"}
-                            {investment.template.lastRunMessage
-                              ? `: ${investment.template.lastRunMessage}`
-                              : ""}
-                          </p>
-                        ) : (
-                          <p>Last run: never</p>
-                        )}
-                        <p>
-                          Edit retrieval templates on Settings. Hub face source is
-                          the adapter, not the stored template knobs.
-                        </p>
-                        <button
-                          type="button"
-                          aria-label="Open Settings retrieval templates"
-                          onClick={() => setScreen("settings")}
-                        >
-                          Open Settings
-                        </button>
-                      </td>
-                      <td>Settings</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Backtest / scores</th>
-                      <td>
-                        {(investment.results ?? []).length === 0
-                          ? "unknown — dated bull/bear windows required before scores. Missing evidence stays missing; it does not invent a rank."
-                          : `${formatCount(investment.results.length)} stored window result${investment.results.length === 1 ? "" : "s"}. Suggestion does not change Risk until you Apply.`}
-                      </td>
-                      <td>
-                        {(investment.results ?? []).length === 0 ? "unknown" : "calculated"}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              </details>
-              <section className="hub-panel" id="hub-declarations" aria-label="Declarations" data-focus={positionFocusPanel === "declarations" ? "1" : undefined}>
-              <h3>Declarations</h3>
-              {(() => {
-                const decls = investment.declarations ?? [];
-                const paid = decls.filter((d) => d.amountPerShareMinor != null).length;
-                const stored = decls.length;
-                const asOf = asOfDate || new Date().toISOString().slice(0, 10);
-                const inception = investment.template?.inceptionOn?.trim() || "";
-                let short: string | null = null;
-                let needLabel = `need ${formatCount(DECLARATION_LOOKBACK_TARGET)}`;
-                if (paid >= DECLARATION_LOOKBACK_TARGET) {
-                  needLabel = `${formatCount(DECLARATION_LOOKBACK_TARGET)}+ paid — inception N/A`;
-                } else if (inception) {
-                  const expected = expectedDeclarationLookback(
-                    inception,
-                    asOf,
-                    pdDraft.freq || investment.paymentFrequency,
-                  );
-                  needLabel = `need ${formatCount(expected)} (inception-limited; full is ${formatCount(DECLARATION_LOOKBACK_TARGET)})`;
-                  if (paid < expected) {
-                    short = `Adapter returned ${formatCount(paid)} of ${formatCount(expected)} paid declarations expected since inception ${inception}.`;
-                  }
-                } else {
-                  short = `Adapter returned ${formatCount(paid)} of ${formatCount(DECLARATION_LOOKBACK_TARGET)} required paid declarations. Confirm inception Yes/No on Add Position — do not defer to Settings.`;
-                }
-                return (
-                  <>
-                    <h4>Latest paid ({needLabel})</h4>
-                    <p>
-                      Paid $/share from the issuer adapter. Period is the payable date,
-                      not the declaration date. Blank stays unknown, not $0.
-                      Stored: {formatCount(stored)}. Retrieve first; inception is
-                      consulted only when under{" "}
-                      {formatCount(DECLARATION_LOOKBACK_TARGET)} paid points.
-                    </p>
-                    {short ? (
-                      <p role="status" aria-label="Declaration shortfall">
-                        {short}
-                      </p>
-                    ) : null}
-                    <DeclarationPaymentsChart
-                      declarations={(investment.declarations ?? []).map((d) => ({
-                        paymentPeriod: d.paymentPeriod,
-                        amountPerShareMinor: d.amountPerShareMinor ?? 0,
-                        amountScale: d.amountScale,
-                      }))}
-                      asOfDate={asOf}
-                    />
-                    {stored === 0 ? (
-                      <p>No issuer declarations stored.</p>
-                    ) : (
-                      <div className="table-wrap">
-                        <table aria-label="Stored declarations">
-                          <thead>
-                            <tr>
-                              <th scope="col">Pay date</th>
-                              <th className="numeric" scope="col">
-                                Per share
-                              </th>
-                              <th scope="col">Source</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {decls.map((row, i) => (
-                              <tr key={`${row.paymentPeriod}-${i}`}>
-                                <td>{row.paymentPeriod || "—"}</td>
-                                <td className="numeric">
-                                  {row.amountPerShareMinor == null
-                                    ? "—"
-                                    : `$${formatScaled(row.amountPerShareMinor, row.amountScale)}`}
-                                </td>
-                                <td>{row.source || "—"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-              </section>
-              <section className="hub-panel" id="hub-income" aria-label="Plan payment summary" data-focus={positionFocusPanel === "income" ? "1" : undefined}>
-              <h3>Plan payment summary</h3>
-              <p>
-                Remaining-year Plan cash (Plan × quantity). Blank stays unknown, not $0.
-                Separate from paid declaration history and broker ledger.
-              </p>
-              {pdRemaining == null ? (
-                <p>Loading plan payment summary…</p>
-              ) : (
-                <>
-                  <p aria-label="Remaining year schedule provenance">
-                    {pdRemaining.known
-                      ? dateProvenanceLabel(pdRemaining.provenance)
-                      : `${dateProvenanceLabel(pdRemaining.provenance)}. Unknown stays unknown.`}
-                    {pdRemaining.calendarPolicy
-                      ? ` Schedule: ${calendarPolicyLabel(pdRemaining.calendarPolicy)}.`
-                      : ""}
-                  </p>
-                  <div className="table-wrap">
-                    <table aria-label="Plan payment summary">
-                      <thead>
-                        <tr>
-                          <th scope="col">Period</th>
-                          <th className="numeric" scope="col">Plan cash</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr>
-                          <th scope="row">Remaining this year</th>
-                          <td className="numeric">
-                            {pdRemaining.yearToGoMinor == null
-                              ? "unknown"
-                              : formatUsd(pdRemaining.yearToGoMinor, pdRemaining.scale)}
-                          </td>
-                        </tr>
-                        {pdRemaining.months.map((m) => (
-                          <tr key={m.month}>
-                            <th scope="row">{m.month}</th>
-                            <td className="numeric">
-                              {m.cashMinor == null
-                                ? "unknown"
-                                : formatUsd(m.cashMinor, pdRemaining.scale)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-              </section>
-              <section className="hub-panel" id="hub-pay-dates" aria-label="Future plan payment dates">
-              <h3>Future plan payment dates</h3>
-              <p>Each remaining pay date × Plan × open quantity for this symbol.</p>
-              {pdRemaining == null ? (
-                <p>Loading pay dates…</p>
-              ) : (pdRemaining.payments ?? []).length === 0 ? (
-                <p>No remaining-year pay dates yet.</p>
-              ) : (
-                <div className="table-wrap">
-                  <table aria-label="Future plan payment dates">
-                    <thead>
-                      <tr>
-                        <th scope="col">Pay on</th>
-                        <th className="numeric" scope="col">Plan cash</th>
-                        <th scope="col">Date source</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pdRemaining.payments.map((pay) => (
-                        <tr key={pay.originalPayOn}>
-                          <td>{pay.payOn}</td>
-                          <td className="numeric">
-                            {pay.cashMinor == null
-                              ? "unknown"
-                              : formatUsd(pay.cashMinor, pdRemaining.scale)}
-                          </td>
-                          <td>
-                            {dateProvenanceLabel(
-                              pay.dateProvenance || pay.originalPayOn,
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              </section>
-              <section
-                className="hub-panel"
-                id="hub-received"
-                aria-label="Received payments"
-              >
-                <h3>Received payments</h3>
-                <p>
-                  Broker cash already received for this symbol (Investment Activity
-                  Ledger). All-years and per calendar year. Unknown stays unknown.
-                </p>
-                {(() => {
-                  const actuals = pdLedger?.actuals ?? [];
-                  const scale = pdLedger?.scale ?? investment.scale;
-                  const byYear = receivedByYear(actuals);
-                  const allYears =
-                    investment.distributionsScope === "incomplete" ||
-                    investment.totalDistributionsReceivedMinor == null
-                      ? null
-                      : investment.totalDistributionsReceivedMinor;
-                  const ledgerSum = actuals.reduce((s, a) => s + a.amountMinor, 0);
-                  return (
-                    <>
-                      <div className="table-wrap">
-                        <table aria-label="Received payment totals">
-                          <thead>
-                            <tr>
-                              <th scope="col">Scope</th>
-                              <th className="numeric" scope="col">
-                                Received
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr>
-                              <th scope="row">All years</th>
-                              <td className="numeric">
-                                {allYears == null
-                                  ? actuals.length === 0
-                                    ? "unknown"
-                                    : formatUsd(ledgerSum, scale)
-                                  : formatUsd(allYears, investment.scale)}
-                              </td>
-                            </tr>
-                            {investment.rocDistributionsMinor != null ? (
-                              <tr>
-                                <th scope="row">ROC component (all years)</th>
-                                <td className="numeric">
-                                  {formatUsd(
-                                    investment.rocDistributionsMinor,
-                                    investment.scale,
-                                  )}
-                                </td>
-                              </tr>
-                            ) : null}
-                          </tbody>
-                        </table>
-                      </div>
-                      {byYear.length === 0 ? (
-                        <p>No ledger dividends stored for this symbol yet.</p>
-                      ) : (
-                        <div className="table-wrap">
-                          <table aria-label="Received payments by year">
-                            <thead>
-                              <tr>
-                                <th scope="col">Year</th>
-                                <th className="numeric" scope="col">
-                                  Received
-                                </th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {byYear.map((row) => (
-                                <tr key={row.year}>
-                                  <td>{row.year}</td>
-                                  <td className="numeric">
-                                    {formatUsd(row.amountMinor, scale)}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </>
-                  );
-                })()}
-              </section>
-              <section
-                className="hub-panel"
-                id="hub-ledger"
-                aria-label="Ledger income"
-                data-focus={positionFocusPanel === "ledger" ? "1" : undefined}
-              >
-                <h3>Ledger income</h3>
-                <p>
-                  Broker-paid dividends for this symbol (Investment Activity Ledger).
-                  Unknown stays unknown.
-                </p>
-                {(pdLedger?.actuals ?? []).length === 0 ? (
-                  <p>No ledger dividends stored for this symbol yet.</p>
-                ) : (
-                  <div className="table-wrap">
-                    <table aria-label="Ledger dividends">
-                      <thead>
-                        <tr>
-                          <th scope="col">Occurred</th>
-                          <th className="numeric" scope="col">
-                            Amount
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(pdLedger?.actuals ?? []).map((row) => (
-                          <tr key={row.actualId}>
-                            <td>{row.occurredOn}</td>
-                            <td className="numeric">
-                              {formatUsd(row.amountMinor, row.scale)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr>
-                          <td>Total</td>
-                          <td className="numeric">
-                            {formatUsd(
-                              (pdLedger?.actuals ?? []).reduce(
-                                (s, a) => s + a.amountMinor,
-                                0,
-                              ),
-                              pdLedger?.scale ?? 2,
-                            )}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-                )}
-              </section>
-              <section
-                className="hub-panel"
-                id="hub-lots"
-                aria-label="Lots by account"
-                data-focus={positionFocusPanel === "lots" ? "1" : undefined}
-              >
-                <h3>Lots by account</h3>
-                <p>Lots and cost for the chosen ticker only. Data totals above stay put.</p>
-                {investment.lots.length === 0 ? (
-                  <p>No open lots. Calculator omits this symbol until the first lot.</p>
-                ) : (
-                  <SymbolLotsTable lots={investment.lots} />
-                )}
-              </section>
-              <section className="hub-panel" aria-label="Backtests">
-              <h3>Owner period</h3>
-              <p>
-                You name the window. The system does not pick bull or bear dates.
-                Save the period, then calculate. Window prices stay candidates.
-              </p>
-              <div className="table-wrap">
-                <table aria-label="Owner period draft">
-                  <tbody>
-                    <tr>
-                      <th scope="row">Kind</th>
-                      <td>
-                        <select
-                          aria-label="Period kind"
-                          value={pdPeriod.kind}
-                          onChange={(e) => patchPeriod({ kind: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        >
-                          <option value="">Choose kind</option>
-                          {PERIOD_KINDS.map((kind) => (
-                            <option key={kind} value={kind}>
-                              {kind}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Name</th>
-                      <td>
-                        <input
-                          aria-label="Period name"
-                          value={pdPeriod.name}
-                          onChange={(e) => patchPeriod({ name: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Start</th>
-                      <td>
-                        <input
-                          type="date"
-                          aria-label="Period start"
-                          value={pdPeriod.startOn}
-                          onChange={(e) => patchPeriod({ startOn: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">End</th>
-                      <td>
-                        <input
-                          type="date"
-                          aria-label="Period end"
-                          value={pdPeriod.endOn}
-                          onChange={(e) => patchPeriod({ endOn: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Benchmark</th>
-                      <td>
-                        <input
-                          aria-label="Period benchmark"
-                          value={pdPeriod.benchmark}
-                          onChange={(e) => patchPeriod({ benchmark: e.target.value })}
-                          disabled={busy || writesBlocked}
-                        />
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div className="buttons dossier-actions">
-                <button
-                  type="button"
-                  aria-label="Save owner period"
-                  className={periodDirty ? "is-unsaved" : undefined}
-                  disabled={busy || writesBlocked || !periodReady || !periodDirty}
-                  onClick={() => void saveOwnerPeriod()}
-                >
-                  Save period
-                </button>
-                <button
-                  type="button"
-                  aria-label="Calculate window"
-                  disabled={
-                    busy ||
-                    writesBlocked ||
-                    periodDirty ||
-                    !(savedPeriodId || investment.periods.at(-1)?.periodId)
-                  }
-                  onClick={() => void calculateWindow()}
-                >
-                  Calculate window
-                </button>
-              </div>
-              {(investment.periods ?? []).length === 0 ? (
-                <p>No owner periods stored.</p>
-              ) : (
-                <div className="table-wrap">
-                  <table aria-label="Stored owner periods">
-                    <thead>
-                      <tr>
-                        <th scope="col">Kind</th>
-                        <th scope="col">Dates</th>
-                        <th scope="col">Benchmark</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {investment.periods.map((period) => (
-                        <tr key={period.periodId}>
-                          <td>{period.kind}</td>
-                          <td>
-                            {period.startOn} – {period.endOn}
-                          </td>
-                          <td>{period.benchmarkSymbol || "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <h3>Window results</h3>
-              {(investment.results ?? []).length === 0 ? (
-                <p>No calculated window. Unknown stays unknown.</p>
-              ) : (
-                <div className="table-wrap">
-                  <table aria-label="Window results">
-                    <thead>
-                      <tr>
-                        <th scope="col">Metric</th>
-                        <th scope="col">Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(() => {
-                        const latest = investment.results[investment.results.length - 1];
-                        return (
-                          <>
-                            <tr>
-                              <th scope="row">Price return</th>
-                              <td>{formatBps(latest.priceReturnBps)}</td>
-                            </tr>
-                            <tr>
-                              <th scope="row">Total return</th>
-                              <td>{formatBps(latest.totalReturnBps)}</td>
-                            </tr>
-                            <tr>
-                              <th scope="row">Cushion</th>
-                              <td>{formatBps(latest.cushionBps)}</td>
-                            </tr>
-                            <tr>
-                              <th scope="row">Max drawdown</th>
-                              <td>{formatBps(latest.maxDrawdownBps)}</td>
-                            </tr>
-                            <tr>
-                              <th scope="row">Recovery</th>
-                              <td>
-                                {latest.recoveryRatioBps == null
-                                  ? "unknown"
-                                  : `${formatBps(latest.recoveryRatioBps)}${
-                                      latest.recoveryDays != null
-                                        ? ` / ${latest.recoveryDays}d`
-                                        : ""
-                                    }`}
-                              </td>
-                            </tr>
-                            <tr>
-                              <th scope="row">Income reliability</th>
-                              <td>{formatBps(latest.incomeReliabilityBps)}</td>
-                            </tr>
-                            <tr>
-                              <th scope="row">Bear relative</th>
-                              <td>{formatBps(latest.bearRelativeBps)}</td>
-                            </tr>
-                            <tr>
-                              <th scope="row">Downside capture</th>
-                              <td>{formatBps(latest.downsideCaptureBps)}</td>
-                            </tr>
-                            <tr>
-                              <th scope="row">Upside capture</th>
-                              <td>{formatBps(latest.upsideCaptureBps)}</td>
-                            </tr>
-                            <tr>
-                              <th scope="row">Completeness</th>
-                              <td>{latest.completeness}</td>
-                            </tr>
-                          </>
-                        );
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <h3>Evidence</h3>
-              {investment.evidence == null ? (
-                <p>No evidence dimensions until a window is calculated.</p>
-              ) : (
-                <dl className="health" aria-label="Evidence dimensions">
-                  <dt>Income Reliability</dt>
-                  <dd>
-                    {investment.evidence.incomeReliability == null
-                      ? "unknown"
-                      : investment.evidence.incomeReliability}
-                  </dd>
-                  <dt>Downside Resilience</dt>
-                  <dd>
-                    {investment.evidence.downsideResilience == null
-                      ? "unknown"
-                      : investment.evidence.downsideResilience}
-                  </dd>
-                  <dt>Recovery / Upside</dt>
-                  <dd>
-                    {investment.evidence.recoveryUpside == null
-                      ? "unknown"
-                      : investment.evidence.recoveryUpside}
-                  </dd>
-                  <dt>NAV Persistence</dt>
-                  <dd>
-                    {investment.evidence.navPersistence == null
-                      ? "unknown"
-                      : investment.evidence.navPersistence}
-                  </dd>
-                  <dt>Diversification</dt>
-                  <dd>
-                    {investment.evidence.diversification == null
-                      ? "legacy text only"
-                      : investment.evidence.diversification}
-                  </dd>
-                  <dt>Data Confidence</dt>
-                  <dd>
-                    {investment.evidence.dataConfidence} ({investment.evidence.knownComponents} known)
-                  </dd>
-                </dl>
-              )}
-              <h3>Tier suggestion</h3>
-              {investment.suggestion == null || !investment.suggestion.complete ? (
-                <p>
-                  {investment.suggestion?.reason ??
-                    "No complete suggestion. Apply stays disabled."}
-                </p>
-              ) : (
-                <p>
-                  {investment.suggestion.suggestedTier} ({investment.suggestion.ruleset}):{" "}
-                  {investment.suggestion.reason}
-                </p>
-              )}
-              <div className="buttons dossier-actions">
-                {RISK_TIERS.map((tier) => (
-                  <button
-                    key={tier}
-                    type="button"
-                    aria-label={`Apply ${tier}`}
-                    disabled={
-                      busy ||
-                      writesBlocked ||
-                      factsDirty ||
-                      !investment.suggestion?.complete
-                    }
-                    onClick={() => void applySuggestedTier(tier)}
-                  >
-                    Apply {tier}
-                  </button>
-                ))}
-              </div>
-              </section>
-            </>
+        <PositionDetailsScreen
+          DECLARATION_LOOKBACK_TARGET={DECLARATION_LOOKBACK_TARGET}
+          INCOMPLETE_REASONS={INCOMPLETE_REASONS}
+          PERIOD_KINDS={PERIOD_KINDS}
+          PLAN_REASONS={PLAN_REASONS}
+          RISK_TIERS={RISK_TIERS}
+          DIV_TYPES={DIV_TYPES}
+          TAX_HANDLING={TAX_HANDLING}
+          WEEKDAYS={WEEKDAYS}
+          applyIssuerSources={applyIssuerSources}
+          applySuggestedTier={applySuggestedTier}
+          asOfDate={asOfDate}
+          busy={busy}
+          calculateWindow={calculateWindow}
+          calculator={calculator}
+          calendarPolicyLabel={calendarPolicyLabel}
+          cancelPositionEdits={cancelPositionEdits}
+          concentrationSummary={concentrationSummary}
+          dateProvenanceLabel={dateProvenanceLabel}
+          expectedDeclarationLookback={expectedDeclarationLookback}
+          factsDirty={factsDirty}
+          fileWorkTicket={fileWorkTicket}
+          fixRemainingYearTicket={fixRemainingYearTicket}
+          filteredPositionSymbols={filteredPositionSymbols}
+          formatBps={formatBps}
+          formatHubPrice={formatHubPrice}
+          investment={investment}
+          lastPriceBusy={lastPriceBusy}
+          lastPriceProgress={lastPriceProgress}
+          lastPriceRefreshLabel={lastPriceRefreshLabel}
+          leaveWithoutSaving={leaveWithoutSaving}
+          loadInvestment={loadInvestment}
+          metricHint={metricHint}
+          mostCurrentVsPlanFace={mostCurrentVsPlanFace}
+          openRecreateAdapter={openRecreateAdapter}
+          ownerRiskChoice={ownerRiskChoice}
+          patchDraft={patchDraft}
+          patchPeriod={patchPeriod}
+          pdDirty={pdDirty}
+          pdDraft={pdDraft}
+          pdLedger={pdLedger}
+          pdPeriod={pdPeriod}
+          pdRemaining={pdRemaining}
+          periodDirty={periodDirty}
+          periodReady={periodReady}
+          positionDetails={positionDetails}
+          positionFocusPanel={positionFocusPanel}
+          declHistory={declHistory}
+          positionMaster={positionMaster}
+          positionSymbol={positionSymbol}
+          positionSymbolOpen={positionSymbolOpen}
+          positionSymbolQuery={positionSymbolQuery}
+          receivedByYear={receivedByYear}
+          refreshLastPrices={refreshLastPrices}
+          refreshPdDeclarations={refreshPdDeclarations}
+          refreshPdLastPrice={refreshPdLastPrice}
+          researchActivity={researchActivity}
+          researchNotes={researchNotes}
+          researchPdRoc={researchPdRoc}
+          resolveConfirmTicket={resolveConfirmTicket}
+          resolveEnterDeclaredAmount={resolveEnterDeclaredAmount}
+          resolveTicketRetry={resolveTicketRetry}
+          resolveTicketRocContext={resolveTicketRocContext}
+          storeTicketRocUrl={storeTicketRocUrl}
+          storeTicketManualRoc={storeTicketManualRoc}
+          openTicketRocResearch={openTicketRocResearch}
+          retryingTicket={retryingTicket}
+          rocActualUnavailable={rocActualUnavailable}
+          rocResearchLabel={rocResearchLabel}
+          rocResearchUpdated={rocResearchUpdated}
+          saveOwnerPeriod={saveOwnerPeriod}
+          windowClient={client}
+          windowDiscardEpoch={marketImpactDiscard}
+          onWindowsDirty={setMarketImpactDirty}
+          onWindowsSaved={() => {
+            if (investment) void loadInvestment(investment.symbol);
+          }}
+          saveStoredFacts={saveStoredFacts}
+          savedPeriodId={savedPeriodId}
+          scaledDollars={scaledDollars}
+          selectPositionSymbol={selectPositionSymbol}
+          setOwnerRisk={setOwnerRisk}
+          setOwnerRiskChoice={setOwnerRiskChoice}
+          setPositionFocusPanel={setPositionFocusPanel}
+          setPositionSymbol={setPositionSymbol}
+          setPositionSymbolOpen={setPositionSymbolOpen}
+          setPositionSymbolQuery={setPositionSymbolQuery}
+          setScreen={setScreen}
+          strategyCharacteristics={strategyCharacteristics}
+          ticketDecision={ticketDecision}
+          workTickets={workTickets}
+          writesBlocked={writesBlocked}
+        />
+      ) : null}
 
-          ) : (
-            <p>Choose a symbol to open the position hub.</p>
-          )}
-          <details className="hub-fleet" aria-label="Position fleet compare">
-            <summary>
-              {positionSymbol
-                ? `Fleet compare (all symbols) — ${positionSymbol} hub is above`
-                : "Fleet compare — all symbols"}
-            </summary>
-            <section aria-label="Issuer retrieve miss summary">
-              <ExceptionList exceptions={exceptions} onOpenLog={() => void openExceptionLog()} />
-            </section>
-            <h3>Issuer retrieve</h3>
-            <div className="table-wrap">
-              <table aria-label="Issuer retrieve">
-                <thead>
-                  <tr>
-                    <th scope="col">Symbol</th>
-                    <th scope="col">Source</th>
-                    <th scope="col">Freshness</th>
-                    <th scope="col">Last run</th>
-                    <th scope="col">Miss</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(issuerCoverage?.rows ?? []).map((row) => (
-                    <tr key={row.securityId}>
-                      <td>{row.symbol}</td>
-                      <td>{row.declarationSource || "unassigned"}</td>
-                      <td>{row.declarationFreshness || "unavailable"}</td>
-                      <td>
-                        {row.lastRunAt || "never"}
-                        {row.lastRunOk === true
-                          ? " ok"
-                          : row.lastRunOk === false
-                            ? " miss"
-                            : ""}
-                      </td>
-                      <td>
-                        {row.lastRunOk === false
-                          ? row.lastRunMessage || "Issuer page empty."
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <PositionMasterTable
-              rows={positionMaster?.rows ?? null}
-              selectedSymbol={positionSymbol}
-              onOpenSymbol={(symbol) => {
-                leaveWithoutSaving(() => {
-                  setPositionFocusPanel("");
-                  setPositionSymbol(symbol);
-                  void loadInvestment(symbol);
-                });
-              }}
-            />
-            <h3>Account splits (all symbols)</h3>
-            <p>Account × symbol quantity and cost. Filter to the open hub symbol when set.</p>
-            <PositionDetailsTable
-              positions={positionDetails}
-              filter={positionSymbol}
-            />
-          </details>
-        </section>
+
+      {screen === "market-impact" ? (
+        <MarketImpactPlanner
+          client={client}
+          discardEpoch={marketImpactDiscard}
+          onDirtyChange={setMarketImpactDirty}
+          onOpenSymbol={(symbol) => openPositionHub(symbol, "plan")}
+        />
       ) : null}
 
       {screen === "dashboard" ? (
@@ -10352,31 +9434,6 @@ export default function App() {
       {screen === "trends" ? (
         <section aria-label="Trends">
           <h2>Trends</h2>
-          <p>
-            Charts from saved weeks and declared income. Enter the week on Cash
-            Management.
-          </p>
-          {trendsCapture &&
-          (!trendsCapture.exists || trendsCapture.firstUnpopulatedStart) ? (
-            <p role="status">
-              <button
-                type="button"
-                aria-label="Finish this week on Cash Management"
-                onClick={() =>
-                  leaveWithoutSaving(
-                    () => {
-                      setCmDesk("weekly");
-                      setScreen("cash-management");
-                    },
-                    "cash-management",
-                    "weekly",
-                  )
-                }
-              >
-                Finish this week on Cash Management
-              </button>
-            </p>
-          ) : null}
           <TrendsChartsPanel
             key={trendsChartEpoch}
             weeks={trends?.weeks}
@@ -10436,15 +9493,26 @@ export default function App() {
           calculator={calculator}
           researched={addLotSecurityOptions}
           positionMaster={positionMaster}
+          declHistory={declHistory}
           asOfDate={asOfDate}
           busy={busy}
           writesBlocked={writesBlocked}
           onMessage={setActionMessage}
           onBusy={setBusy}
           onDirtyChange={setCartDirty}
+          cartRefreshKey={cartRefreshKey}
+          resumeScenarioId={cartResumeScenarioId}
+          onCartResumed={() => setCartResumeScenarioId(null)}
           onOpenBuyLot={(prefill) => {
             leaveWithoutSaving(() => {
               pendingCartBuyRef.current = { scenarioId: prefill.scenarioId };
+              setCartResumeScenarioId(prefill.scenarioId);
+              writeCartResume({
+                scenarioId: prefill.scenarioId,
+                accountId: prefill.accountId,
+                planId: prefill.planId || prefill.scenarioId,
+              });
+              addLotReturnScreenRef.current = "shopping-cart";
               setAddLotAccountId(prefill.accountId);
               setAddLotSecurityId(prefill.securityId);
               const row = securities.find((s) => s.securityId === prefill.securityId);
@@ -10454,8 +9522,25 @@ export default function App() {
                   : prefill.symbol,
               );
               setAddLotQty(String(prefill.qtyWhole));
-              setAddLotCost((prefill.lastMinor / 100).toFixed(2));
+              // Cart lastMinor is scale 4 (1/10000 USD). Never divide by 100 — that shows $3272 for $32.72.
+              const unitCost = cartPriceInput(prefill.lastMinor, prefill.priceScale ?? 4);
+              setAddLotCost(unitCost);
               setAddLotOpenedOn(prefill.openedOn);
+              setAddLotTaxCost("");
+              setAddLotTaxDifferent(false);
+              setAddLotOrigin("purchase");
+              setAddLotBaseline(
+                JSON.stringify({
+                  securityId: prefill.securityId,
+                  accountId: prefill.accountId,
+                  openedOn: prefill.openedOn,
+                  qty: String(prefill.qtyWhole),
+                  cost: unitCost,
+                  taxCost: "",
+                  taxCostDifferent: false,
+                  origin: "purchase",
+                }),
+              );
               setScreen("add-lot");
             }, "add-lot");
           }}
@@ -10472,16 +9557,8 @@ export default function App() {
             <h2 aria-label="Tax Planning">Tax Planning</h2>
           ) : cmDesk === "external" ? (
             <h2 aria-label="External accounts">External accounts</h2>
-          ) : cmDesk === "coverage" ? (
-            <h2 aria-label="Coverage">
-              {coveragePeriod === "month"
-                ? "Monthly comparison"
-                : coveragePeriod === "year"
-                  ? "Annual comparison"
-                  : "Weekly comparison"}
-            </h2>
-          ) : (
-            <h2 aria-label="System update tasks and confirmations">System update tasks and confirmations</h2>
+          ) : cmDesk === "coverage" ? null : (
+            <h2 aria-label="Week ahead planner">Week ahead planner</h2>
           )}
           {cmDesk === "weekly" ? (
             <PlanHorizonPrompt
@@ -10489,15 +9566,16 @@ export default function App() {
               disabled={busy || writesBlocked}
             />
           ) : null}
-          {cmDesk === "cashflow" || cmDesk === "external" ? null : (
+          {cmDesk === "cashflow"
+          || cmDesk === "external"
+          || cmDesk === "weekly"
+          || cmDesk === "coverage" ? null : (
           <p>
             {cmDesk === "elements"
               ? "Deposits and Withdrawals for the selected managed account."
               : cmDesk === "car"
                 ? "Household YTD and projected income by tax type, MAGI threshold, the Car table, and Cash YTD."
-                : cmDesk === "coverage"
-                  ? "Planned dividend income versus planned withdrawals for the next 12 months. Week is that year ÷ 52. Month is that year ÷ 12. The tables under the comparison list each amount × periods."
-                  : "Enter this Sat–Fri week, then declare SSA, distributions, or withdrawals."}
+                : null}
           </p>
           )}
           {cmDesk === "coverage" ? (
@@ -10581,6 +9659,30 @@ export default function App() {
                 week={weekAhead}
                 busy={busy}
                 pendingId={weekAheadPending}
+                onOpenSymbol={(symbol) => openPositionHub(symbol, "plan")}
+                onOpenMagi={(taskId) => magiNav.open("week-ahead", taskId)}
+                magiTaskId={magiNav.ticket?.from === "week-ahead" ? magiNav.ticket.taskId : null}
+                magiClient={client}
+                magiAccounts={accounts}
+                asOfDate={asOfDate}
+                onCutDraws={magiNav.cutDraws}
+                onCloseMagi={magiNav.close}
+                onAddElement={() => {
+                  const book =
+                    !catalogBook || catalogBook === "all"
+                      ? registerBookRef.current
+                      : catalogBook;
+                  if (book && book !== "all") {
+                    setCatalogBook(book);
+                    registerBookRef.current = book;
+                    setRegisterBook(book);
+                  }
+                  setEditorElement(null);
+                  setEditorOccurrenceId(null);
+                  setElementDirty(false);
+                  setElementEditorOpen(true);
+                  goCmDesk("elements", "Element Management");
+                }}
                 onConfirm={(occurrenceId) => {
                   void (async () => {
                     setWeekAheadPending(occurrenceId);
@@ -10611,7 +9713,6 @@ export default function App() {
                           asOf,
                           registerBookRef.current,
                           registerPeriodRef.current,
-                          ytdViewRef.current,
                         ),
                         magiQualifyingType(posted.activityType)
                           ? client.executeQuery("MagiProjectionGet")
@@ -10630,15 +9731,13 @@ export default function App() {
                           JSON.parse(rem.bodyJson) as CashManagementRemindersGet,
                         );
                       }
-                      if (registerPack.register) {
-                        setCashRegister(registerPack.register);
-                      }
-                      if (registerPack.elements) {
-                        setCashElements(registerPack.elements);
-                      }
-                      if (registerPack.ytd) {
-                        setCashYtd(registerPack.ytd);
-                      }
+                      applyCashNav(
+                        registerPack,
+                        setCashRegister,
+                        setCashElements,
+                        setCashYtdAccount,
+                        setCashYtdTax,
+                      );
                       if (magi && magi.ok && magi.bodyJson) {
                         setCashMagi(JSON.parse(magi.bodyJson) as MagiProjection);
                       }
@@ -10650,6 +9749,7 @@ export default function App() {
                 }}
                 onOpenEditor={(row) => {
                   leaveWithoutSaving(() => {
+                  rememberMenu();
                   void (async () => {
                     registerBookRef.current = row.account;
                     setRegisterBook(row.account);
@@ -10685,9 +9785,29 @@ export default function App() {
                     }
                   })();
                 }}
+                {...weekAheadTaskHandlers({
+                  client,
+                  asOf: cashWeek?.periodEnd || asOfDate,
+                  periodStart: weekAhead?.periodStart,
+                  setPending: setWeekAheadPending,
+                  setBusy,
+                  setMessage: setActionMessage,
+                  setWeek: setWeekAhead,
+                })}
               />
             }
             cashElements={
+              <>
+              <MagiDrawHead
+                taskId={magiNav.drawFilter ? magiNav.cutTaskId : null}
+                client={client}
+                asOfDate={asOfDate}
+                accounts={accounts}
+                busy={busy}
+                onCutDraws={magiNav.cutDraws}
+                onClose={magiNav.close}
+                onPosted={() => {}}
+              />
               <CashElementsCatalog
                 catalog={cashElements}
                 book={catalogBook}
@@ -10710,9 +9830,11 @@ export default function App() {
                   )
                 }
                 busy={busy}
+                drawFilter={magiNav.drawFilter}
                 onBook={setCatalogBook}
                 onAddElement={() => {
                   if (!catalogBook || catalogBook === "all") return;
+                  if (!elementEditorOpen) rememberMenu();
                   const book = catalogBook;
                   registerBookRef.current = book;
                   setRegisterBook(book);
@@ -10722,6 +9844,7 @@ export default function App() {
                   setElementEditorOpen(true);
                 }}
                 onOpenElement={(element) => {
+                  if (!elementEditorOpen) rememberMenu();
                   registerBookRef.current = element.account;
                   setRegisterBook(element.account);
                   setCatalogBook(element.account);
@@ -10796,6 +9919,11 @@ export default function App() {
                     if (updated) setEditorElement(updated);
                     setElementDirty(false);
                     setActionMessage("Element saved.");
+                    if (await magiNav.elementAdjusted(client)) {
+                      setElementEditorOpen(false);
+                      setEditorElement(null);
+                      setEditorOccurrenceId(null);
+                    }
                     return true;
                   } finally {
                     setBusy(false);
@@ -10859,12 +9987,18 @@ export default function App() {
                     }
                     setElementDirty(false);
                     setActionMessage("Exceptions saved.");
+                    if (await magiNav.elementAdjusted(client)) {
+                      setElementEditorOpen(false);
+                      setEditorElement(null);
+                      setEditorOccurrenceId(null);
+                    }
                     return true;
                   } finally {
                     setBusy(false);
                   }
                 }}
               />
+              </>
             }
             cashRegister={
               <CashRegisterPanel
@@ -10887,14 +10021,17 @@ export default function App() {
                         cashWeek?.periodEnd || asOfDate,
                         book,
                         registerPeriodRef.current,
-                        ytdViewRef.current,
                       );
                       if (seq !== registerFetchSeq.current) {
                         return;
                       }
-                      if (pack.register) setCashRegister(pack.register);
-                      if (pack.elements) setCashElements(pack.elements);
-                      if (pack.ytd) setCashYtd(pack.ytd);
+                      applyCashNav(
+                        pack,
+                        setCashRegister,
+                        setCashElements,
+                        setCashYtdAccount,
+                        setCashYtdTax,
+                      );
                     } finally {
                       if (seq === registerFetchSeq.current) {
                         setRegisterBusy(false);
@@ -10913,14 +10050,17 @@ export default function App() {
                         cashWeek?.periodEnd || asOfDate,
                         registerBookRef.current,
                         period,
-                        ytdViewRef.current,
                       );
                       if (seq !== registerFetchSeq.current) {
                         return;
                       }
-                      if (pack.register) setCashRegister(pack.register);
-                      if (pack.elements) setCashElements(pack.elements);
-                      if (pack.ytd) setCashYtd(pack.ytd);
+                      applyCashNav(
+                        pack,
+                        setCashRegister,
+                        setCashElements,
+                        setCashYtdAccount,
+                        setCashYtdTax,
+                      );
                     } finally {
                       if (seq === registerFetchSeq.current) {
                         setRegisterBusy(false);
@@ -10944,24 +10084,9 @@ export default function App() {
             }
             cashYtd={
               <CashYtdPanel
-                ytd={cashYtd}
-                view={ytdView}
+                account={cashYtdAccount}
+                tax={cashYtdTax}
                 busy={busy}
-                onView={(view) => {
-                  ytdViewRef.current = view;
-                  setYtdView(view);
-                  void (async () => {
-                    const pack = await fetchCashNav(client,
-                      cashWeek?.periodEnd || asOfDate,
-                      registerBookRef.current,
-                      registerPeriodRef.current,
-                      view,
-                    );
-                    if (pack.register) setCashRegister(pack.register);
-                    if (pack.elements) setCashElements(pack.elements);
-                    if (pack.ytd) setCashYtd(pack.ytd);
-                  })();
-                }}
               />
             }
             onDirtyChange={setCashDirty}
@@ -10984,7 +10109,6 @@ export default function App() {
                     d,
                     registerBookRef.current,
                     registerPeriodRef.current,
-                    ytdViewRef.current,
                   ),
                 ]);
                 if (r.ok && r.bodyJson) {
@@ -11009,15 +10133,13 @@ export default function App() {
                 if (ahead.ok && ahead.bodyJson) {
                   setWeekAhead(JSON.parse(ahead.bodyJson) as WeekAheadGet);
                 }
-                if (registerPack.register) {
-                  setCashRegister(registerPack.register);
-                }
-                if (registerPack.elements) {
-                  setCashElements(registerPack.elements);
-                }
-                if (registerPack.ytd) {
-                  setCashYtd(registerPack.ytd);
-                }
+                applyCashNav(
+                  registerPack,
+                  setCashRegister,
+                  setCashElements,
+                  setCashYtdAccount,
+                  setCashYtdTax,
+                );
               })();
             }}
             onSave={async (body) => {
@@ -11043,7 +10165,6 @@ export default function App() {
                   asOf,
                   registerBookRef.current,
                   registerPeriodRef.current,
-                  ytdViewRef.current,
                 ),
                 magiQualifyingType(body.activityType as string)
                   ? client.executeQuery("MagiProjectionGet")
@@ -11060,9 +10181,13 @@ export default function App() {
               if (mo.ok && mo.bodyJson) {
                 setCashMonth(JSON.parse(mo.bodyJson) as CashManagementMonthGet);
               }
-              if (registerPack.register) setCashRegister(registerPack.register);
-              if (registerPack.elements) setCashElements(registerPack.elements);
-              if (registerPack.ytd) setCashYtd(registerPack.ytd);
+              applyCashNav(
+                registerPack,
+                setCashRegister,
+                setCashElements,
+                setCashYtdAccount,
+                setCashYtdTax,
+              );
               if (magi && magi.ok && magi.bodyJson) {
                 setCashMagi(JSON.parse(magi.bodyJson) as MagiProjection);
               }
@@ -11096,7 +10221,6 @@ export default function App() {
                   asOf,
                   registerBookRef.current,
                   registerPeriodRef.current,
-                  ytdViewRef.current,
                 ),
                 magiQualifyingType(posted.activityType)
                   ? client.executeQuery("MagiProjectionGet")
@@ -11113,9 +10237,13 @@ export default function App() {
               if (mo.ok && mo.bodyJson) {
                 setCashMonth(JSON.parse(mo.bodyJson) as CashManagementMonthGet);
               }
-              if (registerPack.register) setCashRegister(registerPack.register);
-              if (registerPack.elements) setCashElements(registerPack.elements);
-              if (registerPack.ytd) setCashYtd(registerPack.ytd);
+              applyCashNav(
+                registerPack,
+                setCashRegister,
+                setCashElements,
+                setCashYtdAccount,
+                setCashYtdTax,
+              );
               if (magi && magi.ok && magi.bodyJson) {
                 setCashMagi(JSON.parse(magi.bodyJson) as MagiProjection);
               }
@@ -11162,8 +10290,9 @@ export default function App() {
                     allowClosed: correct,
                   });
                   if (!r.ok) {
-                    setActionMessage(`Trends save failed: ${r.errorCode ?? "error"}`);
-                    return;
+                    const message = `Trends save failed: ${r.errorCode ?? "error"}`;
+                    setActionMessage(message);
+                    return message;
                   }
                   const saved = r.bodyJson
                     ? (JSON.parse(r.bodyJson) as TrendsWeekCapture)
@@ -11173,9 +10302,9 @@ export default function App() {
                   }
                   trendsGraphPeriodRef.current = DEFAULT_GRAPH_PERIOD;
                   setTrendsChartEpoch((n) => n + 1);
-                  await refreshData(
-                    saved?.periodEnd || asOfDate || (body.periodEnd as string),
-                  );
+                  const savedAsOf = saved?.periodEnd || asOfDate || (body.periodEnd as string);
+                  await loadTrendsPack(savedAsOf);
+                  await refreshData(savedAsOf);
                   if (!correct) {
                     setCashWeekSavedAt(Date.now());
                   }
@@ -11291,15 +10420,40 @@ export default function App() {
       ) : null}
 
       {screen === "new-investment" ? (
-        <section aria-label="Add Position">
-          <h2>Add Position</h2>
+        <section aria-label="Add Investment">
+          <h2>Add Investment</h2>
+          <p aria-label="Collector gaps">
+            {wizSecurityId
+              ? wizCollectorGaps.length
+                ? `Open: ${wizCollectorGaps.join(", ")}`
+                : "No collector gaps."
+              : "Open gaps appear once this symbol is saved."}
+          </p>
           {wizProcessASaved && wizSecurityId ? (
             <section aria-label="Process A completion">
               <h3>Research saved</h3>
-              <p>
-                Process A finished for this identity. Zero lots is valid. Choose a next
-                action — this screen stays until you research another symbol.
+              <p role="status" aria-label="Add Investment completion status">
+                {wizCollectorComplete && wizPlanStored
+                  ? `${wizSymbol.trim().toUpperCase() || "This symbol"}: research and Plan are saved in the book. Nothing left to Confirm or Accept on this screen.`
+                  : processANeedsRemaining
+                    ? "Identity retrieval was saved, but Plan and/or inception are still open. Finish Confirm Plan / inception on this screen — Complete research only re-runs retrieval; it does not store Plan."
+                    : "Process A finished for this identity. Choose a next action."}
               </p>
+              <ul aria-label="What is saved versus optional">
+                <li>
+                  Research (frequency, DIV type, provider, underlying, ROC, pays, inception):{" "}
+                  {wizCollectorComplete ? "saved" : "not complete yet"}
+                </li>
+                <li>
+                  Plan / share: {wizPlanStored ? "saved — Shopping Cart can buy" : "not saved — Confirm Plan required"}
+                </li>
+                <li>
+                  Open lot:{" "}
+                  {processALotCount > 0
+                    ? `saved (${formatCount(processALotCount)}) — Income Plan / P/L connected`
+                    : "optional — Add lots when you hold shares (Calculator already lists Plan at 0 shares)"}
+                </li>
+              </ul>
               <dl className="process-a-completion-summary" aria-label="Saved identity summary">
                 <div>
                   <dt>Symbol</dt>
@@ -11314,14 +10468,30 @@ export default function App() {
                   <dd>{formatCount(processALotCount)}</dd>
                 </div>
                 <div>
+                  <dt>Plan / share</dt>
+                  <dd>{wizPlanStored ? "stored" : "not stored — Confirm Plan still required"}</dd>
+                </div>
+                <div>
+                  <dt>Inception</dt>
+                  <dd>
+                    {wizInceptionOn.trim()
+                      ? wizInceptionOn.trim()
+                      : processANeedsInception
+                        ? "needed (under 12 pays)"
+                        : "n/a"}
+                  </dd>
+                </div>
+                <div>
                   <dt>Overall</dt>
                   <dd>
-                    {processAFieldStatus.frequency &&
-                    processAFieldStatus.declarations &&
-                    processAFieldStatus.roc &&
-                    processAFieldStatus.price
-                      ? "researched"
-                      : "incomplete"}
+                    {processANeedsRemaining
+                      ? "incomplete"
+                      : processAFieldStatus.frequency &&
+                          processAFieldStatus.declarations &&
+                          processAFieldStatus.roc &&
+                          processAFieldStatus.price
+                        ? "researched"
+                        : "incomplete"}
                   </dd>
                 </div>
               </dl>
@@ -11361,20 +10531,45 @@ export default function App() {
                         : "unknown"}
                     </td>
                   </tr>
+                  <tr>
+                    <th scope="row">Plan / share</th>
+                    <td>{wizPlanStored ? "stored" : "not stored"}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Calculator / Income Plan</th>
+                    <td>
+                      {processALotCount > 0
+                        ? `connected (${formatCount(processALotCount)} open lot${processALotCount === 1 ? "" : "s"})`
+                        : wizPlanStored
+                          ? "Calculator lists Plan with 0 shares; Income Plan / daily prices wait on Add lots"
+                          : "omitted until Confirm Plan (then Calculator at 0 shares; Add lots for Income Plan)"}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
               <div className="buttons dossier-actions">
+                {processANeedsRemaining ? (
+                  <button
+                    type="button"
+                    aria-label="Complete remaining details"
+                    disabled={busy}
+                    onClick={() => continueProcessARemaining()}
+                  >
+                    Complete remaining details
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    aria-label="Open Position Details"
+                    disabled={busy}
+                    onClick={() => goProcessAToPositionDetails()}
+                  >
+                    Open Position Details
+                  </button>
+                )}
                 <button
                   type="button"
-                  aria-label="Open Position Details"
-                  disabled={busy}
-                  onClick={() => goProcessAToPositionDetails()}
-                >
-                  Open Position Details
-                </button>
-                <button
-                  type="button"
-                  aria-label="Complete research"
+                  aria-label="Re-run research retrieval"
                   disabled={
                     busy ||
                     writesBlocked ||
@@ -11383,7 +10578,9 @@ export default function App() {
                   }
                   onClick={() => void researchRoc()}
                 >
-                  {researchActivity?.running ? "Completing research…" : "Complete research"}
+                  {researchActivity?.running
+                    ? "Re-running research…"
+                    : "Re-run research retrieval"}
                 </button>
                 <button
                   type="button"
@@ -11403,13 +10600,13 @@ export default function App() {
                 </button>
               </div>
             </section>
-          ) : (
-            <>
+          ) : null}
           <p>
-            Process A: enter symbol and the issuer distribution URL, then Research.
+            Process A: enter symbol — if a Template Dividend URL is already on file it
+            is offered as the default. Confirm or paste the issuer URL, then Research.
             Retrieved facts show below; missing stays unknown — never $0. Confirm Plan
             and Apply tier are explicit owner actions. Lots are opened on Add Lot, not here.
-            Save ends Process A on an explicit completion screen.
+            Save keeps this research on screen — it does not wipe fields.
           </p>
           <div className="form-grid process-a-inputs">
             <label>
@@ -11419,8 +10616,27 @@ export default function App() {
                 value={wizSymbol}
                 onChange={(e) => {
                   setWizSymbol(e.target.value.toUpperCase());
-                  setWizResearchDone(false);
-                  setWizProcessASaved(false);
+                }}
+                onBlur={() => {
+                  const next = wizSymbol.trim().toUpperCase();
+                  const held = (
+                    securities.find((s) => s.securityId === wizSecurityId)?.symbol ||
+                    ""
+                  )
+                    .trim()
+                    .toUpperCase();
+                  if (wizSecurityId && next && held && next !== held) {
+                    setWizResearchDone(false);
+                    setWizProcessASaved(false);
+                    setWizStoredUrlOffer("");
+                  }
+                  void offerStoredTemplatesForSymbol(wizSymbol);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void offerStoredTemplatesForSymbol(wizSymbol);
+                  }
                 }}
                 disabled={busy || writesBlocked}
                 autoComplete="off"
@@ -11433,8 +10649,6 @@ export default function App() {
                 value={wizSourceUrl}
                 onChange={(e) => {
                   setWizSourceUrl(e.target.value);
-                  setWizResearchDone(false);
-                  setWizProcessASaved(false);
                 }}
                 disabled={busy || writesBlocked}
                 placeholder="https://…/#distributions"
@@ -11442,6 +10656,11 @@ export default function App() {
               />
             </label>
           </div>
+          {wizStoredUrlOffer ? (
+            <p role="status" aria-label="Stored Template Dividend offer">
+              {wizStoredUrlOffer}
+            </p>
+          ) : null}
           <div className="buttons dossier-actions">
             <button
               type="button"
@@ -11497,8 +10716,31 @@ export default function App() {
             <p role="status">{wizRetrieveNote}</p>
           ) : null}
           {wizResearchDone && !researchActivity?.running ? (
-            <section aria-label="Research results">
+            <section aria-label="Research results" className="process-a-results">
               <h3>Research results</h3>
+              {(() => {
+                const complete = wizEstablishComplete || (wizCollectorComplete && wizPlanStored);
+                const label = complete
+                  ? "Complete"
+                  : wizEstablishOpenLabels.length
+                    ? `Information still needed: ${wizEstablishOpenLabels.join(", ")}`
+                    : !wizPlanStored
+                      ? "Information still needed — Confirm Plan (Shopping Cart needs stored Plan / share)"
+                      : "Information still needed";
+                return (
+                  <p
+                    role="status"
+                    aria-label="Investment details status"
+                    className={
+                      complete
+                        ? "investment-details-status is-complete"
+                        : "investment-details-status is-missing"
+                    }
+                  >
+                    {label}
+                  </p>
+                );
+              })()}
               {wizAskSecondUrl && !wizSecondUrlTried ? (
                 <section aria-label="Second distribution URL" className="process-a-second-url">
                   <p role="status">
@@ -11531,17 +10773,21 @@ export default function App() {
                   is parked. Collector stays incomplete.
                 </p>
               ) : null}
-              {wizAskInception ? (
+              {wizAskInception || processANeedsInception ? (
                 <section aria-label="Inception confirm" className="process-a-inception">
                   <p role="status">
-                    Paid history is under 12.
+                    Paid history is under 12
+                    {wizDecls.length
+                      ? ` (${formatCount(wizDecls.filter((d) => d.amountPerShareMinor > 0).length)} on file)`
+                      : ""}
+                    .
                     {wizInceptionCandidate
                       ? ` Search found inception ${wizInceptionCandidate}${
                           wizExpectedPaid != null
                             ? ` — expected ${formatCount(wizExpectedPaid)} paid periods since then`
                             : ""
                         }. Is this name too new for 12 paid declarations?`
-                      : " Inception search missed. Yes stores a date you type; No opens a ticket and leaves the collector incomplete."}
+                      : " Type the fund inception / start date if you know it, then Yes. No opens a ticket and leaves the collector incomplete. Confirm Plan with an Incomplete analysis reason can still store Plan for Shopping Cart either way."}
                   </p>
                   <label>
                     Inception date
@@ -11587,21 +10833,43 @@ export default function App() {
                   <tr>
                     <th scope="row">Provider / type</th>
                     <td>
-                      {[wizProvider, wizDeclSource].filter(Boolean).join(" · ") || "—"}
+                      <input
+                        aria-label="Provider"
+                        value={wizProvider}
+                        onChange={(e) => setWizProvider(e.target.value)}
+                        disabled={busy || writesBlocked}
+                        placeholder="Provider"
+                      />
+                      {wizDeclSource.trim() ? (
+                        <span aria-label="Declaration source"> · {wizDeclSource}</span>
+                      ) : null}
                     </td>
                     <td>{wizProvider.trim() || wizDeclSource.trim() ? "retrieved" : "unknown"}</td>
                     <td>
-                      <button type="button" aria-label="Accept provider" disabled={busy} onClick={() => void decideProcessAField("provider", "accept")}>Accept</button>
+                      {wizFieldDecision.provider ? (
+                        <span className="process-a-checklist-decision" aria-label="Provider decision">
+                          {wizFieldDecision.provider === "accept" ? "Accepted" : "Skipped"}
+                        </span>
+                      ) : null}
+                      <button type="button" aria-label="Accept provider" disabled={busy || !wizProvider.trim()} onClick={() => void decideProcessAField("provider", "accept")}>Accept</button>
                       <button type="button" aria-label="Skip provider" disabled={busy} onClick={() => void decideProcessAField("provider", "skip")}>Skip</button>
                     </td>
                   </tr>
                     <tr>
                       <th scope="row">Underlying</th>
-                      <td>{wizUnderlying.trim() || "—"}</td>
+                      <td aria-label="Underlying">
+                        {wizUnderlying.trim() || "—"}
+                        <span role="note"> · set in Owner actions</span>
+                      </td>
                       <td>{wizUnderlying.trim() ? "retrieved" : "unknown"}</td>
                       <td>
-                        <button type="button" aria-label="Accept underlying" disabled={busy} onClick={() => void decideProcessAField("underlying", "accept")}>Accept</button>
-                        <button type="button" aria-label="Skip underlying" disabled={busy} onClick={() => void decideProcessAField("underlying", "skip")}>Skip</button>
+                        {wizFieldDecision.underlying ? (
+                          <span className="process-a-checklist-decision" aria-label="Underlying decision">
+                            {wizFieldDecision.underlying === "accept" ? "Accepted" : "Skipped"}
+                          </span>
+                        ) : (
+                          "Owner actions"
+                        )}
                       </td>
                     </tr>
                     <tr>
@@ -11618,10 +10886,29 @@ export default function App() {
                     </tr>
                   <tr>
                     <th scope="row">Frequency</th>
-                    <td>{wizFreq.trim() || "—"}</td>
+                    <td>
+                      <select
+                        aria-label="Payment frequency"
+                        value={wizFreq}
+                        onChange={(e) => setWizFreq(e.target.value)}
+                        disabled={busy || writesBlocked}
+                      >
+                        <option value="">Select frequency</option>
+                        {["Weekly", "Twice monthly", "Monthly", "Quarterly"].map((f) => (
+                          <option key={f} value={f}>
+                            {f}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
                     <td>{parseCadence(wizFreq) ? "retrieved" : "unknown"}</td>
                     <td>
-                      <button type="button" aria-label="Accept frequency" disabled={busy} onClick={() => void decideProcessAField("frequency", "accept")}>Accept</button>
+                      {wizFieldDecision.frequency ? (
+                        <span className="process-a-checklist-decision" aria-label="Frequency decision">
+                          {wizFieldDecision.frequency === "accept" ? "Accepted" : "Skipped"}
+                        </span>
+                      ) : null}
+                      <button type="button" aria-label="Accept frequency" disabled={busy || !parseCadence(wizFreq)} onClick={() => void decideProcessAField("frequency", "accept")}>Accept</button>
                       <button type="button" aria-label="Skip frequency" disabled={busy} onClick={() => void decideProcessAField("frequency", "skip")}>Skip</button>
                     </td>
                   </tr>
@@ -11648,22 +10935,42 @@ export default function App() {
                         : "unknown"}
                     </td>
                     <td>
+                      {wizFieldDecision.remaining_year ? (
+                        <span className="process-a-checklist-decision" aria-label="Remaining year decision">
+                          {wizFieldDecision.remaining_year === "accept" ? "Accepted" : "Skipped"}
+                        </span>
+                      ) : null}
                       <button type="button" aria-label="Accept remaining year" disabled={busy} onClick={() => void decideProcessAField("remaining_year", "accept")}>Accept</button>
                       <button type="button" aria-label="Skip remaining year" disabled={busy} onClick={() => void decideProcessAField("remaining_year", "skip")}>Skip</button>
                     </td>
                   </tr>
                   <tr>
-                    <th scope="row">Suggested Plan</th>
-                    <td>
-                      {wizReview?.mostCurrentMinor != null
-                        ? `${formatPerShare(wizReview.mostCurrentMinor, wizReview.amountScale)}/share (Most Current)`
-                        : "—"}
-                      {wizReview?.avg6Minor != null
-                        ? `; Avg 6 ${formatPerShare(wizReview.avg6Minor, wizReview.amountScale)}`
-                        : ""}
+                    <th scope="row">Dividend basis</th>
+                    <td aria-label="Dividend basis summary">
+                      {wizReview && (wizReview.minMinor != null || wizReview.mostCurrentMinor != null) ? (
+                        <>
+                          {wizReview.minMinor != null
+                            ? `Min ${formatPerShare(wizReview.minMinor, wizReview.amountScale)}`
+                            : null}
+                          {wizReview.maxMinor != null
+                            ? ` · Max ${formatPerShare(wizReview.maxMinor, wizReview.amountScale)}`
+                            : null}
+                          {wizReview.averageMinor != null
+                            ? ` · Avg ${formatPerShare(wizReview.averageMinor, wizReview.amountScale)}`
+                            : null}
+                          {wizReview.mostCurrentMinor != null
+                            ? ` · Most Current ${formatPerShare(wizReview.mostCurrentMinor, wizReview.amountScale)}`
+                            : null}
+                          {wizReview.avg6Minor != null
+                            ? ` · Avg 6 ${formatPerShare(wizReview.avg6Minor, wizReview.amountScale)}`
+                            : null}
+                        </>
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td>
-                      {wizReview?.mostCurrentMinor != null || wizReview?.avg6Minor != null
+                      {wizReview?.mostCurrentMinor != null || wizReview?.averageMinor != null
                         ? "retrieved"
                         : "unknown"}
                     </td>
@@ -11693,39 +11000,85 @@ export default function App() {
                               : ""
                           }`
                         : "—"}
+                      {wizRisk.trim() ? (
+                        <span role="note"> · owner Risk: {wizRisk.trim()}</span>
+                      ) : (
+                        <span role="note"> · set Risk in Owner actions</span>
+                      )}
                       {wizBacktestNeeded ? (
                         <p role="status" aria-label="Backtest dates required for tier suggest">
-                          Backtest start/end (and method/source) are required to complete
-                          ClassificationSuggest. Other research continues without a backtest.
-                          Accept tier remains owner-only.
-                        </p>
-                      ) : null}
-                      {wizAiThesis ? (
-                        <p role="status" aria-label="AI thesis narrative">
-                          Thesis (advisory): {wizAiThesis}
+                          Backtest dates required for ClassificationSuggest. Risk tier is owner-only.
                         </p>
                       ) : null}
                     </td>
                     <td>
-                      {(wizTierSuggestion?.suggestedTier || wizLookthrough.riskTierSuggestion || "").trim()
-                        ? "retrieved"
-                        : wizBacktestNeeded
-                          ? "needs backtest"
-                          : "unknown"}
+                      {wizRisk.trim()
+                        ? "owner set"
+                        : (wizTierSuggestion?.suggestedTier || wizLookthrough.riskTierSuggestion || "").trim()
+                          ? "suggested"
+                          : wizBacktestNeeded
+                            ? "needs backtest"
+                            : "unknown"}
                     </td>
                     <td>
-                      <button type="button" aria-label="Accept risk" disabled={busy} onClick={() => void decideProcessAField("risk_tier", "accept")}>Accept</button>
-                      <button type="button" aria-label="Skip risk" disabled={busy} onClick={() => void decideProcessAField("risk_tier", "skip")}>Skip</button>
-                      <button type="button" aria-label="Skip backtest" disabled={busy} onClick={() => void decideProcessAField("backtest", "skip")}>Skip backtest</button>
+                      {wizFieldDecision.risk_tier ? (
+                        <span className="process-a-checklist-decision" aria-label="Risk decision">
+                          {wizFieldDecision.risk_tier === "accept" ? "Accepted" : "Skipped"}
+                        </span>
+                      ) : (
+                        "Owner actions"
+                      )}
+                      {wizBacktestNeeded ? (
+                        <button type="button" aria-label="Skip backtest" disabled={busy} onClick={() => void decideProcessAField("backtest", "skip")}>Skip backtest</button>
+                      ) : null}
                     </td>
                   </tr>
                   <tr>
-                    <th scope="row">DIV-1 / CASH</th>
-                    <td>—</td>
-                    <td>{wizCollectorGaps.includes("div_type") ? "unknown" : "retrieved"}</td>
+                    <th scope="row">Investment type</th>
                     <td>
-                      <button type="button" aria-label="Accept div type" disabled={busy} onClick={() => void decideProcessAField("div_type", "accept")}>Accept</button>
-                      <button type="button" aria-label="Skip div type" disabled={busy} onClick={() => void decideProcessAField("div_type", "skip")}>Skip</button>
+                      <select
+                        aria-label="Investment type"
+                        value={normalizeDivType(wizDivType)}
+                        onChange={(e) => setWizDivType(e.target.value)}
+                        disabled={busy || writesBlocked}
+                      >
+                        <option value="">Select type</option>
+                        {DIV_TYPES.map((t) => (
+                          <option key={t} value={t}>
+                            {t === "CASH" ? "CASH (money market / DIV-2 path)" : t}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      {normalizeDivType(wizDivType)
+                        ? wizCollectorGaps.includes("div_type")
+                          ? "chosen"
+                          : "retrieved"
+                        : "unknown"}
+                    </td>
+                    <td>
+                      {wizFieldDecision.div_type ? (
+                        <span className="process-a-checklist-decision" aria-label="Div type decision">
+                          {wizFieldDecision.div_type === "accept" ? "Accepted" : "Skipped"}
+                        </span>
+                      ) : null}
+                      <button
+                        type="button"
+                        aria-label="Accept div type"
+                        disabled={busy || !normalizeDivType(wizDivType)}
+                        onClick={() => void decideProcessAField("div_type", "accept")}
+                      >
+                        Accept
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Skip div type"
+                        disabled={busy}
+                        onClick={() => void decideProcessAField("div_type", "skip")}
+                      >
+                        Skip
+                      </button>
                     </td>
                   </tr>
                 </tbody>
@@ -11754,71 +11107,6 @@ export default function App() {
                   ) : null}
                 </section>
               ) : null}
-
-              <section aria-label="ROC research strip" className="roc-research-strip">
-                <h4>ROC research</h4>
-                <p>
-                  {wizRoc && wizRoc.rocPctMinor != null
-                    ? `Proposed ${((wizRoc.rocPctMinor as number) / 10 ** wizRoc.scale).toFixed(wizRoc.scale)}% (2026 estimate, ${wizRoc.kind || "estimate"})${
-                        wizRoc.sourceUrl ? ` — ${wizRoc.sourceUrl}` : ""
-                      }. Not research-complete.`
-                    : "2026 estimate unknown — not 0%. 2025 actual stays N/A when the position was not held that year."}
-                </p>
-                {!(wizRoc && wizRoc.rocPctMinor != null) ? (
-                  <label>
-                    Template ROC
-                    <input
-                      aria-label="Template ROC"
-                      value={wizRocUrl}
-                      onChange={(e) => setWizRocUrl(e.target.value)}
-                      disabled={busy || writesBlocked}
-                      placeholder="https://…19a-1…"
-                    />
-                  </label>
-                ) : null}
-                {!(wizRoc && wizRoc.rocPctMinor != null) ? (
-                  <button
-                    type="button"
-                    aria-label="Store ROC URL"
-                    disabled={busy || writesBlocked || !wizRocUrl.trim()}
-                    onClick={() => void submitProcessARocUrl()}
-                  >
-                    Store ROC URL and parse
-                  </button>
-                ) : null}
-                <div className="buttons">
-                  <button type="button" aria-label="Accept ROC estimate" disabled={busy} onClick={() => void decideProcessAField("roc_estimate", "accept")}>
-                    Accept ROC
-                  </button>
-                  <button type="button" aria-label="Skip ROC estimate" disabled={busy} onClick={() => void decideProcessAField("roc_estimate", "skip")}>
-                    Skip ROC
-                  </button>
-                </div>
-                {wizCollectorComplete ? (
-                  <p role="status">
-                    Collector complete. Add lots is offered below — research does not open a lot.
-                  </p>
-                ) : wizCollectorGaps.length ? (
-                  <p role="status">Incomplete: {wizCollectorGaps.join(", ")}.</p>
-                ) : null}
-                {wizSourceUrl.trim() || wizDeclSource.trim() ? (
-                  <button
-                    type="button"
-                    aria-label="Complete research"
-                    disabled={
-                      busy ||
-                      writesBlocked ||
-                      !wizSecurityId ||
-                      Boolean(researchActivity?.running)
-                    }
-                    onClick={() => void researchRoc()}
-                  >
-                    {researchActivity?.running
-                      ? "Completing research…"
-                      : "Complete research"}
-                  </button>
-                ) : null}
-              </section>
 
               {wizDecls.length > 0 ? (
                 <div className="table-wrap">
@@ -11870,10 +11158,44 @@ export default function App() {
 
               <section aria-label="Owner plan and tier actions">
                 <h4>Owner actions</h4>
+                <p
+                  className="process-a-dividend-basis"
+                  aria-label="Dividend statistics"
+                >
+                  {wizReview &&
+                  (wizReview.minMinor != null ||
+                    wizReview.maxMinor != null ||
+                    wizReview.averageMinor != null) ? (
+                    <>
+                      Min{" "}
+                      {wizReview.minMinor != null
+                        ? formatPerShare(wizReview.minMinor, wizReview.amountScale)
+                        : "—"}
+                      {" · "}
+                      Max{" "}
+                      {wizReview.maxMinor != null
+                        ? formatPerShare(wizReview.maxMinor, wizReview.amountScale)
+                        : "—"}
+                      {" · "}
+                      Average{" "}
+                      {wizReview.averageMinor != null
+                        ? formatPerShare(wizReview.averageMinor, wizReview.amountScale)
+                        : "—"}
+                      {wizReview.mostCurrentMinor != null
+                        ? ` · Most Current ${formatPerShare(wizReview.mostCurrentMinor, wizReview.amountScale)}`
+                        : null}
+                      {wizReview.avg6Minor != null
+                        ? ` · Avg 6 ${formatPerShare(wizReview.avg6Minor, wizReview.amountScale)}`
+                        : null}
+                    </>
+                  ) : (
+                    "Min / Max / Average unavailable until declarations retrieve."
+                  )}
+                </p>
                 <p>
                   {processALotCount > 0
                     ? "Recreate validates stored facts. It does not re-import pays, identity, ROC, or Plan. Confirm Plan is not required unless you change Plan."
-                    : "Confirm Plan writes Plan / share only. It does not replace stored paid history, lots, or remaining-year dates."}
+                    : "Enter Plan / share from the dividend basis above, then Confirm Plan. Confirm Plan writes Plan / share only. It does not replace stored paid history, lots, or remaining-year dates."}
                   {parseCadence(wizFreq) ? "" : " Frequency research is still required."}
                 </p>
                 {(() => {
@@ -11918,6 +11240,32 @@ export default function App() {
                 })()}
                 <div className="form-grid">
                   <label>
+                    Underlying
+                    <input
+                      aria-label="Owner underlying"
+                      value={wizUnderlying}
+                      onChange={(e) => setWizUnderlying(e.target.value)}
+                      disabled={busy || writesBlocked}
+                      placeholder="e.g. MSTR"
+                    />
+                  </label>
+                  <label>
+                    Risk tier
+                    <select
+                      aria-label="Owner risk tier"
+                      value={wizRisk}
+                      onChange={(e) => setWizRisk(e.target.value)}
+                      disabled={busy || writesBlocked}
+                    >
+                      <option value="">Select tier</option>
+                      {RISK_TIERS.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
                     Plan / share
                     <input
                       aria-label="Plan per share"
@@ -11926,6 +11274,7 @@ export default function App() {
                       value={wizPlan}
                       onChange={(e) => setWizPlan(e.target.value)}
                       disabled={busy || writesBlocked}
+                      placeholder="Owner-entered — not auto-filled"
                     />
                   </label>
                   <label>
@@ -11944,19 +11293,73 @@ export default function App() {
                       ))}
                     </select>
                   </label>
-                  {wizReview?.incompleteReasonRequired ? (
-                    <label>
-                      Incomplete analysis reason
-                      <input
-                        aria-label="Incomplete analysis reason"
-                        value={wizIncomplete}
-                        onChange={(e) => setWizIncomplete(e.target.value)}
-                        disabled={busy || writesBlocked}
-                      />
-                    </label>
-                  ) : null}
+                  {(() => {
+                    const obs =
+                      wizReview?.observationCount ??
+                      wizDecls.filter((d) => d.amountPerShareMinor > 0).length;
+                    const shortHistory =
+                      Boolean(wizReview?.incompleteReasonRequired) ||
+                      (obs > 0 && obs < 6);
+                    if (!shortHistory) return null;
+                    if (wizInceptionOn.trim()) {
+                      return (
+                        <p role="status" aria-label="Incomplete analysis covered by inception">
+                          Incomplete analysis reason not needed — inception {wizInceptionOn.trim()} covers short paid history (Confirm Plan will record “Recent inception date”).
+                        </p>
+                      );
+                    }
+                    return (
+                      <label>
+                        Incomplete analysis reason
+                        <select
+                          aria-label="Incomplete analysis reason"
+                          value={wizIncomplete}
+                          onChange={(e) => setWizIncomplete(e.target.value)}
+                          disabled={busy || writesBlocked}
+                        >
+                          <option value="">Select reason</option>
+                          {INCOMPLETE_REASONS.map((r) => (
+                            <option key={r} value={r}>
+                              {r}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    );
+                  })()}
                 </div>
+                {processAPlanBlockReason ? (
+                  <p role="status" aria-label="Confirm Plan blocked reason">
+                    Confirm Plan needs: {processAPlanBlockReason}
+                  </p>
+                ) : (
+                  <p role="status" aria-label="Confirm Plan ready">
+                    Confirm Plan is ready — click it to write Plan into history for Shopping Cart.
+                  </p>
+                )}
                 <div className="buttons">
+                  <button
+                    type="button"
+                    aria-label="Save identity"
+                    className={wizDirty ? "is-unsaved" : undefined}
+                    disabled={busy || writesBlocked || !wizSecurityId}
+                    onClick={() => void saveProcessAOwnerIdentity()}
+                  >
+                    Save underlying / tier
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Apply owner risk tier"
+                    disabled={
+                      busy ||
+                      writesBlocked ||
+                      !wizSecurityId ||
+                      !RISK_TIERS.includes(wizRisk.trim())
+                    }
+                    onClick={() => void applyOwnerRiskTier()}
+                  >
+                    Apply tier
+                  </button>
                   <button
                     type="button"
                     aria-label="Use Most Current as Plan"
@@ -11994,20 +11397,7 @@ export default function App() {
                     disabled={
                       busy ||
                       writesBlocked ||
-                      !wizSecurityId ||
-                      !wizPlan.trim() ||
-                      !wizPlanReason ||
-                      !parseCadence(wizFreq) ||
-                      Boolean(wizReview?.confirmBlocked) ||
-                      (wizReview?.observationCount ?? 0) < 1 ||
-                      (Boolean(wizReview?.incompleteReasonRequired) && !wizIncomplete.trim()) ||
-                      (processALotCount > 0 &&
-                        wizPlanStored &&
-                        wizStoredPlan != null &&
-                        formatPerShare(wizStoredPlan.minor, wizStoredPlan.scale) ===
-                          (Number.isFinite(Number(wizPlan))
-                            ? formatPerShare(Math.round(Number(wizPlan) * 10 ** 4), 4)
-                            : ""))
+                      Boolean(processAPlanBlockReason)
                     }
                     onClick={() => void confirmPlan()}
                   >
@@ -12033,13 +11423,108 @@ export default function App() {
                     Apply tier
                   </button>
                 </div>
-                {wizPlanStored ? <p role="status">Plan confirmed.</p> : null}
+                {wizPlanStored ? (
+                  <p role="status">Plan confirmed — stored in plan history for Shopping Cart.</p>
+                ) : wizPlan.trim() ? (
+                  <p role="status" aria-label="Plan typed but not stored">
+                    Plan is typed here but not stored yet. Shopping Cart week/month/year stay blank until Confirm Plan succeeds.
+                  </p>
+                ) : null}
                 {wizRisk.trim() ? <p role="status">Applied tier: {wizRisk}</p> : null}
+                {(() => {
+                  const complete =
+                    wizEstablishComplete || (wizCollectorComplete && wizPlanStored);
+                  const label = complete
+                    ? "Complete"
+                    : wizEstablishOpenLabels.length
+                      ? `Information still needed: ${wizEstablishOpenLabels.join(", ")}`
+                      : !wizPlanStored
+                        ? "Information still needed — Confirm Plan (Shopping Cart needs stored Plan / share)"
+                        : "Information still needed";
+                  return (
+                    <p
+                      role="status"
+                      aria-label="Investment details status"
+                      className={
+                        complete
+                          ? "investment-details-status is-complete"
+                          : "investment-details-status is-missing"
+                      }
+                    >
+                      {label}
+                    </p>
+                  );
+                })()}
+              </section>
+
+              <section aria-label="ROC research strip" className="roc-research-strip">
+                <h4>ROC research</h4>
+                <p>
+                  {wizRoc && wizRoc.rocPctMinor != null
+                    ? `Proposed ${((wizRoc.rocPctMinor as number) / 10 ** wizRoc.scale).toFixed(wizRoc.scale)}% (2026 estimate, ${wizRoc.kind || "estimate"})${
+                        wizRoc.sourceUrl ? ` — ${wizRoc.sourceUrl}` : ""
+                      }. Not research-complete.`
+                    : "2026 estimate unknown — not 0%. 2025 actual stays N/A when the position was not held that year."}
+                </p>
+                <label>
+                  Template ROC
+                  <input
+                    aria-label="Template ROC"
+                    value={wizRocUrl}
+                    onChange={(e) => setWizRocUrl(e.target.value)}
+                    disabled={busy || writesBlocked}
+                    placeholder="https://…19a-1…"
+                  />
+                </label>
+                <button
+                  type="button"
+                  aria-label="Store ROC URL"
+                  disabled={busy || writesBlocked || !wizRocUrl.trim()}
+                  onClick={() => void submitProcessARocUrl()}
+                >
+                  Store ROC URL and parse
+                </button>
+                <label>
+                  Manual ROC %
+                  <input
+                    aria-label="Manual ROC percent"
+                    inputMode="decimal"
+                    value={wizRocPct}
+                    onChange={(e) => setWizRocPct(e.target.value)}
+                    disabled={busy || writesBlocked}
+                    placeholder="e.g. 80 or 99.70"
+                  />
+                </label>
+                <button
+                  type="button"
+                  aria-label="Store manual ROC percent"
+                  className={wizRocPct.trim() ? "is-unsaved" : undefined}
+                  disabled={busy || writesBlocked || !wizRocPct.trim()}
+                  onClick={() => void submitProcessAManualRoc()}
+                >
+                  Store manual ROC %
+                </button>
+                <div className="buttons">
+                  <button
+                    type="button"
+                    aria-label="Accept ROC estimate"
+                    disabled={busy}
+                    onClick={() => void acceptProcessARoc()}
+                  >
+                    Accept ROC
+                  </button>
+                  <button type="button" aria-label="Skip ROC estimate" disabled={busy} onClick={() => void decideProcessAField("roc_estimate", "skip")}>
+                    Skip ROC
+                  </button>
+                </div>
               </section>
             </section>
           ) : null}
-            </>
-          )}
+          <ReadinessChecklist
+            rows={wizEstablishChecklist}
+            complete={wizEstablishComplete}
+            openLabels={wizEstablishOpenLabels}
+          />
         </section>
       ) : null}
 
@@ -12047,7 +11532,7 @@ export default function App() {
         <section aria-label="Add Lot">
           <h2>Add Lot</h2>
           <p>
-            Process B: open an explicit lot on a researched symbol (Add Position first).
+            Process B: open an explicit lot on a researched symbol (Add Investment first).
             Account, opened-on, quantity, original cost, tax cost if different, and origin only.
             No frequency, URL, ROC, or tier here. Opening is explicit — no FIFO. Zero lots after
             research is valid until you save.
@@ -12216,13 +11701,13 @@ export default function App() {
           </div>
           {securities.length === 0 ? (
             <p role="status">
-              No securities yet. Use Add Position (symbol + distribution URL), then return
+              No securities yet. Use Add Investment (symbol + distribution URL), then return
               here to open a lot. Researched names with zero lots are included.
             </p>
           ) : addLotQuery.trim() && !addLotSecurityId && filteredAddLotSecurities.length === 0 ? (
             <p role="status">
               No matching researched symbol. Cannot create a new ticker here — research it
-              on Add Position first.
+              on Add Investment first.
             </p>
           ) : null}
         </section>
@@ -12321,8 +11806,8 @@ export default function App() {
           <section aria-label="Manual dividend">
             <h3>Enter missing dividend</h3>
             <p>
-              Cash positions (SPAXX, FDRXX, SWVXX) and Account 9. Qty is 1. Description is
-              Dividend. Amount is the cash total, not per share.
+              Cash positions ({CASH_PAR_SYMBOLS.join(", ")}) and Account 9. Qty is 1.
+              Description is Dividend. Amount is the cash total, not per share.
             </p>
             <div className="table-wrap">
               <table aria-label="Manual dividend rows">
@@ -12432,15 +11917,15 @@ export default function App() {
           <h2>Tickets</h2>
           <p>
             {ticketFocusSymbol
-              ? `Open work tickets for ${ticketFocusSymbol}. `
-              : "All open work tickets, every symbol. "}
-            Recreate adapter opens Add Position with the stored Template
-            Dividend and researches that URL (self-heal). Paste only when no
-            seed URL is stored. A GET timeout skips that name, continues the
-            fleet, then retries the same stored URL at 20s / 45s / 90s — Retry
-            does that too. Recreate is not the timeout path. Amount variation
-            stays open until Except (keep the vendor amount) or Reject
-            (discard it).
+              ? `Open work for ${ticketFocusSymbol}. `
+              : "Open work for every symbol. "}
+            Each card says what failed and which button to click.{" "}
+            <strong>Recreate adapter</strong> opens Add Investment to finish
+            establish (for example a missing ROC).{" "}
+            <strong>Fix remaining year</strong> overwrites derived projections
+            with vendor-posted dates for those periods (collect heal — not a
+            year rebuild). <strong>File</strong> only dismisses the ticket with a
+            note — it does not fix the underlying problem.
           </p>
           {ticketFocusSymbol ? (
             <button
@@ -12458,9 +11943,24 @@ export default function App() {
             retryingSymbol={retryingTicket?.symbol}
             pendingTicketId={ticketDecision?.ticketId}
             pendingAction={ticketDecision?.action}
+            resolveRocContext={(t) =>
+              resolveTicketRocContext(t as WorkTicketRecord)
+            }
+            onStoreRocUrl={(t, url) =>
+              storeTicketRocUrl(t as WorkTicketRecord, url)
+            }
+            onStoreManualRoc={(t, pct) =>
+              void storeTicketManualRoc(t as WorkTicketRecord, pct)
+            }
+            onOpenRocResearch={(t) =>
+              openTicketRocResearch(t as WorkTicketRecord)
+            }
             onRetry={(t) => void resolveTicketRetry(t as WorkTicketRecord)}
             onRecreateAdapter={(t) =>
               openRecreateAdapter(t as WorkTicketRecord)
+            }
+            onFixRemainingYear={(t) =>
+              void fixRemainingYearTicket(t as WorkTicketRecord)
             }
             onExcept={(t) =>
               resolveConfirmTicket(t as WorkTicketRecord, "positive")
@@ -12520,10 +12020,17 @@ export default function App() {
           onOpenExceptionLog={() => void openExceptionLog()}
           onRetryTicket={(t) => void resolveTicketRetry(t)}
           onRecreateAdapter={(t) => openRecreateAdapter(t as WorkTicketRecord)}
+          onFixRemainingYear={(t) => void fixRemainingYearTicket(t)}
           onExceptTicket={(t) => resolveConfirmTicket(t, "positive")}
           onRejectTicket={(t) => resolveConfirmTicket(t, "reject")}
           onEnterAmount={(t, amount) => void resolveEnterDeclaredAmount(t, amount)}
           onFileTicket={(t) => void fileWorkTicket(t)}
+          resolveTicketRocContext={(t) => resolveTicketRocContext(t)}
+          onStoreTicketRocUrl={(t, url) => storeTicketRocUrl(t, url)}
+          onStoreTicketManualRoc={(t, pct) =>
+            void storeTicketManualRoc(t, pct)
+          }
+          onOpenTicketRocResearch={(t) => openTicketRocResearch(t)}
         />
       ) : null}
 
@@ -12538,51 +12045,52 @@ export default function App() {
         />
       ) : null}
 
+      {screen === "task-manager" ? (
+        <TaskManager
+          client={client}
+          asOfDate={asOfDate}
+          accounts={accounts}
+          onOpenSymbol={(symbol) => openPositionHub(symbol, "plan")}
+          magiTaskId={magiNav.ticket?.from === "task-manager" ? magiNav.ticket.taskId : null}
+          onOpenMagi={(taskId) => magiNav.open("task-manager", taskId)}
+          onCloseMagi={magiNav.close}
+          onCutDraws={magiNav.cutDraws}
+        />
+      ) : null}
+
+      {screen === "interest-rate" ? <InterestRateCalculator /> : null}
+
+      {screen === "contract-positions" ? <ContractPositions client={client} /> : null}
+
       {screen === "components" ? (
-        <section className="actions" aria-label="Component registry">
-          <h2>Components</h2>
-          <p>
-            UI extraction catalog: whether a screen has left App.tsx. Not a
-            domain-completeness index and not a plugin host. Core functions
-            stay in Settings.
-          </p>
-          <div className="table-wrap">
-            <table aria-label="Component registry">
-              <thead>
-                <tr>
-                  <th scope="col">Module</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Folder</th>
-                  <th scope="col">Menu areas</th>
-                  <th scope="col">Core functions</th>
-                  <th scope="col">Host</th>
-                </tr>
-              </thead>
-              <tbody>
-                {coreFunctions?.modules?.length ? (
-                  coreFunctions.modules.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.title}</td>
-                      <td>{row.status}</td>
-                      <td>{row.folder}</td>
-                      <td>{row.menuAreas.join(", ")}</td>
-                      <td>
-                        {row.coreFunctionIds?.length
-                          ? row.coreFunctionIds.join(", ")
-                          : "—"}
-                      </td>
-                      <td>{row.host || "—"}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={6}>Loading components…</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <ComponentRegistry modules={coreFunctions?.modules} />
+      ) : null}
+
+      {screen === "screen-atlas" ? (
+        <Suspense fallback={<p role="status">Loading Screen Atlas…</p>}>
+          <ScreenAtlasScreen
+            asOfDate={atlasPinnedAsOf() ?? asOfDate}
+            isBusy={busy || !!menuWorking || lastPriceBusy || declarationBusy}
+            autoStart={atlasAutoStart}
+            onDone={(message) => {
+              setAtlasAutoStart(false);
+              // Only show on Screen Atlas; avoid sticky banners on Tickets / Home.
+              setActionMessage(message);
+            }}
+            modules={coreFunctions?.modules}
+            onNavigate={(next, desk) => {
+              if (desk) {
+                setCmDesk(desk as CmDesk);
+              }
+              if (next !== "screen-atlas") {
+                setActionMessage((prev) =>
+                  prev?.startsWith("Screen Atlas") ? null : prev,
+                );
+              }
+              setScreen(next as Screen);
+            }}
+          />
+        </Suspense>
       ) : null}
 
       {screen === "settings" ? (

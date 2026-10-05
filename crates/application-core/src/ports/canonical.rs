@@ -845,6 +845,7 @@ pub trait Canonical: Send + Sync {
         qty_minor: i64,
         qty_scale: u8,
         unit_minor: i64,
+        unit_scale: u8,
         proceeds_minor: i64,
         is_cash: bool,
         original_cost_minor: Option<i64>,
@@ -868,6 +869,7 @@ pub trait Canonical: Send + Sync {
         line_id: Uuid,
         qty_whole: i64,
         last_minor: i64,
+        price_scale: u8,
         spend_minor: i64,
         plan_annual_minor: Option<i64>,
     ) -> Result<(), PlatformError> {
@@ -898,6 +900,7 @@ pub trait Canonical: Send + Sync {
         symbol: String,
         qty_whole: i64,
         last_minor: i64,
+        price_scale: u8,
         spend_minor: i64,
         plan_annual_minor: Option<i64>,
     ) -> Result<CartScenarioBody, PlatformError> {
@@ -938,6 +941,36 @@ pub trait Canonical: Send + Sync {
     ) -> Result<(), PlatformError> {
         ni()
     }
+    async fn cart_execute_cash_baseline_set_if_empty(
+        &self,
+        scenario_id: Uuid,
+        baseline_minor: i64,
+    ) -> Result<(), PlatformError> {
+        let _ = (scenario_id, baseline_minor);
+        ni()
+    }
+    async fn cart_execute_cash_baseline_get(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<Option<i64>, PlatformError> {
+        let _ = scenario_id;
+        ni()
+    }
+    async fn cart_execute_steps_list(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<Vec<crate::contracts::CartExecuteStepBody>, PlatformError> {
+        let _ = scenario_id;
+        ni()
+    }
+    async fn cart_scenario_status_set(
+        &self,
+        scenario_id: Uuid,
+        status: String,
+    ) -> Result<(), PlatformError> {
+        let _ = (scenario_id, status);
+        ni()
+    }
     async fn cart_scenario_discard(&self, scenario_id: Uuid) -> Result<(), PlatformError> {
         ni()
     }
@@ -947,6 +980,31 @@ pub trait Canonical: Send + Sync {
         line_id: Uuid,
     ) -> Result<CartScenarioBody, PlatformError> {
         let _ = (scenario_id, line_id);
+        ni()
+    }
+    async fn cart_sell_line_unit_set(
+        &self,
+        scenario_id: Uuid,
+        line_id: Uuid,
+        unit_minor: i64,
+        unit_scale: u8,
+        proceeds_minor: i64,
+        performance_cost_minor: Option<i64>,
+        tax_cost_minor: Option<i64>,
+        performance_gain_minor: Option<i64>,
+        tax_gain_minor: Option<i64>,
+    ) -> Result<CartScenarioBody, PlatformError> {
+        let _ = (
+            scenario_id,
+            line_id,
+            unit_minor,
+            unit_scale,
+            proceeds_minor,
+            performance_cost_minor,
+            tax_cost_minor,
+            performance_gain_minor,
+            tax_gain_minor,
+        );
         ni()
     }
     async fn cart_sell_symbol_clear(
@@ -1136,8 +1194,9 @@ pub trait Canonical: Send + Sync {
         &self,
         line_ids: Vec<Uuid>,
         step: String,
+        ticked_on: Option<String>,
     ) -> Result<crate::contracts::ExternalRegisterGetBody, PlatformError> {
-        let _ = (line_ids, step);
+        let _ = (line_ids, step, ticked_on);
         ni()
     }
     async fn external_register_import(
@@ -1145,6 +1204,125 @@ pub trait Canonical: Send + Sync {
         path: String,
     ) -> Result<crate::contracts::ExternalRegisterGetBody, PlatformError> {
         let _ = path;
+        ni()
+    }
+
+    async fn external_account_manager_get(
+        &self,
+    ) -> Result<crate::contracts::ExternalManagedGetBody, PlatformError> {
+        ni()
+    }
+    async fn external_account_manager_save(
+        &self,
+        accounts: Vec<crate::contracts::ExternalManagedAccountSave>,
+    ) -> Result<crate::contracts::ExternalManagedGetBody, PlatformError> {
+        let _ = accounts;
+        ni()
+    }
+    async fn external_loans_due(
+        &self,
+        start: String,
+        end: String,
+    ) -> Result<Vec<crate::contracts::LoanWeekRow>, PlatformError> {
+        let _ = (start, end);
+        Ok(Vec::new())
+    }
+    async fn external_loan_confirm(
+        &self,
+        account_id: Uuid,
+        due_on: String,
+        principal_minor: i64,
+        interest_minor: i64,
+    ) -> Result<crate::contracts::ExternalManagedGetBody, PlatformError> {
+        let _ = (account_id, due_on, principal_minor, interest_minor);
+        ni()
+    }
+    async fn external_loan_apply_element(
+        &self,
+        element_id: Uuid,
+        occurrence_id: Uuid,
+        occurred_on: String,
+        amount_minor: i64,
+    ) -> Result<(), PlatformError> {
+        let _ = (element_id, occurrence_id, occurred_on, amount_minor);
+        Ok(())
+    }
+    async fn task_rule_list(
+        &self,
+    ) -> Result<Vec<crate::contracts::TaskRuleRecord>, PlatformError> {
+        Ok(Vec::new())
+    }
+    async fn task_rule_set(
+        &self,
+        code: String,
+        enabled: bool,
+    ) -> Result<crate::contracts::TaskRuleRecord, PlatformError> {
+        let _ = (code, enabled);
+        ni()
+    }
+    async fn task_list(
+        &self,
+        week_start: Option<String>,
+        status: Option<String>,
+    ) -> Result<Vec<crate::contracts::TaskRecord>, PlatformError> {
+        let _ = (week_start, status);
+        Ok(Vec::new())
+    }
+    async fn task_get(
+        &self,
+        task_id: Uuid,
+    ) -> Result<crate::contracts::TaskRecord, PlatformError> {
+        let _ = task_id;
+        ni()
+    }
+    async fn task_by_code_week(
+        &self,
+        code: String,
+        week_start: String,
+    ) -> Result<Option<crate::contracts::TaskRecord>, PlatformError> {
+        let _ = (code, week_start);
+        Ok(None)
+    }
+    async fn task_insert(
+        &self,
+        record: crate::contracts::TaskRecord,
+    ) -> Result<crate::contracts::TaskRecord, PlatformError> {
+        let _ = record;
+        ni()
+    }
+    async fn task_update(
+        &self,
+        record: crate::contracts::TaskRecord,
+    ) -> Result<crate::contracts::TaskRecord, PlatformError> {
+        let _ = record;
+        ni()
+    }
+    async fn option_contract_list(
+        &self,
+        status: Option<String>,
+    ) -> Result<Vec<crate::contracts::OptionContractRecord>, PlatformError> {
+        let _ = status;
+        Ok(Vec::new())
+    }
+    async fn option_contract_get(
+        &self,
+        contract_id: Uuid,
+    ) -> Result<crate::contracts::OptionContractRecord, PlatformError> {
+        let _ = contract_id;
+        ni()
+    }
+    async fn option_contract_insert(
+        &self,
+        record: crate::contracts::OptionContractRecord,
+    ) -> Result<crate::contracts::OptionContractRecord, PlatformError> {
+        let _ = record;
+        ni()
+    }
+    async fn option_contract_update(
+        &self,
+        record: crate::contracts::OptionContractRecord,
+    ) -> Result<crate::contracts::OptionContractRecord, PlatformError> {
+        let _ = record;
         ni()
     }
 }

@@ -1,0 +1,16 @@
+---
+description: After a collector failure, review every collector for that same failure mode.
+globs: crates/**/*collector*.rs,crates/**/*declaration*.rs,crates/**/*schedule*.rs
+alwaysApply: false
+---
+
+# Collector fleet lesson
+
+A collector failure is not closed on the name that failed.
+
+- Review every collector for that same failure mode.
+- Apply the fix where the mode matches.
+- Leave a name out only when it is different by design: cash vs DIV-1, pay interval, ROC scope. Say which names were reviewed, which were left out, and why.
+- Do not hardcode the failing symbol. A new interval (for example 24 pays a year) is allowed when it is stored on the position.
+
+Green goldens alone are not Done if the live book was dirty. Include an owner DB sample when it was.

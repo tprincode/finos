@@ -31,9 +31,9 @@
     {
       "id": "income-decl-per-share-color",
       "menuArea": "Income Plan",
-      "function": "Color-coded Decl $/sh (current / stale / none)",
-      "lastChanged": "2026-09-09",
-      "lastVerified": "2026-09-09",
+      "function": "Color-coded Decl $/sh (current green / none grey; no stale yellow by owner request)",
+      "lastChanged": "2026-10-03",
+      "lastVerified": "2026-10-03",
       "sentinels": [
         {
           "path": "packages/ui-components/src/index.tsx",
@@ -46,10 +46,6 @@
         {
           "path": "apps/desktop/src/App.css",
           "mustContain": "td.numeric.ip-decl-current"
-        },
-        {
-          "path": "apps/desktop/src/App.css",
-          "mustContain": "td.numeric.ip-decl-stale"
         },
         {
           "path": "apps/desktop/src/App.css",
@@ -81,7 +77,7 @@
     {
       "id": "home-declarations-coverage",
       "menuArea": "Home",
-      "function": "Dividend Managed positions N of M — last update date; Refresh declarations",
+      "function": "Dividend Managed positions N of M â€” last update date; Refresh declarations",
       "lastChanged": "2026-09-21",
       "lastVerified": "2026-09-21",
       "sentinels": [
@@ -162,7 +158,7 @@
     {
       "id": "home-dividend-plan-panel",
       "menuArea": "Home",
-      "function": "Home 3×5 portfolio tiles in a fixed 580px left column beside Dividend Plan (annual, MV, monthly income/medical, weekly, effective annual). Empty space under Dividend Plan is the shared Account cash flow projection (same AccountCashFlow as Cash Management Register Trend). Title account and duration dropdowns (default Health + 2 months). Not market value. Energy and Robinhood income are $0. Unknown stays unknown.",
+      "function": "Home 3Ã—5 portfolio tiles in a fixed 580px left column beside Dividend Plan (annual, MV, monthly income/medical, weekly, effective annual). Empty space under Dividend Plan is the shared Account cash flow projection (same AccountCashFlow as Cash Management Register Trend). Title account and duration dropdowns (default Health + 2 months). Not market value. Energy and Robinhood income are $0. Unknown stays unknown.",
       "lastChanged": "2026-09-20",
       "lastVerified": "2026-09-20",
       "alsoVerify": ["account_value", "accessibility"],
@@ -320,7 +316,7 @@
     {
       "id": "home-weekly-actuals",
       "menuArea": "Home",
-      "function": "Weekly actuals line on Home account charts except Speculation. Account 9 keeps the line. Sat–Fri week plotted on Friday. Closed weeks only. Dual Y-axis. Card header is Account Name, Broker, Amount on one row. Home cards have no in-chart ECharts legend (HTML legend is the lock). Last category label shown; right grid 36px so the current week is not clipped.",
+      "function": "Weekly actuals line on Home account charts except Speculation. Account 9 keeps the line. Satâ€“Fri week plotted on Friday. Closed weeks only. Dual Y-axis. Card header is Account Name, Broker, Amount on one row. Home cards have no in-chart ECharts legend (HTML legend is the lock). Last category label shown; right grid 36px so the current week is not clipped.",
       "lastChanged": "2026-09-11",
       "lastVerified": "2026-09-11",
       "alsoVerify": ["account_value", "accessibility"],
@@ -397,7 +393,7 @@
       "lastVerified": "2026-09-09",
       "sentinels": [
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/collectors/CollectorsScreen.tsx",
           "mustContain": "aria-label=\"Collector fleet\""
         },
         {
@@ -426,7 +422,7 @@
       "lastVerified": "2026-09-09",
       "sentinels": [
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/collectors/CollectorsScreen.tsx",
           "mustContain": "aria-label=\"Run enabled collectors\""
         }
       ]
@@ -465,11 +461,11 @@
           "mustContain": "not every retrieve_run"
         },
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/collectors/CollectorsScreen.tsx",
           "mustContain": "Still miss"
         },
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/collectors/CollectorsScreen.tsx",
           "mustContain": "Had a miss today"
         },
         {
@@ -563,7 +559,7 @@
     {
       "id": "cash-management-week-ahead",
       "menuArea": "Plan",
-      "function": "Cash Management: Week Ahead confirms this Sat–Fri planned Element occurrences",
+      "function": "Cash Management: Week Ahead confirms this Satâ€“Fri planned Element occurrences",
       "lastChanged": "2026-09-17",
       "lastVerified": "2026-09-17",
       "alsoVerify": ["week_ahead", "accessibility", "cash_management"],
@@ -589,7 +585,7 @@
     {
       "id": "cash-management-register",
       "menuArea": "Cash Management",
-      "function": "First-class Cashflow Manager: month calendar (day click lists that day’s transactions), Home AccountCashFlow Trend (same account and duration choosers), Manage Elements. YTD is Tax Planning, not this page.",
+      "function": "First-class Account Trends and Calendar: month calendar (day click lists that dayâ€™s transactions), Home AccountCashFlow Trend (same account and duration choosers), Manage Elements. YTD is Tax Planning, not this page.",
       "lastChanged": "2026-09-21",
       "lastVerified": "2026-09-21",
       "alsoVerify": ["cash_register", "week_ahead", "accessibility"],
@@ -637,7 +633,7 @@
           "mustContain": "\"CashElementHistoryGet\""
         },
         {
-          "path": "apps/desktop/src/features/shared/PageActivityCard.tsx",
+          "path": "apps/desktop/src/features/shared/PageActivityBar.tsx",
           "mustContain": "aria-label=\"Page activity\""
         }
       ]
@@ -663,7 +659,7 @@
     {
       "id": "cash-management-car-roc-plan",
       "menuArea": "Cash Management",
-      "function": "Cash Management: Tax Planning — MAGI threshold from MagiProjectionGet; household YTD/projected IRA (Income + Speculation + Account 9), Roth, ROC, ordinary, 1099 job ($14,625 2026 MAGI), SSA, LT/ST gains; Car table unchanged. Seed Form_1099 ROC is not this-year YTD. Never invent $0.",
+      "function": "Cash Management: Tax Planning â€” MAGI threshold from MagiProjectionGet; household YTD/projected IRA (Income + Speculation + Account 9), Roth, ROC, ordinary, 1099 job ($14,625 2026 MAGI), SSA, LT/ST gains; Car table unchanged. Seed Form_1099 ROC is not this-year YTD. Never invent $0.",
       "lastChanged": "2026-09-19",
       "lastVerified": "2026-09-19",
       "alsoVerify": ["cash_management", "ui_modules", "roc_plan", "cash_menu_ia"],
@@ -689,7 +685,7 @@
     {
       "id": "cash-management-coverage",
       "menuArea": "Cash Management",
-      "function": "Cash Management: Coverage — Weekly/Monthly/Annual comparison: average income vs average expenses over the lookback (13 weeks / 12 months / last year), Δ = income − expenses. Monthly series convert into the week × 3/13. Plan vs Actual is average plan income vs average recorded income on that same lookback. Unknown ≠ $0. No SSA.",
+      "function": "Cash Management: Coverage â€” Weekly/Monthly/Annual comparison: average income vs average expenses over the lookback (13 weeks / 12 months / last year), Î” = income âˆ’ expenses. Monthly series convert into the week Ã— 3/13. Plan vs Actual is average plan income vs average recorded income on that same lookback. Unknown â‰  $0. No SSA.",
       "lastChanged": "2026-09-19",
       "lastVerified": "2026-09-19",
       "alsoVerify": ["cm_coverage", "cash_menu_ia", "ui_modules"],
@@ -703,7 +699,7 @@
           "mustContain": "\"CashCoverageGet\""
         },
         {
-          "path": "crates/application-core/src/cash_coverage.rs",
+          "path": "crates/application-core/src/income_plan_display.rs",
           "mustContain": "actual_known.then_some"
         }
       ]
@@ -785,7 +781,7 @@
     {
       "id": "file-restart-graceful",
       "menuArea": "File",
-      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts repo-root finos.bat if the supervisor.lock parent is missing, and exits. Coding start is finos.bat (Restart parent); it Start-Process-es start-finos-dev.bat. Household release uses app.restart(). A stale supervisor.lock is not a live parent; File → Restart waits for cmd /c start so the new console is not in the dying Tauri job.",
+      "function": "Restart waits for in-flight work, checkpoints WAL, closes SQLite, writes restart.token, starts repo-root finos.bat if the supervisor.lock parent is missing, and exits. Coding start is finos.bat (Restart parent); it Start-Process-es start-finos-dev.bat. Household release uses app.restart(). A stale supervisor.lock is not a live parent; File â†’ Restart waits for cmd /c start so the new console is not in the dying Tauri job.",
       "lastChanged": "2026-09-18",
       "lastVerified": "2026-09-18",
       "alsoVerify": ["desktop_menu", "accessibility", "account_value"],
@@ -874,11 +870,11 @@
       "lastVerified": "2026-09-09",
       "sentinels": [
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
           "mustContain": "id=\"hub-declarations\""
         },
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
           "mustContain": "aria-label=\"Declarations\""
         }
       ]
@@ -891,7 +887,7 @@
       "lastVerified": "2026-09-09",
       "sentinels": [
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
           "mustContain": "aria-label=\"Refresh last price for this symbol\""
         }
       ]
@@ -905,23 +901,23 @@
       "alsoVerify": ["position_details", "accessibility"],
       "sentinels": [
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
           "mustContain": "id=\"hub-identity\""
         },
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
           "mustContain": "aria-label=\"Position information\""
         },
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
           "mustContain": "aria-label=\"Position risk\""
         },
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
           "mustContain": "aria-label=\"Position frequency\""
         },
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
           "mustContain": "aria-label=\"Save stored facts\""
         },
         {
@@ -1035,7 +1031,7 @@
     {
       "id": "save-unsaved-orange",
       "menuArea": "All",
-      "function": "Owner-edit Save turns orange while unsaved (class is-unsaved). Global for Position Details, Add Position, Add Lot, Cash, Trends.",
+      "function": "Owner-edit Save turns orange while unsaved (class is-unsaved). Global for Position Details, Add Investment, Add Lot, Cash, Trends.",
       "lastChanged": "2026-09-10",
       "lastVerified": "2026-09-10",
       "alsoVerify": ["accessibility", "desktop_menu"],
@@ -1045,7 +1041,7 @@
           "mustContain": "button.is-unsaved"
         },
         {
-          "path": "apps/desktop/src/App.tsx",
+          "path": "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
           "mustContain": "className={pdDirty ? \"is-unsaved\" : undefined}"
         },
         {
@@ -1061,7 +1057,7 @@
     {
       "id": "last-price-auto-window",
       "menuArea": "Home",
-      "function": "Auto LastPriceRefresh, hub autoPrice MarketRetrieve, and auto DeclarationRefresh share weekdays 9–4 Eastern. Last price also skips when the last price retrieve_run (ok, fail, or started) is under 4 hours. Collectors run once per local date (not the 4-hour gate). Manual Refresh last prices and Refresh declarations send force. Stored last price still displays. Unknown stays unknown. 3s per symbol; miss keeps last price.",
+      "function": "Auto LastPriceRefresh, hub autoPrice MarketRetrieve, and auto DeclarationRefresh share weekdays 9â€“4 Eastern. Last price also skips when the last price retrieve_run (ok, fail, or started) is under 4 hours. Collectors run once per local date (not the 4-hour gate). Manual Refresh last prices and Refresh declarations send force. Stored last price still displays. Unknown stays unknown. 3s per symbol; miss keeps last price.",
       "lastChanged": "2026-09-19",
       "lastVerified": "2026-09-19",
       "alsoVerify": ["position_details", "accessibility"],
@@ -1083,7 +1079,7 @@
     {
       "id": "tools-component-registry",
       "menuArea": "Tools",
-      "function": "Tools → Components is a read-only UI module registry (extracted vs in-app). Not a plugin host. Core functions stay in Settings.",
+      "function": "Tools â†’ Components is a read-only UI module registry (extracted vs in-app). Not a plugin host. Core functions stay in Settings.",
       "lastChanged": "2026-09-13",
       "lastVerified": "2026-09-13",
       "alsoVerify": ["desktop_menu", "accessibility", "core_functions", "ui_modules"],

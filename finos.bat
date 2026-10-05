@@ -40,16 +40,16 @@ if not defined LOCALAPPDATA (
   exit /b 1
 )
 
-set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+call "%REPO%\finos-env.bat"
 where node >nul 2>&1
 if errorlevel 1 (
-  echo Node.js is required. Install it, then run this file again.
+  echo Node.js is required. Install from https://nodejs.org or fix PATH, then run finos.bat again.
   pause
   exit /b 1
 )
 where cargo >nul 2>&1
 if errorlevel 1 (
-  echo Rust/cargo is required. Install it, then run this file again.
+  echo Rust/cargo is required. Install rustup, then run finos.bat again.
   pause
   exit /b 1
 )
@@ -161,7 +161,7 @@ if defined LIVEDEV (
     exit /b 0
   )
 )
-powershell -NoProfile -Command "Start-Process -FilePath '%DEVBAT%' -WindowStyle Normal"
+powershell -NoProfile -Command "Start-Process -FilePath '%DEVBAT%' -WorkingDirectory '%REPO%\apps\desktop' -WindowStyle Normal"
 exit /b 0
 
 :pid_is_live_cmd

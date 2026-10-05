@@ -56,8 +56,9 @@ fn take_newer_declaration(
 fn week_positions_by_cadence(
     week: &IncomePlanWeekBody,
 ) -> Vec<(&'static str, Vec<&crate::contracts::IncomePlanPositionBody>)> {
-    ["Monthly", "Quarterly", "Weekly", "Other"]
-        .into_iter()
+    financial_domain::income_plan::CADENCE_GROUP_ORDER
+        .iter()
+        .copied()
         .filter_map(|name| {
             let rows: Vec<_> = week
                 .positions
@@ -445,7 +446,7 @@ pub fn assemble_grid(
             .or_default()
             .push(row);
     }
-    let group_order = ["Monthly", "Quarterly", "Weekly", "Other"];
+    let group_order = financial_domain::income_plan::CADENCE_GROUP_ORDER;
     let table2 = group_order
         .iter()
         .filter_map(|g| {

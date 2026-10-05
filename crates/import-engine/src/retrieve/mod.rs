@@ -184,6 +184,38 @@ pub fn miss_is_timeout(miss: &Value) -> bool {
             .is_some_and(is_declaration_timeout)
 }
 
+/// Transient issuer/network misses that should get 45s/90s passes like timeouts.
+/// ProShares fund HTML is never authoritative; API blips and bot stubs look like "empty page."
+pub fn miss_is_retriable_transient(miss: &Value) -> bool {
+    if miss_is_timeout(miss) {
+        return true;
+    }
+    let src = miss
+        .get("declarationSource")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if src != "proshares" {
+        return false;
+    }
+    let code = miss
+        .get("code")
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    if code != "declaration_retrieve_miss" {
+        return false;
+    }
+    let reason = miss
+        .get("reason")
+        .and_then(|r| r.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    reason.contains("issuer page empty")
+        || reason.contains("distribution api returned no rows")
+        || reason.contains("proshares distribution api")
+}
+
 fn http_agent() -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(decl_get_wait_secs()))
@@ -694,6 +726,11 @@ pub fn roc_from_notice_bytes(bytes: &[u8]) -> Option<(i64, String)> {
     parse_19a1_notice(&notice_text_from_bytes(bytes))
 }
 
+/// Prefer the named ticker's block on multi-fund YieldMax/Group notices.
+pub fn roc_from_notice_bytes_for_symbol(bytes: &[u8], symbol: &str) -> Option<(i64, String)> {
+    parse_19a1_notice_for_symbol(&notice_text_from_bytes(bytes), symbol)
+}
+
 fn docx_plain_text(bytes: &[u8]) -> Option<String> {
     if !bytes.starts_with(b"PK") {
         return None;
@@ -814,6 +851,17 @@ fn pdf_ascii(bytes: &[u8]) -> String {
 
 /// Current-year 19a-1 estimate. Network-free. 100% ROC → 10000 at scale 2.
 pub fn parse_19a1_notice(text: &str) -> Option<(i64, String)> {
+    parse_19a1_notice_for_symbol(text, "")
+}
+
+/// Same as [`parse_19a1_notice`], but on multi-fund Group notices prefer the `symbol` block.
+pub fn parse_19a1_notice_for_symbol(text: &str, symbol: &str) -> Option<(i64, String)> {
+    let sym = symbol.trim().to_ascii_uppercase();
+    if !sym.is_empty() {
+        if let Some(hit) = parse_19a1_ticker_block(text, &sym) {
+            return Some(hit);
+        }
+    }
     let lower = text.to_ascii_lowercase();
     let needle = "of such dividend will be a return of capital";
     if let Some(idx) = lower.find(needle) {
@@ -835,6 +883,63 @@ pub fn parse_19a1_notice(text: &str) -> Option<(i64, String)> {
         return Some(hit);
     }
     adapters::parse_return_of_capital_pct(text)
+}
+
+/// YieldMax Group / multi-fund PDF: ticker then the next Return of Capital % in that fund block.
+fn parse_19a1_ticker_block(text: &str, symbol: &str) -> Option<(i64, String)> {
+    let sym = symbol.trim().to_ascii_uppercase();
+    if sym.len() < 2 {
+        return None;
+    }
+    // YieldMax Group PDFs inject "en-US" between almost every run, often glued to the
+    // ticker (`en-USYMAX`). Strip those tags so whole-token matching works.
+    let cleaned = text.replace("en-US", " ").replace("EN-US", " ");
+    let upper = cleaned.to_ascii_uppercase();
+    let mut search = 0usize;
+    while let Some(rel) = upper.get(search..).and_then(|s| s.find(&sym)) {
+        let idx = search + rel;
+        // Whole-token ticker (not a substring of another word).
+        let before_ok = idx == 0
+            || !upper
+                .as_bytes()
+                .get(idx - 1)
+                .copied()
+                .is_some_and(|b| b.is_ascii_alphanumeric());
+        let after_ok = !upper
+            .as_bytes()
+            .get(idx + sym.len())
+            .copied()
+            .is_some_and(|b| b.is_ascii_alphanumeric());
+        if before_ok && after_ok {
+            let window_end = (idx + 900).min(cleaned.len());
+            let window = cleaned.get(idx..window_end)?;
+            let w_lower = window.to_ascii_lowercase();
+            // Stop at the next fund ticker-ish block when possible: another "Fund Name" after ours.
+            let cut = w_lower
+                .find("fund name")
+                .filter(|&p| p > 20)
+                .unwrap_or(window.len());
+            let block = &window[..cut];
+            if let Some(pct) =
+                parse_19a1_return_of_capital_table(&adapters::collapse_spaced_financial(block))
+                    .map(|(p, _)| p)
+                    .or_else(|| {
+                        let bl = block.to_ascii_lowercase();
+                        let i = bl.find("return of capital")?;
+                        first_percent(&block[i..])
+                    })
+            {
+                if (1..=10_000).contains(&pct) {
+                    return Some((
+                        pct,
+                        format!("19a-1 table current distribution ({sym})"),
+                    ));
+                }
+            }
+        }
+        search = idx + sym.len();
+    }
+    None
 }
 
 /// Global X table row: `Return of Capital $0.1824 99.72%` (not the prose mention).
@@ -1121,12 +1226,12 @@ pub fn roc_estimate_from_search_hits(
             continue;
         };
         let text = pdf_notice_text(body.as_bytes());
-        if let Some((pct, how)) = parse_19a1_notice(&text) {
+        if let Some((pct, how)) = parse_19a1_notice_for_symbol(&text, ticker) {
             if (0..=10_000).contains(&pct) {
                 return Some((pct, url, how));
             }
         }
-        if let Some((pct, how)) = parse_19a1_notice(body) {
+        if let Some((pct, how)) = parse_19a1_notice_for_symbol(body, ticker) {
             if (0..=10_000).contains(&pct) {
                 return Some((pct, url, how));
             }
@@ -1346,7 +1451,7 @@ fn follow_vendor_19a1_seeds(
         };
         let text = notice_text_from_bytes(&bytes);
         if let Some((pct, how)) = adapters::parse_simplify_s19a_roc(&text, &sym_u)
-            .or_else(|| parse_19a1_notice(&text))
+            .or_else(|| parse_19a1_notice_for_symbol(&text, &sym_u))
             .or_else(|| adapters::parse_return_of_capital_pct(&text))
         {
             if pct <= 0 {
@@ -1375,7 +1480,7 @@ fn live_neos_roc(symbol: &str) -> LiveRocFill {
         probes.push(probe);
         if let Ok(bytes) = got {
             let text = pdf_ascii(&bytes);
-            if let Some((pct, how)) = parse_19a1_notice(&text) {
+            if let Some((pct, how)) = parse_19a1_notice_for_symbol(&text, symbol) {
                 return LiveRocFill {
                     candidates: vec![roc_estimate(
                         pct,
@@ -2393,22 +2498,76 @@ fn adapter_probe_urls(source: &str, symbol: &str) -> Vec<String> {
     }
 }
 
-fn live_proshares_distribution_body(symbol: &str) -> Option<String> {
+fn proshares_distribution_api_url(symbol: &str, year: i32) -> String {
+    format!(
+        "https://www.proshares.com/api/distributionsummary/?fund={}&year={year}",
+        symbol.trim().to_ascii_uppercase()
+    )
+}
+
+fn http_get_with_curl_fallback(url: &str) -> Result<String, String> {
+    http_get(url).or_else(|e| {
+        #[cfg(windows)]
+        {
+            http_get_via_os_curl(url).map_err(|curl| format!("{e}; curl: {curl}"))
+        }
+        #[cfg(not(windows))]
+        {
+            Err(e)
+        }
+    })
+}
+
+fn fetch_proshares_api_rows(url: &str) -> Option<Vec<Value>> {
+    let body = http_get_with_curl_fallback(url).ok()?;
+    let trimmed = body.trim();
+    if !trimmed.starts_with('[') && !trimmed.starts_with('{') {
+        return None;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+        return None;
+    };
+    match v {
+        Value::Array(rows) if !rows.is_empty() => Some(rows),
+        Value::Object(o) => o
+            .get("data")
+            .or_else(|| o.get("distributions"))
+            .and_then(|x| x.as_array())
+            .filter(|a| !a.is_empty())
+            .cloned(),
+        _ => None,
+    }
+}
+
+/// URL owners should open to verify ProShares distributions (API, not empty HTML fund shell).
+pub fn proshares_owner_check_url(symbol: &str, template_dividend: Option<&str>) -> String {
+    if let Some(seed) = template_dividend.map(str::trim).filter(|s| !s.is_empty()) {
+        if seed.contains("/api/distributionsummary") {
+            return seed.to_string();
+        }
+    }
+    proshares_distribution_api_url(symbol, Utc::now().year())
+}
+
+fn live_proshares_distribution_body(symbol: &str, template_dividend: Option<&str>) -> Option<String> {
     let sym = symbol.trim().to_ascii_uppercase();
     if sym.is_empty() {
         return None;
     }
     let year = Utc::now().year();
     let mut all = Vec::new();
+    if let Some(seed) = template_dividend.map(str::trim).filter(|s| !s.is_empty()) {
+        if seed.contains("/api/distributionsummary") {
+            if let Some(rows) = fetch_proshares_api_rows(seed) {
+                all.extend(rows);
+            }
+        }
+    }
     for y in [year, year - 1, year - 2] {
-        let url = format!("https://www.proshares.com/api/distributionsummary/?fund={sym}&year={y}");
-        let Ok(body) = http_get(&url) else {
-            continue;
-        };
-        let Ok(Value::Array(rows)) = serde_json::from_str::<Value>(&body) else {
-            continue;
-        };
-        all.extend(rows);
+        let url = proshares_distribution_api_url(&sym, y);
+        if let Some(rows) = fetch_proshares_api_rows(&url) {
+            all.extend(rows);
+        }
     }
     if all.is_empty() {
         return None;
@@ -2916,19 +3075,18 @@ fn fetch_adapter_page_status(
         };
     }
     if src == "proshares" {
-        if let Some(body) = live_proshares_distribution_body(symbol) {
-            let url = adapter_probe_urls("proshares", symbol)
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| {
-                    format!(
-                        "https://www.proshares.com/our-etfs/strategic/{}",
-                        symbol.trim().to_ascii_lowercase()
-                    )
-                });
+        if let Some(body) = live_proshares_distribution_body(symbol, source_url) {
+            let url = proshares_owner_check_url(symbol, source_url);
             let (u, h, c) = pack_adapter_fetch(url, body, None);
             return AdapterFetch::Page(u, h, c);
         }
+        let check = proshares_owner_check_url(symbol, source_url);
+        return AdapterFetch::Blocked {
+            url: check.clone(),
+            reason: format!(
+                "ProShares distribution API returned no rows (collect does not parse fund HTML). check_url={check}"
+            ),
+        };
     }
     if src == "roundhill" {
         if let Some((url, body)) = live_roundhill_distribution_body(symbol) {
@@ -4606,6 +4764,57 @@ mod tests {
     }
 
     #[test]
+    fn yieldmax_group1_notice_picks_ymax_not_first_or_last_fund() {
+        // Shape after pdf_notice_text on the 9.17.26 Group 1 multi-fund PDF.
+        let text = r#"
+YMAG YieldMax Magnificent 7
+Return of Capital en-US$0.0539 en-US80.20% en-USTotal (per common share) en-US$0.0672 en-US100.00%
+Fund Name
+YMAX YieldMax Universe Fund of Option Income ETFs
+Return of Capital en-US$0.0400 en-US68.69% en-USTotal (per common share) en-US$0.0582 en-US100.00%
+Fund Name
+LFGY YieldMax Crypto
+Return of Capital en-US$0.0979 en-US63.36% en-USTotal (per common share) en-US$0.1546 en-US100.00%
+Fund Name
+YRAM Memory
+Return of Capital en-US$0.3790 en-US97.31% en-USTotal (per common share) en-US$0.3895 en-US100.00%
+"#;
+        let (pct, how) = parse_19a1_notice_for_symbol(text, "YMAX").expect("YMAX");
+        assert_eq!(pct, 6_869, "YMAX Group 1 9.17.26 is 68.69% ROC, not YMAG/YRAM: {how}");
+        assert!(how.contains("YMAX"), "{how}");
+        let (ymag, _) = parse_19a1_notice_for_symbol(text, "YMAG").expect("YMAG");
+        assert_eq!(ymag, 8_020);
+        // Untickered parse must not silently invent YMAX — it may pick first table ROC.
+        let (any, _) = parse_19a1_notice(text).expect("any");
+        assert_ne!(any, 3_599, "35.99 was a prior wrong YMAX ticket value");
+    }
+
+    #[test]
+    fn yieldmax_group1_pdf_parses_ymax_ticker_block() {
+        let path = std::env::temp_dir().join("ymax-19a1.pdf");
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        let text = pdf_notice_text(&bytes);
+        // Real YieldMax Group PDFs glue locale tags to tickers (`en-USYMAX`).
+        assert!(
+            text.to_ascii_uppercase().contains("USYMAX")
+                || text.to_ascii_uppercase().contains("YMAX"),
+            "fixture PDF must mention YMAX"
+        );
+        let (pct, how) = parse_19a1_notice_for_symbol(&text, "YMAX").expect("YMAX from PDF");
+        assert_eq!(
+            pct, 6_869,
+            "live Group 1 PDF YMAX row is 68.69% ROC: {how}"
+        );
+        assert!(how.contains("YMAX"), "{how}");
+        let (ymag, _) = parse_19a1_notice_for_symbol(&text, "YMAG").expect("YMAG");
+        assert_eq!(ymag, 8_020);
+        let (yram, _) = parse_19a1_notice_for_symbol(&text, "YRAM").expect("YRAM");
+        assert_eq!(yram, 9_731);
+    }
+
+    #[test]
     fn haky_19a1_notice_fixture_parses_current_distribution_percent() {
         let raw = include_str!("../../tests/fixtures/haky_19a1_notice_05-29-26.txt");
         assert!(
@@ -5302,6 +5511,28 @@ Amplify HACK Cybersecurity Covered Call ETF HAKY
     }
 
     #[test]
+    fn roundhill_19a1_sentence_is_100_percent_not_a_miss() {
+        let html = "Per the Fund’s most recent 19a-1 notice, the estimated per share composition of the distribution includes return of capital (ROC) of 100%.";
+        assert_eq!(parse_roundhill_roc_html(html), Some(10000));
+        let url = "https://www.roundhillinvestments.com/etf/amdw/";
+        let fill = LiveRocFill {
+            candidates: vec![roc_estimate(
+                parse_roundhill_roc_html(html).unwrap(),
+                url,
+                "2026-10-05",
+                "issuer page 19a-1 sentence".into(),
+                "19a-1-current-year",
+            )],
+            probes: vec![http_probe(url, Some(200), None)],
+        };
+        assert!(!fill.candidates.is_empty());
+        assert_eq!(fill.candidates[0]["rocPctMinor"], 10000);
+        assert_eq!(fill.candidates[0]["method"], "19a-1-current-year");
+        assert_eq!(fill.candidates[0]["ownerOverride"], false);
+        assert!(!fill.probes.is_empty());
+    }
+
+    #[test]
     fn neos_19a1_notice_parses_percent() {
         let text = "In connection with the monthly dividend payment of $0.5309 per share payable on January 23rd, 2026 to shareholders of record on January 21st, 2026, it is anticipated that 97% of such dividend will be a return of capital.";
         let (pct, _) = parse_19a1_notice(text).expect("19a-1");
@@ -5734,6 +5965,72 @@ Amplify HACK Cybersecurity Covered Call ETF HAKY
         assert!(live_roc_candidates_for("ORD1", "", "").candidates.is_empty());
         assert!(live_roc_candidates_for("CASH1", "CASH", "").candidates.is_empty());
         assert!(live_roc_candidates_for("GLAD", "gladstone", "").candidates.is_empty());
+    }
+
+    #[test]
+    #[ignore = "live network — run: cargo test -p import-engine live_bito_proshares_collect -- --ignored --nocapture"]
+    fn live_bito_proshares_collect() {
+        let target = DeclarationTarget {
+            security_id: "test".into(),
+            symbol: "BITO".into(),
+            declaration_source: "proshares".into(),
+            source_symbol: "BITO".into(),
+            source_url: "https://www.proshares.com/our-etfs/strategic/bito".into(),
+            last_content_hash: "2f1e18f5367fe180".into(),
+            div_type: "DIV-1".into(),
+            force_refresh: true,
+            last_run_ok: true,
+            last_run_at: "2026-09-28T10:10:27".into(),
+            inception_on: "2026-02-01".into(),
+            payment_frequency: "Monthly".into(),
+            paid_count: 7,
+            known_payment_periods: vec![],
+            known_declaration_amounts: vec![],
+        };
+        let out = collect_declarations_for(vec![target]);
+        assert!(
+            out.misses.is_empty(),
+            "misses={:?} fetched={}",
+            out.misses,
+            out.fetched_source_url
+        );
+        assert!(
+            !out.candidates.is_empty() || !out.unchanged.is_empty(),
+            "expected candidates or unchanged"
+        );
+    }
+
+    #[test]
+    fn proshares_empty_page_miss_is_retriable_transient() {
+        let miss = serde_json::json!({
+            "code": "declaration_retrieve_miss",
+            "declarationSource": "proshares",
+            "reason": "Issuer page empty. get_len=1086 payable=false td=0",
+        });
+        assert!(miss_is_retriable_transient(&miss));
+        let other = serde_json::json!({
+            "code": "declaration_retrieve_miss",
+            "declarationSource": "amplify",
+            "reason": "Issuer page empty.",
+        });
+        assert!(!miss_is_retriable_transient(&other));
+    }
+
+    #[test]
+    fn proshares_owner_check_url_prefers_api_when_template_is_fund_page() {
+        let api = proshares_owner_check_url(
+            "BITO",
+            Some("https://www.proshares.com/our-etfs/strategic/bito"),
+        );
+        assert!(api.contains("/api/distributionsummary/?fund=BITO"));
+        let seed = proshares_owner_check_url(
+            "BITO",
+            Some("https://www.proshares.com/api/distributionsummary/?fund=BITO&year=2026"),
+        );
+        assert_eq!(
+            seed,
+            "https://www.proshares.com/api/distributionsummary/?fund=BITO&year=2026"
+        );
     }
 
     #[test]

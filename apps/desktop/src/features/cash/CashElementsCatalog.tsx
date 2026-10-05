@@ -5,6 +5,8 @@ import { CashElementEditor, type EditorOccurrence } from "./CashElementEditor";
 import { CashElementExceptions } from "./CashElementExceptions";
 import { CashElementHistory } from "./CashElementHistory";
 import { PageActivityCard } from "../shared/PageActivityCard";
+import { popNavIf, pushNav } from "../navigation/navStack";
+import { magiFutureUnconfirmedWithdrawal } from "./magiDrawFilter";
 
 const MANAGED_ELEMENT_ACCOUNTS = [
   "Income",
@@ -49,6 +51,7 @@ export function CashElementsCatalog({
   onDeleteSeries,
   onDirtyChange,
   asOfDate,
+  drawFilter,
 }: {
   catalog: CashElementListGet | null;
   book: string;
@@ -84,18 +87,21 @@ export function CashElementsCatalog({
   onDeleteSeries: (elementId: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
   asOfDate: string;
+  drawFilter?: boolean;
 }) {
   const [addKind, setAddKind] = useState("Withdrawal");
   const [exceptionsOpen, setExceptionsOpen] = useState(false);
 
   useEffect(() => {
-    setExceptionsOpen(false);
-  }, [editorElement?.elementId, editorOpen]);
+    setExceptionsOpen(Boolean(editorOccurrenceId));
+  }, [editorElement?.elementId, editorOpen, editorOccurrenceId]);
   const items = (catalog?.items ?? []).filter(
     (el) => book === "all" || el.account === book,
   );
   const deposits = items.filter((el) => isDeposit(el.kind));
-  const withdrawals = items.filter((el) => !isDeposit(el.kind));
+  const withdrawals = drawFilter
+    ? (catalog?.items ?? []).filter((el) => magiFutureUnconfirmedWithdrawal(el, asOfDate))
+    : items.filter((el) => !isDeposit(el.kind));
   const money = (minor: number | null | undefined) =>
     minor == null ? "—" : formatUsd(minor, 2);
   const canAdd = Boolean(book) && book !== "all" && !busy;
@@ -180,9 +186,12 @@ export function CashElementsCatalog({
           account={editorAccount}
           element={editorElement}
           occurrences={editorOccurrences}
+          initialOccurrenceId={editorOccurrenceId}
           busy={busy}
           onSave={onSaveExceptions}
-          onClose={() => setExceptionsOpen(false)}
+          onClose={() => {
+            if (!popNavIf("exceptions")) setExceptionsOpen(false);
+          }}
           onDirtyChange={onDirtyChange}
         />
       ) : editorOpen ? (
@@ -193,7 +202,13 @@ export function CashElementsCatalog({
           busy={busy}
           onSave={onSaveElement}
           onDeleteSeries={onDeleteSeries}
-          onOpenExceptions={() => setExceptionsOpen(true)}
+          onOpenExceptions={() => {
+            pushNav({
+              id: "exceptions",
+              restore: () => setExceptionsOpen(false),
+            });
+            setExceptionsOpen(true);
+          }}
           onClose={() => {
             setExceptionsOpen(false);
             onCloseEditor();
@@ -210,7 +225,11 @@ export function CashElementsCatalog({
             selected={selectedForBook(book)}
             onSelected={(next) => onBook(bookFromSelected(next))}
           />
-          {renderGroup("Deposits", "Add Deposit", "Deposit", deposits)}
+          {drawFilter ? (
+            <p>Future unconfirmed withdrawals on Income, Speculation, and Account 9.</p>
+          ) : (
+            renderGroup("Deposits", "Add Deposit", "Deposit", deposits)
+          )}
           {renderGroup("Withdrawals", "Add Withdrawal", "Withdrawal", withdrawals)}
         </>
       )}

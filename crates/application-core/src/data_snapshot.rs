@@ -12,6 +12,11 @@ use crate::ports::canonical::Canonical;
 use crate::ports::platform::{Platform, PlatformError};
 
 pub fn raw_data_dir(app_dir: &Path, as_of: &str) -> PathBuf {
+    if let Some(root) = std::env::var_os("FINOS_DOWNLOAD_DIR") {
+        if !root.is_empty() {
+            return PathBuf::from(root).join("raw-data").join(as_of);
+        }
+    }
     app_dir.join("raw-data").join(as_of)
 }
 
@@ -633,7 +638,7 @@ pub async fn export_data_snapshot(
                 a.lot_id.to_string(),
                 a.activity_id.to_string(),
                 money_str(a.quantity_minor, a.quantity_scale),
-                money_str(a.proceeds_minor, a.scale),
+                money_str(a.proceeds_minor, 2),
             ]
         })
         .collect();
@@ -861,6 +866,18 @@ pub async fn export_data_snapshot(
         &mut files,
     )?;
 
+    let module_rows = ui_module_sheet_rows().map_err(|e| {
+        PlatformError::new("snapshot_write_failed", format!("ui modules: {e}"))
+    })?;
+    counts.push(("ui_modules".into(), module_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_UiModules.xlsx",
+        UI_MODULE_HEADERS,
+        &module_rows,
+        &mut files,
+    )?;
+
     let yaml = write_plan_yaml(&securities, &plans);
     let yaml_name = "calculator-plan-seed.yaml";
     std::fs::write(folder.join(yaml_name), yaml)
@@ -937,6 +954,96 @@ async fn copy_live_sqlite(
     })?;
     files.push("local.sqlite".into());
     Ok(())
+}
+
+const UI_MODULE_HEADERS: &[&str] = &[
+    "screen",
+    "cmDesk",
+    "id",
+    "title",
+    "status",
+    "folder",
+    "menu areas",
+];
+
+const UI_SCREEN_ORDER: &[&str] = &[
+    "home",
+    "income-plan",
+    "calculator",
+    "market-impact",
+    "dashboard",
+    "trends",
+    "cash-management",
+    "shopping-cart",
+    "holdings",
+    "import",
+    "settings",
+    "new-investment",
+    "add-lot",
+    "position-details",
+    "collectors",
+    "tickets",
+    "collector-establish",
+    "task-manager",
+    "interest-rate",
+    "contract-positions",
+    "components",
+    "screen-atlas",
+];
+
+const UI_DESK_ORDER: &[&str] = &[
+    "elements",
+    "cashflow",
+    "weekly",
+    "car",
+    "coverage",
+    "external",
+];
+
+fn screen_rank(screen: &str) -> usize {
+    UI_SCREEN_ORDER
+        .iter()
+        .position(|id| *id == screen)
+        .unwrap_or(UI_SCREEN_ORDER.len())
+}
+
+fn desk_rank(desk: &str) -> usize {
+    if desk.is_empty() {
+        return 0;
+    }
+    UI_DESK_ORDER
+        .iter()
+        .position(|id| *id == desk)
+        .map(|i| i + 1)
+        .unwrap_or(UI_DESK_ORDER.len() + 1)
+}
+
+/// Archive rows for Template_UiModules.xlsx. Not a seed sheet.
+pub fn ui_module_sheet_rows() -> Result<Vec<Vec<String>>, String> {
+    let catalog = crate::core_functions::core_functions_catalog()?;
+    let mut indexed: Vec<(usize, crate::contracts::UiModuleItem)> =
+        catalog.modules.into_iter().enumerate().collect();
+    indexed.sort_by_key(|(index, module)| {
+        (
+            screen_rank(&module.screen),
+            desk_rank(&module.cm_desk),
+            *index,
+        )
+    });
+    Ok(indexed
+        .into_iter()
+        .map(|(_, module)| {
+            vec![
+                module.screen,
+                module.cm_desk,
+                module.id,
+                module.title,
+                module.status,
+                module.folder,
+                module.menu_areas.join(", "),
+            ]
+        })
+        .collect())
 }
 
 fn write_named(

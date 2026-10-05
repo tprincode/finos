@@ -14,6 +14,7 @@ fn cadence_label(frequency: &str, periods: u8) -> String {
     }
     match periods {
         52 => "Weekly".into(),
+        24 => "Twice monthly".into(),
         12 => "Monthly".into(),
         4 => "Quarterly".into(),
         _ => String::new(),
@@ -62,15 +63,19 @@ async fn holes_for_security(
         .issuer_pay_date_list(security_id)
         .await
         .unwrap_or_default();
+    let assumed = canonical
+        .assumed_pay_date_list(security_id)
+        .await
+        .unwrap_or_default();
+    let filled = |existing: &str, pay_on: &str| {
+        existing == pay_on
+            || financial_domain::schedule::vendor_payables_same_period(cadence, existing, pay_on)
+    };
     Ok(derived
         .into_iter()
         .filter(|pay_on| {
-            !issuer.iter().any(|row| {
-                row.pay_on == *pay_on
-                    || financial_domain::schedule::vendor_payables_same_period(
-                        cadence, &row.pay_on, pay_on,
-                    )
-            })
+            !issuer.iter().any(|row| filled(&row.pay_on, pay_on))
+                && !assumed.iter().any(|row| filled(&row.pay_on, pay_on))
         })
         .collect())
 }

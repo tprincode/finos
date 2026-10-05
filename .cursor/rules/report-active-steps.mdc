@@ -1,0 +1,37 @@
+---
+description: Report the active step at least once a minute. Never go silent.
+alwaysApply: true
+---
+
+# Report active steps, at least once a minute
+
+Say what you are doing now, in one line, at least once a minute. The report does not pause the
+work and does not ask a question. It names the thing in flight.
+
+- Name the file, query, test, or command you are on: "editing `cart.rs` supersede path", "running
+ `cargo test --test cart`", "querying `cart_scenario` for plan a4312bcd".
+- Before a long compile, test run, or restart, say it is starting and roughly how long.
+- Coming out of a long step, say what it returned before the next step.
+- Changing direction mid-task is a report, not a silent pivot. Say the old plan failed and why.
+
+Going quiet through a multi-minute compile is a fail. The owner cannot see tool calls; silence
+reads as a hang.
+
+## Do not substitute volume for evidence
+
+A report is one line about the current step. It is not a summary, not a plan, not a recap of
+what already happened. Save the accounting for the end, and make it evidence: file paths,
+golden names, pass counts, the number on the screen.
+
+## Clean up your own artifacts
+
+Temp copies, scratch databases, probe files and worktrees you created are yours to delete. Do
+not ask the owner whether to remove something they never made and cannot be expected to
+recognise. The owner-confirmation rule covers their files, not your debris.
+
+## Read the screen before recomputing it
+
+If the owner shows a screenshot or names a figure, that figure is the evidence. Read it and the
+code path that produced it. Do not re-derive a number the product already displays, and do not
+widen to a different record than the one named. Recomputing a correct number is waste and reads
+as not listening.

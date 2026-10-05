@@ -3,7 +3,7 @@
 use crate::error::DomainError;
 use crate::money::{rescale, to_usd_cents};
 
-/// Plan YOC uses the locked cadence 52 / 12 / 4 (AC-PD-06). Unknown is 0, never a default 12.
+/// Plan YOC uses the locked cadence 52 / 24 / 12 / 4 (AC-PD-06). Unknown is 0, never a default 12.
 pub fn planning_periods_per_year(frequency: &str) -> u8 {
     crate::calculator::PaymentCadence::parse(frequency)
         .and_then(crate::calculator::PaymentCadence::periods)
@@ -175,25 +175,37 @@ pub fn roc_research_status(
     "missing-1099"
 }
 
+/// A stored amount is accepted, including a declared zero. A missing amount is not `$0`.
+pub fn declaration_amount_accepted(amount: Option<i64>) -> bool {
+    amount.is_some()
+}
+
+/// Stale only after the expected pay week's Friday is before `as_of` and no accepted
+/// payment period falls in that Sat–Fri week. No expected pay date is unknown.
+/// A collector run is not an input.
 pub fn declaration_freshness(
-    entered_or_paid_on: &[&str],
-    today: &str,
-    last_run_at: &str,
-    last_run_ok: Option<bool>,
+    expected_pay_on: &str,
+    as_of: &str,
+    accepted_periods: &[&str],
 ) -> &'static str {
-    let run_today = !last_run_at.is_empty()
-        && (last_run_at.starts_with(today) || last_run_at == today);
-    let stamp_today = entered_or_paid_on
-        .iter()
-        .any(|stamp| stamp.starts_with(today) || *stamp == today);
-    if run_today || stamp_today {
+    let (Some(pay), Some(today)) = (
+        crate::week::parse_iso_day(expected_pay_on),
+        crate::week::parse_iso_day(as_of),
+    ) else {
+        return "unknown";
+    };
+    let week = crate::week::week_containing(pay);
+    let accepted = accepted_periods.iter().any(|period| {
+        crate::week::parse_iso_day(period)
+            .is_some_and(|day| crate::week::week_containing(day).start == week.start)
+    });
+    if accepted {
         return "current";
     }
-    let has_paid = entered_or_paid_on.iter().any(|s| !s.is_empty());
-    if last_run_ok != Some(true) && !has_paid {
-        return "unavailable";
+    if week.end < today {
+        return "stale";
     }
-    "stale"
+    "unknown"
 }
 
 pub fn recorded_status(is_active: bool, open_lots: bool, had_lots: bool, has_characteristics: bool) -> &'static str {
@@ -235,8 +247,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_periods_are_52_12_4() {
+    fn plan_periods_are_52_24_12_4() {
         assert_eq!(planning_periods_per_year("Weekly"), 52);
+        assert_eq!(planning_periods_per_year("Twice monthly"), 24);
+        assert_eq!(planning_periods_per_year("24"), 24);
         assert_eq!(planning_periods_per_year("monthly"), 12);
         assert_eq!(planning_periods_per_year("Quarterly"), 4);
         assert_eq!(planning_periods_per_year("12"), 12);
@@ -302,18 +316,32 @@ mod tests {
 
     #[test]
     fn declaration_freshness_follows_last_run_and_stamps() {
-        assert_eq!(declaration_freshness(&[], "2026-08-25", "", None), "unavailable");
+        assert!(!declaration_amount_accepted(None));
+        assert!(declaration_amount_accepted(Some(0)));
+        assert_eq!(declaration_freshness("", "2026-10-04", &[]), "unknown");
+        // Week of 2026-09-26 ends Friday 2026-10-02, before Sunday 2026-10-04.
         assert_eq!(
-            declaration_freshness(&["2026-08-01"], "2026-08-25", "2026-08-25", Some(true)),
-            "current"
-        );
-        assert_eq!(
-            declaration_freshness(&["2026-08-01"], "2026-08-25", "2026-08-24", Some(true)),
+            declaration_freshness("2026-09-26", "2026-10-04", &[]),
             "stale"
         );
         assert_eq!(
-            declaration_freshness(&[], "2026-08-25", "2026-08-25", Some(false)),
+            declaration_freshness("2026-09-26", "2026-10-04", &["2026-09-30"]),
             "current"
+        );
+        // A declared zero is accepted. A missing amount is not passed in.
+        assert_eq!(
+            declaration_freshness("2026-09-26", "2026-10-04", &["2026-09-26"]),
+            "current"
+        );
+        // Friday of the pay week is as-of, so the week has not passed.
+        assert_eq!(
+            declaration_freshness("2026-10-02", "2026-10-02", &[]),
+            "unknown"
+        );
+        // Next week has not passed, and a same-day collector run is not current.
+        assert_eq!(
+            declaration_freshness("2026-10-10", "2026-10-04", &[]),
+            "unknown"
         );
     }
 }

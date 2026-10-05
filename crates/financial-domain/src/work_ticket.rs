@@ -34,6 +34,7 @@ pub const RAISEABLE_CODES: &[&str] = &[
     "declaration_history_dropped",
     "declaration_lookback_short",
     "declaration_cadence_mismatch",
+    "declaration_cadence_spacing",
     "declaration_amount_variation",
     "declaration_plan_mismatch",
     "div_type",
@@ -65,7 +66,9 @@ pub fn tool_for_code(code: &str) -> Option<&'static str> {
         | CODE_ADAPTER_URL_MISMATCH
         | CODE_MISSING_SEED_URL => TOOL_RETRY_RETRIEVE,
         "declaration_lookback_short" => TOOL_SET_INCEPTION,
-        "declaration_cadence_mismatch" | "frequency" => TOOL_LOCK_CADENCE,
+        "declaration_cadence_mismatch" | "declaration_cadence_spacing" | "frequency" => {
+            TOOL_LOCK_CADENCE
+        }
         "declaration_amount_variation" => TOOL_AMOUNT_CONFIRM,
         crate::mlp_sec::CODE_OWNER_AMOUNT => TOOL_ENTER_DECLARED_AMOUNT,
         "declaration_plan_mismatch" => TOOL_PLAN_VS_DECL,
@@ -95,7 +98,7 @@ pub fn field_for_code(code: &str) -> &'static str {
         | CODE_ADAPTER_URL_MISMATCH => "declaration_miss",
         CODE_MISSING_SEED_URL => "seed_url",
         "declaration_lookback_short" => "last_run",
-        "declaration_cadence_mismatch" | "frequency" => "frequency",
+        "declaration_cadence_mismatch" | "declaration_cadence_spacing" | "frequency" => "frequency",
         "declaration_amount_variation"
         | "declaration_plan_mismatch"
         | crate::mlp_sec::CODE_OWNER_AMOUNT => "last_run",
@@ -152,6 +155,13 @@ pub fn roc_pct_change_reason(
 
 /// Proposed (new) ROC minor and scale from a `roc_pct_change` reason.
 pub fn parse_roc_pct_change_proposed(reason: &str) -> Option<(i64, u8)> {
+    let (was, now, scale) = parse_roc_pct_change_minors(reason)?;
+    let _ = was;
+    Some((now, scale))
+}
+
+/// Stored (was) and proposed (now) ROC minors + scale from `[was->now @scale]`.
+pub fn parse_roc_pct_change_minors(reason: &str) -> Option<(i64, i64, u8)> {
     let start = reason.rfind('[')?;
     let end = reason.rfind(']')?;
     if end <= start {
@@ -159,10 +169,11 @@ pub fn parse_roc_pct_change_proposed(reason: &str) -> Option<(i64, u8)> {
     }
     let inner = reason.get(start + 1..end)?;
     let (pair, scale_s) = inner.split_once(" @")?;
-    let (_, now_s) = pair.split_once("->")?;
+    let (was_s, now_s) = pair.split_once("->")?;
+    let was = was_s.trim().parse::<i64>().ok()?;
     let now = now_s.trim().parse::<i64>().ok()?;
     let scale = scale_s.trim().parse::<u8>().ok()?;
-    Some((now, scale))
+    Some((was, now, scale))
 }
 
 /// First history parse fail prompts a second URL once. Not lookback-short.
@@ -195,12 +206,17 @@ pub fn is_retrieve_failure_code(code: &str) -> bool {
     )
 }
 
-/// Closed when retrieve is ok. Confirm tickets (variation) stay open for Except/Reject.
+/// Closed when retrieve is ok. Confirm tickets (variation) stay open for Except/Reject
+/// only when the variation is still in the runtime window; cadence spacing raised on
+/// locked history auto-files once collect no longer fails on it.
 pub fn is_auto_file_on_ok_code(code: &str) -> bool {
     is_retrieve_failure_code(code)
         || matches!(
             code.trim(),
-            "declaration_history_dropped" | "declaration_lookback_short"
+            "declaration_history_dropped"
+                | "declaration_lookback_short"
+                | "declaration_cadence_mismatch"
+                | "declaration_cadence_spacing"
         )
 }
 
@@ -220,6 +236,7 @@ pub fn is_declaration_ticket_code(code: &str) -> bool {
             | "declaration_history_dropped"
             | "declaration_lookback_short"
             | "declaration_cadence_mismatch"
+            | "declaration_cadence_spacing"
             | "declaration_amount_variation"
             | "declaration_plan_mismatch"
             | crate::mlp_sec::CODE_OWNER_AMOUNT
@@ -283,6 +300,7 @@ mod tests {
         assert!(reason.starts_with("ROC % was 80.00 and now ROC % should be 75.00"));
         assert!(reason.contains("Last year 1099 was 70.00 (informational)"));
         assert_eq!(parse_roc_pct_change_proposed(&reason), Some((7_500, 2)));
+        assert_eq!(parse_roc_pct_change_minors(&reason), Some((8_000, 7_500, 2)));
         let unknown = roc_pct_change_reason(8_000, 7_500, 2, None);
         assert!(unknown.contains("Last year 1099 is unknown (informational)"));
     }

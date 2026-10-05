@@ -1,3 +1,4 @@
+import { isCashSymbol } from "@finos/app-contracts";
 import type { LotOption } from "./LotSelect";
 
 export type LotSortMode = "lowest-cost" | "largest-tax-loss";
@@ -15,12 +16,6 @@ function toCents(minor: number, scale: number | undefined): number {
   if (places === 2) return minor;
   if (places > 2) return Math.round(minor / 10 ** (places - 2));
   return Math.round(minor * 10 ** (2 - places));
-}
-
-const CASH = new Set(["SPAXX", "CASH", "FDRXX", "SWVXX"]);
-
-function isCashSymbol(symbol: string): boolean {
-  return CASH.has(symbol.toUpperCase());
 }
 
 function formatQty(minor: number, scale: number): string {
@@ -194,7 +189,7 @@ export function LotCostTable({
                   <td>
                     <button
                       type="button"
-                      aria-label={`Choose lot ${lot.symbol} ${lot.lotId}`}
+                      aria-label={`Choose lot ${lot.symbol} opened ${lot.openedOn ?? ""}`}
                       disabled={disabled}
                       onClick={() => onChange(lot.lotId)}
                     >

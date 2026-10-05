@@ -1,8 +1,8 @@
 //! Shopping cart (table-isolated from ledger, lots, and MAGI).
 
 use application_core::contracts::{
-    CartBuyLineBody, CartEvalBody, CartGetBody, CartItemRecord, CartScenarioBody, CartScenarioListBody,
-    CartSellLineBody,
+    CartBuyLineBody, CartEvalBody, CartExecuteStepBody, CartGetBody, CartItemRecord,
+    CartScenarioBody, CartScenarioListBody, CartSellLineBody,
 };
 use application_core::ports::platform::PlatformError;
 use financial_domain::cart::prepare_line;
@@ -87,7 +87,8 @@ async fn plan_id_of(pool: &SqlitePool, scenario_id: Uuid) -> Result<Uuid, Platfo
 pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartScenarioBody, PlatformError> {
     let header = sqlx::query(
         "SELECT scenario_id, plan_id, slot, account_id, account_name, name, kind, status, as_of,
-                cash_yield_bps, funding_source, override_reason, created_at, agreed_at
+                cash_yield_bps, funding_source, override_reason, created_at, agreed_at,
+                execute_cash_baseline_minor
          FROM cart_scenario WHERE scenario_id = ?",
     )
     .bind(scenario_id.to_string())
@@ -107,8 +108,8 @@ pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartSc
     .unwrap_or(0);
     let sells = sqlx::query(
         "SELECT line_id, lot_id, security_id, symbol, qty_minor, qty_scale, unit_minor,
-                proceeds_minor, is_cash, original_cost_minor, performance_cost_minor, tax_cost_minor,
-                performance_gain_minor, tax_gain_minor
+                unit_scale, proceeds_minor, is_cash, original_cost_minor, performance_cost_minor,
+                tax_cost_minor, performance_gain_minor, tax_gain_minor
          FROM cart_sell_line WHERE plan_id = ? ORDER BY is_cash DESC, symbol, line_id",
     )
     .bind(plan_id.to_string())
@@ -116,7 +117,8 @@ pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartSc
     .await
     .map_err(|e| map_err(e.into()))?;
     let buys = sqlx::query(
-        "SELECT line_id, security_id, symbol, qty_whole, last_minor, spend_minor, plan_annual_minor
+        "SELECT line_id, security_id, symbol, qty_whole, last_minor, price_scale, spend_minor,
+                plan_annual_minor
          FROM cart_buy_line WHERE scenario_id = ? ORDER BY line_id",
     )
     .bind(scenario_id.to_string())
@@ -144,6 +146,10 @@ pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartSc
             qty_minor: row.try_get("qty_minor").map_err(|e| map_err(e.into()))?,
             qty_scale: row.try_get::<i64, _>("qty_scale").map_err(|e| map_err(e.into()))? as u8,
             unit_minor: row.try_get("unit_minor").map_err(|e| map_err(e.into()))?,
+            unit_scale: row
+                .try_get::<i64, _>("unit_scale")
+                .map(|s| s as u8)
+                .unwrap_or(2),
             proceeds_minor: row.try_get("proceeds_minor").map_err(|e| map_err(e.into()))?,
             is_cash: row.try_get::<i64, _>("is_cash").map_err(|e| map_err(e.into()))? != 0,
             original_cost_minor: row.try_get("original_cost_minor").map_err(|e| map_err(e.into()))?,
@@ -161,6 +167,10 @@ pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartSc
             symbol: row.try_get("symbol").map_err(|e| map_err(e.into()))?,
             qty_whole: row.try_get("qty_whole").map_err(|e| map_err(e.into()))?,
             last_minor: row.try_get("last_minor").map_err(|e| map_err(e.into()))?,
+            price_scale: row
+                .try_get::<i64, _>("price_scale")
+                .map(|s| s as u8)
+                .unwrap_or(2),
             spend_minor: row.try_get("spend_minor").map_err(|e| map_err(e.into()))?,
             plan_annual_minor: row.try_get("plan_annual_minor").map_err(|e| map_err(e.into()))?,
         });
@@ -194,6 +204,11 @@ pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartSc
             })
         })
         .transpose()?;
+    let execute_cash_baseline_minor: Option<i64> = header
+        .try_get("execute_cash_baseline_minor")
+        .ok()
+        .flatten();
+    let execute_steps = execute_steps_list(pool, scenario_id).await?;
     Ok(CartScenarioBody {
         scenario_id,
         account_id: parse_uuid(&header.try_get::<String, _>("account_id").map_err(|e| map_err(e.into()))?)?,
@@ -211,6 +226,8 @@ pub async fn scenario_get(pool: &SqlitePool, scenario_id: Uuid) -> Result<CartSc
         sell_lines,
         buy_lines,
         eval,
+        execute_cash_baseline_minor,
+        execute_steps,
     })
 }
 
@@ -275,6 +292,7 @@ pub async fn sell_line_add(
     qty_minor: i64,
     qty_scale: u8,
     unit_minor: i64,
+    unit_scale: u8,
     proceeds_minor: i64,
     is_cash: bool,
     original_cost_minor: Option<i64>,
@@ -286,9 +304,9 @@ pub async fn sell_line_add(
     let plan_id = plan_id_of(pool, scenario_id).await?;
     sqlx::query(
         "INSERT INTO cart_sell_line (line_id, plan_id, lot_id, security_id, symbol, qty_minor,
-            qty_scale, unit_minor, proceeds_minor, is_cash, original_cost_minor,
+            qty_scale, unit_minor, unit_scale, proceeds_minor, is_cash, original_cost_minor,
             performance_cost_minor, tax_cost_minor, performance_gain_minor, tax_gain_minor)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(plan_id.to_string())
@@ -298,6 +316,7 @@ pub async fn sell_line_add(
     .bind(qty_minor)
     .bind(qty_scale as i64)
     .bind(unit_minor)
+    .bind(i64::from(unit_scale))
     .bind(proceeds_minor)
     .bind(if is_cash { 1 } else { 0 })
     .bind(original_cost_minor)
@@ -311,6 +330,47 @@ pub async fn sell_line_add(
     scenario_get(pool, scenario_id).await
 }
 
+pub async fn sell_line_unit_set(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+    line_id: Uuid,
+    unit_minor: i64,
+    unit_scale: u8,
+    proceeds_minor: i64,
+    performance_cost_minor: Option<i64>,
+    tax_cost_minor: Option<i64>,
+    performance_gain_minor: Option<i64>,
+    tax_gain_minor: Option<i64>,
+) -> Result<CartScenarioBody, PlatformError> {
+    let plan_id = plan_id_of(pool, scenario_id).await?;
+    let updated = sqlx::query(
+        "UPDATE cart_sell_line SET unit_minor = ?, unit_scale = ?, proceeds_minor = ?,
+            performance_cost_minor = ?, tax_cost_minor = ?,
+            performance_gain_minor = ?, tax_gain_minor = ?
+         WHERE line_id = ? AND plan_id = ? AND is_cash = 0",
+    )
+    .bind(unit_minor)
+    .bind(i64::from(unit_scale))
+    .bind(proceeds_minor)
+    .bind(performance_cost_minor)
+    .bind(tax_cost_minor)
+    .bind(performance_gain_minor)
+    .bind(tax_gain_minor)
+    .bind(line_id.to_string())
+    .bind(plan_id.to_string())
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?
+    .rows_affected();
+    if updated == 0 {
+        return Err(PlatformError::new(
+            "missing_line",
+            "position sell line not found",
+        ));
+    }
+    scenario_get(pool, scenario_id).await
+}
+
 pub async fn buy_line_add(
     pool: &SqlitePool,
     scenario_id: Uuid,
@@ -318,13 +378,14 @@ pub async fn buy_line_add(
     symbol: String,
     qty_whole: i64,
     last_minor: i64,
+    price_scale: u8,
     spend_minor: i64,
     plan_annual_minor: Option<i64>,
 ) -> Result<CartScenarioBody, PlatformError> {
     sqlx::query(
         "INSERT INTO cart_buy_line (line_id, scenario_id, security_id, symbol, qty_whole, last_minor,
-            spend_minor, plan_annual_minor)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            price_scale, spend_minor, plan_annual_minor)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(scenario_id.to_string())
@@ -332,6 +393,7 @@ pub async fn buy_line_add(
     .bind(&symbol)
     .bind(qty_whole)
     .bind(last_minor)
+    .bind(i64::from(price_scale))
     .bind(spend_minor)
     .bind(plan_annual_minor)
     .execute(pool)
@@ -361,15 +423,17 @@ pub async fn buy_line_set(
     line_id: Uuid,
     qty_whole: i64,
     last_minor: i64,
+    price_scale: u8,
     spend_minor: i64,
     plan_annual_minor: Option<i64>,
 ) -> Result<(), PlatformError> {
     sqlx::query(
-        "UPDATE cart_buy_line SET qty_whole = ?, last_minor = ?, spend_minor = ?, plan_annual_minor = ?
-         WHERE line_id = ?",
+        "UPDATE cart_buy_line SET qty_whole = ?, last_minor = ?, price_scale = ?, spend_minor = ?,
+            plan_annual_minor = ? WHERE line_id = ?",
     )
     .bind(qty_whole)
     .bind(last_minor)
+    .bind(i64::from(price_scale))
     .bind(spend_minor)
     .bind(plan_annual_minor)
     .bind(line_id.to_string())
@@ -448,6 +512,79 @@ pub async fn scenario_agree(
     .await
     .map_err(|e| map_err(e.into()))?;
     scenario_get(pool, scenario_id).await
+}
+
+pub async fn execute_steps_list(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+) -> Result<Vec<CartExecuteStepBody>, PlatformError> {
+    let rows = sqlx::query(
+        "SELECT kind, activity_id, lot_id FROM cart_execute_step WHERE scenario_id = ? ORDER BY rowid",
+    )
+    .bind(scenario_id.to_string())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let act: Option<String> = row.try_get("activity_id").map_err(|e| map_err(e.into()))?;
+        let lot: Option<String> = row.try_get("lot_id").map_err(|e| map_err(e.into()))?;
+        out.push(CartExecuteStepBody {
+            kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+            activity_id: act
+                .as_deref()
+                .map(parse_uuid)
+                .transpose()?,
+            lot_id: lot.as_deref().map(parse_uuid).transpose()?,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn execute_cash_baseline_get(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+) -> Result<Option<i64>, PlatformError> {
+    let raw: Option<i64> = sqlx::query_scalar(
+        "SELECT execute_cash_baseline_minor FROM cart_scenario WHERE scenario_id = ?",
+    )
+    .bind(scenario_id.to_string())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?
+    .flatten();
+    Ok(raw)
+}
+
+pub async fn execute_cash_baseline_set_if_empty(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+    baseline_minor: i64,
+) -> Result<(), PlatformError> {
+    sqlx::query(
+        "UPDATE cart_scenario SET execute_cash_baseline_minor = ?
+         WHERE scenario_id = ? AND execute_cash_baseline_minor IS NULL",
+    )
+    .bind(baseline_minor)
+    .bind(scenario_id.to_string())
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    Ok(())
+}
+
+pub async fn scenario_status_set(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+    status: &str,
+) -> Result<(), PlatformError> {
+    sqlx::query("UPDATE cart_scenario SET status = ? WHERE scenario_id = ?")
+        .bind(status)
+        .bind(scenario_id.to_string())
+        .execute(pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
+    Ok(())
 }
 
 pub async fn execute_step_add(
@@ -698,6 +835,7 @@ pub async fn scenario_duplicate(
             sell.qty_minor,
             sell.qty_scale,
             sell.unit_minor,
+            sell.unit_scale,
             sell.proceeds_minor,
             sell.is_cash,
             sell.original_cost_minor,
@@ -716,6 +854,7 @@ pub async fn scenario_duplicate(
             buy.symbol,
             buy.qty_whole,
             buy.last_minor,
+            buy.price_scale,
             buy.spend_minor,
             buy.plan_annual_minor,
         )

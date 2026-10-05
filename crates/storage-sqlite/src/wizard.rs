@@ -893,6 +893,7 @@ fn collector_symbol_pays(div_type: &str, payment_frequency: &str, symbol: &str) 
         financial_domain::calculator::PaymentCadence::parse(payment_frequency),
         Some(
             financial_domain::calculator::PaymentCadence::Weekly
+                | financial_domain::calculator::PaymentCadence::TwiceMonthly
                 | financial_domain::calculator::PaymentCadence::Monthly
                 | financial_domain::calculator::PaymentCadence::Quarterly
         )

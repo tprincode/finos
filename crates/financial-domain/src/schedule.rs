@@ -43,8 +43,11 @@ impl CalendarPolicy {
     }
 
     /// Stored policy plus live issuer pay rows — vendor dates win when present.
-    pub fn resolve(stored: &str, periods_per_year: u8, issuer_pay_count: usize) -> Self {
-        if issuer_pay_count > 0 {
+    /// Force issuer calendar only when vendor (non-derived) pay stamps exist.
+    /// Persisted `derived_walk` horizon rows must not flip a stored derived_walk
+    /// template onto issuer_calendar (OPEN week goldens / wall-clock LotOpen).
+    pub fn resolve(stored: &str, periods_per_year: u8, vendor_pay_count: usize) -> Self {
+        if vendor_pay_count > 0 {
             return Self::IssuerCalendar;
         }
         Self::parse_or_infer(stored, periods_per_year)
@@ -152,6 +155,18 @@ pub fn period_has_occurred(period: &str, as_of: &str) -> bool {
         (Some(d), Some(as_of_d)) => d < as_of_d,
         _ => true,
     }
+}
+
+/// Runtime collect store-verify window: today/current month + future only.
+/// Establish/inception owns paid history; months-old page rows must not fail `last_run_ok`.
+pub fn runtime_declaration_verify_period(period: &str, as_of: &str) -> bool {
+    if !is_plausible_payment_period(period) {
+        return false;
+    }
+    if !period_has_occurred(period, as_of) {
+        return true;
+    }
+    year_month(period) == year_month(as_of)
 }
 
 /// Unoccurred copied last-pay / orphan calendar rows. Not an issuer notice.
@@ -345,12 +360,21 @@ fn year_month(raw: &str) -> Option<String> {
     Some(format!("{:04}-{:02}", d.year(), d.month()))
 }
 
-/// Same payable slot: weekly uses Sat–Fri week or a 3-day window; other cadences use calendar month.
+/// Same payable slot: weekly uses Sat–Fri week or a 3-day window;
+/// twice-monthly uses the twin-gap ceiling (~7d), not calendar month
+/// (mid-month and month-end are distinct pays); other cadences use calendar month.
 pub fn vendor_payables_same_period(frequency: &str, left: &str, right: &str) -> bool {
-    if PaymentCadence::parse(frequency) == Some(PaymentCadence::Weekly) {
-        return same_pay_week(left, right) || within_calendar_days(left, right, 3);
+    match PaymentCadence::parse(frequency) {
+        Some(PaymentCadence::Weekly) => {
+            same_pay_week(left, right) || within_calendar_days(left, right, 3)
+        }
+        Some(PaymentCadence::TwiceMonthly) => {
+            let ceiling =
+                crate::declaration_post::cadence_twin_gap_ceiling_days(frequency).unwrap_or(7);
+            left.trim() == right.trim() || within_calendar_days(left, right, ceiling)
+        }
+        _ => year_month(left) == year_month(right),
     }
-    year_month(left) == year_month(right)
 }
 
 /// Stored date is the earlier leftover (record/ex) for the same payable slot.
@@ -539,6 +563,156 @@ pub fn leftover_ex_to_payable_moves(
     out
 }
 
+/// Same-dollar short-gap twins under a locked cadence: earlier date is leftover, keep later.
+/// Quarterly EPD-style 14d ex+pay pairs; also collapses near-miss ex vs payable without exact fields.
+pub fn short_gap_twin_moves(
+    stored: &[(String, i64, u8)],
+    locked_frequency: &str,
+) -> Vec<(String, String)> {
+    let Some(ceiling) = crate::declaration_post::cadence_twin_gap_ceiling_days(locked_frequency)
+    else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(String, i64, u8, chrono::NaiveDate)> = stored
+        .iter()
+        .filter_map(|(on, amt, scale)| {
+            if *amt <= 0 || !is_plausible_payment_period(on) {
+                return None;
+            }
+            let d = parse_iso_day(on)?;
+            Some((on.clone(), *amt, *scale, d))
+        })
+        .collect();
+    rows.sort_by(|a, b| a.3.cmp(&b.3).then_with(|| a.0.cmp(&b.0)));
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < rows.len() {
+        let (ref early_on, early_amt, early_scale, early_d) = rows[i];
+        let (ref late_on, late_amt, late_scale, late_d) = rows[i + 1];
+        let gap = (late_d - early_d).num_days().abs();
+        if gap > 0
+            && gap <= ceiling
+            && crate::money::amounts_equal(early_amt, early_scale, late_amt, late_scale)
+        {
+            if !out.iter().any(|(from, to)| from == early_on && to == late_on) {
+                out.push((early_on.clone(), late_on.clone()));
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A stored pay-on that the derived walk guessed rather than the issuer publishing it.
+pub fn is_derived_pay_date_source(source: &str) -> bool {
+    matches!(CalendarPolicy::parse(source), Some(CalendarPolicy::DerivedWalk))
+}
+
+/// Unoccurred pay-on twins where one side is a derived filler and the other is published.
+/// Returns the derived dates to supersede.
+///
+/// Vendor dates are the standard and derived is only the fallback, so once the issuer posts
+/// the date the walk already guessed, the guess has to go. Left in place the name carries two
+/// pays a few days apart and every spacing band, count window, and remaining-year check
+/// fails on a name whose data is actually fine.
+///
+/// Two *published* dates inside the twin gap are a conflict, not a filler, and are left
+/// alone so the owner gets a ticket instead of a silent delete.
+pub fn derived_twin_pay_date_drops(
+    pay_ons: &[(String, String)],
+    locked_frequency: &str,
+    as_of: &str,
+) -> Vec<String> {
+    let Some(ceiling) = crate::declaration_post::cadence_twin_gap_ceiling_days(locked_frequency)
+    else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(String, bool, chrono::NaiveDate)> = pay_ons
+        .iter()
+        .filter_map(|(on, source)| {
+            if !is_plausible_payment_period(on) || on.as_str() < as_of {
+                return None;
+            }
+            let d = parse_iso_day(on)?;
+            Some((on.clone(), is_derived_pay_date_source(source), d))
+        })
+        .collect();
+    rows.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i + 1 < rows.len() {
+        let (ref early_on, early_derived, early_d) = rows[i];
+        let (ref late_on, late_derived, late_d) = rows[i + 1];
+        let gap = (late_d - early_d).num_days().abs();
+        if gap == 0 || gap > ceiling {
+            i += 1;
+            continue;
+        }
+        let drop = match (early_derived, late_derived) {
+            (true, false) => Some(early_on.clone()),
+            (false, true) => Some(late_on.clone()),
+            // Two guesses in one period: keep the later, matching payable-over-ex.
+            (true, true) => Some(early_on.clone()),
+            (false, false) => None,
+        };
+        match drop {
+            Some(d) => {
+                if !out.contains(&d) {
+                    out.push(d);
+                }
+                i += 2;
+            }
+            None => i += 1,
+        }
+    }
+    out
+}
+
+/// Collapse upcoming pay-ons that sit inside the twin gap for the locked cadence.
+/// Keeps the later date in each short pair (payable over ex/record).
+pub fn collapse_short_gap_pay_ons(pay_ons: &[String], locked_frequency: &str) -> Vec<String> {
+    let Some(ceiling) = crate::declaration_post::cadence_twin_gap_ceiling_days(locked_frequency)
+    else {
+        return pay_ons
+            .iter()
+            .filter(|d| is_plausible_payment_period(d))
+            .cloned()
+            .collect();
+    };
+    let mut days: Vec<(String, chrono::NaiveDate)> = pay_ons
+        .iter()
+        .filter_map(|on| {
+            if !is_plausible_payment_period(on) {
+                return None;
+            }
+            let d = parse_iso_day(on)?;
+            Some((on.clone(), d))
+        })
+        .collect();
+    days.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    days.dedup_by(|a, b| a.0 == b.0);
+    if days.is_empty() {
+        return Vec::new();
+    }
+    let mut keep: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < days.len() {
+        if i + 1 < days.len() {
+            let gap = (days[i + 1].1 - days[i].1).num_days().abs();
+            if gap > 0 && gap <= ceiling {
+                keep.push(days[i + 1].0.clone());
+                i += 2;
+                continue;
+            }
+        }
+        keep.push(days[i].0.clone());
+        i += 1;
+    }
+    keep
+}
+
 /// Remaining unpaid dates through 31 Dec from paid history + cadence.
 /// Monthly early-month names (paid day 1–10, e.g. BITO ex/pay in the first three
 /// days): the 3rd of each remaining month. Other monthly names: +1 month from
@@ -583,11 +757,26 @@ pub fn derive_remaining_pay_ons(
             }
             out
         }
+        Some(24) => {
+            // ~every 15 days from last paid (Direxion twice-monthly).
+            let mut out = Vec::new();
+            let mut cursor = latest;
+            for _ in 0..24 {
+                cursor += Duration::days(15);
+                if cursor > year_end {
+                    break;
+                }
+                if cursor >= as_of_d {
+                    out.push(cursor.format("%Y-%m-%d").to_string());
+                }
+            }
+            out
+        }
         Some(4) => {
             let mut out = Vec::new();
             let mut cursor = latest;
             for _ in 0..4 {
-                let Some(next) = cursor.checked_add_signed(Duration::days(91)) else {
+                let Some(next) = cursor.checked_add_months(Months::new(3)) else {
                     break;
                 };
                 cursor = next;
@@ -657,6 +846,29 @@ pub fn derive_horizon_pay_ons(
             };
             month_slots_in_range(start_d, end_d, day)
         }
+        Some(24) => {
+            let mut out = Vec::new();
+            let mut cursor = paid.last().copied().unwrap_or(start_d);
+            if cursor < start_d {
+                cursor = start_d;
+            }
+            // Seed from last paid, then step ~15d through the horizon.
+            if paid.last().is_some() {
+                cursor = paid.last().copied().unwrap();
+            } else {
+                out.push(start_d.format("%Y-%m-%d").to_string());
+            }
+            for _ in 0..48 {
+                cursor += Duration::days(15);
+                if cursor > end_d {
+                    break;
+                }
+                if cursor >= start_d {
+                    out.push(cursor.format("%Y-%m-%d").to_string());
+                }
+            }
+            out
+        }
         Some(4) => {
             if let Some(latest) = paid.last().copied() {
                 let mut out = Vec::new();
@@ -716,12 +928,12 @@ pub fn derive_quarterly_template_pay_ons(as_of: &str, paid_periods: &[&str]) -> 
     out
 }
 
-/// Remaining pay periods from `as_of` through 31 Dec, capped at 4 / 12 / 52.
+/// Remaining pay periods from `as_of` through 31 Dec, capped at 4 / 12 / 24 / 52.
 /// A monthly name in August has 5 remaining months, not 12.
 pub fn remaining_periods_to_year_end(as_of: &str, periods_per_year: u8) -> Option<u8> {
     let as_of_d = NaiveDate::parse_from_str(as_of.trim(), "%Y-%m-%d").ok()?;
     let cap = match periods_per_year {
-        4 | 12 | 52 => periods_per_year,
+        4 | 12 | 24 | 52 => periods_per_year,
         _ => return None,
     };
     let year_end = remaining_year_end(as_of_d);
@@ -730,6 +942,10 @@ pub fn remaining_periods_to_year_end(as_of: &str, periods_per_year: u8) -> Optio
     }
     let raw = match cap {
         12 => 13u32.saturating_sub(u32::from(as_of_d.month())) as u8,
+        24 => {
+            let months_left = 13u32.saturating_sub(u32::from(as_of_d.month())) as u8;
+            months_left.saturating_mul(2).min(cap)
+        }
         4 => {
             let quarter = ((as_of_d.month() - 1) / 3) + 1;
             5u8.saturating_sub(quarter as u8)
@@ -887,22 +1103,6 @@ fn apply_owner_month_anchor(
     true
 }
 
-fn stepped_dates(anchor: NaiveDate, step_days: i64, as_of: NaiveDate, year_end: NaiveDate) -> Vec<NaiveDate> {
-    let step = Duration::days(step_days);
-    let mut d = anchor;
-    let mut dates = Vec::new();
-    for _ in 0..60 {
-        if d > year_end {
-            break;
-        }
-        if d >= as_of {
-            dates.push(d);
-        }
-        d += step;
-    }
-    dates
-}
-
 fn apply_overrides(dates: &[NaiveDate], overrides: &[DateOverride]) -> Vec<(NaiveDate, NaiveDate, bool)> {
     dates
         .iter()
@@ -1027,8 +1227,8 @@ fn schedule_from_derived_ons(
 }
 
 /// Rest-of-year payment dates. Weekly = remaining Sat–Fri weeks. Monthly = last
-/// calendar day of each remaining month through 31 Dec. Quarterly walks ~91 days
-/// from the latest parseable declaration period (or an owner-named next date).
+/// calendar day of each remaining month through 31 Dec. Quarterly walks +1 calendar
+/// quarter from the latest parseable declaration period (or an owner-named next date).
 pub fn remaining_year_payments(
     as_of: &str,
     latest_payment_period: Option<&str>,
@@ -1167,10 +1367,45 @@ fn derived_walk_schedule(
             orphaned,
         );
     }
-    let step_days = match spec.periods_per_year {
-        4 => 91,
-        _ => return unknown("unknown — frequency is not Weekly, Monthly, or Quarterly"),
-    };
+    if spec.periods_per_year == 24 {
+        // Twice-monthly payers (e.g. Direxion MUIB): mid-month + month-end
+        // anchors until a dedicated walk exists; still better than Monthly×12 for FWD.
+        let month_ends = monthly_last_calendar_days(as_of_d, year_end);
+        let mut raw: Vec<NaiveDate> = Vec::new();
+        for end in &month_ends {
+            if let Some(mid_day) = NaiveDate::from_ymd_opt(end.year(), end.month(), 15) {
+                if mid_day >= as_of_d && mid_day <= year_end {
+                    raw.push(mid_day);
+                }
+            }
+            if *end >= as_of_d && *end <= year_end {
+                raw.push(*end);
+            }
+        }
+        raw.sort();
+        raw.dedup();
+        let from_owner = apply_owner_month_anchor(&mut raw, spec.overrides, as_of_d, year_end);
+        let orphaned = orphaned_from(&raw, spec.overrides);
+        let tagged = apply_overrides(&raw, spec.overrides);
+        let provenance = if from_owner || tagged.iter().any(|(_, _, o)| *o) {
+            "owner date override".into()
+        } else {
+            "mid-month and month-end through 31 Dec (twice monthly)".into()
+        };
+        return assemble(
+            tagged,
+            year_end,
+            provenance,
+            "derived_walk",
+            spec.lots,
+            spec.plan_minor,
+            spec.plan_scale,
+            orphaned,
+        );
+    }
+    if spec.periods_per_year != 4 {
+        return unknown("unknown — frequency is not Weekly, Twice monthly, Monthly, or Quarterly");
+    }
     let decl_anchor = spec.latest_payment_period.and_then(parse_iso_day);
     let named_anchor = owner_anchor(spec.overrides);
     let (anchor, from_owner) = match (named_anchor, decl_anchor) {
@@ -1180,7 +1415,22 @@ fn derived_walk_schedule(
             return unknown("unknown — no parseable declaration period");
         }
     };
-    let raw = stepped_dates(anchor, step_days, as_of_d, year_end);
+    // +1 calendar quarter (same as derive_quarterly_template_pay_ons). Not +91 days —
+    // that invents 11/13 from 8/14 instead of IR payable 11/14.
+    let mut cursor = anchor;
+    let mut raw = Vec::new();
+    for _ in 0..16 {
+        let Some(next) = cursor.checked_add_months(Months::new(3)) else {
+            break;
+        };
+        cursor = next;
+        if cursor > year_end {
+            break;
+        }
+        if cursor >= as_of_d {
+            raw.push(cursor);
+        }
+    }
     let orphaned = orphaned_from(&raw, spec.overrides);
     let tagged = apply_overrides(&raw, spec.overrides);
     let freq = frequency_label(spec.periods_per_year);
@@ -1208,6 +1458,18 @@ fn derived_walk_schedule(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_verify_skips_months_old_history() {
+        assert!(runtime_declaration_verify_period("2026-10-15", "2026-10-01"));
+        assert!(runtime_declaration_verify_period("2026-10-31", "2026-10-15"));
+        assert!(runtime_declaration_verify_period("2026-11-30", "2026-10-01"));
+        assert!(
+            !runtime_declaration_verify_period("2026-07-31", "2026-10-01"),
+            "July is locked history in October"
+        );
+        assert!(!runtime_declaration_verify_period("2026-09-30", "2026-10-01"));
+    }
 
     #[test]
     fn leftover_ex_moves_to_later_payable_including_cross_month() {
@@ -1245,6 +1507,115 @@ mod tests {
             )],
         );
         assert_eq!(rounded, vec![("2014-07-23".into(), "2014-07-30".into())]);
+    }
+
+    #[test]
+    fn short_gap_twins_move_earlier_ex_to_later_payable() {
+        let stored = vec![
+            ("2025-07-31".into(), 545, 3),
+            ("2025-08-14".into(), 545, 3),
+            ("2025-10-31".into(), 545, 3),
+            ("2025-11-14".into(), 545, 3),
+        ];
+        let moves = short_gap_twin_moves(&stored, "Quarterly");
+        assert!(moves.contains(&("2025-07-31".into(), "2025-08-14".into())), "{moves:?}");
+        assert!(moves.contains(&("2025-10-31".into(), "2025-11-14".into())), "{moves:?}");
+        assert!(short_gap_twin_moves(&stored, "Weekly").is_empty());
+    }
+
+    /// BITO's live shape: the walk guessed 2026-10-03 and ProShares then published
+    /// 2026-10-07. Four days apart on a Monthly name breaks the 25–35 band, so the guess
+    /// goes and the published date stays.
+    #[test]
+    fn vendor_pay_date_supersedes_the_derived_guess_it_contradicts() {
+        let stored = vec![
+            ("2026-09-08".to_string(), "proshares".to_string()),
+            ("2026-10-03".to_string(), "derived_walk".to_string()),
+            ("2026-10-07".to_string(), "vendor_payable".to_string()),
+            ("2026-11-03".to_string(), "derived_walk".to_string()),
+            ("2026-12-03".to_string(), "derived_walk".to_string()),
+        ];
+        let drops = derived_twin_pay_date_drops(&stored, "Monthly", "2026-10-01");
+        assert_eq!(drops, vec!["2026-10-03".to_string()], "{drops:?}");
+
+        // A derived date the vendor has not contradicted is the fallback and stays.
+        let only_derived = vec![
+            ("2026-10-03".to_string(), "derived_walk".to_string()),
+            ("2026-11-03".to_string(), "derived_walk".to_string()),
+        ];
+        assert!(
+            derived_twin_pay_date_drops(&only_derived, "Monthly", "2026-10-01").is_empty(),
+            "a lone fallback is not a twin"
+        );
+
+        // Two published dates in one period are an owner conflict, not a filler.
+        let both_published = vec![
+            ("2026-10-03".to_string(), "proshares".to_string()),
+            ("2026-10-07".to_string(), "vendor_payable".to_string()),
+        ];
+        assert!(
+            derived_twin_pay_date_drops(&both_published, "Monthly", "2026-10-01").is_empty(),
+            "two published dates must ticket, never silently delete"
+        );
+
+        // Past dates are history and are never rewritten.
+        assert!(
+            derived_twin_pay_date_drops(&stored, "Monthly", "2026-12-31").is_empty(),
+            "only unoccurred dates are in scope"
+        );
+    }
+
+    /// Fleet-wide, not a Monthly patch: the walk fills dates for every cadence.
+    #[test]
+    fn derived_twin_drop_applies_to_every_cadence() {
+        for (freq, derived, vendor) in [
+            ("Weekly", "2026-10-05", "2026-10-07"),
+            ("Twice monthly", "2026-10-03", "2026-10-07"),
+            ("Monthly", "2026-10-03", "2026-10-07"),
+            ("Quarterly", "2026-10-03", "2026-11-03"),
+        ] {
+            let stored = vec![
+                (derived.to_string(), "derived_walk".to_string()),
+                (vendor.to_string(), "vendor_payable".to_string()),
+            ];
+            assert_eq!(
+                derived_twin_pay_date_drops(&stored, freq, "2026-10-01"),
+                vec![derived.to_string()],
+                "{freq} must drop the contradicted guess"
+            );
+        }
+    }
+
+    #[test]
+    fn collapse_short_gap_pay_ons_keeps_later_payable() {
+        let ons = vec![
+            "2026-10-30".into(),
+            "2026-11-13".into(),
+            "2027-01-29".into(),
+            "2090-08-17".into(),
+        ];
+        let kept = collapse_short_gap_pay_ons(&ons, "Quarterly");
+        assert_eq!(
+            kept,
+            vec!["2026-11-13".to_string(), "2027-01-29".to_string()]
+        );
+    }
+
+    #[test]
+    fn twice_monthly_same_period_does_not_merge_mid_and_month_end() {
+        assert!(
+            !vendor_payables_same_period("Twice monthly", "2026-08-17", "2026-08-31"),
+            "14d apart is two pays, not one month slot"
+        );
+        assert!(vendor_payables_same_period(
+            "Twice monthly",
+            "2026-08-17",
+            "2026-08-17"
+        ));
+        assert!(
+            vendor_payables_same_period("Monthly", "2026-08-17", "2026-08-31"),
+            "Monthly still uses calendar month"
+        );
     }
 
     #[test]
@@ -1918,5 +2289,24 @@ mod tests {
         let dates = derive_quarterly_template_pay_ons("2026-09-08", &["2026-08-19"]);
         assert_eq!(dates, vec!["2026-11-19".to_string()]);
         assert!(!dates.iter().any(|d| d.starts_with("2027")));
+    }
+
+    #[test]
+    fn quarterly_remaining_walk_is_plus_three_months_not_ninety_one_days() {
+        // 2026-08-14 + 91d = 2026-11-13 (wrong). +3 months = 2026-11-14 (IR payable).
+        let dates = derive_remaining_pay_ons("2026-09-20", "Quarterly", &["2026-08-14"]);
+        assert_eq!(dates, vec!["2026-11-14".to_string()]);
+        let schedule = remaining_year_payments(
+            "2026-09-20",
+            Some("2026-08-14"),
+            4,
+            100,
+            0,
+            1_000,
+            4,
+            &[],
+        );
+        let ons: Vec<_> = schedule.payments.iter().map(|p| p.pay_on.as_str()).collect();
+        assert_eq!(ons, ["2026-11-14"]);
     }
 }

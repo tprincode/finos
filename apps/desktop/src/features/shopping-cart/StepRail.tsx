@@ -4,7 +4,9 @@ const STEPS = [
   "Evaluate",
   "Agree",
   "Confirm sell",
-  "Open lot",
+  "Confirm purchase",
+  "Confirm cash",
+  "Done",
 ] as const;
 
 export type CartRailStep = (typeof STEPS)[number];

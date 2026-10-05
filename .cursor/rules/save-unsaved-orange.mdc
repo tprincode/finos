@@ -1,9 +1,13 @@
 ---
-description: Save turns orange while owner edits are unsaved
+description: Dirty owner-edit Save is orange. Leaving while dirty asks first.
 globs: apps/desktop/src/**/*.{tsx,css}
-alwaysApply: true
+alwaysApply: false
 ---
 
 # Unsaved Save is orange
 
-Any owner-edit **Save** (or the screen’s commit control: Save period, Save week, Confirm Plan, Open lot) uses `className="is-unsaved"` while that screen’s dirty flag is true. CSS is `button.is-unsaved` in `App.css`. Do not invent a second save affordance. Export/snapshot Save buttons stay unchanged.
+Any owner-edit Save (Save period, Save week, Confirm Plan, Confirm) uses `className="is-unsaved"` while that screen is dirty. CSS is `button.is-unsaved` in App.css. Do not add a second Save.
+
+Export and snapshot Save stay unchanged.
+
+Leaving that screen, or restarting, while the dirty flag is true must ask first. Do not drop the edits.

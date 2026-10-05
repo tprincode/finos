@@ -69,6 +69,7 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::CashAdjustAccount => "cash_adjust_account",
         DomainError::CashAdjustWithholdingNotAllowed => "cash_adjust_withholding_not_allowed",
         DomainError::CashAdjustAmount => "cash_adjust_amount",
+        DomainError::PositionNotEstablished => "position_not_established",
     };
     PlatformError::new(code, err.to_string())
 }

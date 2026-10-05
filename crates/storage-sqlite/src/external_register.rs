@@ -49,7 +49,14 @@ fn row_to_line(row: &sqlx::sqlite::SqliteRow) -> Result<ExternalRegisterLine, Pl
         completed: row.try_get::<i64, _>("completed").map_err(map_sql)? != 0,
         step_transfer: row.try_get::<i64, _>("step_transfer").map_err(map_sql)? != 0,
         step_billpay: row.try_get::<i64, _>("step_billpay").map_err(map_sql)? != 0,
+        step_billpay_deposit: row.try_get::<i64, _>("step_billpay_deposit").map_err(map_sql)? != 0,
         step_pay: row.try_get::<i64, _>("step_pay").map_err(map_sql)? != 0,
+        step_withdrawal: row.try_get::<i64, _>("step_withdrawal").map_err(map_sql)? != 0,
+        step_transfer_on: row.try_get("step_transfer_on").map_err(map_sql)?,
+        step_billpay_on: row.try_get("step_billpay_on").map_err(map_sql)?,
+        step_billpay_deposit_on: row.try_get("step_billpay_deposit_on").map_err(map_sql)?,
+        step_pay_on: row.try_get("step_pay_on").map_err(map_sql)?,
+        step_withdrawal_on: row.try_get("step_withdrawal_on").map_err(map_sql)?,
     })
 }
 
@@ -57,7 +64,9 @@ async fn load_all(pool: &SqlitePool) -> Result<Vec<ExternalRegisterLine>, Platfo
     let rows = sqlx::query(
         "SELECT line_id, source_row, pay_type, occurred_on, amount_minor, scale,
                 category, vendor, description, true_up_on, completed,
-                step_transfer, step_billpay, step_pay
+                step_transfer, step_billpay, step_billpay_deposit, step_pay, step_withdrawal,
+                step_transfer_on, step_billpay_on, step_billpay_deposit_on, step_pay_on,
+                step_withdrawal_on
          FROM external_register_line
          ORDER BY CASE WHEN source_row IS NULL THEN 0 ELSE 1 END,
                   source_row ASC,
@@ -94,11 +103,47 @@ async fn rewrite_names(pool: &SqlitePool) -> Result<(), PlatformError> {
     Ok(())
 }
 
+async fn fill_missing_completed_dates(pool: &SqlitePool) -> Result<(), PlatformError> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    sqlx::query(
+        "UPDATE external_register_line
+         SET true_up_on = ?1
+         WHERE completed = 1
+           AND (true_up_on IS NULL OR trim(true_up_on) = '')",
+    )
+    .bind(&today)
+    .execute(pool)
+    .await
+    .map_err(map_sql)?;
+    // All four CCT steps done also means completed — stamp the date even if the flag lagged.
+    sqlx::query(
+        "UPDATE external_register_line
+         SET completed = 1,
+             true_up_on = CASE
+                 WHEN true_up_on IS NOT NULL AND trim(true_up_on) <> '' THEN true_up_on
+                 ELSE ?1
+             END
+         WHERE step_transfer = 1
+           AND step_billpay_deposit = 1
+           AND step_pay = 1
+           AND step_withdrawal = 1
+           AND (completed = 0
+                OR true_up_on IS NULL
+                OR trim(true_up_on) = '')",
+    )
+    .bind(&today)
+    .execute(pool)
+    .await
+    .map_err(map_sql)?;
+    Ok(())
+}
+
 pub async fn get(
     pool: &SqlitePool,
     search: Option<String>,
 ) -> Result<ExternalRegisterGetBody, PlatformError> {
     rewrite_names(pool).await?;
+    fill_missing_completed_dates(pool).await?;
     let all = load_all(pool).await?;
     let query = search.unwrap_or_default();
     let lines = all
@@ -191,42 +236,86 @@ pub async fn true_up(
     get(pool, None).await
 }
 
+fn tick_day(ticked_on: Option<String>) -> String {
+    if let Some(day) = ticked_on {
+        let day = day.trim().to_string();
+        if NaiveDate::parse_from_str(&day, "%Y-%m-%d").is_ok() {
+            return day;
+        }
+    }
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
 pub async fn mark_step(
     pool: &SqlitePool,
     line_ids: Vec<Uuid>,
     step: &str,
+    ticked_on: Option<String>,
 ) -> Result<ExternalRegisterGetBody, PlatformError> {
-    if !matches!(step, "transfer" | "billpay" | "pay") {
+    if !matches!(
+        step,
+        "transfer" | "billpay" | "billpay_deposit" | "pay" | "withdrawal"
+    ) {
         return Err(PlatformError::new(
             "bad_step",
-            "step must be transfer, billpay, or pay",
+            "step must be transfer, billpay, billpay_deposit, pay, or withdrawal",
         ));
     }
+    let day = tick_day(ticked_on);
     let mut tx = pool.begin().await.map_err(map_sql)?;
     for line_id in line_ids {
         sqlx::query(
             "UPDATE external_register_line
              SET step_transfer = CASE WHEN ?1 = 'transfer' THEN 1 ELSE step_transfer END,
-                 step_billpay = CASE WHEN ?2 = 'billpay' THEN 1 ELSE step_billpay END,
-                 step_pay = CASE WHEN ?3 = 'pay' THEN 1 ELSE step_pay END
-             WHERE line_id = ?4",
+                 step_billpay = CASE
+                     WHEN ?1 = 'billpay' OR ?1 = 'billpay_deposit' THEN 1
+                     ELSE step_billpay END,
+                 step_billpay_deposit = CASE WHEN ?1 = 'billpay_deposit' THEN 1 ELSE step_billpay_deposit END,
+                 step_pay = CASE WHEN ?1 = 'pay' THEN 1 ELSE step_pay END,
+                 step_withdrawal = CASE WHEN ?1 = 'withdrawal' THEN 1 ELSE step_withdrawal END,
+                 step_transfer_on = CASE
+                     WHEN ?1 = 'transfer'
+                          AND (step_transfer_on IS NULL OR trim(step_transfer_on) = '')
+                     THEN ?2 ELSE step_transfer_on END,
+                 step_billpay_on = CASE
+                     WHEN (?1 = 'billpay' OR ?1 = 'billpay_deposit')
+                          AND (step_billpay_on IS NULL OR trim(step_billpay_on) = '')
+                     THEN ?2 ELSE step_billpay_on END,
+                 step_billpay_deposit_on = CASE
+                     WHEN ?1 = 'billpay_deposit'
+                          AND (step_billpay_deposit_on IS NULL OR trim(step_billpay_deposit_on) = '')
+                     THEN ?2 ELSE step_billpay_deposit_on END,
+                 step_pay_on = CASE
+                     WHEN ?1 = 'pay'
+                          AND (step_pay_on IS NULL OR trim(step_pay_on) = '')
+                     THEN ?2 ELSE step_pay_on END,
+                 step_withdrawal_on = CASE
+                     WHEN ?1 = 'withdrawal'
+                          AND (step_withdrawal_on IS NULL OR trim(step_withdrawal_on) = '')
+                     THEN ?2 ELSE step_withdrawal_on END
+             WHERE line_id = ?3",
         )
         .bind(step)
-        .bind(step)
-        .bind(step)
+        .bind(&day)
         .bind(line_id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(map_sql)?;
         sqlx::query(
             "UPDATE external_register_line
-             SET completed = 1
+             SET completed = 1,
+                 true_up_on = CASE
+                     WHEN true_up_on IS NOT NULL AND trim(true_up_on) <> '' THEN true_up_on
+                     ELSE ?2
+                 END
              WHERE line_id = ?1
                AND step_transfer = 1
-               AND step_billpay = 1
-               AND step_pay = 1",
+               AND step_billpay_deposit = 1
+               AND step_pay = 1
+               AND step_withdrawal = 1",
         )
         .bind(line_id.to_string())
+        .bind(&day)
         .execute(&mut *tx)
         .await
         .map_err(map_sql)?;
@@ -385,7 +474,14 @@ pub async fn import_workbook(
             completed: true_up_on.is_some(),
             step_transfer: true_up_on.is_some(),
             step_billpay: true_up_on.is_some(),
+            step_billpay_deposit: true_up_on.is_some(),
             step_pay: true_up_on.is_some(),
+            step_withdrawal: true_up_on.is_some(),
+            step_transfer_on: None,
+            step_billpay_on: None,
+            step_billpay_deposit_on: None,
+            step_pay_on: None,
+            step_withdrawal_on: None,
         });
     }
 
@@ -428,6 +524,16 @@ mod tests {
     use application_core::ports::canonical::Canonical;
 
     use crate::platform::LocalPlatform;
+
+    #[test]
+    fn tick_day_keeps_a_calendar_date() {
+        assert_eq!(
+            super::tick_day(Some("2026-09-28".into())),
+            "2026-09-28"
+        );
+        let fallback = super::tick_day(Some("nope".into()));
+        assert!(chrono::NaiveDate::parse_from_str(&fallback, "%Y-%m-%d").is_ok());
+    }
 
     #[tokio::test]
     #[ignore]

@@ -32,6 +32,10 @@ fn accessibility_primary_actions_have_accessible_names() {
     let cash_management =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/CashManagement.tsx"))
             .expect("CashManagement.tsx");
+    let household_income = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/HouseholdIncomeReport.tsx"),
+    )
+    .expect("HouseholdIncomeReport.tsx");
     let cash_coverage =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/features/cash/CashCoverage.tsx"))
             .expect("CashCoverage.tsx");
@@ -58,8 +62,46 @@ fn accessibility_primary_actions_have_accessible_names() {
         repo_root().join("apps/desktop/src/features/collectors/CollectorEstablishScreen.tsx"),
     )
     .expect("CollectorEstablishScreen.tsx");
+    let cart_screen = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shopping-cart/ShoppingCartScreen.tsx"),
+    )
+    .expect("ShoppingCartScreen.tsx");
+    let cart_execute = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shopping-cart/ExecutePlanPanel.tsx"),
+    )
+    .expect("ExecutePlanPanel.tsx");
+    let cart_rail = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shopping-cart/StepRail.tsx"),
+    )
+    .expect("StepRail.tsx");
+    let position_details = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/position-details/PositionDetailsScreen.tsx"),
+    )
+    .expect("PositionDetailsScreen.tsx");
+    let symbol_window = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/market-impact/SymbolWindowRow.tsx"),
+    )
+    .expect("SymbolWindowRow.tsx");
+    assert!(
+        position_details.contains("aria-label=\"Plan Management\"")
+            && position_details.contains("avg6Declaration(")
+            && position_details.contains("lastPaidDeclarations("),
+        "Plan Management shows Avg 6 from the calculator helper, not a second average"
+    );
+    let add_lot = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/add-lot/AddLotScreen.tsx"),
+    )
+    .expect("AddLotScreen.tsx");
+    let holdings = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/holdings/HoldingsScreen.tsx"),
+    )
+    .expect("HoldingsScreen.tsx");
+    let component_registry = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/components/ComponentRegistry.tsx"),
+    )
+    .expect("ComponentRegistry.tsx");
     let sources = format!(
-        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{cash_week_desk}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}\n{cash_coverage}\n{home_dividend_plan}\n{home_trend_focus}\n{plan_horizon}\n{income_plan_screen}\n{collectors_screen}\n{collector_establish}"
+        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{cash_week_desk}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}\n{household_income}\n{cash_coverage}\n{home_dividend_plan}\n{home_trend_focus}\n{plan_horizon}\n{income_plan_screen}\n{collectors_screen}\n{collector_establish}\n{cart_screen}\n{cart_execute}\n{cart_rail}\n{position_details}\n{symbol_window}\n{add_lot}\n{holdings}\n{component_registry}"
     );
     for name in [
         "aria-label=\"Import wizard\"",
@@ -107,7 +149,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Position Details\"",
         "aria-label=\"Dashboard\"",
         "aria-label=\"Holdings\"",
-        "aria-label=\"Add Position\"",
+        "aria-label=\"Add Investment\"",
         "aria-label=\"Add Lot\"",
         "aria-label=\"Import\"",
         "aria-label=\"Collectors\"",
@@ -136,7 +178,6 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Lots by account\"",
         "aria-label=\"Ledger income\"",
         "aria-label=\"Position hub sections\"",
-        "aria-label=\"Position fleet compare\"",
         "aria-label=\"Position hub summary\"",
         "aria-label=\"Collector action status\"",
         "aria-label=\"Collector run progress\"",
@@ -158,65 +199,75 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Assign lot\"",
         "aria-label=\"Retrieve declarations for this symbol\"",
         "aria-label=\"Mandatory data checklist\"",
+        "aria-label=\"Dividend basis summary\"",
+        "aria-label=\"Dividend statistics\"",
+        "aria-label=\"Owner plan and tier actions\"",
+        "aria-label=\"Last declarations\"",
+        "aria-label=\"Remaining year dates\"",
+        "aria-label=\"Provider decision\"",
         "aria-label=\"Use Most Current as Plan\"",
+        "aria-label=\"Use Avg 6 as Plan\"",
+        "aria-label=\"Plan Management\"",
         "aria-label=\"Save Process A research\"",
         "aria-label=\"Save stored facts\"",
         "aria-label=\"Position information\"",
-        "aria-label=\"Position risk\"",
         "aria-label=\"Position frequency\"",
         "aria-label=\"Cancel position edits\"",
         "aria-label=\"Research\"",
+        "aria-label=\"Confirm add lot\"",
+        "aria-label={`Confirm purchase ${row.symbol}`}",
+        "aria-label=\"Completed register summary\"",
+        "aria-label=\"Shopping cart steps\"",
         "aria-label=\"Cancel add lot edits\"",
         "aria-label=\"Cancel unsaved edits\"",
         "aria-label=\"Open screen with unsaved edits\"",
-        "aria-label=\"Save owner period\"",
-        "aria-label=\"Calculate window\"",
-        "aria-label={`Apply ${tier}`}",
+        "Save ${row.symbol} windows",
+        "aria-label=\"Market impact windows\"",
         "aria-label=\"Position dossier\"",
         "aria-label=\"Confirm Plan\"",
         "aria-label=\"Complete research\"",
+        "aria-label=\"Complete remaining details\"",
+        "aria-label=\"Re-run research retrieval\"",
         "aria-label=\"Fill research gaps\"",
         "aria-label=\"Research progress\"",
         "aria-label=\"Research notes\"",
         "aria-label=\"Research result\"",
         "aria-label=\"Owner risk choice\"",
-        "aria-label=\"Set risk\"",
-        "aria-label=\"Confirm ROC plan\"",
-        "aria-label=\"Next wizard step\"",
-        "aria-label=\"Previous wizard step\"",
-        "aria-label=\"Wizard step guidance\"",
-        "aria-label=\"Source research\"",
-        "aria-label=\"Issuer site attempts\"",
-        "aria-label=\"What we maintain\"",
-        "aria-label=\"Maintenance strategy\"",
-        "aria-label=\"Standing retrieval template\"",
-        "aria-label=\"Source analytics\"",
-        "aria-label=\"Future declaration strategy\"",
-        "aria-label=\"New investment underlying\"",
-        "aria-label=\"Look-through research\"",
-        "aria-label=\"New investment theme strategy\"",
-        "aria-label=\"New investment primary risk driver\"",
-        "aria-label=\"New investment concentration\"",
-        "aria-label=\"New investment volatility proxy\"",
-        "aria-label=\"New investment tax character\"",
-        "aria-label=\"Look-through risk suggestion\"",
+        "aria-label=\"Accept ROC estimate\"",
+        "aria-label=\"Manual ROC percent\"",
+        "aria-label=\"Store manual ROC percent\"",
+        "aria-label=\"ROC research strip\"",
+        "aria-label=\"Stored Template Dividend offer\"",
+        "aria-label=\"Owner underlying\"",
+        "aria-label=\"Owner risk tier\"",
+        "aria-label=\"Save identity\"",
+        "aria-label=\"Apply owner risk tier\"",
+        "aria-label=\"Confirm Plan blocked reason\"",
+        "aria-label=\"Confirm Plan ready\"",
+        "aria-label=\"Plan typed but not stored\"",
+        "aria-label=\"Investment details status\"",
+        "investment-details-status is-complete",
+        "investment-details-status is-missing",
+        "Information still needed — Confirm Plan (Shopping Cart needs stored Plan / share)",
+        "Confirm Plan (Shopping Cart needs stored Plan / share)",
+        "aria-label=\"Add Investment completion status\"",
+        "aria-label=\"What is saved versus optional\"",
+        "research and Plan are saved in the book",
+        "Calculator / Income Plan",
+        "Calculator lists Plan with 0 shares",
+        "aria-label=\"Researched without open lot\"",
+        "aria-label=\"Incomplete analysis covered by inception\"",
+        "aria-label=\"Incomplete analysis reason\"",
+        "Recent inception date",
+        "aria-label=\"Buy plan missing\"",
+        "offerStoredTemplatesForSymbol",
+        "PROCESS_A_DRAFT_KEY",
+        "saveProcessAOwnerIdentity",
         "aria-label=\"Position theme strategy\"",
         "aria-label=\"Position primary risk driver\"",
         "aria-label=\"Position concentration\"",
         "aria-label=\"Position volatility proxy\"",
         "aria-label=\"Position tax character\"",
-        "aria-label=\"Open first lot\"",
-        "aria-label=\"Save remaining payment dates\"",
-        "aria-label=\"Remaining-year payment dates\"",
-        "aria-label=\"Next payment date\"",
-        "aria-label={`Remaining pay date ${pay.originalPayOn}`}",
-        "aria-label=\"Record bull period\"",
-        "aria-label=\"Record bear period\"",
-        "aria-label=\"Bull start\"",
-        "aria-label=\"Bull end\"",
-        "aria-label=\"Bear start\"",
-        "aria-label=\"Bear end\"",
-        "aria-label=\"Record last price\"",
         "aria-label=\"Refresh last prices\"",
         "aria-label=\"Refresh declarations\"",
         "aria-label=\"Work Tickets\"",
@@ -241,30 +292,28 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Position symbols\"",
         "aria-label=\"Position information\"",
         "aria-label=\"Declaration graphing period\"",
-        "aria-label=\"Issuer retrieve\"",
         "aria-label=\"Issuer retrieve miss summary\"",
         "aria-label=\"Application\"",
         "aria-label=\"Data position totals\"",
         "aria-label=\"Apply issuer sources from provider\"",
+        "aria-label=\"Investment type\"",
         "aria-label=\"Position div type\"",
+        "aria-label=\"Accept div type\"",
+        "DIV_TYPES",
+        "normalizeDivType",
         "aria-label=\"Needs ROC research\"",
         "aria-label=\"Position is active\"",
         "aria-label=\"Expected tax handling\"",
         "aria-label=\"Declaration weekday\"",
         "aria-label=\"Ex-date weekday\"",
         "aria-label=\"Payday weekday\"",
-        "aria-label=\"Price source\"",
-        "aria-label=\"Declaration source\"",
-        "aria-label=\"Lookback count\"",
         "aria-label=\"Position completeness\"",
         "aria-label=\"Position master\"",
         "aria-label={`Open ${row.symbol} dossier`}",
         "aria-label={`Filter ${label}`}",
         "aria-label={`Clear ${label} filter`}",
         "aria-label=\"Clear filters\"",
-        "aria-label=\"Retrieve declarations\"",
         "aria-label=\"Select week\"",
-        "aria-label=\"Loading Data\"",
         "aria-label=\"Current week\"",
         "aria-label=\"Previous week\"",
         "aria-label=\"Next week\"",
@@ -295,21 +344,10 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Live by risk allocation\"",
         "aria-label=\"Symbol totals\"",
         "aria-label=\"Exit symbol totals\"",
-        "aria-label=\"Fidelity total\"",
-        "aria-label=\"Schwab total\"",
-        "aria-label=\"Finish this week on Cash Management\"",
-        "aria-label=\"Cash week follow-up\"",
-        "aria-label=\"Add cash activity\"",
         "aria-label=\"Saved cash weeks\"",
         "aria-label=\"Cash week overview\"",
         "aria-label=\"Trends weekly capture\"",
         "aria-label=\"Week capture grid\"",
-        "aria-label=\"Income Total Balance\"",
-        "aria-label=\"FI Roth Total Balance\"",
-        "aria-label=\"Speculation Total Balance\"",
-        "aria-label=\"Health Total Balance\"",
-        "aria-label=\"Car Total Balance\"",
-        "aria-label=\"Account 9 Total Balance\"",
         "aria-label=\"Account 9 70% ETF\"",
         "aria-label=\"Save Trends week\"",
         "aria-label=\"Edit Trends week\"",
@@ -329,7 +367,6 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Tom SSA received\"",
         "aria-label=\"Cancel Tom SSA confirm\"",
         "aria-label=\"Cash MAGI preview\"",
-        "aria-label=\"Cash management month\"",
         "aria-label=\"Cash Management distributions YTD\"",
         "aria-label=\"Distribution account totals\"",
         "aria-label=\"All distribution accounts\"",
@@ -338,7 +375,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Cash Management Tax Planning\"",
         "aria-label=\"Tax Planning income\"",
         "aria-label=\"Tax Planning MAGI\"",
-        "aria-label=\"Cash Management Coverage\"",
+        "aria-label=\"Income vs Expense planner\"",
         "aria-label=\"Coverage period\"",
         "aria-label=\"Coverage plan\"",
         "aria-label=\"Coverage income math\"",
@@ -349,7 +386,9 @@ fn accessibility_primary_actions_have_accessible_names() {
         assert!(sources.contains(name), "missing accessible name {name}");
     }
     assert!(
-        app.contains("REGISTERED_DECLARATION_SOURCES"),
+        sources.contains("REGISTERED_DECLARATION_SOURCES")
+            || sources.contains("declarationSource")
+                && sources.contains("Apply issuer sources from provider"),
         "declaration source select must list all registered issuer adapters"
     );
     assert!(
@@ -372,6 +411,143 @@ fn accessibility_primary_actions_have_accessible_names() {
         app.contains("saturdayOfWeek(new Date().toISOString().slice(0, 10))"),
         "Income Plan as-of must default to calendar this week, not last yield"
     );
+}
+
+#[test]
+fn cart_confirm_returns_to_cart_then_confirm_cash() {
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let cart = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shopping-cart/ShoppingCartScreen.tsx"),
+    )
+    .unwrap();
+    let execute = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shopping-cart/ExecutePlanPanel.tsx"),
+    )
+    .unwrap();
+    let rail = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shopping-cart/StepRail.tsx"),
+    )
+    .unwrap();
+    // Hard lock: after LotOpen from a cart buy, screen must return to shopping-cart.
+    // A weak "opens Add Lot" OR previously let this regress four times.
+    assert!(
+        app.contains("setScreen(fromCart ? \"shopping-cart\"")
+            && app.contains("resumeScenarioId={cartResumeScenarioId}")
+            && app.contains("writeCartResume("),
+        "LotOpen from cart must setScreen shopping-cart and keep resumeScenarioId — opening wizard is a defect"
+    );
+    assert!(
+        app.contains("let fromCart = false")
+            && app.contains("fromCart = true")
+            && app.contains("pendingCartBuyRef")
+            && app.contains("CartExecuteBuyStep"),
+        "cart buy path must mark fromCart and record CartExecuteBuyStep"
+    );
+    assert!(
+        app.contains("addLotReturnScreenRef.current = \"shopping-cart\"")
+            && app.contains("cartRefreshKey={cartRefreshKey}"),
+        "Confirm purchase must set return screen + refresh cart on return"
+    );
+    assert!(
+        cart.contains("CartScenarioGet")
+            && cart.contains("resumingCart")
+            && cart.contains("Returning to in-progress cart"),
+        "Shopping Cart remount must restore the executing scenario, not CartStartWizard"
+    );
+    assert!(
+        !app.contains("Enter qty and unit $ again for another lot"),
+        "cart Confirm must not keep the owner on Add Lot for a second lot"
+    );
+    assert!(
+        !app.contains("aria-label=\"Save add lot\""),
+        "Add Lot commit is Confirm, not Save"
+    );
+    assert!(
+        !app.contains("Type the next qty and unit $"),
+        "Add Lot must not stay for a second Save"
+    );
+    assert!(
+        rail.contains("Confirm purchase") && rail.contains("Confirm cash") && !rail.contains("Open lot"),
+        "step rail is Confirm purchase then Confirm cash"
+    );
+    assert!(
+        execute.contains("Confirm cash") && !execute.contains("Align cash"),
+        "finish step is Confirm cash"
+    );
+    assert!(
+        execute.contains("Confirm cash preview") && execute.contains("Confirm cash calculation"),
+        "Confirm cash must show leftover dollars, not only a button"
+    );
+    assert!(
+        cart.contains("align leftover cash after the last purchase")
+            && execute.contains("Completed register summary")
+            && execute.contains("Net dividend change")
+            && !execute.contains("Ending {cashSymbol} $"),
+        "last purchase aligns leftover cash and shows one completion row"
+    );
+    // periodsForPlan lives in cartPlan.ts; the screen must still route through it.
+    let cart_plan = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shopping-cart/cartPlan.ts"),
+    )
+    .unwrap();
+    assert!(
+        cart.contains("Frequency wins over a stale Calculator planningPeriodsPerYear")
+            && cart.contains("periodsForPlan(")
+            && cart_plan.contains("Twice monthly")
+            && cart_plan.contains("return 24"),
+        "cart yield must prefer Twice monthly = 24 over stale planningPeriodsPerYear"
+    );
+    assert!(
+        cart.contains("agreedScene ? (") && cart.contains("<ExecutePlanPanel"),
+        "after Agree the cart is the execute panel only"
+    );
+}
+
+/// The owner called out a wrong MUIB rate repeatedly. Two locks: the cart reads Plan only,
+/// and every rate shows the Plan $ and periods it came from so a wrong one is readable.
+#[test]
+fn cart_rate_is_plan_only_and_shows_its_plan_basis() {
+    let folder = repo_root().join("apps/desktop/src/features/shopping-cart");
+    let cart = std::fs::read_to_string(folder.join("ShoppingCartScreen.tsx")).unwrap();
+    let sheets = std::fs::read_to_string(folder.join("PlanSheets.tsx")).unwrap();
+    let plan = std::fs::read_to_string(folder.join("cartPlan.ts")).unwrap();
+    assert!(
+        plan.contains("export function planBasisText") && plan.contains("Plan $"),
+        "cartPlan owns the Plan $ x periods label"
+    );
+    assert!(
+        cart.contains("function planBasisForSymbol")
+            && cart.matches("planBasis:").count() >= 2
+            && cart.contains("planBasisForSymbol(calculator, master, line.symbol)"),
+        "sell and buy sheet rows both carry the Plan basis"
+    );
+    assert!(
+        sheets.contains("planBasis?: string") && sheets.matches("row.planBasis").count() >= 2,
+        "the sheet renders the Plan basis next to the rate"
+    );
+    for entry in std::fs::read_dir(&folder).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("tsx")
+            && path.extension().and_then(|e| e.to_str()) != Some("ts")
+        {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).unwrap();
+        for needle in [
+            "declPerShareMinor",
+            "declaredAmountMinor",
+            "amountPerShareMinor",
+            "IssuerDeclarationList",
+            "declFwdYieldBps",
+        ] {
+            assert!(
+                !body.contains(needle),
+                "{} must not read {needle} — the cart uses Plan amounts for every rate and \
+                 projected income comparison",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]
@@ -453,7 +629,7 @@ fn dividend_weeks_lives_on_income_plan_not_trends_middle() {
         "Cash week desk does not show seed Profit"
     );
     assert!(
-        charts.contains("Weekly Decl vs Plan"),
+        charts.contains("Declared vs Plan"),
         "Trends must keep the weekly Plan vs Declaration chart"
     );
     assert!(
@@ -476,11 +652,13 @@ fn dividend_weeks_lives_on_income_plan_not_trends_middle() {
     )
     .unwrap();
     assert!(
-        decl_chart.contains("Decl — solid")
-            && decl_chart.contains("Plan — dashed")
+        decl_chart.contains("name: \"Declared\"")
+            && decl_chart.contains("name: \"Plan\"")
+            && !decl_chart.contains("Decl — solid")
+            && !decl_chart.contains("Plan — dashed")
             && decl_chart.contains("type: \"dashed\"")
             && decl_chart.contains("symbol: \"none\""),
-        "Decl vs Plan: solid Decl, dashed Plan, no circles"
+        "Declared vs Plan: Declared and Plan labels, dashed Plan line, no circles"
     );
     assert!(
         charts.contains("week_not_saved"),
@@ -618,6 +796,19 @@ fn g1_g6_slice1b_capture_grid_one_table() {
             && capture.contains("aria-label=\"Accept blocked reason\""),
         "Accept must send suggestedMonthlyDivsMinor; blocked clicks must say why"
     );
+    assert!(
+        capture.contains("Fidelity week-to-week")
+            && capture.contains("Schwab week-to-week")
+            && capture.contains("fidEntered ? formatUsd(fidChange, scale) : \"TBD\"")
+            && capture.contains("schwabEntered ? formatUsd(schChange, scale) : \"TBD\""),
+        "week-to-week stays TBD until that broker's totals are entered"
+    );
+    let css = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.css")).unwrap();
+    assert!(
+        css.contains(".trends-capture-review")
+            && css.contains("repeat(7, minmax(0, 1fr))"),
+        "the seven week-review figures stay on one row"
+    );
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
     assert!(
         app.contains("WeekCaptureAccept"),
@@ -632,5 +823,205 @@ fn g1_g6_slice1b_capture_grid_one_table() {
             && app.contains("refreshDeclarations(true)")
             && app.contains("force ? { force: true }"),
         "auto collectors share weekday 9-4; Refresh declarations is force"
+    );
+}
+
+#[test]
+fn holdings_assign_picks_sell_not_uuid() {
+    let holdings = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/holdings/HoldingsScreen.tsx"),
+    )
+    .unwrap();
+    let picker = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shared/pickers/UnassignedSellTable.tsx"),
+    )
+    .unwrap();
+    let host = std::fs::read_to_string(repo_root().join("crates/application-core/src/cart.rs"))
+        .unwrap();
+    assert!(
+        !holdings.contains("Sell activity id") && !holdings.contains("assignActivityId"),
+        "Holdings must not ask the owner to type a sell activity UUID"
+    );
+    assert!(
+        holdings.contains("if (!lotId || !selectedSell) return;")
+            && holdings.contains("disabled={busy || writesBlocked || !lotId || !selectedSell}"),
+        "Assign lot stays off until an unassigned sell is picked"
+    );
+    assert!(
+        holdings.contains("No unassigned sell for this symbol")
+            && holdings.contains("Cart Confirm sell assigns the lot in the same step"),
+        "Holdings leftover copy names cart as the assigned-sale path"
+    );
+    assert!(
+        picker.contains("aria-label=\"Unassigned sells\"")
+            && picker.contains("Choose sell ${sell.occurredOn}")
+            && !picker.contains("Choose sell ${sell.activityId}"),
+        "unassigned sell labels are date/account/amount, not UUIDs"
+    );
+    assert!(
+        host.contains("lot_assign(\n                sell.lot_id,")
+            && host.contains("cart_execute_step_add("),
+        "Cart Confirm sell still assigns in the same command"
+    );
+}
+
+#[test]
+fn plan_management_shows_typed_change_and_shares_are_not_a_missing_lot() {
+    let screen = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/position-details/PositionDetailsScreen.tsx"),
+    )
+    .unwrap();
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let ui = std::fs::read_to_string(repo_root().join("packages/ui-components/src/index.tsx")).unwrap();
+    let plan_rs =
+        std::fs::read_to_string(repo_root().join("crates/storage-sqlite/src/plan.rs")).unwrap();
+
+    let snap = screen
+        .split("id=\"hub-calculator\"")
+        .nth(1)
+        .unwrap()
+        .split("id=\"hub-plan\"")
+        .next()
+        .unwrap();
+    let shares = snap.find("sharesMinor > 0").expect("shares check");
+    let does_not_pay = snap
+        .find("Cadence is does not pay")
+        .expect("cadence omission");
+    let neither = snap
+        .find("neither open shares nor a Plan")
+        .expect("shares and plan omission");
+    let no_lot = snap.find("needs Plan + first lot").expect("no-share copy");
+    assert!(
+        does_not_pay < shares && shares < neither && neither < no_lot,
+        "holdings shares must not produce the missing-lot sentence"
+    );
+    assert!(
+        !snap.contains("is not on the Calculator list"),
+        "an omitted row names the failed check"
+    );
+
+    let plan = screen.split("id=\"hub-plan\"").nth(1).unwrap();
+    assert!(plan.contains("aria-label=\"Plan amount\""));
+    assert!(plan.contains("FWD at this amount"));
+    assert!(plan.contains("planFwdAtAmountBps("));
+    assert!(plan.contains("avg3Declaration("));
+    assert!(plan.contains("${paid3.length} of 3, unknown"));
+    assert!(plan.contains("minPaidDeclaration("));
+    assert!(plan.contains("planDecisionImpact("));
+    assert!(plan.contains("formatScale6(impact.perShareDeltaUnits)"));
+    assert!(plan.contains("formatScale6(impact.paymentDeltaUnits)"));
+    assert!(plan.contains("formatScale6(impact.annualDeltaUnits)"));
+    assert!(plan.contains("${paid.length} of 6, unknown"));
+    let plan_section = plan.split("id=\"hub-identity\"").next().unwrap();
+    assert!(plan_section.contains("aria-label=\"Stored Plan decision reason\""));
+    assert!(plan_section.contains("planReason === \"Match Most Current\""));
+    assert!(plan_section.contains("planReason === \"Match Avg 6 (owner typed)\" && avg != null"));
+    assert!(!screen.contains("Use Most Current as Plan"));
+    assert!(!screen.contains("Use Avg 6 as Plan"));
+    let identity = screen
+        .split("id=\"hub-identity\"")
+        .nth(1)
+        .unwrap()
+        .split("id=\"hub-calculator\"")
+        .next()
+        .unwrap();
+    assert!(identity.contains("two-col-facts"));
+    let yields = screen
+        .split("id=\"hub-plan-yields\"")
+        .nth(1)
+        .unwrap()
+        .split("id=\"hub-accounts\"")
+        .next()
+        .unwrap();
+    assert!(yields.contains("two-col-facts"));
+    assert!(
+        screen.contains("className=\"two-col-facts\" aria-label=\"Position dossier\"")
+            && plan_section.contains("aria-label=\"Stored incomplete analysis reason\"")
+    );
+    assert!(screen.contains("It does not store the Plan."));
+    assert!(screen.contains("aria-label=\"Collector gaps\""));
+    assert!(app.contains("aria-label=\"Collector gaps\""));
+    let fwd = ui
+        .split("export function planFwdAtAmountBps")
+        .nth(1)
+        .unwrap()
+        .split("function paidInViewCents")
+        .next()
+        .unwrap();
+    assert!(fwd.contains("amountMinor * periods * 1_000_000"));
+    assert!(
+        !fwd.contains("cellCents"),
+        "FWD must not round the typed per-share to a cent first"
+    );
+
+    let impact = ui
+        .split("export function planDecisionImpact")
+        .nth(1)
+        .unwrap()
+        .split("export function formatScale6")
+        .next()
+        .unwrap();
+    assert!(impact.contains("moneyUnits(input.nextMinor, input.nextScale)"));
+    assert!(impact.contains("Math.round(perShareDeltaUnits * quantity)"));
+    assert!(
+        !impact.contains("cellCents"),
+        "the typed change must not round each share to a cent first"
+    );
+    fn units(minor: i64, scale: u32) -> i64 {
+        minor * 10i64.pow(6 - scale)
+    }
+    let per_share = units(23_461, 5) - units(2_300, 4);
+    let payment = per_share * 20;
+    assert_ne!(per_share, 0);
+    assert_ne!(payment, 0);
+
+    let upsert = plan_rs
+        .split("pub async fn position_characteristic_upsert")
+        .nth(1)
+        .unwrap();
+    let keep = upsert.find("stored_owner_tier").expect("tier keep");
+    let branch = upsert
+        .find("payment_frequency.trim().is_empty()")
+        .expect("both upsert paths");
+    assert!(
+        keep < branch,
+        "a blank tier is replaced before either characteristic write"
+    );
+}
+
+#[test]
+fn stored_tier_selects_on_open_and_roc_url_is_a_link() {
+    let screen = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/position-details/PositionDetailsScreen.tsx"),
+    )
+    .unwrap();
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let queries =
+        std::fs::read_to_string(repo_root().join("crates/application-core/src/queries.rs")).unwrap();
+    let load = app.split("const applyInvestment").nth(1).expect("load");
+    assert!(
+        load.contains("RISK_TIERS.includes(body.riskTier)")
+            && load.contains("setOwnerRiskChoice(body.riskTier)"),
+        "opening a position selects the stored tier"
+    );
+    assert!(
+        app.contains("RISK_TIERS.includes(storedTier)"),
+        "complete research keeps a stored tier ahead of a suggestion"
+    );
+    assert!(screen.contains("Tier is stored as ${storedTier}."));
+    assert!(screen.contains("<a href={rocUrl}>ROC URL Data</a>"));
+    assert!(screen.contains("aria-label=\"Assigned tier\""));
+    assert!(screen.contains("aria-label=\"ROC\""));
+    assert!(screen.contains("ROC previous year"));
+    assert!(screen.contains("ROC current year"));
+    assert!(screen.contains("roc-facts"));
+    assert!(!screen.contains("research-notes-overview"));
+    assert!(!screen.contains("aria-label=\"Set risk\""));
+    assert!(!screen.contains("aria-label=\"Position risk\""));
+    assert!(screen.contains("className=\"fact-strip\""));
+    assert!(screen.contains("className=\"fact-grid\""));
+    assert!(
+        !queries.contains("roc source:"),
+        "confirming ROC must not replace owner notes"
     );
 }

@@ -1,0 +1,4 @@
+{
+    "count":  0,
+    "note":  "Count of error TS lines from npx tsc --noEmit -p apps/desktop/tsconfig.json. scripts/tsc-baseline.ps1 fails when the count rises. A slice that fixes errors updates this number in the same change."
+}

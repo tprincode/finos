@@ -1,4 +1,5 @@
 import { Fragment, useState, type CSSProperties } from "react";
+import { DefaultTick } from "./chartDefault";
 import type {
   DividendPerformanceGet,
   DividendPerformanceRange,
@@ -122,7 +123,7 @@ export function weeklyDeclVsPlanOption(perf: DividendPerformanceGet) {
   const planColor = "#d9480f";
   return {
     title: {
-      text: "Weekly Decl vs Plan",
+      text: "Declared vs Plan",
       left: 0,
       textStyle: { fontSize: 13, fontWeight: 600 },
     },
@@ -133,8 +134,8 @@ export function weeklyDeclVsPlanOption(perf: DividendPerformanceGet) {
     },
     legend: {
       data: [
-        { name: "Decl — solid", icon: "path://M0 0H18V3H0Z" },
-        { name: "Plan — dashed", icon: "path://M0 0H5V3H0ZM8 0H13V3H8ZM16 0H21V3H16Z" },
+        { name: "Declared", icon: "path://M0 0H18V3H0Z" },
+        { name: "Plan", icon: "path://M0 0H5V3H0ZM8 0H13V3H8ZM16 0H21V3H16Z" },
       ],
       top: 20,
     },
@@ -147,7 +148,7 @@ export function weeklyDeclVsPlanOption(perf: DividendPerformanceGet) {
     yAxis: { type: "value", scale: true, axisLabel: { fontSize: 10 } },
     series: [
       {
-        name: "Decl — solid",
+        name: "Declared",
         type: "line",
         data: declared,
         symbol: "none",
@@ -158,7 +159,7 @@ export function weeklyDeclVsPlanOption(perf: DividendPerformanceGet) {
         emphasis: { scale: false },
       },
       {
-        name: "Plan — dashed",
+        name: "Plan",
         type: "line",
         data: plan,
         symbol: "none",
@@ -240,17 +241,20 @@ export function DividendWeeksPanel({
       <div className="dividend-weeks-period">
         <label className="trends-period-label">
           Period
-          <select
-            aria-label="Dividend performance period"
-            value={range}
-            onChange={(e) => onRangeChange(e.target.value as DividendPerformanceRange)}
-          >
-            {RANGE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          <span className="chart-default-choice">
+            <select
+              aria-label="Dividend performance period"
+              value={range}
+              onChange={(e) => onRangeChange(e.target.value as DividendPerformanceRange)}
+            >
+              {RANGE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <DefaultTick storageKey="dividend-period" value={range} />
+          </span>
         </label>
         <p className="dividend-weeks-period-caption" aria-label="Weeks in selected period">
           {weekSpan

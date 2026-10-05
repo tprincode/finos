@@ -1,0 +1,17 @@
+---
+description: FinOS always-on. Do not erase shipped behavior. Money scale. Fleet review.
+alwaysApply: true
+---
+
+# FinOS mandates (always)
+
+- Do not remove or reshuffle a shipped screen, menu child, command, or control unless this prompt names that change. Task manager, Week Ahead, MAGI gap, Elements, Register, Coverage, Tax Planning, and the Home portfolio board are in that set.
+- Auto-continue may start the next execution.md step. It may not delete a shipped function to get there.
+- A collector failure is reviewed across every collector for that same failure mode. Fix where it matches. Leave a name out only when it is different by design (cash vs DIV-1, pay interval, ROC scope) and say which names and why.
+- Collector code is the shared machine. Per-symbol facts stay on the position or template. A branch that exists so one symbol works (hardcoded URL, percent, amount, interval, or if-symbol) is a fail.
+- Money is integer minor + scale. Display = minor / 10^scale. $32.00 is minor 3200 scale 2. Goldens assert minor and scale.
+- Every behavior change extends a golden in golden-harness. No golden, not done.
+- Tasks are atomic: one symbol or one step. "Fix MAGI gap" is one household task. "Adjust Plan" is one task per symbol.
+- Do not regenerate MAGI oracles. Blank is not $0.
+- Do not hardcode a household ticker except in a named owner fixture.
+- Evidence block before stop: files, golden names, pass count, what you did not delete.

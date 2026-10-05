@@ -1,4 +1,7 @@
+import type { CartExecutedRow } from "@finos/app-contracts";
+
 import { AccountSelect, type AccountOption } from "../shared/pickers";
+import { ExecutedCarts } from "./ExecutedCarts";
 import { usd } from "./planMath";
 
 export type CartFunding = "sellLots" | "accountCash" | "newDeposit";
@@ -38,12 +41,14 @@ export function CartStartWizard({
   accountName,
   planName,
   savedPlans,
+  executedCarts,
   busy,
   writesBlocked,
   onAccountId,
   onPlanName,
   onOpenPlan,
   onDeletePlan,
+  onOpenExecuted,
   onNewPlan,
   onBack,
   onNext,
@@ -54,12 +59,14 @@ export function CartStartWizard({
   accountName: string;
   planName: string;
   savedPlans: SavedCartPlan[];
+  executedCarts: CartExecutedRow[];
   busy?: boolean;
   writesBlocked?: boolean;
   onAccountId: (id: string) => void;
   onPlanName: (name: string) => void;
   onOpenPlan: (planId: string) => void;
   onDeletePlan: (plan: SavedCartPlan) => void;
+  onOpenExecuted: (row: CartExecutedRow) => void;
   onNewPlan: () => void;
   onBack: () => void;
   onNext: () => void;
@@ -71,6 +78,12 @@ export function CartStartWizard({
     (prompt === "account" && !accountId);
   return (
     <section aria-label="Cart start wizard">
+      {/*
+        Home is two screens stacked. The account picker plus Next is how a cart starts or
+        continues; picking an account leaves this screen for that account's open carts.
+        The executed register is every account, and it sits below Next so it is not part of
+        starting a cart.
+      */}
       {prompt === "account" ? (
         <AccountSelect
           accounts={accounts}
@@ -82,7 +95,7 @@ export function CartStartWizard({
       ) : null}
       {prompt === "plans" ? (
         <section aria-label="Saved plans" className="plan-sheet">
-          <h3>Saved plans for {accountName}</h3>
+          <h3>Open carts for {accountName}</h3>
           <table>
             <thead>
               <tr>
@@ -99,7 +112,7 @@ export function CartStartWizard({
             <tbody>
               {savedPlans.length === 0 ? (
                 <tr>
-                  <td colSpan={8}>No saved plans for this account.</td>
+                  <td colSpan={8}>No open carts for this account.</td>
                 </tr>
               ) : (
                 savedPlans.map((plan) => (
@@ -176,6 +189,9 @@ export function CartStartWizard({
           </button>
         )}
       </div>
+      {prompt === "account" ? (
+        <ExecutedCarts rows={executedCarts} busy={busy} onOpen={onOpenExecuted} />
+      ) : null}
     </section>
   );
 }

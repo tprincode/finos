@@ -1,0 +1,14 @@
+---
+description: Home portfolio board order is locked.
+globs: apps/desktop/src/**/*.{tsx,css}
+alwaysApply: false
+---
+
+# Home portfolio board
+
+This is one case of the no-silent-removal rule.
+
+- Market value, original cost, tax basis, and unrealized stay on one row.
+- Income through stays above Last Price all symbols.
+
+Other work must not reshuffle these tiles. A prompt that names Home layout may change them.

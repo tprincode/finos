@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import { isCashSymbol } from "@finos/app-contracts";
 import {
   ClearFiltersButton,
   colFilter,
@@ -124,6 +125,28 @@ export function formatPctOfPlan(pct: number | null | undefined): string {
 export function formatBps(bps: number | null | undefined): string {
   if (bps == null) return "unknown";
   return `${(bps / 100).toFixed(2)}%`;
+}
+
+/** Calculator ROC %: current-year actual, else current-year estimate, else prior-year actual. */
+export function calculatorRocPercent(
+  master:
+    | {
+        rocPct2026ActualMinor?: number | null;
+        rocPct2026EstimateMinor?: number | null;
+        rocPct2025ActualMinor?: number | null;
+        rocScale?: number | null;
+      }
+    | null
+    | undefined,
+): { minor: number; scale: number } | null {
+  if (!master || master.rocScale == null) return null;
+  const minor =
+    master.rocPct2026ActualMinor ??
+    master.rocPct2026EstimateMinor ??
+    master.rocPct2025ActualMinor ??
+    null;
+  if (minor == null) return null;
+  return { minor, scale: master.rocScale };
 }
 
 function moneyTotal(
@@ -704,7 +727,10 @@ export type PositionMasterRowView = {
   planFwdYieldBps: number | null;
   mostCurrentFwdYieldBps: number | null;
   unrealizedPnlBps: number | null;
+  rocPct2024ActualMinor?: number | null;
   rocPct2025ActualMinor: number | null;
+  rocPct2026EstimateMinor?: number | null;
+  rocPct2026ActualMinor?: number | null;
   rocScale: number | null;
   declarationCount: number;
   periodDated: boolean;
@@ -966,10 +992,10 @@ export function PositionMasterTable({
               {sortHead(sort, "NAV persistence", "nav", true, f("nav"))}
               {sortHead(sort, "Data confidence", "dataConf", true, f("dataConf"))}
               {sortHead(sort, "Bear price", "bearPrice", true, f("bearPrice"))}
-              {sortHead(sort, "Bear cushion", "bearCushion", true, f("bearCushion"))}
+              {sortHead(sort, "Bear cash cushion", "bearCushion", true, f("bearCushion"))}
               {sortHead(sort, "Bear total", "bear", true, f("bear"))}
               {sortHead(sort, "Bull price", "bullPrice", true, f("bullPrice"))}
-              {sortHead(sort, "Bull cushion", "bullCushion", true, f("bullCushion"))}
+              {sortHead(sort, "Bull cash cushion", "bullCushion", true, f("bullCushion"))}
               {sortHead(sort, "Bull total", "bull", true, f("bull"))}
               {sortHead(sort, "Complete", "complete", false, f("complete"))}
               {sortHead(sort, "Notes", "notes", false, f("notes"))}
@@ -1216,16 +1242,115 @@ export type WorkTicketView = {
   urlsTried?: string;
   status: string;
   openedOn?: string;
+  retrieveRunId?: string;
+};
+
+function ticketHeadline(reason: string): string {
+  const first = reason.split("\n")[0]?.trim() ?? "";
+  return first || "Open work item";
+}
+
+function ticketFailedStep(reason: string): string | null {
+  const fail = reason
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => /\bFAIL\b/i.test(l));
+  if (!fail) return null;
+  return fail.replace(/^\d+\.\s*/, "");
+}
+
+function toolActionHint(tool: string): string {
+  switch (tool) {
+    case "establish_recertify":
+      return "Opens Add Investment with the stored Template Dividend so you can finish establish (often a missing ROC %).";
+    case "fix_remaining_year":
+      return "Runs collect heal: vendor-posted dates overwrite derived projections for those periods. Other derived fillers stay until the issuer posts them.";
+    case "retry_retrieve":
+      return "Fetches the stored issuer page again and matches pay date to amount.";
+    case "amount_confirm":
+      return "Choose whether to keep the new issuer amount or the stored amount.";
+    case "roc_confirm":
+      return "Choose whether to update this year’s ROC % or keep the previous %. Use the ROC research fields below to parse a notice or type a percent before Accept. Accept files this ticket — do not also File.";
+    case "enter_declared_amount":
+      return "Type the declared $ per unit from the issuer page.";
+    default:
+      return "Use the action button below, or File only if you are dismissing without a fix.";
+  }
+}
+
+/** `[was->now @scale]` from a roc_pct_change reason (with or without Steps/Remediation). */
+export function parseRocPctChangeMinors(
+  reason: string,
+): { wasMinor: number; nowMinor: number; scale: number } | null {
+  const start = reason.lastIndexOf("[");
+  const end = reason.lastIndexOf("]");
+  if (start < 0 || end <= start) return null;
+  const inner = reason.slice(start + 1, end);
+  const at = inner.lastIndexOf(" @");
+  if (at < 0) return null;
+  const pair = inner.slice(0, at);
+  const scale = Number(inner.slice(at + 2).trim());
+  const arrow = pair.indexOf("->");
+  if (arrow < 0 || !Number.isFinite(scale)) return null;
+  const wasMinor = Number(pair.slice(0, arrow).trim());
+  const nowMinor = Number(pair.slice(arrow + 2).trim());
+  if (!Number.isFinite(wasMinor) || !Number.isFinite(nowMinor)) return null;
+  return { wasMinor, nowMinor, scale };
+}
+
+function formatRocPct(minor: number, scale: number): string {
+  const s = scale > 0 ? scale : 2;
+  return (minor / 10 ** s).toFixed(s);
+}
+
+function isRocWorkTicket(t: WorkTicketView): boolean {
+  if (t.tool === "roc_confirm" || t.code === "roc_pct_change") return true;
+  if (t.code === "collector_establish_incomplete") {
+    return /\bROC\b|roc_estimate/i.test(t.reason);
+  }
+  return false;
+}
+
+/** One ROC research form per symbol — prefer roc_pct_change over establish Gaps: ROC. */
+function rocResearchOwnerTicketId(rows: WorkTicketView[]): string | null {
+  const rocRows = rows.filter(isRocWorkTicket);
+  if (rocRows.length === 0) return null;
+  const preferred =
+    rocRows.find((t) => t.tool === "roc_confirm" || t.code === "roc_pct_change") ??
+    rocRows[0];
+  return preferred.ticketId;
+}
+
+export type TicketRocContext = {
+  rocSourceUrl?: string;
+  /** Live / proposed estimate when not only in the ticket reason. */
+  rocEstimateMinor?: number | null;
+  rocScale?: number;
+};
+
+/** Result of Store ROC URL and parse — shown on the ticket strip. */
+export type TicketRocParseResult = {
+  ok: boolean;
+  /** Display percent without % sign, e.g. "68.69". */
+  parsedPct?: string;
+  message: string;
 };
 
 export function WorkTicketQueue({
   tickets,
   onRetry,
   onRecreateAdapter,
+  onFixRemainingYear,
   onExcept,
   onReject,
   onEnterAmount,
   onFile,
+  resolveCheckUrl,
+  onOpenCheckUrl,
+  resolveRocContext,
+  onStoreRocUrl,
+  onStoreManualRoc,
+  onOpenRocResearch,
   filterSymbol,
   retryingTicketId,
   retryingSymbol,
@@ -1235,16 +1360,33 @@ export function WorkTicketQueue({
   tickets: WorkTicketView[];
   onRetry?: (ticket: WorkTicketView) => void;
   onRecreateAdapter?: (ticket: WorkTicketView) => void;
+  onFixRemainingYear?: (ticket: WorkTicketView) => void;
   onExcept?: (ticket: WorkTicketView) => void;
   onReject?: (ticket: WorkTicketView) => void;
   onEnterAmount?: (ticket: WorkTicketView, amount: string) => void;
   onFile?: (ticket: WorkTicketView) => void;
+  resolveCheckUrl?: (ticket: WorkTicketView) => string | null;
+  onOpenCheckUrl?: (url: string) => void;
+  resolveRocContext?: (ticket: WorkTicketView) => TicketRocContext | null;
+  onStoreRocUrl?: (
+    ticket: WorkTicketView,
+    url: string,
+  ) => void | Promise<TicketRocParseResult | void>;
+  onStoreManualRoc?: (ticket: WorkTicketView, pct: string) => void;
+  onOpenRocResearch?: (ticket: WorkTicketView) => void;
   filterSymbol?: string;
   retryingTicketId?: string;
   retryingSymbol?: string;
   pendingTicketId?: string;
   pendingAction?: "accept" | "reject" | "except";
 }) {
+  const [rocDrafts, setRocDrafts] = useState<
+    Record<string, { url: string; pct: string }>
+  >({});
+  const [rocParseByTicket, setRocParseByTicket] = useState<
+    Record<string, TicketRocParseResult>
+  >({});
+  const [rocParseBusyId, setRocParseBusyId] = useState<string | null>(null);
   const open = tickets.filter((t) => t.status === "open");
   const scoped = filterSymbol
     ? open.filter(
@@ -1264,6 +1406,70 @@ export function WorkTicketQueue({
   const codeRollup = [...codes.entries()]
     .map(([c, n]) => `${c} ${n}`)
     .join(", ");
+  const draftFor = (t: WorkTicketView) => {
+    const existing = rocDrafts[t.ticketId];
+    if (existing) return existing;
+    const ctx = resolveRocContext?.(t);
+    // Manual % stays empty until the owner types — do not seed from Proposed
+    // (that looked like a leftover typed value).
+    return {
+      url: ctx?.rocSourceUrl?.trim() || "",
+      pct: "",
+    };
+  };
+  const setDraft = (
+    ticketId: string,
+    patch: Partial<{ url: string; pct: string }>,
+    seed: { url: string; pct: string },
+  ) => {
+    setRocDrafts((prev) => ({
+      ...prev,
+      [ticketId]: { ...seed, ...(prev[ticketId] ?? {}), ...patch },
+    }));
+  };
+  const noticePctDisplay = (t: WorkTicketView): string | null => {
+    const fromParse = rocParseByTicket[t.ticketId]?.parsedPct?.trim();
+    if (fromParse) return fromParse;
+    const fromReason = parseRocPctChangeMinors(t.reason);
+    if (fromReason) {
+      return formatRocPct(fromReason.nowMinor, fromReason.scale);
+    }
+    const ctx = resolveRocContext?.(t);
+    if (ctx?.rocEstimateMinor != null) {
+      return formatRocPct(ctx.rocEstimateMinor, ctx.rocScale ?? 2);
+    }
+    return null;
+  };
+  const runStoreRocUrl = async (t: WorkTicketView, url: string) => {
+    if (!onStoreRocUrl) return;
+    setRocParseBusyId(t.ticketId);
+    setRocParseByTicket((prev) => {
+      const next = { ...prev };
+      delete next[t.ticketId];
+      return next;
+    });
+    try {
+      const result = await onStoreRocUrl(t, url);
+      if (result && typeof result === "object" && "ok" in result) {
+        setRocParseByTicket((prev) => ({ ...prev, [t.ticketId]: result }));
+      } else {
+        setRocParseByTicket((prev) => ({
+          ...prev,
+          [t.ticketId]: {
+            ok: true,
+            message: "ROC URL stored. Check Notice ROC below.",
+          },
+        }));
+      }
+    } catch (err: unknown) {
+      setRocParseByTicket((prev) => ({
+        ...prev,
+        [t.ticketId]: { ok: false, message: String(err) },
+      }));
+    } finally {
+      setRocParseBusyId(null);
+    }
+  };
   return (
     <section aria-label="Work tickets">
       {retryingTicketId ? (
@@ -1283,17 +1489,83 @@ export function WorkTicketQueue({
         <p>No open work tickets.</p>
       ) : (
         [...bySymbol.entries()].map(([symbol, rows]) => (
-          <details key={symbol} aria-label={`Work tickets for ${symbol}`}>
+          <details key={symbol} open aria-label={`Work tickets for ${symbol}`}>
             <summary>
               {symbol} — {formatCount(rows.length)} open (
               {rows.map((r) => r.code).join(", ")})
             </summary>
             <ul>
-              {rows.map((t) => (
+              {rows.map((t) => {
+                const failed = ticketFailedStep(t.reason);
+                const showRocResearch =
+                  rocResearchOwnerTicketId(rows) === t.ticketId;
+                const parsed = showRocResearch
+                  ? parseRocPctChangeMinors(t.reason)
+                  : null;
+                const draft = showRocResearch
+                  ? draftFor(t)
+                  : { url: "", pct: "" };
+                return (
                 <li key={t.ticketId}>
                   <p>
-                    {t.code}: {t.reason}
+                    <strong>Problem:</strong> {ticketHeadline(t.reason)}
                   </p>
+                  <p className="ps-note">
+                    <strong>What succeeded:</strong> the collector opened this
+                    ticket and recorded code <code>{t.code}</code>. That is not
+                    a successful collect — it means work is still required.
+                  </p>
+                  {failed ? (
+                    <p className="ps-note">
+                      <strong>What failed:</strong> {failed}
+                    </p>
+                  ) : null}
+                  <p className="ps-note">
+                    <strong>What to do:</strong> {toolActionHint(t.tool)}
+                  </p>
+                  {parsed ? (
+                    <p aria-label={`ROC percents for ${symbol}`}>
+                      <strong>Stored ROC:</strong>{" "}
+                      {formatRocPct(parsed.wasMinor, parsed.scale)}%
+                      {" → "}
+                      <strong>Proposed ROC:</strong>{" "}
+                      {formatRocPct(parsed.nowMinor, parsed.scale)}%
+                    </p>
+                  ) : null}
+                  {t.reason.includes("Steps (") ? (
+                    <details aria-label={`Run diagnostics for ${symbol} ${t.code}`}>
+                      <summary>Technical diagnostics</summary>
+                      <pre className="ticket-run-diagnostics">{t.reason}</pre>
+                      {t.retrieveRunId ? (
+                        <p className="ps-note">retrieveRunId {t.retrieveRunId}</p>
+                      ) : null}
+                    </details>
+                  ) : t.retrieveRunId ? (
+                    <p className="ps-note">retrieveRunId {t.retrieveRunId}</p>
+                  ) : null}
+                  {resolveCheckUrl && onOpenCheckUrl
+                  && (t.tool === "retry_retrieve"
+                    || t.code === "declaration_retrieve_timeout") ? (
+                    (() => {
+                      const checkUrl = resolveCheckUrl(t);
+                      return checkUrl ? (
+                        <p>
+                          <button
+                            type="button"
+                            aria-label={`Check current URL for ${symbol}`}
+                            disabled={Boolean(retryingTicketId)}
+                            onClick={() => onOpenCheckUrl(checkUrl)}
+                          >
+                            Check current URL
+                          </button>
+                          <span className="ticket-check-url" title={checkUrl}>
+                            {" "}
+                            {checkUrl}
+                          </span>
+                        </p>
+                      ) : null;
+                    })()
+                  ) : null}
                   {(t.tool === "retry_retrieve" ||
                     t.tool === "establish_recertify") &&
                   onRecreateAdapter ? (
@@ -1304,6 +1576,16 @@ export function WorkTicketQueue({
                       onClick={() => onRecreateAdapter(t)}
                     >
                       Recreate adapter
+                    </button>
+                  ) : null}
+                  {t.tool === "fix_remaining_year" && onFixRemainingYear ? (
+                    <button
+                      type="button"
+                      aria-label={`Fix remaining year ${symbol}`}
+                      disabled={Boolean(retryingTicketId)}
+                      onClick={() => onFixRemainingYear(t)}
+                    >
+                      Fix remaining year
                     </button>
                   ) : null}
                   {t.tool === "retry_retrieve" && onRetry ? (
@@ -1325,10 +1607,131 @@ export function WorkTicketQueue({
                   ) : null}
                   {t.tool === "roc_confirm" ? (
                     <p aria-label={`ROC change action ${symbol}`}>
-                      Accept changes this year's ROC projection to the new %.
+                      Accept changes this year&apos;s ROC projection to the new %.
                       Reject leaves the previous %. Last year 1099 is
                       informational only and is not written on Accept or Reject.
                     </p>
+                  ) : null}
+                  {showRocResearch ? (
+                    <section
+                      aria-label={`ROC research for ${symbol}`}
+                      className="roc-research-strip"
+                    >
+                      <h4>ROC research</h4>
+                      <p>
+                        {parsed
+                          ? `Edit this position’s ROC before Accept, or open full research.`
+                          : "2026 estimate unknown — not 0%. Paste a Template ROC URL or type a manual percent."}
+                      </p>
+                      {(() => {
+                        const noticePct = noticePctDisplay(t);
+                        const parseResult = rocParseByTicket[t.ticketId];
+                        const parsing = rocParseBusyId === t.ticketId;
+                        return (
+                          <>
+                            <p aria-label={`Notice ROC ${symbol}`}>
+                              <strong>Notice ROC:</strong>{" "}
+                              {noticePct != null
+                                ? `${noticePct}%`
+                                : "not read yet"}
+                            </p>
+                            <p
+                              role="status"
+                              aria-live="polite"
+                              aria-label={`ROC parse status ${symbol}`}
+                            >
+                              {parsing
+                                ? "Parsing 19a-1 notice…"
+                                : parseResult
+                                  ? parseResult.ok
+                                    ? parseResult.parsedPct
+                                      ? `Parse succeeded — read ${parseResult.parsedPct}% ROC.`
+                                      : parseResult.message || "Parse succeeded."
+                                    : `Parse failed — ${parseResult.message}`
+                                  : null}
+                            </p>
+                          </>
+                        );
+                      })()}
+                      <label>
+                        Template ROC
+                        <input
+                          aria-label={`Template ROC ${symbol}`}
+                          value={draft.url}
+                          disabled={
+                            Boolean(retryingTicketId) ||
+                            rocParseBusyId === t.ticketId
+                          }
+                          onChange={(e) =>
+                            setDraft(t.ticketId, { url: e.target.value }, draft)
+                          }
+                          placeholder="https://…19a-1…"
+                        />
+                      </label>
+                      {onStoreRocUrl ? (
+                        <button
+                          type="button"
+                          aria-label={`Store ROC URL ${symbol}`}
+                          className={
+                            draft.url.trim() &&
+                            draft.url.trim() !==
+                              (resolveRocContext?.(t)?.rocSourceUrl?.trim() ||
+                                "")
+                              ? "is-unsaved"
+                              : undefined
+                          }
+                          disabled={
+                            Boolean(retryingTicketId) ||
+                            rocParseBusyId === t.ticketId ||
+                            !draft.url.trim()
+                          }
+                          aria-busy={rocParseBusyId === t.ticketId}
+                          onClick={() =>
+                            void runStoreRocUrl(t, draft.url.trim())
+                          }
+                        >
+                          {rocParseBusyId === t.ticketId
+                            ? "Parsing…"
+                            : "Store ROC URL and parse"}
+                        </button>
+                      ) : null}
+                      <label>
+                        Manual ROC %
+                        <input
+                          aria-label={`Manual ROC percent ${symbol}`}
+                          inputMode="decimal"
+                          value={draft.pct}
+                          disabled={Boolean(retryingTicketId)}
+                          onChange={(e) =>
+                            setDraft(t.ticketId, { pct: e.target.value }, draft)
+                          }
+                          placeholder="type only to override — e.g. 80 or 99.70"
+                        />
+                      </label>
+                      {onStoreManualRoc ? (
+                        <button
+                          type="button"
+                          aria-label={`Store manual ROC percent ${symbol}`}
+                          className={draft.pct.trim() ? "is-unsaved" : undefined}
+                          disabled={
+                            Boolean(retryingTicketId) || !draft.pct.trim()
+                          }
+                          onClick={() => onStoreManualRoc(t, draft.pct.trim())}
+                        >
+                          Store manual ROC %
+                        </button>
+                      ) : null}
+                      {onOpenRocResearch ? (
+                        <button
+                          type="button"
+                          aria-label={`Open ROC research ${symbol}`}
+                          disabled={Boolean(retryingTicketId)}
+                          onClick={() => onOpenRocResearch(t)}
+                        >
+                          Open full ROC research
+                        </button>
+                      ) : null}
+                    </section>
                   ) : null}
                   {t.tool === "amount_confirm" && onExcept ? (
                     <button
@@ -1426,11 +1829,12 @@ export function WorkTicketQueue({
                       disabled={Boolean(retryingTicketId)}
                       onClick={() => onFile?.(t)}
                     >
-                      File
+                      File (dismiss only)
                     </button>
                   ) : null}
                 </li>
-              ))}
+                );
+              })}
             </ul>
           </details>
         ))
@@ -1828,6 +2232,13 @@ function formatDeclPerShare(
   return `$${formatScaled(minor, places)}`;
 }
 
+/** ISO date → MM-DD (no year). Non-ISO values pass through. */
+function formatMonthDay(iso: string | null | undefined): string {
+  const s = (iso ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(5, 10);
+  return s;
+}
+
 function declShareTone(
   known: boolean | undefined,
   current: boolean | undefined,
@@ -1840,7 +2251,24 @@ function declShareClass(
   known: boolean | undefined,
   current: boolean | undefined,
 ): string {
-  return `ip-decl-${declShareTone(known, current)}`;
+  const tone = declShareTone(known, current);
+  // Older declarations stay unhighlighted; only current (≤5 trading days) is green.
+  if (tone === "stale") return "";
+  return `ip-decl-${tone}`;
+}
+
+/** Declaration arrived and is below plan (dollar totals). */
+function planShortOfDecl(row: {
+  planKnown?: boolean;
+  declarationKnown?: boolean;
+  plannedMinor?: number;
+  declarationMinor?: number;
+}): boolean {
+  return (
+    !!row.planKnown &&
+    !!row.declarationKnown &&
+    (row.declarationMinor ?? 0) < (row.plannedMinor ?? 0)
+  );
 }
 
 function fmtGridCell(
@@ -1925,7 +2353,7 @@ export function IncomePlanGridPanel({
       <div className="income-week-bar">
         <AccountTickPicker
           legend="Accounts"
-          allLabel="All Dividend accounts"
+          allLabel="All"
           mode="anyCombination"
           accounts={chips}
           allAccounts={INCOME_PLAN_DEFAULT_ACCOUNTS}
@@ -1969,13 +2397,13 @@ export function IncomePlanGridPanel({
         <div className="income-print-export">
           <button
             type="button"
-            aria-label="Print Export"
+            aria-label="Export"
             aria-busy={exportLoading}
             className={exportLoading ? "is-loading" : undefined}
             disabled={exportLoading}
             onClick={() => onPrintExport()}
           >
-            Print Export
+            Export
           </button>
         </div>
       </div>
@@ -2031,6 +2459,10 @@ export function IncomePlanGridPanel({
       </div>
       <div className="ip-panel">
         <h3>Position plan grid</h3>
+        <p className="ip-legend" aria-label="Declaration colour legend">
+          Decl $/sh current (≤5 trading days) is green. Older declarations are left
+          unhighlighted. No declaration on file is grey.
+        </p>
         <table className="ip-grid" aria-label="Income plan position grid">
           <thead>
             <tr>
@@ -2127,8 +2559,6 @@ export function IncomePlanGridPanel({
         <span><i className="ip-sw miss" />Past · miss</span>
         <span><i className="ip-sw future" />Future plan</span>
         <span><i className="ip-sw empty" />Not a pay week</span>
-        <span><i className="ip-sw ok" />Decl $/sh current (≤5 trading days)</span>
-        <span><i className="ip-sw" />Decl $/sh stale</span>
       </p>
     </div>
   );
@@ -2156,6 +2586,8 @@ export type IncomePlanWeekView = {
     actualKnown?: boolean;
     plannedMinor?: number;
     planKnown: boolean;
+    planPerShareMinor?: number | null;
+    planPerShareScale?: number;
     declarationMinor?: number;
     declarationKnown?: boolean;
     declarationPerShareMinor?: number | null;
@@ -2217,6 +2649,33 @@ export function IncomePlanWeekPanel({
     selected.length > 0
       ? lines.filter((line) => selected.includes(line.accountName))
       : lines;
+  const accountDeclVariance = (accountName: string): number | null => {
+    const sameAccount = (name: string | undefined) =>
+      (name ?? "").trim().toLowerCase() === accountName.trim().toLowerCase();
+    const parts: number[] = [];
+    for (const row of week.positions ?? []) {
+      const slices = (row.accounts ?? []).filter((account) =>
+        sameAccount(account.accountName),
+      );
+      if (slices.length === 0) {
+        continue;
+      }
+      for (const slice of slices) {
+        if (slice.declarationKnown && slice.planKnown) {
+          parts.push((slice.declarationMinor ?? 0) - (slice.plannedMinor ?? 0));
+          continue;
+        }
+        if (row.declarationKnown && slice.planKnown && (row.plannedMinor ?? 0) > 0) {
+          const share = Math.round(
+            ((row.declarationMinor ?? 0) * (slice.plannedMinor ?? 0)) /
+              (row.plannedMinor ?? 1),
+          );
+          parts.push(share - (slice.plannedMinor ?? 0));
+        }
+      }
+    }
+    return parts.length === 0 ? null : parts.reduce((sum, part) => sum + part, 0);
+  };
   const weekLines = sortRows(visibleLines, weekSort.sortKey, weekSort.sortDir, (line, key) => {
     switch (key) {
       case "account":
@@ -2226,7 +2685,7 @@ export function IncomePlanWeekPanel({
       case "actual":
         return line.actualMinor;
       case "variance":
-        return line.planKnown ? line.actualMinor - (line.plannedMinor ?? 0) : null;
+        return accountDeclVariance(line.accountName);
       case "pct":
         return pctOfPlanMinor(
           line.planKnown,
@@ -2258,7 +2717,13 @@ export function IncomePlanWeekPanel({
     if (slices.length === 0) {
       return [];
     }
-    const planKnown = slices.every((account) => account.planKnown);
+    // Cash on an account with no lot is actual-only: it has no plan and no
+    // declaration. That slice must not blank Plan $/sh for accounts that hold shares.
+    const planSlices = slices.filter(
+      (account) => account.planKnown || account.declarationKnown,
+    );
+    const planKnown =
+      planSlices.length > 0 && planSlices.every((account) => account.planKnown);
     const actualKnown = slices.some((account) => account.actualKnown);
     const declarationKnown = slices.some((account) => account.declarationKnown);
     return [
@@ -2324,10 +2789,12 @@ export function IncomePlanWeekPanel({
       ? (r.declarationMinor ?? 0) - (r.plannedMinor ?? 0)
       : null;
   const planTickets = positionRows.filter((r) => planOf(r) > 0);
-  const missingDeclared = planTickets
+  // Cash / money-market never receives an issuer declaration — exclude from ticket gates.
+  const declTickets = planTickets.filter((r) => !isCashSymbol(r.symbol));
+  const missingDeclared = declTickets
     .filter((r) => !r.declarationKnown)
     .map((r) => r.symbol);
-  const missingPaid = planTickets
+  const missingPaid = declTickets
     .filter((r) => !(r.actualKnown && r.actualMinor > 0))
     .map((r) => r.symbol);
   const weekComplete =
@@ -2335,15 +2802,6 @@ export function IncomePlanWeekPanel({
     missingDeclared.length === 0 &&
     missingPaid.length === 0;
   const weekOpen = calendarOpen && !weekComplete;
-  const positionPctTotal = (() => {
-    const actualOpen =
-      weekOpen && positionRows.every((row) => row.actualMinor === 0);
-    if (actualOpen || positionRows.length === 0) return null;
-    if (positionRows.some((row) => !row.planKnown)) return null;
-    const planned = positionRows.reduce((sum, row) => sum + (row.plannedMinor ?? 0), 0);
-    const actual = positionRows.reduce((sum, row) => sum + row.actualMinor, 0);
-    return pctOfPlanMinor(true, planned, actual, false);
-  })();
   const accountPctTotal = (() => {
     const actualOpen = weekOpen && totalActual === 0;
     if (actualOpen) return null;
@@ -2364,12 +2822,27 @@ export function IncomePlanWeekPanel({
   const missCount = missSymbols.length;
   const ticketTitle = (missing: string[], empty: string) =>
     missing.length === 0 ? empty : missing.join(", ");
-  const cadenceOrder = ["Monthly", "Quarterly", "Weekly", "Other"] as const;
+  const cadenceOrder = [
+    "Monthly",
+    "Twice monthly",
+    "Quarterly",
+    "Weekly",
+    "Other",
+  ] as const;
   const cadenceBucket = (c?: string) => {
     const f = (c ?? "").toLowerCase();
-    if (f.includes("month")) return "Monthly";
-    if (f.includes("quarter")) return "Quarterly";
-    if (f.includes("week")) return "Weekly";
+    if (
+      f.includes("twice") ||
+      f.includes("semi") ||
+      f === "24" ||
+      f === "twice monthly" ||
+      f === "twice-monthly"
+    ) {
+      return "Twice monthly";
+    }
+    if (f.includes("month") || f === "12") return "Monthly";
+    if (f.includes("quarter") || f === "4") return "Quarterly";
+    if (f.includes("week") || f === "52") return "Weekly";
     return "Other";
   };
   const grouped = cadenceOrder
@@ -2402,10 +2875,6 @@ export function IncomePlanWeekPanel({
                   ? "—"
                   : formatUsdWhole(weekVariance, week.scale ?? 2)}
               </b>
-            </div>
-            <div className="ip-kpi-box" title="Planned this week and not declared">
-              <span>Misses</span>
-              <b>{missCount == null ? "—" : missCount}</b>
             </div>
           </div>
           <div className="income-week-bar">
@@ -2446,22 +2915,6 @@ export function IncomePlanWeekPanel({
               ))}
             </div>
           ) : null}
-          <div className="income-week-bar" aria-label="Week summary">
-            <span>Plan {formatUsd(weekPlan, week.scale)}</span>
-            <span>
-              Declared{" "}
-              {declaredRows.length === 0
-                ? "N/A"
-                : formatUsd(weekDecl, week.scale)}
-            </span>
-            <span>
-              Current variance{" "}
-              {weekVariance == null
-                ? "N/A"
-                : formatUsd(weekVariance, week.scale)}
-            </span>
-            <span>Misses {missCount}</span>
-          </div>
         </>
       )}
       {totalActual === 0 && positionRows.length === 0 ? (
@@ -2477,10 +2930,19 @@ export function IncomePlanWeekPanel({
             Plan tickets <b className="ip-field">{planTickets.length}</b>
           </span>
           <span title={ticketTitle(missingDeclared, "Every planned name is declared")}>
-            Declared <b className="ip-field">{planTickets.length - missingDeclared.length}</b>
+            Declared <b className="ip-field">{declTickets.length - missingDeclared.length}</b>
+          </span>
+          <span title={ticketTitle(missingDeclared, "Every planned name is declared")}>
+            Remaining declarations{" "}
+            <b
+              className={`ip-field${missCount > 0 ? " is-remaining" : ""}`}
+              aria-label="Remaining declarations"
+            >
+              {missCount}
+            </b>
           </span>
           <span title={ticketTitle(missingPaid, "Every planned name is paid")}>
-            Paid <b className="ip-field">{planTickets.length - missingPaid.length}</b>
+            Paid <b className="ip-field">{declTickets.length - missingPaid.length}</b>
           </span>
           <span>
             Plan Week Complete <b className="ip-field">{weekComplete ? "Yes" : "No"}</b>
@@ -2502,6 +2964,7 @@ export function IncomePlanWeekPanel({
           <tbody>
             {weekLines.map((line) => {
               const actualOpen = weekOpen && line.actualMinor === 0;
+              const declVar = accountDeclVariance(line.accountName);
               return (
               <tr key={line.accountName}>
                 <td>{line.accountName}</td>
@@ -2512,9 +2975,9 @@ export function IncomePlanWeekPanel({
                 </td>
                 <td className="numeric">{actualText(line.actualMinor, line.scale)}</td>
                 <td className="numeric">
-                  {line.planKnown && !actualOpen
-                    ? formatUsd(line.actualMinor - (line.plannedMinor ?? 0), line.scale)
-                    : "N/A"}
+                  {declVar == null
+                    ? "—"
+                    : formatUsd(declVar, line.scale)}
                 </td>
                 <td className="numeric">
                   {formatPctOfPlan(
@@ -2555,22 +3018,9 @@ export function IncomePlanWeekPanel({
                   : formatUsd(totalActual, week.scale)}
               </td>
               <td className="numeric">
-                {weekComplete
-                  ? formatUsd(
-                      visibleLines.reduce((sum, line) => {
-                        if (!line.planKnown) return sum;
-                        return sum + (line.actualMinor - (line.plannedMinor ?? 0));
-                      }, 0),
-                      week.scale,
-                    )
-                  : moneyTotal(
-                      visibleLines.map((line) => {
-                        if (!line.planKnown) return null;
-                        const reported = !weekOpen || line.actualMinor !== 0;
-                        return reported ? line.actualMinor - (line.plannedMinor ?? 0) : null;
-                      }),
-                      week.scale,
-                    )}
+                {weekVariance == null
+                  ? "—"
+                  : formatUsd(weekVariance, week.scale)}
               </td>
               <td className="numeric">{formatPctOfPlan(accountPctTotal)}</td>
             </tr>
@@ -2578,7 +3028,15 @@ export function IncomePlanWeekPanel({
         </table>
       </div>
       )}
-      <h3>{onBack ? "Positions in this week" : "By position for the week"}</h3>
+      <div className="ip-pos-head">
+        <h3>{onBack ? "Positions in this week" : "By position for the week"}</h3>
+        <p className="ip-pos-legend">
+          <span>
+            <i className="ip-sw ok" />
+            Declarations within the last 5 days are Green
+          </span>
+        </p>
+      </div>
       {positionRows.length === 0 ? (
         <p>No positions scheduled or paid in this week.</p>
       ) : (
@@ -2587,6 +3045,7 @@ export function IncomePlanWeekPanel({
             <tr>
               <th className="ip-sticky">Symbol</th>
               <th>Pay date</th>
+              <th className="ip-plan-sh">Plan $/sh</th>
               <th className="ip-decl-sh">Decl $/sh</th>
               <th>Last Update</th>
               <th>Plan $</th>
@@ -2609,6 +3068,7 @@ export function IncomePlanWeekPanel({
                       {group.name} · {group.rows.length}
                     </td>
                     <td />
+                    <td className="ip-plan-sh" />
                     <td className="ip-decl-sh" />
                     <td />
                     <td className="numeric">{formatUsdWhole(gPlan, week.scale ?? 2)}</td>
@@ -2620,6 +3080,7 @@ export function IncomePlanWeekPanel({
                   {group.rows.map((row) => {
                     const planned = planOf(row);
                     const varMinor = varOf(row);
+                    const planShort = planShortOfDecl(row);
                     return (
                       <tr key={row.symbol}>
                         <td className="ip-sticky">
@@ -2635,7 +3096,22 @@ export function IncomePlanWeekPanel({
                             row.symbol
                           )}
                         </td>
-                        <td>{row.payOn ?? ""}</td>
+                        <td>{formatMonthDay(row.payOn)}</td>
+                        <td
+                          className={`numeric ip-plan-sh${planShort ? " ip-plan-short" : ""}`}
+                          title={
+                            planShort
+                              ? "Declaration is less than plan"
+                              : undefined
+                          }
+                        >
+                          {row.planKnown
+                            ? formatDeclPerShare(
+                                row.planPerShareMinor,
+                                row.planPerShareScale,
+                              )
+                            : ""}
+                        </td>
                         <td
                           className={`numeric ip-decl-sh ${declShareClass(
                             row.declarationPerShareMinor != null,
@@ -2660,7 +3136,7 @@ export function IncomePlanWeekPanel({
                             row.declarationPerShareScale,
                           )}
                         </td>
-                        <td>{row.lastUpdate?.trim() || ""}</td>
+                        <td>{formatMonthDay(row.lastUpdate?.trim() || "")}</td>
                         <td className="numeric">
                           {row.planKnown ? formatUsd(planned, row.scale) : ""}
                         </td>
@@ -2683,6 +3159,7 @@ export function IncomePlanWeekPanel({
             <tr className="ip-current">
               <td className="ip-sticky">Current · {declaredRows.length}</td>
               <td />
+              <td className="ip-plan-sh" />
               <td className="ip-decl-sh" />
               <td />
               <td className="numeric">{formatUsdWhole(currentPlan, week.scale ?? 2)}</td>
@@ -2698,6 +3175,7 @@ export function IncomePlanWeekPanel({
             <tr className="ip-grand">
               <td className="ip-sticky">Grand Total · {positionRows.length}</td>
               <td />
+              <td className="ip-plan-sh" />
               <td className="ip-decl-sh" />
               <td />
               <td className="numeric">{formatUsdWhole(weekPlan, week.scale ?? 2)}</td>
@@ -3392,6 +3870,15 @@ function cadenceRowClass(freq: string): string {
   if (c === "weekly" || c === "52") {
     return "cadence-weekly";
   }
+  if (
+    c === "twice monthly" ||
+    c === "twice-monthly" ||
+    c === "semimonthly" ||
+    c === "semi-monthly" ||
+    c === "24"
+  ) {
+    return "cadence-twice-monthly";
+  }
   if (c === "monthly" || c === "12") {
     return "cadence-monthly";
   }
@@ -3410,6 +3897,15 @@ function cadenceMatchesFilter(freq: string, filter: string): boolean {
   if (want === "weekly") {
     return have === "weekly" || have === "52";
   }
+  if (want === "twice-monthly" || want === "twice monthly") {
+    return (
+      have === "twice monthly" ||
+      have === "twice-monthly" ||
+      have === "semimonthly" ||
+      have === "semi-monthly" ||
+      have === "24"
+    );
+  }
   if (want === "monthly") {
     return have === "monthly" || have === "12";
   }
@@ -3417,6 +3913,70 @@ function cadenceMatchesFilter(freq: string, filter: string): boolean {
     return have === "quarterly" || have === "4";
   }
   return have === want;
+}
+
+export const CALCULATOR_PERFORMANCE_VIEWS = [
+  { id: "pl-green", label: "P/L ≥ 0%, plan FWD yield, green plan check" },
+  { id: "pl-green-roc", label: "P/L ≥ 0%, plan FWD yield, green plan check, 90% ROC" },
+] as const;
+
+export const CALCULATOR_CADENCE_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "weekly", label: "Weekly" },
+  { id: "twice-monthly", label: "Twice monthly" },
+  { id: "monthly", label: "Monthly" },
+  { id: "quarterly", label: "Quarterly" },
+] as const;
+
+type CalculatorViewMaster = {
+  remainingQuantityMinor?: number;
+  unrealizedPnlBps?: number | null;
+  planKnown?: boolean;
+  planPerShareMinor?: number;
+  planScale?: number;
+  rocPct2025ActualMinor?: number | null;
+  rocScale?: number | null;
+};
+
+/** Same membership as the Calculator Performance filter. Cadence All keeps every frequency. */
+export function matchesCalculatorPerformanceView(
+  row: {
+    paymentFrequency: string;
+    cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>;
+  },
+  master: CalculatorViewMaster | undefined,
+  performance: string,
+  cadence: string,
+): boolean {
+  if (!cadenceMatchesFilter(row.paymentFrequency, cadence)) return false;
+  if (performance === "all") return true;
+  const held = (master?.remainingQuantityMinor ?? 0) > 0;
+  if (held && (master?.unrealizedPnlBps == null || master.unrealizedPnlBps < 0)) {
+    return false;
+  }
+  if (
+    !planCheck(
+      row.cells,
+      master?.planKnown ?? false,
+      master?.planPerShareMinor ?? 0,
+      master?.planScale ?? 2,
+    ).atOrAbove
+  ) {
+    return false;
+  }
+  if (performance === "pl-green-roc") {
+    if (!master || master.rocPct2025ActualMinor == null || master.rocScale == null) return false;
+    if (master.rocPct2025ActualMinor / 10 ** master.rocScale < 90) return false;
+  }
+  return true;
+}
+
+/** Same gate as Rust `calculator_view_includes` — DIV-1/CASH, not owner-tagged None. */
+function calculatorEligibleMaster(row: PositionMasterRowView): boolean {
+  const freq = (row.paymentFrequency || "").trim().toLowerCase();
+  if (freq === "none") return false;
+  const div = (row.divType || "").trim().toUpperCase().replace(/\s+/g, "-");
+  return div === "DIV-1" || div === "DIV1" || div === "CASH";
 }
 
 export function DeclarationHistoryPanel({
@@ -3459,6 +4019,7 @@ export function DeclarationHistoryPanel({
             onChange={(e) => onCadenceChange(e.target.value)}
           >
             <option value="weekly">Weekly</option>
+            <option value="twice-monthly">Twice monthly</option>
             <option value="monthly">Monthly</option>
             <option value="quarterly">Quarterly</option>
             <option value="all">All</option>
@@ -3556,7 +4117,7 @@ function cellCents(cell: { amountPerShareMinor: number | null; amountScale: numb
   return Math.round(cell.amountPerShareMinor / 10 ** (scale - 2));
 }
 
-function newestDeclaration(
+export function newestDeclaration(
   cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
 ): { amountPerShareMinor: number; amountScale: number } | null {
   for (let i = cells.length - 1; i >= 0; i -= 1) {
@@ -3568,17 +4129,88 @@ function newestDeclaration(
   return null;
 }
 
+/** Non-blank payments, newest first. This is the walk Avg 6 averages. */
+export function lastPaidDeclarations(
+  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
+  count = 6,
+): Array<{ index: number; amountPerShareMinor: number; amountScale: number }> {
+  const paid: Array<{ index: number; amountPerShareMinor: number; amountScale: number }> = [];
+  for (let i = cells.length - 1; i >= 0 && paid.length < count; i -= 1) {
+    const cell = cells[i];
+    if (cell?.amountPerShareMinor == null) continue;
+    paid.push({
+      index: i,
+      amountPerShareMinor: cell.amountPerShareMinor,
+      amountScale: cell.amountScale,
+    });
+  }
+  return paid;
+}
+
 /** Avg 6 is six non-blank payments, newest first. Fewer than six stays unknown. */
-function avg6Declaration(
+export function avg6Declaration(
   cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
 ): number | null {
-  const paid: number[] = [];
-  for (let i = cells.length - 1; i >= 0 && paid.length < 6; i -= 1) {
-    const cents = cellCents(cells[i]);
-    if (cents != null) paid.push(cents);
-  }
-  if (paid.length < 6) return null;
+  return meanPaidCents(cells, 6);
+}
+
+/** Avg 3 is three non-blank payments, newest first. Fewer than three stays unknown. */
+export function avg3Declaration(
+  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
+): number | null {
+  return meanPaidCents(cells, 3);
+}
+
+/** Lowest non-blank pay in the loaded history, in cents. Blank is not $0. */
+export function minPaidDeclaration(
+  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
+): number | null {
+  const paid = lastPaidDeclarations(cells, Math.max(cells.length, 1))
+    .map((cell) => cellCents(cell))
+    .filter((cents): cents is number => cents != null);
+  if (paid.length === 0) return null;
+  return Math.min(...paid);
+}
+
+function meanPaidCents(
+  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
+  count: number,
+): number | null {
+  const paid = lastPaidDeclarations(cells, count)
+    .map((cell) => cellCents(cell))
+    .filter((cents): cents is number => cents != null);
+  if (paid.length < count) return null;
   return Math.round(paid.reduce((sum, cents) => sum + cents, 0) / paid.length);
+}
+
+/**
+ * Forward yield of a typed Plan: per-share × periods ÷ last price, in basis points.
+ * The per-share amount stays at the scale it was typed. 334 is 3.34%.
+ */
+export function planFwdAtAmountBps(
+  amountMinor: number | null,
+  amountScale: number,
+  periods: number,
+  priceMinor: number | null,
+  priceScale: number,
+): number | null {
+  if (
+    amountMinor == null ||
+    amountMinor <= 0 ||
+    periods <= 0 ||
+    priceMinor == null ||
+    priceMinor <= 0
+  ) {
+    return null;
+  }
+  const priceCents =
+    priceScale <= 2
+      ? priceMinor * 10 ** (2 - priceScale)
+      : Math.round(priceMinor / 10 ** (priceScale - 2));
+  if (priceCents <= 0) return null;
+  const denom = 10 ** amountScale * priceCents;
+  const num = amountMinor * periods * 1_000_000;
+  return Math.floor((num + Math.floor(denom / 2)) / denom);
 }
 
 function paidInViewCents(
@@ -3601,7 +4233,7 @@ function moneyUnits(minor: number, scale: number): number {
 }
 
 /** Excel New Plan check: blanks are not counted. Above % is above / counted weeks. */
-function planCheck(
+export function planCheck(
   cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
   planKnown: boolean,
   planMinor: number,
@@ -3628,9 +4260,90 @@ function planCheck(
   };
 }
 
+/** Dollars typed in Plan Management, kept at the number of decimal places entered. */
+export function parseTypedPlan(text: string): { minor: number; scale: number } | null {
+  const trimmed = text.trim().replace(/^\$/, "");
+  if (!/^-?\d+(\.\d+)?$/.test(trimmed)) return null;
+  const dot = trimmed.indexOf(".");
+  const scale = dot < 0 ? 0 : trimmed.length - dot - 1;
+  const minor = Math.round(Number(trimmed) * 10 ** scale);
+  if (!Number.isFinite(minor)) return null;
+  return { minor, scale };
+}
+
+/**
+ * Typed Plan against the stored Plan. The per-share difference stays at scale 6
+ * and is multiplied by quantity there, so a gap smaller than one cent per share
+ * still shows on the payment.
+ */
+export function planDecisionImpact(input: {
+  currentMinor: number | null;
+  currentScale: number;
+  nextMinor: number | null;
+  nextScale: number;
+  quantityMinor: number;
+  quantityScale: number;
+  periods: number;
+  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>;
+}): {
+  perShareDeltaUnits: number | null;
+  paymentDeltaUnits: number | null;
+  annualDeltaUnits: number | null;
+  checkText: string;
+  paidCount: number;
+} {
+  const paidCount = input.cells.filter((cell) => cell.amountPerShareMinor != null).length;
+  const check = planCheck(
+    input.cells,
+    input.nextMinor != null,
+    input.nextMinor ?? 0,
+    input.nextScale,
+  );
+  if (input.currentMinor == null || input.nextMinor == null) {
+    return {
+      perShareDeltaUnits: null,
+      paymentDeltaUnits: null,
+      annualDeltaUnits: null,
+      checkText: check.text,
+      paidCount,
+    };
+  }
+  const perShareDeltaUnits =
+    moneyUnits(input.nextMinor, input.nextScale) -
+    moneyUnits(input.currentMinor, input.currentScale);
+  const quantity = input.quantityMinor / 10 ** input.quantityScale;
+  const paymentDeltaUnits = Math.round(perShareDeltaUnits * quantity);
+  const annualDeltaUnits = input.periods > 0 ? paymentDeltaUnits * input.periods : null;
+  return {
+    perShareDeltaUnits,
+    paymentDeltaUnits,
+    annualDeltaUnits,
+    checkText: check.text,
+    paidCount,
+  };
+}
+
+/** Scale-6 money units as dollars, keeping digits a cent would have rounded off. */
+export function formatScale6(units: number | null): string {
+  if (units == null) return "unknown";
+  const sign = units < 0 ? "-" : units > 0 ? "+" : "";
+  const dollars = Math.abs(units) / 1_000_000;
+  const text = dollars.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+  return `${sign}$${text || "0"}`;
+}
+
 function periodsPerYear(freq: string): number {
   const c = freq.trim().toLowerCase();
   if (c === "weekly" || c === "52") return 52;
+  if (
+    c === "twice monthly" ||
+    c === "twice-monthly" ||
+    c === "semimonthly" ||
+    c === "semi-monthly" ||
+    c === "24"
+  ) {
+    return 24;
+  }
   if (c === "monthly" || c === "12") return 12;
   if (c === "quarterly" || c === "4") return 4;
   return 0;
@@ -3662,7 +4375,7 @@ type DividendScore = {
   currentPay: number | null;
 };
 
-function dividendScore(
+export function dividendScore(
   master: PositionMasterRowView | undefined,
   cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
 ): DividendScore {
@@ -3773,38 +4486,19 @@ export function CalculatorReturnSheet({
   if (!history) return <p>Loading distribution history…</p>;
   if (!rows) return <p>Loading Calculator…</p>;
   const masterBySymbol = new Map(rows.map((row) => [row.symbol, row]));
-  const listed = history.rows.filter((row) => {
-    if (!cadenceMatchesFilter(row.paymentFrequency, cadence)) return false;
-    if (performance === "all") return true;
-    const master = masterBySymbol.get(row.symbol);
-    if (master?.unrealizedPnlBps == null || master.unrealizedPnlBps <= 0) return false;
-    if (
-      !planCheck(
-        row.cells,
-        master.planKnown,
-        master.planPerShareMinor,
-        master.planScale,
-      ).atOrAbove
-    ) {
-      return false;
-    }
-    if (performance === "pl-green-roc") {
-      if (master.rocPct2025ActualMinor == null || master.rocScale == null) return false;
-      if (master.rocPct2025ActualMinor / 10 ** master.rocScale < 90) return false;
-    }
-    return true;
-  });
-  const shown =
-    performance !== "all"
-      ? listed.slice().sort((a, b) => {
-          const ay = masterBySymbol.get(a.symbol)?.planFwdYieldBps;
-          const by = masterBySymbol.get(b.symbol)?.planFwdYieldBps;
-          if (ay == null && by == null) return a.symbol.localeCompare(b.symbol);
-          if (ay == null) return 1;
-          if (by == null) return -1;
-          return by - ay;
-        })
-      : sortRows(listed, sort.sortKey, sort.sortDir, (row, key) => {
+  const listed = history.rows.filter((row) =>
+    matchesCalculatorPerformanceView(row, masterBySymbol.get(row.symbol), performance, cadence),
+  );
+  const pendingFirstLot = rows
+    .filter((row) => {
+      if (row.remainingQuantityMinor > 0) return false;
+      if (!calculatorEligibleMaster(row)) return false;
+      if (!row.planKnown) return false;
+      return true;
+    })
+    .map((row) => row.symbol)
+    .sort((a, b) => a.localeCompare(b));
+  const shown = sortRows(listed, sort.sortKey, sort.sortDir, (row, key) => {
     const master = masterBySymbol.get(row.symbol);
     const paid = paidInViewCents(row.cells);
     switch (key) {
@@ -3851,7 +4545,7 @@ export function CalculatorReturnSheet({
       case "costRec":
         return master?.costRecoveryBps ?? null;
       case "roc":
-        return master?.rocPct2025ActualMinor ?? null;
+        return calculatorRocPercent(master)?.minor ?? null;
       case "incomeRel":
         return master?.evidence?.incomeReliability ?? null;
       case "downside":
@@ -3864,18 +4558,6 @@ export function CalculatorReturnSheet({
         return master?.evidence?.diversification ?? null;
       case "confidence":
         return master?.evidence?.dataConfidence ?? null;
-      case "bearPrice":
-        return master?.bearPriceReturnBps ?? null;
-      case "bearCushion":
-        return master?.bearCushionBps ?? null;
-      case "bear":
-        return master?.bearTotalReturnBps ?? null;
-      case "bullPrice":
-        return master?.bullPriceReturnBps ?? null;
-      case "bullCushion":
-        return master?.bullCushionBps ?? null;
-      case "bull":
-        return master?.bullTotalReturnBps ?? null;
       case "fresh":
         return master?.declarationFreshness ?? "";
       case "declWd":
@@ -3910,6 +4592,8 @@ export function CalculatorReturnSheet({
         return dividendScore(master, row.cells).planPay;
       case "currentPay":
         return dividendScore(master, row.cells).currentPay;
+      case "avg3":
+        return avg3Declaration(row.cells);
       case "avg6":
         return avg6Declaration(row.cells);
       case "paid":
@@ -3937,12 +4621,11 @@ export function CalculatorReturnSheet({
             value={performance}
             onChange={(e) => setPerformance(e.target.value)}
           >
-            <option value="pl-green">
-              P/L positive, plan FWD yield, green plan check
-            </option>
-            <option value="pl-green-roc">
-              P/L positive, plan FWD yield, green plan check, 90% ROC
-            </option>
+            {CALCULATOR_PERFORMANCE_VIEWS.map((view) => (
+              <option key={view.id} value={view.id}>
+                {view.label}
+              </option>
+            ))}
             <option value="all">All payers</option>
           </select>
         </label>
@@ -3954,6 +4637,7 @@ export function CalculatorReturnSheet({
             onChange={(e) => onCadenceChange(e.target.value)}
           >
             <option value="weekly">Weekly</option>
+            <option value="twice-monthly">Twice monthly</option>
             <option value="monthly">Monthly</option>
             <option value="quarterly">Quarterly</option>
             <option value="all">All</option>
@@ -3992,8 +4676,17 @@ export function CalculatorReturnSheet({
           />
         </label>
       </div>
+      {pendingFirstLot.length > 0 ? (
+        <p role="status" aria-label="Researched without open lot">
+          Plan on file, 0 shares (P/L blank until Add Lot or Cart execute):{" "}
+          {pendingFirstLot.join(", ")}.
+        </p>
+      ) : null}
       <p className="calculator-sheet-note">
-        Highest most-current forward yield first. Plan check counts the weeks on this row: above, equal, or below Plan. Blanks are not counted.
+        MC FWD = Most Current forward yield (latest paid dividend annualized ÷ last
+        price). FWD uses Plan / share instead. Default sort is MC FWD high→low — click
+        any column head to change. Plan check counts weeks on this row above / equal /
+        below Plan; blanks are not counted.
       </p>
       <div className="table-wrap calculator-sheet-wrap">
         <table aria-label="Distribution history">
@@ -4020,18 +4713,6 @@ export function CalculatorReturnSheet({
               {sortHead(sort, "ROC $", "rocComp", true)}
               {sortHead(sort, "Cost rec", "costRec", true)}
               {sortHead(sort, "ROC %", "roc", true)}
-              {sortHead(sort, "Income reliability", "incomeRel", true)}
-              {sortHead(sort, "Downside", "downside", true)}
-              {sortHead(sort, "Recovery", "recovery", true)}
-              {sortHead(sort, "NAV persistence", "nav", true)}
-              {sortHead(sort, "Diversification", "divScore", true)}
-              {sortHead(sort, "Data confidence", "confidence", true)}
-              {sortHead(sort, "Bear price", "bearPrice", true)}
-              {sortHead(sort, "Bear cushion", "bearCushion", true)}
-              {sortHead(sort, "Bear total", "bear", true)}
-              {sortHead(sort, "Bull price", "bullPrice", true)}
-              {sortHead(sort, "Bull cushion", "bullCushion", true)}
-              {sortHead(sort, "Bull total", "bull", true)}
               {sortHead(sort, "Declares", "declWd")}
               {sortHead(sort, "Ex-date", "exWd")}
               {sortHead(sort, "Payday", "payWd")}
@@ -4050,6 +4731,7 @@ export function CalculatorReturnSheet({
               {sortHead(sort, "Plan pay", "planPay", true)}
               {sortHead(sort, "Current pay", "currentPay", true)}
               {sortHead(sort, "Most current", "most", true)}
+              {sortHead(sort, "Avg 3", "avg3", true)}
               {sortHead(sort, "Avg 6", "avg6", true)}
               {sortHead(sort, "Paid", "paid", true)}
               {sortHead(sort, "Plan check", "planCheck", true)}
@@ -4135,26 +4817,11 @@ export function CalculatorReturnSheet({
                   </td>
                   <td className="numeric">{formatBps(master?.costRecoveryBps)}</td>
                   <td className="numeric">
-                    {master?.rocPct2025ActualMinor == null || master?.rocScale == null
-                      ? "N/A"
-                      : formatPercentScaled(master.rocPct2025ActualMinor, master.rocScale)}
+                    {(() => {
+                      const roc = calculatorRocPercent(master);
+                      return roc == null ? "N/A" : formatPercentScaled(roc.minor, roc.scale);
+                    })()}
                   </td>
-                  <td className="numeric">{formatBps(master?.evidence?.incomeReliability)}</td>
-                  <td className="numeric">{formatBps(master?.evidence?.downsideResilience)}</td>
-                  <td className="numeric">{formatBps(master?.evidence?.recoveryUpside)}</td>
-                  <td className="numeric">{formatBps(master?.evidence?.navPersistence)}</td>
-                  <td className="numeric">{formatBps(master?.evidence?.diversification)}</td>
-                  <td className="numeric">
-                    {master?.evidence == null
-                      ? "unknown"
-                      : formatCount(master.evidence.dataConfidence)}
-                  </td>
-                  <td className="numeric">{formatBps(master?.bearPriceReturnBps)}</td>
-                  <td className="numeric">{formatBps(master?.bearCushionBps)}</td>
-                  <td className="numeric">{formatBps(master?.bearTotalReturnBps)}</td>
-                  <td className="numeric">{formatBps(master?.bullPriceReturnBps)}</td>
-                  <td className="numeric">{formatBps(master?.bullCushionBps)}</td>
-                  <td className="numeric">{formatBps(master?.bullTotalReturnBps)}</td>
                   <td>{master?.declarationWeekday || "—"}</td>
                   <td>{master?.exdateWeekday || "—"}</td>
                   <td>{master?.paydayWeekday || "—"}</td>
@@ -4180,6 +4847,13 @@ export function CalculatorReturnSheet({
                       return current == null
                         ? ""
                         : `$${formatScaled(current.amountPerShareMinor, current.amountScale)}`;
+                    })()}
+                  </td>
+                  <td className="numeric">
+                    {(() => {
+                      const avg3 = avg3Declaration(row.cells);
+                      const found = lastPaidDeclarations(row.cells, 3).length;
+                      return avg3 == null ? `${found} of 3, unknown` : formatUsd(avg3, 2);
                     })()}
                   </td>
                   <td className="numeric">
@@ -4219,12 +4893,11 @@ function MonthPerThousandChart({
   const bars = rows.flatMap((row) => {
     const master = masterBySymbol.get(row.symbol);
     const bps = master?.planFwdYieldBps;
-    if (bps == null) return [];
+    if (!master || bps == null) return [];
     const monthly = bps / 120;
-    const rocKnown = master.rocPct2025ActualMinor != null && master.rocScale != null;
-    const rocPct = rocKnown
-      ? master.rocPct2025ActualMinor! / 10 ** master.rocScale!
-      : 0;
+    const roc = calculatorRocPercent(master);
+    const rocKnown = roc != null;
+    const rocPct = rocKnown ? roc.minor / 10 ** roc.scale : 0;
     const rocShare = Math.min(1, Math.max(0, rocPct / 100));
     return [
       {

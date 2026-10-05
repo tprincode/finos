@@ -8,13 +8,15 @@ use crate::ports::platform::PlatformError;
 use crate::week_ahead::{ensure_horizon, ensure_seed};
 use chrono::Datelike;
 use financial_domain::cash_management::{
-    book_matches_income_plan_account, is_cash_adjust_type, is_cash_distribution_type,
-    job_1099_year_amounts, register_book_label, register_ledger_account, REGISTER_BOOKS,
+    is_cash_adjust_type, is_cash_distribution_type, job_1099_year_amounts, register_book_label,
+    register_ledger_account, REGISTER_BOOKS,
 };
 use financial_domain::trends::parse_iso_date;
 
-/// Tax-type YTD is reportable income. Car cash-outs stay on the Account view
-/// only — Car tax year is ROC (nontaxable) + ordinary dividends on Tax Planning.
+/// Tax-type YTD is posted cash. Remaining plan is the cash-element plan.
+/// Dividend income plan is not a withdrawal and is not added here.
+/// Car cash-outs stay on the Account view only — Car tax year is ROC and
+/// ordinary dividends on Tax Planning.
 const TAX_ROWS: &[(&str, &str)] = &[
     ("IRA ordinary", "Income"),
     ("SSA", "SSA_2026"),
@@ -56,50 +58,6 @@ struct BookRollup {
     remaining: Option<i64>,
 }
 
-async fn income_plan_remaining_by_book(
-    canonical: &dyn Canonical,
-    start: &str,
-    end: &str,
-    as_of: &str,
-) -> Result<HashMap<&'static str, i64>, PlatformError> {
-    let start_d = parse_iso_date(start)
-        .ok_or_else(|| PlatformError::new("bad_date", format!("invalid start {start}")))?;
-    let end_d = parse_iso_date(end)
-        .ok_or_else(|| PlatformError::new("bad_date", format!("invalid end {end}")))?;
-    if start_d > end_d {
-        return Ok(HashMap::new());
-    }
-    let mut by_book: HashMap<&'static str, i64> = HashMap::new();
-    let views = crate::queries::income_plan_week_views_in_range(canonical, start, end, as_of).await?;
-    for view in &views {
-        for pos in &view.positions {
-            if !pos.plan_known || pos.planned_minor == 0 {
-                continue;
-            }
-            if pos.pay_on.is_empty() || pos.pay_on.as_str() < start || pos.pay_on.as_str() > end {
-                continue;
-            }
-            for book in REGISTER_BOOKS {
-                if *book == "SSA_2026" {
-                    continue;
-                }
-                let day_sum: i64 = pos
-                    .accounts
-                    .iter()
-                    .filter(|a| {
-                        a.plan_known && book_matches_income_plan_account(book, &a.account_name)
-                    })
-                    .map(|a| a.planned_minor)
-                    .sum();
-                if day_sum > 0 {
-                    *by_book.entry(*book).or_insert(0) += day_sum;
-                }
-            }
-        }
-    }
-    Ok(by_book)
-}
-
 async fn rollups(
     canonical: &dyn Canonical,
     jan1: &str,
@@ -112,9 +70,6 @@ async fn rollups(
         .activity_list_in_range(None, jan1, dec31)
         .await
         .unwrap_or_default();
-    let remaining_start = next_day(as_of)?;
-    let plan_remaining =
-        income_plan_remaining_by_book(canonical, &remaining_start, dec31, as_of).await?;
     let mut out = HashMap::new();
     for book in REGISTER_BOOKS {
         let ledger = register_ledger_account(book);
@@ -125,6 +80,18 @@ async fn rollups(
         let mut actual = 0i64;
         let mut remaining = 0i64;
         let mut remaining_known = false;
+        let mut withdrawn_on = std::collections::HashSet::<String>::new();
+        if let Some(account_id) = ledger_id {
+            for act in &activities {
+                if act.account_id != account_id || !is_cash_distribution_type(&act.activity_type) {
+                    continue;
+                }
+                let on = act.occurred_on.get(..10).unwrap_or(act.occurred_on.as_str());
+                if on >= jan1 && on <= dec31 {
+                    withdrawn_on.insert(on.to_string());
+                }
+            }
+        }
         for o in &occs {
             if register_book_label(&o.account) != Some(*book) {
                 continue;
@@ -138,9 +105,8 @@ async fn rollups(
             {
                 actual += o.amount_minor.abs();
             }
-            if o.confirmed_at.is_none()
-                && o.occurred_on.as_str() > as_of
-                && o.occurred_on.as_str() <= dec31
+            let on = o.occurred_on.get(..10).unwrap_or(o.occurred_on.as_str());
+            if o.confirmed_at.is_none() && on >= as_of && on <= dec31 && !withdrawn_on.contains(on)
             {
                 remaining += o.amount_minor.abs();
                 remaining_known = true;
@@ -165,10 +131,6 @@ async fn rollups(
                 }
                 actual += act.amount_minor.abs();
             }
-        }
-        if let Some(plan) = plan_remaining.get(book) {
-            remaining += *plan;
-            remaining_known = true;
         }
         out.insert(
             *book,
@@ -203,8 +165,21 @@ pub async fn cash_ytd_get(
             .iter()
             .map(|(label, book)| {
                 let roll = books.get(book);
-                let actual = roll.map(|r| r.actual).unwrap_or(0);
-                let remaining = roll.and_then(|r| r.remaining);
+                let mut actual = roll.map(|r| r.actual).unwrap_or(0);
+                let mut remaining = roll.and_then(|r| r.remaining);
+                // One IRA figure: Income plus Account 9. Speculation has no book here;
+                // Tax Planning adds it and it is zero when that account has no withdrawal.
+                if *book == "Income" {
+                    if let Some(nine) = books.get("Account 9") {
+                        actual += nine.actual;
+                        remaining = match (remaining, nine.remaining) {
+                            (Some(a), Some(b)) => Some(a + b),
+                            (Some(a), None) => Some(a),
+                            (None, Some(b)) => Some(b),
+                            (None, None) => None,
+                        };
+                    }
+                }
                 CashYtdRow {
                     label: (*label).into(),
                     actual_minor: actual,

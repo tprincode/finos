@@ -486,6 +486,15 @@ async fn later_cash_lot_does_not_invent_july_running() {
     .await;
     let security_id = security["securityId"].as_str().unwrap();
     research_template(&platform, security_id, "SPAXX").await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        security_id,
+        "SPAXX",
+        "Monthly",
+        false,
+    )
+    .await
+    .expect("complete collector");
     must_ok(
         &platform,
         "LotOpen",
@@ -660,8 +669,16 @@ fn r7_week_ahead_and_capture_grid_still_locked() {
     )
     .unwrap();
     assert!(
-        ahead.contains("onOpenEditor") && !ahead.contains("inputMode=\"decimal\""),
+        ahead.contains("onOpenEditor")
+            && ahead.contains("<h3>Elements</h3>")
+            && ahead.contains("aria-label={`Edit ${row.account}"),
         "Week Ahead Edit opens the shared editor"
+    );
+    assert!(
+        ahead
+            .match_indices("inputMode=\"decimal\"")
+            .all(|(idx, _)| ahead[idx.saturating_sub(80)..idx].contains("interest")),
+        "inline decimal is loan interest only — plan Edit uses onOpenEditor"
     );
 }
 
@@ -1173,6 +1190,21 @@ async fn register_1y_sees_assumed_2027_after_confirm() {
         serde_json::json!({ "asOfDate": "2026-09-20" }),
     )
     .await;
+    let after = query_json(
+        &platform,
+        "PlanHorizonGet",
+        serde_json::json!({ "asOfDate": "2026-09-20" }),
+    )
+    .await;
+    let still_open = after["names"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["symbol"] == symbol);
+    assert!(
+        !still_open,
+        "assumed 2027 dates close the Confirm task for {symbol}: {after}"
+    );
     let year = query_json(
         &platform,
         "RemainingYearIncomeGet",
@@ -1296,4 +1328,565 @@ async fn vendor_2027_prunes_assumed_hole() {
         !plan_days.iter().any(|d| *d == "2027-01-15"),
         "pruned assumed hole must not plot: {plan_days:?}"
     );
+}
+
+#[tokio::test]
+async fn week_report_splits_income_ira_into_net_fed_state_and_ytd() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "ira"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CashDistributionPost",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "activityType": "IRA_Distribution",
+            "occurredOn": "2026-02-06",
+            "grossMinor": 400000,
+            "federalWithholdingMinor": 40000,
+            "stateWithholdingMinor": 16000,
+            "scale": 2,
+            "idempotencyKey": "week-report-feb6"
+        }),
+    )
+    .await;
+    let report = query_json(
+        &platform,
+        "DisbursementWeekReportGet",
+        serde_json::json!({"asOfDate": "2026-09-26"}),
+    )
+    .await;
+    let columns = report["columns"].as_array().unwrap();
+    let index = |key: &str| {
+        columns
+            .iter()
+            .position(|c| c["key"] == key)
+            .unwrap_or_else(|| panic!("missing column {key}"))
+    };
+    let income_i = index("income");
+    let fed_i = index("fed");
+    let state_i = index("state");
+    let total_i = index("total");
+    let rows = report["rows"].as_array().unwrap();
+    assert!(
+        rows.iter().all(|row| row["periodEnd"].as_str().unwrap() <= "2026-09-26"
+            || row["periodStart"].as_str().unwrap() <= "2026-09-26"),
+        "report is posted weeks only"
+    );
+    assert_eq!(rows.len(), 1, "empty weeks stay off the to-date report");
+    let week = rows
+        .iter()
+        .find(|row| row["periodEnd"] == "2026-02-06")
+        .expect("week ending 2026-02-06");
+    let cell = |i: usize| &week["cells"][i];
+    assert_eq!(cell(income_i)["amountMinor"].as_i64(), Some(344_000));
+    assert_eq!(cell(income_i)["planned"].as_bool(), Some(false));
+    assert_eq!(cell(fed_i)["amountMinor"].as_i64(), Some(40_000));
+    assert_eq!(cell(state_i)["amountMinor"].as_i64(), Some(16_000));
+    assert_eq!(cell(total_i)["amountMinor"].as_i64(), Some(400_000));
+    assert_eq!(report["ytdMinor"][income_i].as_i64(), Some(344_000));
+    assert_eq!(report["ytdMinor"][fed_i].as_i64(), Some(40_000));
+    assert_eq!(report["ytdMinor"][state_i].as_i64(), Some(16_000));
+    assert_eq!(report["ytdMinor"][total_i].as_i64(), Some(400_000));
+    let exported = query_json(
+        &platform,
+        "DisbursementWeekReportExportGet",
+        serde_json::json!({"asOfDate": "2026-09-26"}),
+    )
+    .await;
+    assert_eq!(
+        exported["defaultFileName"],
+        "current-year-totals-2026-09-26.xlsx"
+    );
+    assert!(exported["bytesBase64"].as_str().unwrap().len() > 32);
+}
+
+#[tokio::test]
+async fn week_report_remaining_uses_plan_through_year_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "ira"}),
+    )
+    .await;
+    for (name, amount) in [("net", 82_000), ("fed", 13_000), ("state", 5_000)] {
+        must_ok(
+            &platform,
+            "CashElementSave",
+            serde_json::json!({
+                "account": "Income",
+                "name": name,
+                "kind": "Withdrawal",
+                "cadence": "weekly",
+                "weekdayOrMonthDay": "Sat",
+                "amountMinor": amount,
+                "asOfDate": "2026-09-26"
+            }),
+        )
+        .await;
+    }
+    let report = query_json(
+        &platform,
+        "DisbursementWeekReportGet",
+        serde_json::json!({"asOfDate": "2026-09-26", "scope": "remaining"}),
+    )
+    .await;
+    assert_eq!(report["reportKind"], "remaining");
+    let columns = report["columns"].as_array().unwrap();
+    let index = |key: &str| {
+        columns
+            .iter()
+            .position(|c| c["key"] == key)
+            .unwrap_or_else(|| panic!("missing column {key}"))
+    };
+    let income_i = index("income");
+    let fed_i = index("fed");
+    let state_i = index("state");
+    let total_i = index("total");
+    let rows = report["rows"].as_array().unwrap();
+    assert!(
+        rows.iter().all(|row| row["periodEnd"].as_str().unwrap() >= "2026-09-26"),
+        "remaining starts at the as-of week"
+    );
+    assert_eq!(rows.len(), 14, "Saturdays from 2026-09-26 through 2026-12-26");
+    let week = rows
+        .iter()
+        .find(|row| row["periodEnd"] == "2026-10-02")
+        .expect("week ending 2026-10-02");
+    assert_eq!(week["cells"][income_i]["amountMinor"].as_i64(), Some(82_000));
+    assert_eq!(week["cells"][income_i]["planned"].as_bool(), Some(true));
+    assert_eq!(week["cells"][fed_i]["amountMinor"].as_i64(), Some(13_000));
+    assert_eq!(week["cells"][state_i]["amountMinor"].as_i64(), Some(5_000));
+    assert_eq!(week["cells"][total_i]["amountMinor"].as_i64(), Some(100_000));
+    assert_eq!(report["ytdMinor"][income_i].as_i64(), Some(14 * 82_000));
+    assert_eq!(report["ytdMinor"][total_i].as_i64(), Some(14 * 100_000));
+    let posted = query_json(
+        &platform,
+        "DisbursementWeekReportGet",
+        serde_json::json!({"asOfDate": "2026-09-26", "scope": "posted"}),
+    )
+    .await;
+    assert_eq!(posted["reportKind"], "posted");
+    assert!(posted["rows"].as_array().unwrap().is_empty());
+    let exported = query_json(
+        &platform,
+        "DisbursementWeekReportExportGet",
+        serde_json::json!({"asOfDate": "2026-09-26", "scope": "remaining"}),
+    )
+    .await;
+    assert_eq!(
+        exported["defaultFileName"],
+        "remaining-this-year-2026-09-26.xlsx"
+    );
+}
+
+#[tokio::test]
+async fn one_time_on_tenth_fifth_shows_in_this_week() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "FI Roth", "kind": "roth"}),
+    )
+    .await;
+    let saved = must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "FI Roth",
+            "name": "Roth transfer",
+            "kind": "Withdrawal",
+            "cadence": "one-time",
+            "weekdayOrMonthDay": "10/5",
+            "startOn": "2026-10-05",
+            "amountMinor": 15_000,
+            "scale": 2,
+            "asOfDate": "2026-10-09",
+            "occurrences": []
+        }),
+    )
+    .await;
+    let occ_id = saved["occurrences"][0]["occurrenceId"].as_str().unwrap();
+    assert_eq!(saved["occurrences"][0]["occurredOn"], "2026-10-05");
+    assert_eq!(saved["occurrences"][0]["amountMinor"], 15_000);
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-10-04"}),
+    )
+    .await;
+    assert!(
+        ahead["rows"].as_array().unwrap().iter().any(|row| {
+            row["account"] == "FI Roth" && row["occurredOn"] == "2026-10-05"
+        }),
+        "10/5 is inside Sat 10/3–Fri 10/9: {ahead}"
+    );
+    must_ok(
+        &platform,
+        "PlannedOccurrenceDelete",
+        serde_json::json!({ "occurrenceId": occ_id }),
+    )
+    .await;
+    let again = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-10-04"}),
+    )
+    .await;
+    assert!(
+        again["rows"].as_array().unwrap().iter().any(|row| {
+            row["account"] == "FI Roth" && row["occurredOn"] == "2026-10-05"
+        }),
+        "a saved one-time with no row is created when the week opens: {again}"
+    );
+}
+
+#[tokio::test]
+async fn income_withdrawal_tenth_tenth_edits_as_an_exception() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "ira"}),
+    )
+    .await;
+    let saved = must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "Income",
+            "name": "net",
+            "kind": "Withdrawal",
+            "cadence": "weekly",
+            "weekdayOrMonthDay": "Sat",
+            "amountMinor": 10_000,
+            "scale": 2,
+            "asOfDate": "2026-10-04",
+            "occurrences": []
+        }),
+    )
+    .await;
+    let element_id = saved["element"]["elementId"].as_str().unwrap();
+    let list = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Income", "asOfDate": "2026-10-04"}),
+    )
+    .await;
+    let item = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["elementId"] == element_id)
+        .expect("income withdrawal");
+    let first = &item["upcoming"][0];
+    assert_eq!(first["occurredOn"], "2026-10-10");
+    assert_eq!(item["amountMinor"], 10_000);
+    let occurrence_id = first["occurrenceId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PlannedOccurrenceSave",
+        serde_json::json!({
+            "elementId": element_id,
+            "occurrenceId": occurrence_id,
+            "occurredOn": "2026-10-10",
+            "amountMinor": 2_500,
+            "scale": 2,
+            "asOfDate": "2026-10-04",
+            "cancel": false
+        }),
+    )
+    .await;
+    let after = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Income", "asOfDate": "2026-10-04"}),
+    )
+    .await;
+    let edited = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["elementId"] == element_id)
+        .unwrap();
+    assert_eq!(edited["amountMinor"], 10_000, "the series amount stays");
+    let hit = edited["upcoming"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["occurredOn"] == "2026-10-10")
+        .unwrap();
+    assert_eq!(hit["amountMinor"], 2_500);
+    assert_eq!(hit["isException"], true);
+}
+
+#[tokio::test]
+async fn open_income_on_october_third_stays_editable() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "ira"}),
+    )
+    .await;
+    let saved = must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "Income",
+            "name": "net",
+            "kind": "Withdrawal",
+            "cadence": "weekly",
+            "weekdayOrMonthDay": "Sat",
+            "amountMinor": 10_000,
+            "scale": 2,
+            "asOfDate": "2026-10-04",
+            "occurrences": []
+        }),
+    )
+    .await;
+    assert_eq!(saved["element"]["amountMinor"], 10_000);
+    let element_id = saved["element"]["elementId"].as_str().unwrap();
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-10-04"}),
+    )
+    .await;
+    assert!(
+        ahead["rows"].as_array().unwrap().iter().any(|row| {
+            row["account"] == "Income" && row["occurredOn"] == "2026-10-03"
+        }),
+        "Oct 3 is the open Saturday of this week: {ahead}"
+    );
+    let list = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Income", "asOfDate": "2026-10-09"}),
+    )
+    .await;
+    let item = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["elementId"] == element_id)
+        .expect("income withdrawal");
+    let open = item["upcoming"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["occurredOn"] == "2026-10-03")
+        .expect("Open Oct 3 stays on the exception list when as-of is Friday");
+    assert_eq!(open["amountMinor"], 10_000);
+    assert_eq!(open["isCancelled"], false);
+    assert_eq!(item["amountMinor"], 10_000);
+    let dates: Vec<&str> = item["upcoming"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["occurredOn"].as_str())
+        .collect();
+    assert!(
+        dates.contains(&"2026-10-03")
+            && dates.contains(&"2026-10-10")
+            && dates.contains(&"2026-10-17"),
+        "the forward weeks stay, and the open Oct 3 is on the list: {dates:?}"
+    );
+    let occurrence_id = open["occurrenceId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PlannedOccurrenceSave",
+        serde_json::json!({
+            "elementId": element_id,
+            "occurrenceId": occurrence_id,
+            "occurredOn": "2026-10-03",
+            "amountMinor": 2_500,
+            "scale": 2,
+            "asOfDate": "2026-10-09",
+            "cancel": false
+        }),
+    )
+    .await;
+    let edited = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Income", "asOfDate": "2026-10-04"}),
+    )
+    .await;
+    let after = edited["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["elementId"] == element_id)
+        .unwrap();
+    assert_eq!(after["amountMinor"], 10_000, "the series amount stays");
+    let hit = after["upcoming"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["occurredOn"] == "2026-10-03")
+        .unwrap();
+    assert_eq!(hit["amountMinor"], 2_500);
+    assert_eq!(hit["isException"], true);
+    must_ok(
+        &platform,
+        "WeekAheadConfirm",
+        serde_json::json!({ "occurrenceId": occurrence_id }),
+    )
+    .await;
+    let posted = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Income", "asOfDate": "2026-10-04"}),
+    )
+    .await;
+    let frozen = posted["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["elementId"] == element_id)
+        .unwrap();
+    assert!(
+        !frozen["upcoming"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["occurrenceId"] == occurrence_id),
+        "a confirmed payment leaves the Open list: {posted}"
+    );
+    let refused = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "PlannedOccurrenceSave",
+            serde_json::json!({
+                "elementId": element_id,
+                "occurrenceId": occurrence_id,
+                "occurredOn": "2026-10-03",
+                "amountMinor": 1_000,
+                "scale": 2,
+                "asOfDate": "2026-10-04",
+                "cancel": false
+            }),
+        ),
+    )
+    .await;
+    assert!(!refused.ok, "posted history stays frozen");
+    assert_eq!(refused.error_code.as_deref(), Some("occurrence_confirmed"));
+}
+
+#[tokio::test]
+async fn fi_roth_confirm_posts_on_fi_roth_not_income() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "ira"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "FI Roth", "kind": "fi_roth"}),
+    )
+    .await;
+    let saved = must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "FI Roth",
+            "name": "One time Roth",
+            "kind": "Withdrawal",
+            "cadence": "one-time",
+            "weekdayOrMonthDay": "10/5",
+            "startOn": "2026-10-05",
+            "amountMinor": 12_000,
+            "scale": 2,
+            "asOfDate": "2026-10-09",
+            "occurrences": []
+        }),
+    )
+    .await;
+    assert_eq!(saved["element"]["account"], "FI Roth");
+    assert_eq!(saved["element"]["amountMinor"], 12_000);
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-10-04"}),
+    )
+    .await;
+    let row = ahead["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["account"] == "FI Roth" && r["occurredOn"] == "2026-10-05")
+        .expect("FI Roth one-time is on the week");
+    let posted = must_ok(
+        &platform,
+        "WeekAheadConfirm",
+        serde_json::json!({ "occurrenceId": row["occurrenceId"] }),
+    )
+    .await;
+    assert_eq!(posted["activityType"], "Roth_Distribution");
+    assert_eq!(posted["amountMinor"], 12_000);
+    assert_eq!(posted["scale"], 2);
+    let income = query_json(
+        &platform,
+        "CashRegisterGet",
+        serde_json::json!({
+            "account": "Income",
+            "period": "1M",
+            "asOfDate": "2026-10-09"
+        }),
+    )
+    .await;
+    assert!(
+        !income["rows"].as_array().unwrap().iter().any(|r| {
+            r["occurredOn"] == "2026-10-05" || r["label"] == "One time Roth"
+        }),
+        "FI Roth confirmation stays off the Income register: {income}"
+    );
+    let roth = query_json(
+        &platform,
+        "CashRegisterGet",
+        serde_json::json!({
+            "account": "FI Roth",
+            "period": "1M",
+            "asOfDate": "2026-10-09"
+        }),
+    )
+    .await;
+    let hit = roth["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["occurredOn"] == "2026-10-05")
+        .expect("confirmed row is on the FI Roth register");
+    assert_eq!(hit["withdrawalMinor"], 12_000);
+    assert_eq!(hit["scale"], 2);
+    assert_eq!(hit["posted"], true);
+    assert_eq!(hit["label"], "One time Roth");
 }

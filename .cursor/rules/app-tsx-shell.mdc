@@ -1,0 +1,32 @@
+---
+description: Do not grow App.tsx. Move a screen before deleting its old body.
+globs: apps/desktop/src/App.tsx,apps/desktop/src/features/**/*.tsx,docs/architecture/ui-modules.json
+alwaysApply: true
+---
+
+# App.tsx is a shell
+
+`apps/desktop/src/App.tsx` stays a **shell**: imports, `Screen` id, `navButton`, and a thin
+mount (`screen === "…" ? <Feature /> : null`).
+
+## Rules
+
+- If a change needs more than **~20 lines** in `App.tsx`, **stop and extract** the screen
+  under `apps/desktop/src/features/` first.
+- **Never** append a new tool or screen body into `App.tsx`.
+- After extract: register the module in
+  [`docs/architecture/ui-modules.json`](../../docs/architecture/ui-modules.json) with
+  `status: "extracted"`, `folder`, and `menuAreas`, so Tools → Components stays true.
+
+## Extract order
+
+1. Copy the screen into `apps/desktop/src/features/<name>/` with the same controls and commands.
+2. Mount it: `screen === "<id>" ? <Feature /> : null`.
+3. Register it in `docs/architecture/ui-modules.json`.
+4. Only then delete the old inline body.
+
+A feature file that exists but is never mounted is also a fail — Contract positions and the
+Interest rate calculator were both written, left unmounted, and unreachable from Tools.
+
+Removing a menu child, command, or control that was not moved is a fail. Existing pattern:
+Task Manager, Collectors, Income Plan, Shopping Cart.

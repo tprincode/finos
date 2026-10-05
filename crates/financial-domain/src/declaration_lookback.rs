@@ -129,6 +129,10 @@ fn periods_elapsed(inception: NaiveDate, as_of: NaiveDate, periods_per_year: u8)
     let days = (as_of - inception).num_days().max(0) as u32;
     match periods_per_year {
         52 => days / 7,
+        24 => {
+            // Mid-month + month-end slots after launch month (same month-end base as monthly ×2).
+            completed_month_ends_after_launch_month(inception, as_of).saturating_mul(2)
+        }
         12 => completed_month_ends_after_launch_month(inception, as_of),
         4 => completed_month_ends_after_launch_month(inception, as_of) / 3,
         _ => {

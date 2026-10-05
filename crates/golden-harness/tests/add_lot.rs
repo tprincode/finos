@@ -181,7 +181,17 @@ async fn process_b_lot_open_without_research_fails() {
     )
     .await;
     assert!(!result.ok);
-    assert_eq!(result.error_code.as_deref(), Some("not_researched"));
+    assert_eq!(result.error_code.as_deref(), Some("position_not_established"));
+    let body: serde_json::Value =
+        serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap();
+    assert_eq!(
+        body["message"].as_str(),
+        Some(
+            "Symbol is not on Position Details. Finish research first. Add a collector only if this symbol needs price or dividend retrieve."
+        )
+    );
+    let lots = query_json(&platform, "BasisGet", serde_json::json!({})).await;
+    assert!(lots["lots"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -448,6 +458,9 @@ async fn wz_add_lot_unknown_security_fails() {
     )
     .await;
     assert!(!result.ok, "WZ-add-lot-unknown must fail");
+    assert_eq!(result.error_code.as_deref(), Some("position_not_established"));
+    let lots = query_json(&platform, "BasisGet", serde_json::json!({})).await;
+    assert!(lots["lots"].as_array().unwrap().is_empty());
 }
 
 /// Required Skip keeps LotOpen gated. Accept restores complete. Do not LotOpen from research.
@@ -534,4 +547,26 @@ async fn process_a_required_skip_keeps_lot_open_gated() {
         }),
     )
     .await;
+}
+
+#[test]
+fn add_lot_ui_shows_position_not_established_sentence() {
+    let app = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.tsx"))
+        .unwrap();
+    let host = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/queries.rs"),
+    )
+    .unwrap();
+    assert!(
+        app.contains("Symbol is not on Position Details. Finish research first. Add a collector only if this symbol needs price or dividend retrieve.")
+            && app.contains("lotOpenOwnerMessage(result)")
+            && !app.contains("Lot not stored: ${result.errorCode"),
+        "Add Lot must show the owner sentence, not a UUID or raw errorCode dump"
+    );
+    assert!(
+        host.contains("\"position_not_established\"")
+            && host.contains("position_is_established")
+            && host.contains("Do not create security, Plan, characteristic, or a collector here."),
+        "LotOpen refuses before write and does not invent the investment"
+    );
 }

@@ -21,6 +21,28 @@ pub fn roc_pcts_equal(left: i64, left_scale: u8, right: i64, right_scale: u8) ->
         == rescale_roc_pct(right, right_scale, ROC_PCT_SCALE)
 }
 
+/// Same calendar month (`YYYY-MM`) for two ISO dates. Used by the once-per-month ROC gate.
+pub fn same_calendar_month(left: &str, right: &str) -> bool {
+    let l = left.trim();
+    let r = right.trim();
+    if l.len() < 7 || r.len() < 7 {
+        return false;
+    }
+    &l[..7] == &r[..7]
+}
+
+/// Runtime ROC HTTP is once per calendar month unless forced (Reevaluate / ticket / owner paste).
+/// No prior fetch → due. Same `YYYY-MM` as last `roc-19a1` run → skip.
+pub fn roc_monthly_fetch_due(last_fetch_as_of: Option<&str>, as_of: &str, force: bool) -> bool {
+    if force {
+        return true;
+    }
+    match last_fetch_as_of.map(str::trim).filter(|s| !s.is_empty()) {
+        None => true,
+        Some(last) => !same_calendar_month(last, as_of),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RocSuggestion {
     pub roc_pct_minor: Option<i64>,
@@ -345,5 +367,15 @@ mod tests {
         assert_eq!(rescale_roc_pct(800, 1, 2), 8_000);
         assert!(roc_pcts_equal(800, 1, 8_000, 2));
         assert!(!roc_pcts_equal(8_000, 2, 7_500, 2));
+    }
+
+    #[test]
+    fn roc_monthly_fetch_once_per_calendar_month() {
+        assert!(roc_monthly_fetch_due(None, "2026-10-02", false));
+        assert!(roc_monthly_fetch_due(Some("2026-09-15"), "2026-10-02", false));
+        assert!(!roc_monthly_fetch_due(Some("2026-10-01"), "2026-10-15", false));
+        assert!(roc_monthly_fetch_due(Some("2026-10-01"), "2026-10-15", true));
+        assert!(same_calendar_month("2026-10-01", "2026-10-31"));
+        assert!(!same_calendar_month("2026-09-30", "2026-10-01"));
     }
 }

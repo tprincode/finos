@@ -177,6 +177,12 @@ async fn explicit_lots_dual_basis_no_fifo_and_broker_recon() {
     let before = query_json(&platform, "BrokerLotReconcileGet", None).await;
     assert_eq!(before["unmatchedSells"].as_u64().unwrap(), 1);
     assert_eq!(before["matched"].as_bool().unwrap(), false);
+    let leftover = query_json(&platform, "HoldingsGet", None).await;
+    let leftover_sells = leftover["unassignedSells"].as_array().unwrap();
+    assert_eq!(leftover_sells.len(), 1);
+    assert_eq!(leftover_sells[0]["activityId"], sell["activityId"]);
+    assert_eq!(leftover_sells[0]["source"], "posted");
+    assert!(leftover_sells[0]["quantityMinor"].is_null());
 
     must_ok(
         &platform,
@@ -193,6 +199,8 @@ async fn explicit_lots_dual_basis_no_fifo_and_broker_recon() {
     assert_eq!(after["unmatchedSells"].as_u64().unwrap(), 0);
     assert_eq!(after["matched"].as_bool().unwrap(), true);
     assert_eq!(after["assignedQuantityMinor"].as_i64().unwrap(), 10);
+    let assigned = query_json(&platform, "HoldingsGet", None).await;
+    assert!(assigned["unassignedSells"].as_array().unwrap().is_empty());
 
     let roi = query_json(&platform, "RoiGet", None).await;
     assert_eq!(roi["proceedsMinor"].as_i64().unwrap(), 60_000);
@@ -565,4 +573,85 @@ async fn fi_roth_crf_drip_without_price_raises_drip_qty_unknown() {
         .iter()
         .any(|e| e["code"].as_str() == Some("drip_qty_unknown"));
     assert!(hit, "{exceptions}");
+}
+
+#[tokio::test]
+async fn holdings_unassigned_recovers_qty_from_cart_sell_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let taxable = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Taxable Brokerage", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = taxable["accountId"].as_str().unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "AAPL", "name": "Apple"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id, "AAPL").await;
+    let lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": security_id,
+            "openedOn": "2026-01-05",
+            "origin": "purchase",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 100_000,
+            "taxBasisMinor": 80_000,
+            "scale": 2
+        }),
+    )
+    .await;
+    let posted = must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": security_id,
+            "activityType": "sell",
+            "amountMinor": 50_000,
+            "scale": 2,
+            "occurredOn": "2026-03-01"
+        }),
+    )
+    .await;
+    let scene = must_ok(
+        &platform,
+        "CartScenarioCreate",
+        serde_json::json!({
+            "accountId": account_id,
+            "asOf": "2026-03-01",
+            "cashYieldBps": 0
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartSellLineAdd",
+        serde_json::json!({
+            "scenarioId": scene["scenarioId"],
+            "lotId": lot["lotId"],
+            "qtyMinor": 5,
+            "unitMinor": 10_000,
+            "isCash": false
+        }),
+    )
+    .await;
+    let holdings = query_json(&platform, "HoldingsGet", None).await;
+    let sells = holdings["unassignedSells"].as_array().unwrap();
+    assert_eq!(sells.len(), 1);
+    assert_eq!(sells[0]["activityId"], posted["activityId"]);
+    assert_eq!(sells[0]["quantityMinor"].as_i64().unwrap(), 5);
+    assert_eq!(sells[0]["quantityScale"].as_u64().unwrap(), 0);
+    assert_eq!(sells[0]["source"], "cart");
 }

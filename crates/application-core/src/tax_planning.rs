@@ -5,7 +5,9 @@
 //! rewrite MAGI oracles.
 
 use crate::cash_ytd::cash_ytd_get;
-use crate::contracts::{CarRocPlanBody, TaxPlanningBody, TaxPlanningGroup, TaxPlanningRow};
+use crate::contracts::{
+    CarRocPlanBody, TaxPlanningBody, TaxPlanningGroup, TaxPlanningRow, TaxWithholdingRow,
+};
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
 use chrono::Datelike;
@@ -82,10 +84,13 @@ async fn speculation_ira(
         if o.note.eq_ignore_ascii_case("dividend") {
             continue;
         }
-        if o.confirmed_at.is_none()
-            && o.occurred_on.as_str() > as_of
-            && o.occurred_on.as_str() <= dec31
-        {
+        let on = o.occurred_on.get(..10).unwrap_or(o.occurred_on.as_str());
+        let already_posted = activities.iter().any(|act| {
+            act.account_id == acct.account_id
+                && is_cash_distribution_type(&act.activity_type)
+                && act.occurred_on.get(..10).unwrap_or(act.occurred_on.as_str()) == on
+        });
+        if o.confirmed_at.is_none() && on >= as_of && on <= dec31 && !already_posted {
             projected += o.amount_minor.abs();
             projected_known = true;
         }
@@ -109,6 +114,93 @@ fn push_row(
         total_minor: row_total(ytd, projected),
         magi_impact: magi_impact.into(),
     });
+}
+
+fn withholding_key(note: &str) -> Option<&'static str> {
+    match note.trim().to_ascii_lowercase().as_str() {
+        "fed" | "federal" => Some("fed"),
+        "state" => Some("state"),
+        _ => None,
+    }
+}
+
+/// Posted Income withholding is YTD. Unconfirmed Income `fed` / `state` Elements
+/// through 31 Dec are the remaining plan. Confirmed Element Saturdays count as collected.
+async fn withholding_rows(
+    canonical: &dyn Canonical,
+    as_of: &str,
+    jan1: &str,
+    dec31: &str,
+) -> Result<Vec<TaxWithholdingRow>, PlatformError> {
+    if as_of <= dec31 {
+        crate::week_ahead::ensure_horizon(canonical, as_of, dec31).await?;
+    }
+    let accounts = canonical.account_list().await.unwrap_or_default();
+    let income_id = accounts
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("Income"))
+        .map(|a| a.account_id);
+    let elements = canonical.cash_element_list().await.unwrap_or_default();
+    let occs = canonical.planned_occurrence_list().await.unwrap_or_default();
+    let posted = if let Some(account_id) = income_id {
+        canonical
+            .activity_list_in_range(Some(account_id), jan1, as_of)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut ytd = std::collections::HashMap::from([("fed", 0i64), ("state", 0i64)]);
+    let mut remaining = std::collections::HashMap::from([("fed", 0i64), ("state", 0i64)]);
+    for act in &posted {
+        for key in ["fed", "state"] {
+            if let Some(amount) = financial_domain::cash_management::income_element_activity_slice(
+                key,
+                &act.activity_type,
+                act.amount_minor,
+                act.federal_withholding_minor,
+                act.state_withholding_minor,
+                &act.idempotency_key,
+            ) {
+                *ytd.entry(key).or_insert(0) += amount;
+            }
+        }
+    }
+    for element in &elements {
+        if !element.account.eq_ignore_ascii_case("Income") {
+            continue;
+        }
+        let Some(key) = withholding_key(&element.note) else {
+            continue;
+        };
+        for occ in occs.iter().filter(|o| o.element_id == element.element_id) {
+            if occ.is_cancelled {
+                continue;
+            }
+            let on = occ.occurred_on.as_str();
+            if occ.confirmed_at.is_some() {
+                if on >= jan1 && on <= as_of {
+                    *ytd.entry(key).or_insert(0) += occ.amount_minor.abs();
+                }
+            } else if on >= as_of && on <= dec31 {
+                *remaining.entry(key).or_insert(0) += occ.amount_minor.abs();
+            }
+        }
+    }
+    Ok(vec![
+        TaxWithholdingRow {
+            key: "fed".into(),
+            label: "Fed tax".into(),
+            ytd_minor: ytd["fed"],
+            remaining_minor: remaining["fed"],
+        },
+        TaxWithholdingRow {
+            key: "state".into(),
+            label: "State tax".into(),
+            ytd_minor: ytd["state"],
+            remaining_minor: remaining["state"],
+        },
+    ])
 }
 
 fn group(label: &str, rows: &[&TaxPlanningRow]) -> TaxPlanningGroup {
@@ -146,16 +238,11 @@ pub async fn tax_planning_get(
             .await;
     }
     let ira_ytd = income_ytd + nine_ytd + spec_ytd;
-    let ira_proj = match (income_proj, nine_proj, spec_proj) {
-        (Some(a), Some(b), Some(c)) => Some(a + b + c),
-        (Some(a), Some(b), None) => Some(a + b),
-        (Some(a), None, Some(c)) => Some(a + c),
-        (None, Some(b), Some(c)) => Some(b + c),
-        (Some(a), None, None) => Some(a),
-        (None, Some(b), None) => Some(b),
-        (None, None, Some(c)) => Some(c),
-        (None, None, None) => None,
-    };
+    // No withdrawal element means nothing left to withdraw. A missing plan is
+    // zero, not the dividend forecast.
+    let ira_proj = Some(income_proj.unwrap_or(0) + nine_proj.unwrap_or(0) + spec_proj.unwrap_or(0));
+    let roth_proj = Some(roth_proj.unwrap_or(0));
+    let hsa_proj = Some(hsa_proj.unwrap_or(0));
 
     let mut rows = Vec::new();
     push_row(
@@ -231,6 +318,8 @@ pub async fn tax_planning_get(
         "magi",
     );
 
+    let withholding = withholding_rows(canonical, as_of, &jan1, &dec31).await?;
+    let ira_contribution_minor = ira_contribution_year_minor(canonical, as_of).await?;
     let magi_rows: Vec<&TaxPlanningRow> = rows
         .iter()
         .filter(|r| r.magi_impact == "magi" || r.magi_impact == "magi_ltcg")
@@ -245,7 +334,29 @@ pub async fn tax_planning_get(
         all_sources: group("All income sources", &all_rows),
         rows,
         scale: 2,
+        withholding,
         car: Some(car.clone()),
         ytd: Some(ytd),
+        ira_contribution_minor,
     })
+}
+
+async fn ira_contribution_year_minor(
+    canonical: &dyn Canonical,
+    as_of: &str,
+) -> Result<i64, PlatformError> {
+    let year = as_of.get(..4).unwrap_or("");
+    if year.len() != 4 {
+        return Ok(0);
+    }
+    let prefix = format!("{year}-");
+    let activities = canonical.activity_list().await?;
+    Ok(activities
+        .iter()
+        .filter(|row| {
+            row.activity_type.eq_ignore_ascii_case("ira-contribution")
+                && row.occurred_on.starts_with(&prefix)
+        })
+        .map(|row| row.amount_minor)
+        .sum())
 }

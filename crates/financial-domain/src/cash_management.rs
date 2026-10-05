@@ -63,6 +63,14 @@ impl SsaPayee {
     }
 }
 
+pub fn is_etf_purchase(activity_type: &str) -> bool {
+    activity_type == "ETF Purchase"
+}
+
+pub fn is_etf_sale(activity_type: &str) -> bool {
+    activity_type == "ETF Sale"
+}
+
 /// Types Cash Management may post.
 pub fn is_cash_distribution_type(activity_type: &str) -> bool {
     matches!(
@@ -717,6 +725,20 @@ pub fn element_horizon_dates(
     out
 }
 
+/// True when `occurred_on` is a date the element's cadence would emit.
+pub fn element_date_on_schedule(
+    cadence: &str,
+    weekday_or_month_day: &str,
+    occurred_on: &str,
+) -> bool {
+    let Some(day) = crate::trends::parse_iso_date(occurred_on.trim()) else {
+        return false;
+    };
+    element_horizon_dates(cadence, weekday_or_month_day, day, day)
+        .iter()
+        .any(|d| d == occurred_on.trim())
+}
+
 /// Deposit increases running cash; Withdrawal decreases. Unknown start stays —.
 pub fn fold_running_cash(start: Option<i64>, deltas: &[i64]) -> Vec<Option<i64>> {
     let Some(mut running) = start else {
@@ -1030,6 +1052,9 @@ mod tests {
             ),
             None
         );
+        assert!(element_date_on_schedule("monthly", "15", "2026-09-15"));
+        assert!(!element_date_on_schedule("monthly", "15", "2026-09-01"));
+        assert!(element_date_on_schedule("monthly", "25", "2026-08-25"));
     }
 
     #[test]

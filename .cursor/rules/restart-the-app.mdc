@@ -1,29 +1,16 @@
 ---
-description: If a restart or Vite reload is required, the agent does it
+description: Restart the desktop and prove Home painted. A process and an HTTP 200 are not done.
 alwaysApply: true
 ---
 
 # Restart the app yourself
 
-Do not end a turn with **File → Restart** or **File → Reload** as owner homework. If the change cannot show until the host or Vite reloads, restart in the same turn and wait until the desktop is back.
+If rust, SQL, migrations, the native menu, or a command the running exe has not loaded changed, restart in the same turn.
 
-## When it is required
+1. Write `%LOCALAPPDATA%\com.finos.desktop\restart.token` with an ISO stamp and a reason. Delete `%LOCALAPPDATA%\com.finos.desktop\page-loaded.log` in the same step so an old Home line cannot pass.
+2. Stop every `finos-desktop` so repo-root `finos.bat` starts one `finos (dev)` child. Do not start `start-finos-dev.bat` alone. Do not `npm run desktop:build`.
+3. Run `.\scripts\app-up.ps1`. It exits 0 only when exactly one `finos-desktop.exe` is running, exactly one `start-finos-dev.bat` launcher is running, and `page loaded Home` is newer than that process. `http://localhost:1420` answering is not proof. A second desktop or a second dev launcher is a failed turn.
+4. Read `%LOCALAPPDATA%\com.finos.desktop\dev-console.log`. `panicked`, `Failed to setup`, or `npm error` is a failed turn. A window full of errors is not complete. The same sentences are checked by `app-up.ps1`.
+5. If the parent is missing, start repo-root `finos.bat` only.
 
-- **Host restart:** rust, SQL/migrations, native menu, Tauri `lib.rs`, or any command/query the running exe has not loaded.
-- **Vite reload / restart:** new `features/` files, stale webview, or HMR did not pick up the screen. If Reload is not enough, do the host restart.
-
-## How (coding launch)
-
-1. Write `%LOCALAPPDATA%\com.finos.desktop\restart.token` (ISO stamp + a reason line).
-2. Stop `finos-desktop` so repo-root `finos.bat` consumes the token and starts one `finos (dev)` child.
-3. Wait until `finos-desktop` is running and `http://localhost:1420` answers.
-4. Grep `%LOCALAPPDATA%\com.finos.desktop\dev-console.log` for `panicked`, `Failed to setup`, and `npm error`. A live desktop does not clear a migrate panic in that log.
-5. If the parent is missing, start **repo-root `finos.bat` only**.
-
-## Do not
-
-- Start `apps/desktop/start-finos-dev.bat` alone
-- `npm run desktop:build`
-- Start a second copy while one desktop is already up
-- `taskkill` port 1420 unless you are in the restart sequence above (killing Vite without the token leaves the app dead)
-- Leave “reload the Vite screen” as the last sentence
+Do not leave File → Restart as owner homework.

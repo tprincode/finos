@@ -1,0 +1,28 @@
+---
+description: Say how long a golden takes before you start it, and what it actually took.
+alwaysApply: true
+---
+
+# Announce and measure every golden run
+
+Before a golden suite starts, say how long it will take. After it finishes, say how long it
+took. The owner cannot see tool calls, so an unannounced three-minute cargo run is
+indistinguishable from a hang.
+
+Run them through the wrapper, which does both from recorded measurements:
+
+```
+.\scripts\golden.ps1 cart accessibility
+```
+
+It prints `running a 1.6 minutes golden: accessibility` before cargo starts, prints the actual
+elapsed time after, and writes the measurement back to
+[`docs/architecture/golden-durations.json`](../../docs/architecture/golden-durations.json) so the
+next estimate is closer.
+
+- A suite with no recorded duration is announced as unmeasured, not guessed at.
+- Every `--test` suite named in the Pass block of `docs/architecture/execution.md` must have a
+ key in `golden-durations.json`. `ui_modules::every_pass_suite_has_a_measured_duration` fails
+ if a suite is added to the gate without one.
+- Calling `cargo test` directly is fine for a single fast suite you have already timed. Say the
+ number either way.

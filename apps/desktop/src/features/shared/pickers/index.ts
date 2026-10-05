@@ -7,6 +7,7 @@ export {
   type LotCostOption,
   type LotSortMode,
 } from "./LotCostTable";
+export { UnassignedSellTable } from "./UnassignedSellTable";
 export {
   ResearchedSymbolCombobox,
   type ResearchedSymbolOption,

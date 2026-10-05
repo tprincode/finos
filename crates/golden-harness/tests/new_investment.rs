@@ -124,7 +124,7 @@ async fn record_decls(platform: &LocalPlatform, security_id: &str, n: usize) {
 }
 
 #[tokio::test]
-async fn wz_no_watch_omits_calculator_until_first_lot() {
+async fn wz_no_watch_omits_calculator_until_plan() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
     let (_account_id, security_id) = seed_identity(&platform, "NEW1").await;
@@ -146,11 +146,18 @@ async fn wz_no_watch_omits_calculator_until_first_lot() {
         serde_json::json!({
             "securityId": security_id,
             "paymentFrequency": "Weekly",
-            "riskTier": "HighRisk"
+            "riskTier": "HighRisk",
+            "divType": "DIV-1"
         }),
     )
     .await;
     record_decls(&platform, &security_id, 6).await;
+    let calc_before = query_json(&platform, "CalculatorGet", serde_json::json!({})).await;
+    let rows_before = calc_before["rows"].as_array().unwrap();
+    assert!(
+        rows_before.iter().all(|r| r["symbol"] != "NEW1"),
+        "WZ-no-watch: Calculator must omit identity without Plan"
+    );
     must_ok(
         &platform,
         "PlanHistoryConfirm",
@@ -165,16 +172,32 @@ async fn wz_no_watch_omits_calculator_until_first_lot() {
     )
     .await;
     let calc = query_json(&platform, "CalculatorGet", serde_json::json!({})).await;
-    let rows = calc["rows"].as_array().unwrap();
+    let row = calc["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["symbol"] == "NEW1")
+        .expect("WZ-plan: Calculator lists Plan-confirmed DIV-1 before first lot");
+    assert_eq!(row["remainingQuantityMinor"].as_i64(), Some(0));
+    let hist = query_json(
+        &platform,
+        "DeclarationHistoryGet",
+        serde_json::json!({ "asOfDate": "2026-08-21", "cadenceFilter": "all" }),
+    )
+    .await;
     assert!(
-        rows.iter().all(|r| r["symbol"] != "NEW1"),
-        "WZ-no-watch: Calculator must omit incomplete investment"
+        hist["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["symbol"] == "NEW1"),
+        "WZ-plan: DeclarationHistory lists Plan-confirmed DIV-1 before first lot"
     );
     let set = query_json(&platform, "PriceRetrievalSetGet", serde_json::json!({})).await;
     let ids = set["securityIds"].as_array().cloned().unwrap_or_default();
     assert!(
         ids.iter().all(|id| id.as_str() != Some(security_id.as_str())),
-        "WZ-daily-set: incomplete not in price retrieval set"
+        "WZ-daily-set: incomplete (no open lot) not in price retrieval set"
     );
 }
 
@@ -3064,4 +3087,504 @@ async fn lot_open_grandfather_is_already_has_open_lots() {
         }),
     )
     .await;
+}
+
+#[tokio::test]
+async fn underlying_accept_persists_and_files_ticket() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let (_account_id, security_id) = seed_identity(&platform, "MUIB").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Twice monthly",
+            "divType": "DIV-1",
+            "provider": "Direxion",
+            "riskTier": "Risk On",
+            "underlying": ""
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorFieldDecisionSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "field": "underlying",
+            "decision": "skip"
+        }),
+    )
+    .await;
+    let open = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        open["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["code"] == "underlying"),
+        "skip opens underlying ticket"
+    );
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "underlying": "SOXX"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorFieldDecisionSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "field": "underlying",
+            "decision": "accept"
+        }),
+    )
+    .await;
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-10-02" }),
+    )
+    .await;
+    assert_eq!(inv["underlying"], "SOXX");
+    let after = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["code"] != "underlying"),
+        "accept/upsert must file underlying ticket"
+    );
+}
+
+#[tokio::test]
+async fn roc_plan_confirm_without_frequency_persists_and_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let (_account_id, security_id) = seed_identity(&platform, "MUIB").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "divType": "DIV-1",
+            "provider": "Direxion",
+            "paymentFrequency": ""
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorFieldDecisionSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "field": "roc_estimate",
+            "decision": "skip"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RocPlanConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "rocPctMinor": 8500,
+            "rocScale": 2,
+            "asOfDate": "2026-10-02",
+            "ownerOverride": true,
+            "sourceUrl": "https://www.direxion.com/uploads/19adoc-MUIB-091626.pdf"
+        }),
+    )
+    .await;
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-10-02" }),
+    )
+    .await;
+    assert_eq!(inv["rocPct2026EstimateMinor"], 8500);
+    assert_eq!(inv["needsRocResearch"], false);
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["code"] != "roc_estimate"),
+        "RocPlanConfirm files roc_estimate even when frequency empty"
+    );
+}
+
+#[tokio::test]
+async fn establish_checklist_complete_without_lot_on_investment_get() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let (_account_id, security_id) = seed_identity(&platform, "MUIB").await;
+    ready_first_lot(&platform, &security_id, "MUIB").await;
+    record_decls(&platform, &security_id, 6).await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 23,
+            "amountScale": 2,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-10-02",
+            "decisionReason": "owner"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LastPriceRefresh",
+        serde_json::json!({
+            "quotes": [{
+                "securityId": security_id,
+                "priceMinor": 3323,
+                "scale": 2,
+                "asOfAt": "2026-10-02",
+                "source": "test"
+            }]
+        }),
+    )
+    .await;
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-10-02" }),
+    )
+    .await;
+    assert!(
+        inv["establishChecklist"].as_array().unwrap().len() >= 10,
+        "checklist rows present"
+    );
+    let lot_row = inv["establishChecklist"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "first_lot")
+        .expect("first_lot row");
+    assert_eq!(lot_row["status"], "na");
+    assert_eq!(lot_row["blocksComplete"], false);
+    assert!(inv["lots"].as_array().unwrap().is_empty());
+    assert_eq!(inv["planKnown"], true);
+    let calc = query_json(&platform, "CalculatorGet", serde_json::json!({})).await;
+    assert!(
+        calc["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["symbol"] == "MUIB"),
+        "Calculator lists MUIB at 0 shares when Plan confirmed"
+    );
+}
+
+/// One cash roster per language, and the TypeScript copy must agree with the Rust authority.
+/// Ten separate money-market lists is how a new sweep account shows the right balance on one
+/// screen and zero on another.
+#[test]
+fn cash_symbol_lists_match_the_rust_authority() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let rust =
+        std::fs::read_to_string(root.join("crates/financial-domain/src/current_price.rs")).unwrap();
+    let authority: Vec<String> = rust
+        .split("pub fn is_cash_par_symbol")
+        .nth(1)
+        .expect("is_cash_par_symbol")
+        .split("}")
+        .next()
+        .unwrap()
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(|s| s.to_string())
+        .collect();
+    assert!(
+        authority.len() >= 3,
+        "could not read the Rust cash authority: {authority:?}"
+    );
+
+    let ts = std::fs::read_to_string(root.join("packages/app-contracts/src/index.ts")).unwrap();
+    let mirror: Vec<String> = ts
+        .split("export const CASH_PAR_SYMBOLS")
+        .nth(1)
+        .expect("CASH_PAR_SYMBOLS must live in app-contracts")
+        .split(']')
+        .next()
+        .unwrap()
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        mirror, authority,
+        "app-contracts CASH_PAR_SYMBOLS drifted from financial-domain is_cash_par_symbol"
+    );
+
+    // No screen may keep its own copy. Walk every desktop source and the shared components.
+    let mut dirs = vec![
+        root.join("apps/desktop/src"),
+        root.join("packages/ui-components/src"),
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if !matches!(path.extension().and_then(|e| e.to_str()), Some("ts" | "tsx")) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for (lineno, line) in text.lines().enumerate() {
+                let hits = authority.iter().filter(|s| line.contains(s.as_str())).count();
+                if hits >= 2 {
+                    offenders.push(format!(
+                        "{}:{}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        lineno + 1
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these lines re-list money-market symbols instead of importing the shared one: {offenders:?}"
+    );
+}
+
+/// No symbol may be special-cased in the UI. A hard-coded ticker is a roster the product
+/// cannot grow: it works for the one name someone was debugging and silently does nothing
+/// for the next position added. Fixtures belong in goldens, not in the shipped screens.
+#[test]
+fn no_income_fleet_symbol_is_hard_coded_in_the_desktop_ui() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut files: Vec<std::path::PathBuf> = vec![root.join("apps/desktop/src/App.tsx")];
+    let mut stack = vec![root.join("apps/desktop/src/features")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if matches!(path.extension().and_then(|e| e.to_str()), Some("ts" | "tsx")) {
+                files.push(path);
+            }
+        }
+    }
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        for (lineno, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            // Comments may name a symbol to explain a rule; code may not branch on one.
+            if trimmed.starts_with("//") || trimmed.starts_with("*") || trimmed.starts_with("/*") {
+                continue;
+            }
+            for symbol in financial_domain::collector::INCOME_FLEET_SYMBOLS {
+                if line.contains(&format!("\"{symbol}\"")) || line.contains(&format!("'{symbol}'")) {
+                    offenders.push(format!(
+                        "{}:{} {}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        lineno + 1,
+                        trimmed.chars().take(110).collect::<String>()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the UI must not branch on a specific symbol — every roster is derived:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The owner asked four times for one on-screen list of every step adding an investment
+/// must satisfy, at the bottom of the screen, ending in Complete or Information still
+/// needed. This pins all three: the list exists in its own module, every domain step is
+/// explained on it, and the mount is the last thing on the Add investment screen.
+#[test]
+fn process_a_ui_renders_establish_checklist() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    let panel = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/new-investment/ReadinessChecklist.tsx"),
+    )
+    .expect("readiness checklist feature module");
+
+    assert!(panel.contains("aria-label=\"Establish checklist\""));
+    assert!(panel.contains("establishChecklist"), "must name its query source");
+    assert!(panel.contains("Investment details complete"));
+    assert!(panel.contains("Information still needed"));
+
+    // Exactly one checklist: the owner asked not to be prompted twice for the same item.
+    assert_eq!(
+        app.matches("<ReadinessChecklist").count(),
+        1,
+        "mount the readiness checklist once, not once per pane"
+    );
+    assert!(
+        !app.contains("aria-label=\"Establish checklist\""),
+        "the checklist body belongs in features/new-investment, not the App.tsx shell"
+    );
+
+    // Bottom of the screen: after every other Add investment pane, before the next screen.
+    let mount = app.find("<ReadinessChecklist").expect("mount");
+    let roc_strip = app.find("aria-label=\"ROC research strip\"").expect("roc strip");
+    let next_screen = app.find("{screen === \"add-lot\"").expect("next screen");
+    assert!(
+        roc_strip < mount && mount < next_screen,
+        "the checklist must render below the Add investment panes"
+    );
+    assert!(
+        !app[mount..next_screen].contains("aria-label=\""),
+        "nothing may render below the readiness checklist on this screen"
+    );
+
+    // Every step the domain can raise has to be explained on screen. Add a row in Rust and
+    // this fails until the owner is told why it blocks.
+    let domain =
+        std::fs::read_to_string(root.join("crates/financial-domain/src/collector.rs")).unwrap();
+    let mut ids: Vec<&str> = Vec::new();
+    for chunk in domain.split("rows.push(row(").skip(1) {
+        let after = chunk.trim_start();
+        if let Some(rest) = after.strip_prefix('"') {
+            if let Some(end) = rest.find('"') {
+                ids.push(&rest[..end]);
+            }
+        }
+    }
+    assert!(ids.len() >= 18, "expected the full step list, found {ids:?}");
+    let unexplained: Vec<&&str> = ids
+        .iter()
+        .filter(|id| !panel.contains(&format!("{id}:")))
+        .collect();
+    assert!(
+        unexplained.is_empty(),
+        "readiness steps with no on-screen reason: {unexplained:?}"
+    );
+}
+
+#[tokio::test]
+async fn blank_characteristic_upsert_keeps_stored_tier() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let (_account_id, security_id) = seed_identity(&platform, "TIER1").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "riskTier": "Risk On",
+            "divType": "DIV-1"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "riskTier": "",
+            "divType": "DIV-1"
+        }),
+    )
+    .await;
+    let body = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({"symbol": "TIER1", "asOfDate": "2026-10-03"}),
+    )
+    .await;
+    assert_eq!(body["riskTier"], "Risk On");
+}
+
+#[tokio::test]
+async fn paying_non_div1_with_a_plan_is_on_the_calculator() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let (_account_id, security_id) = seed_identity(&platform, "EQTY1").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "riskTier": "Core",
+            "divType": "Equity"
+        }),
+    )
+    .await;
+    record_decls(&platform, &security_id, 6).await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 100,
+            "amountScale": 2,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-08-21",
+            "decisionReason": "owner"
+        }),
+    )
+    .await;
+    let calc = query_json(&platform, "CalculatorGet", serde_json::json!({})).await;
+    assert!(
+        calc["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["symbol"] == "EQTY1"),
+        "a paying Plan is a Calculator row even when the type is not DIV-1"
+    );
+    assert_eq!(
+        calc["planCount"].as_u64(),
+        Some(0),
+        "home plan count stays DIV-1 and CASH"
+    );
+    let hist = query_json(
+        &platform,
+        "DeclarationHistoryGet",
+        serde_json::json!({ "asOfDate": "2026-10-03", "cadenceFilter": "all" }),
+    )
+    .await;
+    assert!(
+        hist["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["symbol"] == "EQTY1"),
+        "declaration history uses the same listing rule"
+    );
 }

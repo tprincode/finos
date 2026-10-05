@@ -20,7 +20,7 @@ pub struct RegimeInputs {
     pub reason: String,
     pub prices: Vec<PricePoint>,
     pub benchmark_prices: Vec<PricePoint>,
-    /// Distribution cash in window, same scale as prices (typically 2).
+    /// Per-share distribution cash in the window, same scale as prices (typically 2).
     pub distribution_minor: Option<i64>,
     pub planned_income_minor: Option<i64>,
     pub observed_income_minor: Option<i64>,
@@ -63,6 +63,67 @@ pub struct TierSuggestion {
 /// Split-adjusted close when a split occurred. The domain does not branch on method.
 pub const REGIME_PRICE_METHOD: &str = "adjusted";
 
+/// A period name belongs to a symbol when the name ends on that symbol token.
+/// `Bull MUIB` matches MUIB. `BULLISH` does not match LL.
+pub fn period_names_symbol(name: &str, symbol: &str) -> bool {
+    let name = name.trim();
+    let symbol = symbol.trim();
+    if symbol.is_empty() || name.len() < symbol.len() {
+        return false;
+    }
+    let start = name.len() - symbol.len();
+    if !name[start..].eq_ignore_ascii_case(symbol) {
+        return false;
+    }
+    start == 0 || !name.as_bytes()[start - 1].is_ascii_alphanumeric()
+}
+
+#[derive(Debug, Clone)]
+pub struct WindowCandidate {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub start_on: String,
+    pub end_on: String,
+}
+
+/// Latest window of `kind` for this symbol. A stored result for the symbol wins over a name match.
+pub fn pick_symbol_window<'a>(
+    kind: &str,
+    symbol: &str,
+    periods: &'a [WindowCandidate],
+    tied_period_ids: &[String],
+) -> Option<&'a WindowCandidate> {
+    let mut best: Option<&WindowCandidate> = None;
+    for period in periods {
+        if !period.kind.eq_ignore_ascii_case(kind.trim()) {
+            continue;
+        }
+        let tied = tied_period_ids
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(&period.id));
+        if !tied && !period_names_symbol(&period.name, symbol) {
+            continue;
+        }
+        best = Some(match best {
+            None => period,
+            Some(current) => {
+                let current_tied = tied_period_ids
+                    .iter()
+                    .any(|id| id.eq_ignore_ascii_case(&current.id));
+                if tied != current_tied {
+                    if tied { period } else { current }
+                } else if period.end_on > current.end_on {
+                    period
+                } else {
+                    current
+                }
+            }
+        });
+    }
+    best
+}
+
 /// Period is owner-complete when dates and kind exist. Method is locked; reason is implied by kind.
 pub fn period_ready(start_on: &str, end_on: &str, kind: &str) -> bool {
     !start_on.trim().is_empty()
@@ -75,6 +136,34 @@ pub fn period_ready(start_on: &str, end_on: &str, kind: &str) -> bool {
 
 pub fn locked_selection_reason(kind: &str) -> String {
     format!("dates named as {} period", kind.trim())
+}
+
+/// Cash per share in `price_scale` units. None when the open share count is zero.
+pub fn per_share_distribution_minor(
+    cash_minor: i64,
+    cash_scale: u8,
+    quantity_minor: i64,
+    quantity_scale: u8,
+    price_scale: u8,
+) -> Option<i64> {
+    if quantity_minor <= 0 {
+        return None;
+    }
+    let cash = crate::money::rescale(cash_minor, cash_scale, price_scale);
+    let factor = 10i128.checked_pow(u32::from(quantity_scale))?;
+    let num = (cash as i128).saturating_mul(factor);
+    let den = quantity_minor as i128;
+    if den == 0 {
+        return None;
+    }
+    let q = num / den;
+    let r = (num % den).abs();
+    let rounded = if r * 2 >= den {
+        q + if num >= 0 { 1 } else { -1 }
+    } else {
+        q
+    };
+    i64::try_from(rounded).ok()
 }
 
 pub fn calculate(inputs: &RegimeInputs) -> Result<RegimeResult, DomainError> {
@@ -231,6 +320,17 @@ fn in_window<'a>(prices: &'a [PricePoint], start: &str, end: &str) -> Vec<&'a Pr
     v
 }
 
+/// First close to last close inside the window, in basis points. Empty or a single price is unknown.
+pub fn price_return_bps(prices: &[PricePoint], start_on: &str, end_on: &str) -> Option<i64> {
+    let path = in_window(prices, start_on, end_on);
+    if path.len() < 2 || path[0].price_minor <= 0 {
+        return None;
+    }
+    let first = path[0].price_minor;
+    let last = path[path.len() - 1].price_minor;
+    Some(bps(last - first, first))
+}
+
 fn bps(num: i64, den: i64) -> i64 {
     if den == 0 {
         return 0;
@@ -356,6 +456,19 @@ mod tests {
     }
 
     #[test]
+    fn per_share_cash_divides_by_open_shares() {
+        assert_eq!(
+            per_share_distribution_minor(5_000, 2, 10, 0, 2),
+            Some(500)
+        );
+        assert_eq!(
+            per_share_distribution_minor(5_000, 2, 1_000, 2, 2),
+            Some(500)
+        );
+        assert_eq!(per_share_distribution_minor(5_000, 2, 0, 0, 2), None);
+    }
+
+    #[test]
     fn incomplete_period_is_blocked() {
         let mut inputs = ready_inputs(vec![pt("2026-01-02", 10_000), pt("2026-04-07", 8_000)]);
         inputs.start_on.clear();
@@ -396,6 +509,17 @@ mod tests {
         assert!(out.max_drawdown_bps.unwrap() < 0);
         assert_eq!(out.income_reliability_bps, Some(9_000));
         assert_eq!(out.downside_capture_bps, Some(10_000));
+    }
+
+    #[test]
+    fn plan_achieved_above_plan_stays_uncapped_on_the_result() {
+        let mut inputs = ready_inputs(vec![pt("2026-01-02", 10_000), pt("2026-04-07", 8_000)]);
+        inputs.planned_income_minor = Some(100);
+        inputs.observed_income_minor = Some(120);
+        let out = calculate(&inputs).unwrap();
+        assert_eq!(out.income_reliability_bps, Some(12_000));
+        let dims = dimensions(&out, None);
+        assert_eq!(dims.income_reliability, Some(100));
     }
 
     #[test]
@@ -456,5 +580,41 @@ mod tests {
         assert!(thin_d.known_components < full_d.known_components);
         assert!(thin.price_return_bps.is_none());
         assert!(thin_d.income_reliability.is_none() || thin_d.known_components < 6);
+    }
+
+    #[test]
+    fn symbol_window_uses_a_result_or_a_name_that_ends_on_the_symbol() {
+        assert!(period_names_symbol("Bull MUIB", "MUIB"));
+        assert!(period_names_symbol("bear muib", "MUIB"));
+        assert!(!period_names_symbol("BULLISH", "LL"));
+        let periods = vec![
+            WindowCandidate {
+                id: "named".into(),
+                kind: "Bull".into(),
+                name: "Bull MUIB".into(),
+                start_on: "2024-01-01".into(),
+                end_on: "2024-06-01".into(),
+            },
+            WindowCandidate {
+                id: "tied".into(),
+                kind: "Bull".into(),
+                name: "other".into(),
+                start_on: "2025-01-01".into(),
+                end_on: "2025-03-01".into(),
+            },
+            WindowCandidate {
+                id: "bear".into(),
+                kind: "Bear".into(),
+                name: "Bear OTHER".into(),
+                start_on: "2022-01-01".into(),
+                end_on: "2022-06-01".into(),
+            },
+        ];
+        let picked = pick_symbol_window("Bull", "MUIB", &periods, &["tied".into()]).unwrap();
+        assert_eq!(picked.id, "tied");
+        let named = pick_symbol_window("Bull", "MUIB", &periods, &[]).unwrap();
+        assert_eq!(named.start_on, "2024-01-01");
+        assert_eq!(named.end_on, "2024-06-01");
+        assert!(pick_symbol_window("Bear", "MUIB", &periods, &[]).is_none());
     }
 }

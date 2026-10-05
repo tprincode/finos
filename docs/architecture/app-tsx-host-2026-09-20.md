@@ -19,7 +19,7 @@ Shopping Cart, graphing, cash Register / Elements / YTD / Coverage / Week desk /
 
 ## Still in App.tsx (extract in this order)
 
-1. **Position Details** / Add Position / Add Lot
+1. **Position Details** / Add Investment / Add Lot
 2. **Home** remainder (cards, tickets button, refresh)
 3. Settings / Tickets / Calculator / Dashboard chrome
 

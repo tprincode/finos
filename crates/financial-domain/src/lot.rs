@@ -264,6 +264,16 @@ pub fn lifetime_gains(proceeds_minor: i64, performance_cost_minor: i64, tax_cost
     )
 }
 
+/// Sale tax P/L in USD cents. Proceeds are activity cents; assignment cost
+/// stays in the lot's stored scale (imported lots are 3–6).
+pub fn assignment_tax_gain_cents(
+    proceeds_cents: i64,
+    tax_cost_minor: i64,
+    cost_scale: u8,
+) -> i64 {
+    proceeds_cents - crate::money::to_usd_cents(tax_cost_minor, cost_scale)
+}
+
 /// IRS: long-term if held more than one year (sold after the one-year anniversary).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldingTerm {
@@ -372,6 +382,15 @@ mod tests {
         let (perf_gain, tax_gain) = lifetime_gains(60_000, used.performance_minor, used.tax_minor);
         assert_eq!(perf_gain, 10_000);
         assert_eq!(tax_gain, 20_000);
+    }
+
+    #[test]
+    fn assignment_gain_converts_lot_scale_before_subtract() {
+        // Live TSLW: $187.17 proceeds, $350.809998 tax basis at scale 6.
+        // Raw subtract is a $3.5M phantom; cents P/L is -$163.64.
+        assert_eq!(assignment_tax_gain_cents(18_717, 350_809_998, 6), -16_364);
+        assert_eq!(assignment_tax_gain_cents(6_806, 1_256_700, 4), -5_761);
+        assert_eq!(assignment_tax_gain_cents(8_508, 15_395, 2), -6_887);
     }
 
     #[test]

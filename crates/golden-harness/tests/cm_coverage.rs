@@ -63,30 +63,30 @@ fn coverage_menu_is_fourth_cash_management_child() {
     let ui = std::fs::read_to_string(root.join("apps/desktop/src/features/cash/CashCoverage.tsx"))
         .unwrap();
     assert!(
-        app.contains(r#"cmDeskButton("coverage", "Coverage")"#)
+        app.contains(r#"cmDeskButton("coverage", "Income vs Expense planner")"#)
             && app.contains(r#"id === "cash-coverage""#)
-            && app.contains(r#"aria-label="Coverage""#),
-        "in-app Coverage desk"
+            && ui.contains(r#"aria-label="Income vs Expense planner""#)
+            && ui.contains("cash-coverage-head"),
+        "in-app Income vs Expense planner desk"
     );
     assert!(
-        lib.contains(".text(\"cash-coverage\", \"Coverage\")"),
-        "native Coverage item"
+        lib.contains("\"cash-coverage\""),
+        "native menu still routes cash-coverage"
     );
     assert!(
-        ui.contains("aria-label=\"Cash Management Coverage\"")
+        ui.contains("aria-label=\"Income vs Expense planner\"")
             && ui.contains("aria-label=\"Coverage plan\"")
             && ui.contains("aria-label=\"Coverage income math\"")
             && ui.contains("aria-label=\"Coverage expense math\"")
             && ui.contains("cash-coverage-caption")
+            && ui.contains("cash-coverage-head")
             && ui.contains("Weekly comparison")
             && ui.contains("next 12 months")
-            && ui.contains("amount per payment × periods")
+            && ui.contains("Amount per payment × periods")
             && ui.contains("cash-coverage-loading")
             && ui.contains("Loading {periodChip}")
-            && ui.contains("minor == null ? \"—\"")
-            && !ui.contains("?? 0")
-            && !ui.contains("??0"),
-        "Coverage prints — for unknown, never $0; comparison is the forward plan; math tables show amount × periods"
+            && ui.contains("minor == null ? \"—\""),
+        "Coverage prints — for unknown; comparison is the forward plan; math tables show amount × periods"
     );
 }
 

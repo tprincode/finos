@@ -8,7 +8,7 @@ if not exist "package.json" (
   exit /b 1
 )
 
-set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+call "%~dp0..\..\finos-env.bat"
 set "DEVLOCK=%LOCALAPPDATA%\com.finos.desktop\dev-start.lock"
 set "DEVPID=%DEVLOCK%\start.pid"
 

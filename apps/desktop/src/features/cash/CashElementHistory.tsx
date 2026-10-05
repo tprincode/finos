@@ -161,14 +161,13 @@ export function CashElementHistory({
                   <th>Kind</th>
                   <th>Cadence</th>
                   <th>Activity</th>
-                  <th>Posted key</th>
                   <th>Exception</th>
                 </tr>
               </thead>
               <tbody>
                 {history.rows.length === 0 ? (
                   <tr>
-                    <td colSpan={11}>No transactions in this duration.</td>
+                    <td colSpan={10}>No transactions in this duration.</td>
                   </tr>
                 ) : (
                   history.rows.map((row) => (
@@ -190,7 +189,6 @@ export function CashElementHistory({
                       <td>{row.kind}</td>
                       <td>{row.cadence}</td>
                       <td>{row.activityType || "—"}</td>
-                      <td>{row.postedKey || "—"}</td>
                       <td>{row.isException ? "Yes" : "—"}</td>
                     </tr>
                   ))

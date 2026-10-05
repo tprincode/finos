@@ -1,8 +1,11 @@
 import { useMemo, useState } from "react";
 import ReactECharts from "echarts-for-react";
+import { ACCOUNT_CASH_SYMBOL } from "@finos/app-contracts";
 import type {
   AccountValueHomeGet,
   DividendPerformanceGet,
+  DividendPlanHomeGet,
+  HoldingsGet,
   RiskValueHome,
   TrendsWeekPoint,
 } from "@finos/app-contracts";
@@ -18,6 +21,7 @@ import {
   graphPeriodStartIso,
   type GraphPeriod,
 } from "./graphPeriod";
+import { DefaultTick, initialChartDefault } from "./chartDefault";
 import { weeklyDeclVsPlanOption } from "./DividendWeeks";
 import {
   accountChartOption,
@@ -25,6 +29,7 @@ import {
   filterSeries,
   LiveByRiskCharts,
 } from "./HomeAccountCharts";
+import { atlasChartExtras } from "../screen-atlas/atlasSession";
 
 export type TrendsCashAccountSpec = {
   title: string;
@@ -35,7 +40,7 @@ export type TrendsCashAccountSpec = {
 const PERIOD_OPTIONS = GRAPH_PERIOD_OPTIONS;
 
 const METRIC_CHARTS: TrendsCashAccountSpec[] = [
-  { title: "Cash", key: "totalCashMinor", color: "#2a5f8f" },
+  { title: "All Cash", key: "totalCashMinor", color: "#2a5f8f" },
   { title: "Monthly Dividends", key: "monthlyDivsMinor", color: "#8a5a12" },
   { title: "Total Fidelity & Schwab", key: "fidSchCombinedMinor", color: "#5b3d8a" },
 ];
@@ -95,6 +100,196 @@ function filterPerfByPeriod(
     return true;
   });
   return { ...perf, weeks };
+}
+
+/** Home cash grid lots. Account 9's book name on the lot is "9". */
+const OPEN_WEEK_CASH_LOTS: Array<[string, string]> = Object.entries(ACCOUNT_CASH_SYMBOL);
+
+function cashLotCents(
+  lots: HoldingsGet["lots"],
+  account: string,
+  symbol: string,
+): number {
+  return lots
+    .filter(
+      (lot) =>
+        lot.accountName === account &&
+        lot.symbol.toUpperCase() === symbol &&
+        lot.remainingQuantityMinor > 0,
+    )
+    .reduce((sum, lot) => {
+      const denom = 10 ** lot.quantityScale;
+      return sum + (denom ? Math.round((lot.remainingQuantityMinor * 100) / denom) : 0);
+    }, 0);
+}
+
+function paidDividendsThisMonth(
+  points: TrendIncomePoint[] | undefined,
+  todayIso: string,
+): number {
+  const month = todayIso.slice(0, 7);
+  let paid = 0;
+  for (const point of points ?? []) {
+    const on = point.occurredOn.slice(0, 10);
+    if (on.slice(0, 7) === month && on <= todayIso) paid += point.amountMinor;
+  }
+  return paid;
+}
+
+/** Home plan month: annual plan ÷ 12, including Health. */
+export function planMonthMinor(
+  plan: DividendPlanHomeGet | null | undefined,
+): number | null {
+  const income = plan?.total.monthlyIncomeMinor;
+  const medical = plan?.total.monthlyMedicalMinor;
+  if (income == null && medical == null) return null;
+  return (income ?? 0) + (medical ?? 0);
+}
+
+/**
+ * Each week is that week's plan, stated as what the month would be.
+ * Saved Fridays keep the figure stored with the week. A saved figure that is
+ * only that week's income, and the open week, use the current plan month.
+ */
+export function monthlyDividendWeeks(
+  weeks: TrendsWeekPoint[],
+  todayIso: string,
+  planMonth: number | null,
+): TrendsWeekPoint[] {
+  const today = todayIso.slice(0, 10);
+  const open = weekIdContaining(today);
+  const saved = [...weeks].sort((a, b) => a.periodEnd.localeCompare(b.periodEnd));
+  const history = saved.filter((week) => week.periodEnd.slice(0, 10) < open.end);
+  let priorMonthly: number | null = null;
+  const plotted = history.map((week) => {
+    const stored = week.monthlyDivsMinor;
+    const profit = week.profitMinor;
+    const weekSized = profit > 0 && stored > 0 && stored <= profit;
+    const monthly = weekSized
+      ? planMonth ?? priorMonthly ?? stored
+      : stored;
+    priorMonthly = monthly;
+    if (monthly === stored) return week;
+    return { ...week, monthlyDivsMinor: monthly };
+  });
+  const closedOpen = saved.find(
+    (week) => week.periodEnd.slice(0, 10) === open.end && week.closed,
+  );
+  if (closedOpen) return [...plotted, closedOpen];
+  const monthly = planMonth ?? priorMonthly;
+  if (monthly == null) return plotted;
+  const template = history.at(-1);
+  plotted.push({
+    periodEnd: open.end,
+    periodStart: open.start,
+    weekYear: open.year,
+    weekNumber: open.number,
+    profitMinor: 0,
+    monthlyDivsMinor: monthly,
+    divDeltaMinor: monthly - (priorMonthly ?? monthly),
+    fidelityTotalMinor: template?.fidelityTotalMinor ?? 0,
+    schwabTotalMinor: template?.schwabTotalMinor ?? 0,
+    fidSchCombinedMinor: template?.fidSchCombinedMinor ?? 0,
+    wkToWkChangeMinor: 0,
+    incomeCashMinor: template?.incomeCashMinor ?? 0,
+    acct9CashMinor: template?.acct9CashMinor ?? 0,
+    acct9EtfProxyMinor: template?.acct9EtfProxyMinor ?? 0,
+    totalCashMinor: template?.totalCashMinor ?? 0,
+    carBalanceMinor: template?.carBalanceMinor ?? null,
+    incomeBalanceMinor: template?.incomeBalanceMinor ?? null,
+    healthBalanceMinor: template?.healthBalanceMinor ?? null,
+    rothBalanceMinor: template?.rothBalanceMinor ?? null,
+    speculationBalanceMinor: template?.speculationBalanceMinor ?? null,
+    closed: false,
+    scale: template?.scale ?? 2,
+  });
+  return plotted;
+}
+
+/**
+ * Chart-only Sat–Fri week for today. Not written to trends_week, so Cash
+ * Management still treats an unsaved Friday as unsaved. Live cash matches the
+ * home cash grid. Fidelity and Schwab match the home account totals. Monthly
+ * Dividends does not use this open week.
+ */
+export function trendsWeeksWithOpenWeek(
+  weeks: TrendsWeekPoint[],
+  todayIso: string,
+  holdings: HoldingsGet | null | undefined,
+  accountValues: AccountValueHomeGet | null | undefined,
+  points: TrendIncomePoint[] | undefined,
+): TrendsWeekPoint[] {
+  const today = todayIso.slice(0, 10);
+  if (today.length < 10) return weeks;
+  const id = weekIdContaining(today);
+  const existing = weeks.find(
+    (week) =>
+      week.periodEnd.slice(0, 10) === id.end ||
+      (week.periodStart ?? "").slice(0, 10) === id.start,
+  );
+  if (existing?.closed) return weeks;
+
+  const prior = [...weeks]
+    .reverse()
+    .find((week) => week.periodEnd.slice(0, 10) < id.end);
+  const scale = existing?.scale ?? prior?.scale ?? 2;
+  const liveCash = holdings
+    ? OPEN_WEEK_CASH_LOTS.map(([account, symbol]) =>
+        cashLotCents(holdings.lots, account, symbol),
+      )
+    : null;
+  const totalCash = liveCash
+    ? liveCash.reduce((sum, cents) => sum + cents, 0)
+    : (existing?.totalCashMinor ?? prior?.totalCashMinor ?? 0);
+  const fidLive = accountValues?.fidelity.currentMinor;
+  const schLive = accountValues?.schwab?.currentMinor;
+  const fidelityTotal =
+    fidLive != null
+      ? fidLive
+      : (existing?.fidelityTotalMinor ?? prior?.fidelityTotalMinor ?? 0);
+  const schwabTotal =
+    schLive != null
+      ? schLive
+      : (existing?.schwabTotalMinor ?? prior?.schwabTotalMinor ?? 0);
+  const combined = fidelityTotal + schwabTotal;
+  const prevCombined = prior?.fidSchCombinedMinor ?? combined;
+  const monthly = paidDividendsThisMonth(points, today);
+  const prevMonthly = prior?.monthlyDivsMinor ?? 0;
+  const point: TrendsWeekPoint = {
+    periodEnd: id.end,
+    periodStart: id.start,
+    weekYear: id.year,
+    weekNumber: id.number,
+    profitMinor: existing?.profitMinor ?? 0,
+    monthlyDivsMinor: monthly,
+    divDeltaMinor: monthly - prevMonthly,
+    fidelityTotalMinor: fidelityTotal,
+    schwabTotalMinor: schwabTotal,
+    fidSchCombinedMinor: combined,
+    wkToWkChangeMinor: combined - prevCombined,
+    incomeCashMinor: liveCash ? liveCash[0] : (existing?.incomeCashMinor ?? prior?.incomeCashMinor ?? 0),
+    acct9CashMinor: liveCash ? liveCash[5] : (existing?.acct9CashMinor ?? prior?.acct9CashMinor ?? 0),
+    acct9EtfProxyMinor: liveCash ? 0 : (existing?.acct9EtfProxyMinor ?? 0),
+    totalCashMinor: totalCash,
+    carBalanceMinor: existing?.carBalanceMinor ?? prior?.carBalanceMinor ?? null,
+    incomeBalanceMinor: existing?.incomeBalanceMinor ?? prior?.incomeBalanceMinor ?? null,
+    healthBalanceMinor: existing?.healthBalanceMinor ?? prior?.healthBalanceMinor ?? null,
+    rothBalanceMinor: existing?.rothBalanceMinor ?? prior?.rothBalanceMinor ?? null,
+    speculationBalanceMinor:
+      existing?.speculationBalanceMinor ?? prior?.speculationBalanceMinor ?? null,
+    carCashMinor: liveCash ? liveCash[4] : (existing?.carCashMinor ?? prior?.carCashMinor),
+    healthCashMinor: liveCash ? liveCash[3] : (existing?.healthCashMinor ?? prior?.healthCashMinor),
+    rothCashMinor: liveCash ? liveCash[1] : (existing?.rothCashMinor ?? prior?.rothCashMinor),
+    speculationCashMinor: liveCash
+      ? liveCash[2]
+      : (existing?.speculationCashMinor ?? prior?.speculationCashMinor),
+    fidelityWkChangeMinor: fidelityTotal - (prior?.fidelityTotalMinor ?? fidelityTotal),
+    schwabWkChangeMinor: schwabTotal - (prior?.schwabTotalMinor ?? schwabTotal),
+    closed: false,
+    scale,
+  };
+  const rest = existing ? weeks.filter((week) => week !== existing) : weeks;
+  return [...rest, point].sort((a, b) => a.periodEnd.localeCompare(b.periodEnd));
 }
 
 function plannedWeekIncomeValues(
@@ -157,6 +352,7 @@ export function chartOptionFromValues(
   const categories = weeks.map((w) => formatWeekShort(w.periodStart || w.periodEnd));
   const trend = linearTrend(data);
   return {
+    ...atlasChartExtras(),
     title: showTitle
       ? { text: title, left: 0, textStyle: { fontSize: 13, fontWeight: 600 } }
       : { show: false },
@@ -321,6 +517,8 @@ export function TrendsChartsPanel({
   error,
   missingRequired,
   accountValues,
+  holdings,
+  dividendPlan,
   risk,
   asOf,
   onGraphPeriodChange,
@@ -332,21 +530,41 @@ export function TrendsChartsPanel({
   error?: string | null;
   missingRequired?: string[];
   accountValues?: AccountValueHomeGet | null;
+  holdings?: HoldingsGet | null;
+  dividendPlan?: DividendPlanHomeGet | null;
   risk?: RiskValueHome | null;
   asOf?: string;
   onGraphPeriodChange?: (period: GraphPeriod) => void;
 }) {
-  const [period, setPeriod] = useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD);
+  const [period, setPeriod] = useState<GraphPeriod>(() =>
+    initialChartDefault(
+      "trends-period",
+      DEFAULT_GRAPH_PERIOD,
+      GRAPH_PERIOD_OPTIONS.map((opt) => opt.value),
+    ),
+  );
   const todayIso = new Date().toISOString().slice(0, 10);
   const chartAsOf = latestIso(asOf, todayIso);
   const setGraphPeriod = (next: GraphPeriod) => {
     setPeriod(next);
     onGraphPeriodChange?.(next);
   };
-  const visible = useMemo(
-    () => (weeks && weeks.length > 0 ? filterWeeksByPeriod(weeks, period, chartAsOf) : []),
-    [weeks, period, chartAsOf],
+  const chartWeeks = useMemo(
+    () =>
+      weeks
+        ? trendsWeeksWithOpenWeek(weeks, todayIso, holdings, accountValues, points)
+        : [],
+    [weeks, todayIso, holdings, accountValues, points],
   );
+  const visible = useMemo(
+    () =>
+      chartWeeks.length > 0 ? filterWeeksByPeriod(chartWeeks, period, chartAsOf) : [],
+    [chartWeeks, period, chartAsOf],
+  );
+  const monthlyVisible = useMemo(() => {
+    const series = monthlyDividendWeeks(weeks ?? [], todayIso, planMonthMinor(dividendPlan));
+    return series.length > 0 ? filterWeeksByPeriod(series, period, chartAsOf) : [];
+  }, [weeks, todayIso, dividendPlan, period, chartAsOf]);
   const chartPerf = useMemo(
     () => filterPerfByPeriod(dividendPerf, period, chartAsOf),
     [dividendPerf, period, chartAsOf],
@@ -366,49 +584,6 @@ export function TrendsChartsPanel({
     );
   }
   if (weeks == null) return <p>Loading Trends…</p>;
-  if (weeks.length === 0) {
-    return (
-      <div className="trends-charts" aria-label="Trends weekly charts">
-        <p role="status">No weekly snapshots yet. Enter the week on Cash Management or run data-seed.</p>
-        <div className="trends-period-bar">
-          <label className="trends-period-label">
-            Graphing period
-            <select
-              aria-label="Trends graphing period"
-              value={period}
-              onChange={(e) => setGraphPeriod(e.target.value as GraphPeriod)}
-            >
-              {PERIOD_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        {chartPerf && chartPerf.weeks.length > 0 ? (
-          <div
-            className="trends-chart-card dividend-weeks-chart"
-            aria-label="Weekly Decl vs Plan"
-          >
-            <ReactECharts
-              option={weeklyDeclVsPlanOption(chartPerf)}
-              style={{ height: 220, width: "100%" }}
-              opts={{ renderer: "canvas" }}
-              notMerge
-              lazyUpdate
-            />
-          </div>
-        ) : null}
-        <LiveByRiskCharts
-          risk={risk ?? accountValues?.risk ?? null}
-          asOf={todayIso}
-          period={period}
-        />
-        <DividendYearCompareChart points={points} />
-      </div>
-    );
-  }
 
   const rangeLabel =
     visible.length > 0
@@ -427,20 +602,23 @@ export function TrendsChartsPanel({
       <div className="trends-period-bar">
         <label className="trends-period-label">
           Graphing period
-          <select
-            aria-label="Trends graphing period"
-            value={period}
-            onChange={(e) => setGraphPeriod(e.target.value as GraphPeriod)}
-          >
-            {PERIOD_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          <span className="chart-default-choice">
+            <select
+              aria-label="Trends graphing period"
+              value={period}
+              onChange={(e) => setGraphPeriod(e.target.value as GraphPeriod)}
+            >
+              {PERIOD_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <DefaultTick storageKey="trends-period" value={period} />
+          </span>
         </label>
         <p className="trends-period-caption">
-          Sat–Fri weeks ({rangeLabel}; {visible.length} of {weeks.length}). {note}
+          Sat–Fri weeks ({rangeLabel}; {visible.length} of {chartWeeks.length}). {note}
         </p>
       </div>
       {visible.length === 0 && !chartPerf?.weeks.length ? (
@@ -450,7 +628,7 @@ export function TrendsChartsPanel({
           {chartPerf && chartPerf.weeks.length > 0 ? (
             <div
               className="trends-chart-card dividend-weeks-chart"
-              aria-label="Weekly Decl vs Plan"
+              aria-label="Declared vs Plan"
             >
               <ReactECharts
                 option={weeklyDeclVsPlanOption(chartPerf)}
@@ -493,7 +671,12 @@ export function TrendsChartsPanel({
             {METRIC_CHARTS.map((spec) => (
               <div key={spec.key} className="trends-chart-card" aria-label={spec.title}>
                 <ReactECharts
-                  option={chartOption(spec.title, visible, spec.key, spec.color)}
+                  option={chartOption(
+                    spec.title,
+                    spec.key === "monthlyDivsMinor" ? monthlyVisible : visible,
+                    spec.key,
+                    spec.color,
+                  )}
                   style={{ height: 220, width: "100%" }}
                   opts={{ renderer: "canvas" }}
                   notMerge

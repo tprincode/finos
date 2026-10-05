@@ -1006,7 +1006,7 @@ async fn run() -> Result<String, String> {
         "asOfDate": today,
     });
     if let Some(url) = notice_url.as_deref() {
-        if let Some((pct, how)) = notice_roc_from_curl(url) {
+        if let Some((pct, how)) = notice_roc_from_curl(url, &symbol) {
             body["candidates"] = serde_json::json!([{
                 "rocPctMinor": pct,
                 "scale": 2,
@@ -1223,7 +1223,7 @@ async fn probe_stored_roc_url(
     ))
 }
 
-fn notice_roc_from_curl(url: &str) -> Option<(i64, String)> {
+fn notice_roc_from_curl(url: &str, symbol: &str) -> Option<(i64, String)> {
     if !url.starts_with("https://") {
         return None;
     }
@@ -1243,5 +1243,6 @@ fn notice_roc_from_curl(url: &str) -> Option<(i64, String)> {
     if !out.status.success() || out.stdout.is_empty() {
         return None;
     }
-    import_engine::roc_from_notice_bytes(&out.stdout)
+    import_engine::roc_from_notice_bytes_for_symbol(&out.stdout, symbol)
+        .or_else(|| import_engine::roc_from_notice_bytes(&out.stdout))
 }

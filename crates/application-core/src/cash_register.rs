@@ -3,17 +3,20 @@
 use crate::contracts::{
     CashElementHistoryBody, CashElementHistoryRow, CashElementHistoryTotals, CashElementListBody,
     CashElementListItem, CashElementOccurrenceInput, CashElementRecord, CashElementSaveBody,
-    CashRegisterBody, CashRegisterRow, CashRegisterSeriesPoint, PlannedOccurrenceRecord,
-    PlannedOccurrenceSaveBody,
+    CashRegisterBody, CashRegisterRow, CashRegisterSeriesPoint, DisbursementWeekCell,
+    DisbursementWeekColumn, DisbursementWeekReportBody, DisbursementWeekReportExportBody,
+    DisbursementWeekRow,
+    PlannedOccurrenceRecord, PlannedOccurrenceSaveBody,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
 use crate::week_ahead::{ensure_horizon, ensure_seed};
+use chrono::Datelike;
 use financial_domain::cash_management::{
-    book_matches_income_plan_account, element_history_period_bounds, element_history_posted_slice,
-    element_horizon_dates, element_is_retired,
-    fold_running_cash, is_cash_adjust_type,
-    is_cash_distribution_type, register_book_label, register_ledger_account, register_period_bounds,
+    element_date_on_schedule, element_history_period_bounds,
+    element_history_posted_slice, element_horizon_dates, element_is_retired,
+    fold_running_cash, is_cash_adjust_type, is_cash_distribution_type, is_etf_purchase,
+    is_etf_sale, register_book_label, register_ledger_account, register_period_bounds,
 };
 use financial_domain::trends::parse_iso_date;
 use uuid::Uuid;
@@ -96,39 +99,23 @@ async fn income_plan_day_deposits(
     if book.eq_ignore_ascii_case("SSA_2026") {
         return Ok(Vec::new());
     }
-    let views =
-        crate::queries::income_plan_week_views_in_range(canonical, start, end, as_of).await?;
+    let deposits =
+        crate::queries::income_plan_book_deposits(canonical, book, start, end, as_of).await?;
     let mut by_name: std::collections::BTreeMap<(String, String), i64> =
         std::collections::BTreeMap::new();
-    for view in &views {
-        for pos in &view.positions {
-            if !pos.plan_known || pos.planned_minor == 0 {
-                continue;
-            }
-            if pos.actual_known {
-                continue;
-            }
-            if pos.pay_on.is_empty() || pos.pay_on.as_str() < start || pos.pay_on.as_str() > end {
-                continue;
-            }
-            if pos.pay_on.as_str() < as_of {
-                continue;
-            }
-            let day_sum: i64 = pos
-                .accounts
-                .iter()
-                .filter(|a| a.plan_known && book_matches_income_plan_account(book, &a.account_name))
-                .map(|a| a.planned_minor)
-                .sum();
-            if day_sum > 0 {
-                let name = if pos.symbol.trim().is_empty() {
-                    "Income Plan".to_string()
-                } else {
-                    pos.symbol.clone()
-                };
-                *by_name.entry((pos.pay_on.clone(), name)).or_insert(0) += day_sum;
-            }
+    for row in deposits {
+        if row.pay_on.as_str() < start || row.pay_on.as_str() > end || row.pay_on.as_str() < as_of {
+            continue;
         }
+        if row.amount_minor <= 0 {
+            continue;
+        }
+        let name = if row.symbol.trim().is_empty() {
+            "Income Plan".to_string()
+        } else {
+            row.symbol
+        };
+        *by_name.entry((row.pay_on, name)).or_insert(0) += row.amount_minor;
     }
     Ok(by_name
         .into_iter()
@@ -173,7 +160,10 @@ pub async fn cash_register_get(
             )
         }
     };
-    if !hits_only {
+    if hits_only {
+        // Home / Register hits still need element occurrences in the requested window.
+        ensure_horizon(canonical, &start, &end).await?;
+    } else {
         ensure_seed(canonical, &sat_of(as_of)?).await?;
         ensure_horizon(canonical, &start, &end).await?;
         crate::week_ahead::prune_off_schedule_occurrences(canonical, as_of).await?;
@@ -242,6 +232,28 @@ pub async fn cash_register_get(
                     },
                     posted: true,
                     source: "adjust".into(),
+                    occurrence_id: None,
+                    element_id: None,
+                });
+                continue;
+            }
+            let pile_deposit = act.activity_type.eq_ignore_ascii_case("ira-contribution")
+                || act.activity_type.eq_ignore_ascii_case("deposit");
+            if pile_deposit
+                || is_etf_purchase(&act.activity_type)
+                || is_etf_sale(&act.activity_type)
+                || act.activity_type.eq_ignore_ascii_case("withdrawal")
+            {
+                // ira-contribution and deposit already increased the cash lot.
+                // The row is the mark. The chart adds only hits dated after as-of.
+                let into_pile = pile_deposit || is_etf_sale(&act.activity_type);
+                drafts.push(DraftRow {
+                    occurred_on: act.occurred_on,
+                    transaction: if into_pile { "Deposit" } else { "Withdrawal" }.into(),
+                    amount_minor: act.amount_minor.abs(),
+                    label: act.activity_type.clone(),
+                    posted: true,
+                    source: "activity".into(),
                     occurrence_id: None,
                     element_id: None,
                 });
@@ -403,6 +415,18 @@ pub async fn cash_register_get(
     })
 }
 
+/// Forward horizon, plus an Open row that is still inside the current Sat–Fri week.
+fn on_edit_list(occurred_on: &str, as_of: &str) -> bool {
+    if occurred_on >= as_of {
+        return true;
+    }
+    let (Some(on), Some(day)) = (parse_iso_date(occurred_on), parse_iso_date(as_of)) else {
+        return false;
+    };
+    let week = financial_domain::week::week_containing(day);
+    on >= week.start && on <= week.end
+}
+
 fn series_want(
     cadence: &str,
     weekday_or_month_day: &str,
@@ -468,7 +492,8 @@ pub async fn cash_element_list_get(
                     .filter(|o| {
                         o.element_id == e.element_id
                             && o.confirmed_at.is_none()
-                            && o.occurred_on.as_str() >= as_of
+                            && !o.is_cancelled
+                            && on_edit_list(&o.occurred_on, as_of)
                     })
                     .map(|o| CashElementOccurrenceInput {
                         occurred_on: o.occurred_on.clone(),
@@ -549,6 +574,9 @@ fn element_history_activity_type(account: &str, kind: &str, posted: bool, posted
     if account.eq_ignore_ascii_case("Income") {
         return "IRA_Distribution".into();
     }
+    if account.eq_ignore_ascii_case("FI Roth") || account.eq_ignore_ascii_case("Roth") {
+        return "Roth_Distribution".into();
+    }
     if account.eq_ignore_ascii_case("Health") {
         return "HSA_Withdrawal".into();
     }
@@ -612,7 +640,17 @@ pub async fn cash_element_history_get(
             (period_start.is_empty() || o.occurred_on.as_str() >= period_start.as_str())
                 && (period_end.is_empty() || o.occurred_on.as_str() <= period_end.as_str())
         })
-        .filter(|o| o.confirmed_at.is_some() || o.occurred_on.as_str() >= as_of)
+        .filter(|o| {
+            // Confirmed / posted week-ahead, future plan, or past on-schedule plan.
+            // Off-schedule leftovers (e.g. Car old 1sts) stay off the register.
+            o.confirmed_at.is_some()
+                || o.occurred_on.as_str() >= as_of
+                || element_date_on_schedule(
+                    &element.cadence,
+                    &element.weekday_or_month_day,
+                    &o.occurred_on,
+                )
+        })
         .map(|o| {
             let key = format!("week-ahead-{}", o.occurrence_id);
             let activity = posted.iter().find(|a| a.idempotency_key == key);
@@ -709,6 +747,16 @@ pub async fn cash_element_history_get(
             }
         }
     }
+    // Posted Actual wins the day: drop Planned when an Actual already lists that date
+    // (Car/SSA seed posts + leftover schedule), so totals do not double-count.
+    let actual_dates: std::collections::HashSet<String> = rows
+        .iter()
+        .filter(|r| r.status.eq_ignore_ascii_case("Actual"))
+        .map(|r| r.occurred_on.clone())
+        .collect();
+    rows.retain(|r| {
+        !(r.status.eq_ignore_ascii_case("Planned") && actual_dates.contains(&r.occurred_on))
+    });
     rows.sort_by(|a, b| {
         b.occurred_on
             .cmp(&a.occurred_on)
@@ -856,7 +904,7 @@ pub async fn cash_element_save(
     canonical.cash_element_upsert(record.clone()).await?;
 
     let (win_start, win_end) = series_window(as_of, start_on, stop_on)?;
-    let want: std::collections::HashSet<String> =
+    let mut want: std::collections::HashSet<String> =
         if cadence == "one-time" {
             occurrences
                 .iter()
@@ -875,6 +923,13 @@ pub async fn cash_element_save(
             .into_iter()
             .collect()
         };
+    if cadence == "one-time" && want.is_empty() {
+        if let Some(on) =
+            crate::week_ahead::one_time_occurred_on(start_on, weekday_or_month_day, as_of)
+        {
+            want.insert(on);
+        }
+    }
 
     let stored = canonical.planned_occurrence_list().await?;
     let mut saved = Vec::new();
@@ -1276,4 +1331,506 @@ pub async fn planned_occurrence_edit(
         element_id,
         occurrences: saved,
     })
+}
+
+const REPORT_KEYS: [&str; 10] = [
+    "income", "fed", "state", "total", "wpd", "barb", "tom", "roth", "acct9", "car",
+];
+
+fn report_columns(extras: &[(String, String, String)]) -> Vec<DisbursementWeekColumn> {
+    let mut columns = vec![
+        DisbursementWeekColumn {
+            key: "income".into(),
+            group: "Income Acct Disbursement".into(),
+            label: "Income".into(),
+        },
+        DisbursementWeekColumn {
+            key: "fed".into(),
+            group: "Income Acct Disbursement".into(),
+            label: "Fed Tax".into(),
+        },
+        DisbursementWeekColumn {
+            key: "state".into(),
+            group: "Income Acct Disbursement".into(),
+            label: "State Tax".into(),
+        },
+        DisbursementWeekColumn {
+            key: "total".into(),
+            group: "Income Acct Disbursement".into(),
+            label: "Total distribution".into(),
+        },
+        DisbursementWeekColumn {
+            key: "wpd".into(),
+            group: String::new(),
+            label: "WPD".into(),
+        },
+        DisbursementWeekColumn {
+            key: "barb".into(),
+            group: "SSA".into(),
+            label: "Barb".into(),
+        },
+        DisbursementWeekColumn {
+            key: "tom".into(),
+            group: "SSA".into(),
+            label: "Tom".into(),
+        },
+        DisbursementWeekColumn {
+            key: "roth".into(),
+            group: String::new(),
+            label: "Roth".into(),
+        },
+        DisbursementWeekColumn {
+            key: "acct9".into(),
+            group: "Acct 9".into(),
+            label: "Withdrawal".into(),
+        },
+        DisbursementWeekColumn {
+            key: "car".into(),
+            group: "Car".into(),
+            label: "Withdrawal".into(),
+        },
+    ];
+    for (key, group, label) in extras {
+        columns.push(DisbursementWeekColumn {
+            key: key.clone(),
+            group: group.clone(),
+            label: label.clone(),
+        });
+    }
+    columns
+}
+
+fn element_column_key(account: &str, note: &str, element_id: &str) -> String {
+    let account_l = account.trim().to_ascii_lowercase();
+    let note_l = note.trim().to_ascii_lowercase();
+    if account_l == "income" {
+        if note_l == "fed" || note_l.contains("federal") {
+            return "fed".into();
+        }
+        if note_l == "state" {
+            return "state".into();
+        }
+        return "income".into();
+    }
+    if account_l.contains("ssa") {
+        if note_l.contains("barb") {
+            return "barb".into();
+        }
+        if note_l.contains("tom") {
+            return "tom".into();
+        }
+    }
+    if account_l == "car" {
+        return "car".into();
+    }
+    if account_l == "9" || account_l == "account 9" {
+        return "acct9".into();
+    }
+    if account_l.contains("roth") {
+        return "roth".into();
+    }
+    format!("el:{element_id}")
+}
+
+fn ssa_column(key: &str, amount_minor: i64) -> Option<&'static str> {
+    let key_l = key.to_ascii_lowercase();
+    if key_l.contains("barb") {
+        return Some("barb");
+    }
+    if key_l.contains("tom") {
+        return Some("tom");
+    }
+    if amount_minor == 133_100 {
+        return Some("barb");
+    }
+    if amount_minor == 286_500 {
+        return Some("tom");
+    }
+    None
+}
+
+fn add_plan(
+    cells: &mut std::collections::BTreeMap<(String, String), (i64, bool)>,
+    week_end: &str,
+    key: &str,
+    amount: i64,
+) {
+    if amount == 0 {
+        return;
+    }
+    let slot = cells
+        .entry((week_end.to_string(), key.to_string()))
+        .or_insert((0, true));
+    if slot.1 {
+        slot.0 += amount;
+    }
+}
+
+fn add_actual(
+    cells: &mut std::collections::BTreeMap<(String, String), (i64, bool)>,
+    week_end: &str,
+    key: &str,
+    amount: i64,
+) {
+    if amount == 0 {
+        return;
+    }
+    let slot = cells
+        .entry((week_end.to_string(), key.to_string()))
+        .or_insert((0, false));
+    if slot.1 {
+        *slot = (amount, false);
+    } else {
+        slot.0 += amount;
+    }
+}
+
+/// `posted` is one row per Sat–Fri week with cash posted through as-of.
+/// `remaining` is the element plan from as-of through the end of that year.
+/// WPD is Form 1099. Total distribution is Income + Fed Tax + State Tax.
+pub async fn disbursement_week_report(
+    canonical: &dyn Canonical,
+    as_of: &str,
+    scope: &str,
+) -> Result<DisbursementWeekReportBody, PlatformError> {
+    let as_of_day = parse_iso_date(as_of)
+        .ok_or_else(|| PlatformError::new("bad_date", format!("invalid asOfDate {as_of}")))?;
+    let year = as_of_day.year();
+    let year_start = chrono::NaiveDate::from_ymd_opt(year, 1, 1)
+        .ok_or_else(|| PlatformError::new("bad_date", "invalid year"))?;
+    let year_end = chrono::NaiveDate::from_ymd_opt(year, 12, 31)
+        .ok_or_else(|| PlatformError::new("bad_date", "invalid year"))?;
+    let start_s = year_start.format("%Y-%m-%d").to_string();
+    let end_s = year_end.format("%Y-%m-%d").to_string();
+    let as_of_s = as_of_day.format("%Y-%m-%d").to_string();
+    let remaining = scope.eq_ignore_ascii_case("remaining");
+    if remaining {
+        crate::week_ahead::ensure_horizon(canonical, &as_of_s, &end_s).await?;
+    }
+
+    let accounts = canonical.account_list().await?;
+    let name_of = |id: uuid::Uuid| -> String {
+        accounts
+            .iter()
+            .find(|a| a.account_id == id)
+            .map(|a| a.name.clone())
+            .unwrap_or_default()
+    };
+    let mut cells: std::collections::BTreeMap<(String, String), (i64, bool)> =
+        std::collections::BTreeMap::new();
+    let mut posted_keys = std::collections::BTreeSet::<(String, String)>::new();
+    let activity = canonical.activity_list().await?;
+    for act in &activity {
+        let on = act.occurred_on.get(..10).unwrap_or(act.occurred_on.as_str());
+        if on < start_s.as_str() || on > end_s.as_str() || on > as_of {
+            continue;
+        }
+        let Some(day) = parse_iso_date(on) else {
+            continue;
+        };
+        let week_end = financial_domain::week::week_containing(day)
+            .end
+            .format("%Y-%m-%d")
+            .to_string();
+        let gross = financial_domain::money::to_usd_cents(act.amount_minor, act.scale);
+        let fed = financial_domain::money::to_usd_cents(act.federal_withholding_minor, act.scale);
+        let state = financial_domain::money::to_usd_cents(act.state_withholding_minor, act.scale);
+        let account = name_of(act.account_id);
+        let account_l = account.to_ascii_lowercase();
+        let mut posted = |key: &str, amount: i64| {
+            if amount == 0 {
+                return;
+            }
+            posted_keys.insert((week_end.clone(), key.to_string()));
+            if !remaining {
+                add_actual(&mut cells, &week_end, key, amount);
+            }
+        };
+        match act.activity_type.as_str() {
+            "IRA_Distribution" if account_l == "income" => {
+                posted("income", gross - fed - state);
+                posted("fed", fed);
+                posted("state", state);
+            }
+            "IRA_Distribution" if account_l == "9" || account_l == "account 9" => {
+                posted("acct9", gross);
+            }
+            "Roth_Distribution" => posted("roth", gross),
+            "Withdrawal" if account_l == "car" => posted("car", gross),
+            "Form_1099" => posted("wpd", gross),
+            "SSA" => {
+                if let Some(key) = ssa_column(&act.idempotency_key, gross) {
+                    posted(key, gross);
+                }
+            }
+            _ => {}
+        }
+    }
+    if remaining {
+        let elements = canonical.cash_element_list().await?;
+        let occurrences = canonical.planned_occurrence_list().await?;
+        for occ in &occurrences {
+            if occ.is_cancelled {
+                continue;
+            }
+            if occ.confirmed_at.as_ref().is_some_and(|s| !s.trim().is_empty()) {
+                continue;
+            }
+            let on = occ.occurred_on.get(..10).unwrap_or(occ.occurred_on.as_str());
+            if on < as_of_s.as_str() || on > end_s.as_str() {
+                continue;
+            }
+            let Some(day) = parse_iso_date(on) else {
+                continue;
+            };
+            let Some(element) = elements.iter().find(|e| e.element_id == occ.element_id) else {
+                continue;
+            };
+            let key = element_column_key(
+                &element.account,
+                &element.note,
+                &element.element_id.to_string(),
+            );
+            let week_end = financial_domain::week::week_containing(day)
+                .end
+                .format("%Y-%m-%d")
+                .to_string();
+            if posted_keys.contains(&(week_end.clone(), key.clone())) {
+                continue;
+            }
+            add_plan(&mut cells, &week_end, &key, occ.amount_minor);
+        }
+    }
+
+    let week_ends: Vec<String> = cells
+        .keys()
+        .map(|(end, _)| end.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    for end in week_ends {
+        let part = |key: &str| -> i64 {
+            cells
+                .get(&(end.clone(), key.to_string()))
+                .map(|(amount, _)| *amount)
+                .unwrap_or(0)
+        };
+        let total = part("income") + part("fed") + part("state");
+        if total != 0 {
+            add_actual(&mut cells, &end, "total", total);
+        }
+    }
+
+    let elements = canonical.cash_element_list().await?;
+    let mut extras: Vec<(String, String, String)> = Vec::new();
+    let mut extra_seen = std::collections::BTreeSet::new();
+    for element in &elements {
+        let key = element_column_key(
+            &element.account,
+            &element.note,
+            &element.element_id.to_string(),
+        );
+        if !REPORT_KEYS.contains(&key.as_str())
+            && cells.keys().any(|(_, cell_key)| cell_key == &key)
+            && extra_seen.insert(key.clone())
+        {
+            let group = if element.account == "9" {
+                "Acct 9".into()
+            } else {
+                element.account.clone()
+            };
+            let label = if element.note.trim().is_empty() {
+                element.kind.clone()
+            } else {
+                element.note.clone()
+            };
+            extras.push((key, group, label));
+        }
+    }
+
+    let columns = report_columns(&extras);
+    let mut rows = Vec::new();
+    let mut cursor = financial_domain::week::week_containing(year_start).start;
+    let last = financial_domain::week::week_containing(year_end).start;
+    while cursor <= last {
+        let week = financial_domain::week::week_containing(cursor);
+        let end = week.end.format("%Y-%m-%d").to_string();
+        if remaining && end.as_str() < as_of_s.as_str() {
+            cursor += chrono::Duration::days(7);
+            continue;
+        }
+        let row_cells: Vec<Option<DisbursementWeekCell>> = columns
+            .iter()
+            .map(|col| {
+                cells.get(&(end.clone(), col.key.clone())).map(|(amount, planned)| {
+                    DisbursementWeekCell {
+                        amount_minor: *amount,
+                        planned: *planned,
+                    }
+                })
+            })
+            .collect();
+        if row_cells.iter().all(|cell| cell.is_none()) {
+            cursor += chrono::Duration::days(7);
+            continue;
+        }
+        rows.push(DisbursementWeekRow {
+            period_start: week.start.format("%Y-%m-%d").to_string(),
+            period_end: end,
+            cells: row_cells,
+        });
+        cursor += chrono::Duration::days(7);
+    }
+    let ytd_minor = columns
+        .iter()
+        .enumerate()
+        .map(|(idx, _col)| {
+            rows.iter()
+                .filter_map(|row| row.cells.get(idx)?.as_ref().map(|cell| cell.amount_minor))
+                .sum()
+        })
+        .collect();
+    Ok(DisbursementWeekReportBody {
+        report_kind: if remaining {
+            "remaining".into()
+        } else {
+            "posted".into()
+        },
+        as_of_date: as_of_s,
+        columns,
+        rows,
+        ytd_minor,
+        scale: 2,
+    })
+}
+
+pub async fn disbursement_week_report_export(
+    canonical: &dyn Canonical,
+    as_of: &str,
+    scope: &str,
+) -> Result<DisbursementWeekReportExportBody, PlatformError> {
+    let report = disbursement_week_report(canonical, as_of, scope).await?;
+    let bytes = week_report_xlsx(&report).map_err(|e| PlatformError::new("export_failed", e))?;
+    let stem = if report.report_kind == "remaining" {
+        "remaining-this-year"
+    } else {
+        "current-year-totals"
+    };
+    Ok(DisbursementWeekReportExportBody {
+        default_file_name: format!("{stem}-{}.xlsx", report.as_of_date),
+        bytes_base64: b64_encode(&bytes),
+    })
+}
+
+fn week_report_xlsx(report: &DisbursementWeekReportBody) -> Result<Vec<u8>, String> {
+    use rust_xlsxwriter::{Format, FormatAlign, Workbook};
+    let mut wb = Workbook::new();
+    let sheet = wb.add_worksheet();
+    let sheet_name = if report.report_kind == "remaining" {
+        "Remaining this year"
+    } else {
+        "Current year totals"
+    };
+    let footer = if report.report_kind == "remaining" {
+        "Remaining"
+    } else {
+        "To date"
+    };
+    sheet.set_name(sheet_name).map_err(|e| e.to_string())?;
+    let head = Format::new().set_bold().set_align(FormatAlign::Center);
+    let money = Format::new().set_num_format("$#,##0.00");
+    let label = Format::new().set_bold();
+    sheet
+        .merge_range(0, 0, 1, 0, "Week", &head)
+        .map_err(|e| e.to_string())?;
+    let mut col: u16 = 1;
+    let mut i = 0;
+    while i < report.columns.len() {
+        let group = report.columns[i].group.as_str();
+        if group.is_empty() {
+            sheet
+                .merge_range(0, col, 1, col, &report.columns[i].label, &head)
+                .map_err(|e| e.to_string())?;
+            col += 1;
+            i += 1;
+            continue;
+        }
+        let mut span = 1usize;
+        while i + span < report.columns.len() && report.columns[i + span].group == group {
+            span += 1;
+        }
+        let last = col + span as u16 - 1;
+        if span == 1 {
+            sheet
+                .write_string_with_format(0, col, group, &head)
+                .map_err(|e| e.to_string())?;
+        } else {
+            sheet
+                .merge_range(0, col, 0, last, group, &head)
+                .map_err(|e| e.to_string())?;
+        }
+        for offset in 0..span {
+            sheet
+                .write_string_with_format(1, col + offset as u16, &report.columns[i + offset].label, &head)
+                .map_err(|e| e.to_string())?;
+        }
+        col = last + 1;
+        i += span;
+    }
+    let mut row_i = 2u32;
+    for row in &report.rows {
+        sheet
+            .write_string(row_i, 0, &row.period_end)
+            .map_err(|e| e.to_string())?;
+        for (idx, cell) in row.cells.iter().enumerate() {
+            if let Some(cell) = cell {
+                sheet
+                    .write_number_with_format(
+                        row_i,
+                        1 + idx as u16,
+                        cell.amount_minor as f64 / 100.0,
+                        &money,
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        row_i += 1;
+    }
+    sheet
+        .write_string_with_format(row_i, 0, footer, &label)
+        .map_err(|e| e.to_string())?;
+    for (idx, amount) in report.ytd_minor.iter().enumerate() {
+        if *amount != 0 {
+            sheet
+                .write_number_with_format(row_i, 1 + idx as u16, *amount as f64 / 100.0, &money)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    wb.save_to_buffer().map_err(|e| e.to_string())
+}
+
+fn b64_encode(bytes: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i];
+        let b1 = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+        let b2 = if i + 2 < bytes.len() { bytes[i + 2] } else { 0 };
+        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(if i + 1 < bytes.len() {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if i + 2 < bytes.len() {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+        i += 3;
+    }
+    out
 }

@@ -25,32 +25,39 @@ const NOT_A_SCREEN: &[&str] = &[
     "components",
 ];
 
-fn native_screen_labels(lib: &str) -> Vec<(String, String)> {
+fn collect_quoted_pairs(src: &str, fn_name: &str) -> Vec<(String, String)> {
+    let needle = format!("{fn_name}(\"");
     let mut out = Vec::new();
-    let mut rest = lib;
-    while let Some(at) = rest.find(".text(\"") {
-        rest = &rest[at + 7..];
+    let mut rest = src;
+    while let Some(at) = rest.find(&needle) {
+        rest = &rest[at + needle.len()..];
         let Some((id, after_id)) = rest.split_once('"') else {
             break;
         };
-        let after_id = after_id.trim_start();
-        if !after_id.starts_with(',') {
+        let after = after_id.trim_start().trim_start_matches(',').trim_start();
+        if !after.starts_with('"') {
             continue;
         }
-        let after_comma = after_id[1..].trim_start();
-        if !after_comma.starts_with('"') {
-            continue;
-        }
-        let after_q = &after_comma[1..];
-        let Some((label, next)) = after_q.split_once('"') else {
+        let Some((label, next)) = after[1..].split_once('"') else {
             break;
         };
         rest = next;
         if NOT_A_SCREEN.contains(&id) {
             continue;
         }
-        out.push((id.to_string(), label.to_string()));
+        let label = label.replace(" -CCT", "");
+        out.push((id.to_string(), label));
     }
+    out
+}
+
+fn menu_screen_labels(app: &str) -> Vec<(String, String)> {
+    let mut out = vec![
+        ("home".into(), "Home".into()),
+        ("income-plan".into(), "Income Plan".into()),
+        ("trends".into(), "Trends".into()),
+    ];
+    out.extend(collect_quoted_pairs(app, "navButton"));
     out
 }
 
@@ -62,13 +69,25 @@ fn desktop_sources() -> String {
         "apps/desktop/src/CashManagement.tsx",
         "apps/desktop/src/features/shopping-cart/ShoppingCartScreen.tsx",
         "apps/desktop/src/features/shopping-cart/CartBlendTable.tsx",
+        "apps/desktop/src/features/shopping-cart/AffordStrip.tsx",
         "apps/desktop/src/features/cash/CashWeekDesk.tsx",
         "apps/desktop/src/features/cash/CashCoverage.tsx",
+        "apps/desktop/src/features/cash/HouseholdIncomeReport.tsx",
+        "apps/desktop/src/features/cash/magiForecast.ts",
         "apps/desktop/src/features/graphing/TrendsCharts.tsx",
         "apps/desktop/src/features/graphing/DividendWeeks.tsx",
         "apps/desktop/src/features/home/HomeDividendPlan.tsx",
         "apps/desktop/src/features/collectors/CollectorsScreen.tsx",
         "apps/desktop/src/features/collectors/CollectorEstablishScreen.tsx",
+        "apps/desktop/src/features/interest-rate/InterestRateCalculator.tsx",
+        "apps/desktop/src/features/contracts/ContractPositions.tsx",
+        "apps/desktop/src/features/task-manager/TaskManager.tsx",
+        "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
+        "apps/desktop/src/features/add-lot/AddLotScreen.tsx",
+        "apps/desktop/src/features/holdings/HoldingsScreen.tsx",
+        "apps/desktop/src/features/income-plan/IncomePlanScreen.tsx",
+        "apps/desktop/src/features/market-impact/MarketImpactPlanner.tsx",
+        "apps/desktop/src/features/screen-atlas/ScreenAtlasScreen.tsx",
         "packages/ui-components/src/index.tsx",
     ] {
         buf.push_str(&std::fs::read_to_string(root.join(rel)).unwrap_or_default());
@@ -79,9 +98,9 @@ fn desktop_sources() -> String {
 
 #[test]
 fn components_catalog_lists_every_current_menu_screen() {
-    let lib = std::fs::read_to_string(repo_root().join("apps/desktop/src-tauri/src/lib.rs"))
-        .expect("native menu");
-    let screens = native_screen_labels(&lib);
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx"))
+        .expect("in-app menu");
+    let screens = menu_screen_labels(&app);
     assert!(
         screens.len() >= 16,
         "native menu should keep growing with product screens, got {screens:?}"
@@ -107,10 +126,10 @@ fn components_catalog_lists_every_current_menu_screen() {
 
 #[test]
 fn each_catalog_screen_has_an_on_screen_heading_the_owner_can_see() {
-    let lib = std::fs::read_to_string(repo_root().join("apps/desktop/src-tauri/src/lib.rs"))
-        .expect("native menu");
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx"))
+        .expect("in-app menu");
     let ui = desktop_sources();
-    for (_id, label) in native_screen_labels(&lib) {
+    for (_id, label) in menu_screen_labels(&app) {
         let heading = format!("<h2>{label}</h2>");
         let labeled = format!("aria-label=\"{label}\"");
         assert!(
@@ -125,10 +144,19 @@ fn owner_facing_calculated_fields_still_on_the_screens() {
     let ui = desktop_sources();
     for needle in [
         ("Home averages", "aria-label=\"Average monthly income\""),
-        ("Income Plan Print Export", "aria-label=\"Print Export\""),
+        ("Income Plan Export", "aria-label=\"Export\""),
         ("Income Plan week Decl $", "<th>Decl $</th>"),
         ("Income Plan week Plan $", "<th>Plan $</th>"),
-        ("Income Plan week Variance", "<th>Variance</th>"),
+        ("Income Plan week Variance", "<th>Current variance</th>"),
+        ("Income Plan remaining declarations", "Remaining declarations"),
+        (
+            "Income Plan cash skips declaration tickets",
+            "Cash / money-market never receives an issuer declaration",
+        ),
+        (
+            "Income Plan weekComplete uses declTickets",
+            "const declTickets = planTickets.filter",
+        ),
         ("Income Plan Decl $/sh", "Decl $/sh"),
         ("Income Plan % of Plan", "% of Plan"),
         ("Income Plan week summary", "aria-label=\"Week summary\""),
@@ -136,7 +164,7 @@ fn owner_facing_calculated_fields_still_on_the_screens() {
         ("Cart blend Week/Month/Year", "<th scope=\"col\">Week</th>"),
         ("Cart blend Annual each", "<th scope=\"col\">Annual each</th>"),
         ("Cart blend Yield", "<th scope=\"col\">Yield</th>"),
-        ("Cart leftover yield from collector", "aria-label=\"Cart cash yield from collector\""),
+        ("Cart leftover yield from collector", "Leftover (still earns)"),
         ("Cash Management SSA both payees", "Barbara"),
         ("Distribution accounts match type", "accountsForCashType(accounts, activityType)"),
         ("Withdrawal accounts are taxable brokerage", "accountsForCashType(accounts, \"Withdrawal\")"),
@@ -148,30 +176,36 @@ fn owner_facing_calculated_fields_still_on_the_screens() {
         ("Tax Planning", "aria-label=\"Cash Management Tax Planning\""),
         ("Tax Planning income", "aria-label=\"Tax Planning income\""),
         ("Tax Planning MAGI", "aria-label=\"Tax Planning MAGI\""),
-        ("Coverage desk", "aria-label=\"Cash Management Coverage\""),
+        ("MAGI forecast panel", "aria-label=\"MAGI forecast\""),
+        ("MAGI forecast suggestions", "aria-label=\"MAGI suggestions\""),
+        ("Coverage desk", "aria-label=\"Income vs Expense planner\""),
         ("Coverage plan table", "aria-label=\"Coverage plan\""),
-        ("Coverage plan vs actual", "aria-label=\"Coverage plan versus actual\""),
+        ("Coverage plan vs withdrawals", "planned income vs planned withdrawals"),
         ("Coverage period caption", "cash-coverage-caption"),
-        ("Coverage period loading", "Coverage loading"),
+        ("Coverage period loading", "cash-coverage-loading"),
         ("Weekly comparison title", "Weekly comparison"),
         ("Car tax table", "aria-label=\"Car account tax planning\""),
         ("Car tax YTD", "Total YTD + Planned"),
         ("Car ordinary row", "Ordinary"),
         ("Car long-term gains", "Long Term Capital Gains"),
         ("Car short-term gains", "Short Term Capital Gains"),
-        ("Trends stays charts", "Enter the week on Cash"),
-        ("Trends does not own capture", "Finish this week on Cash Management"),
+        ("Trends stays charts", "aria-label=\"Trends graphing period\""),
+        ("Trends does not own capture", "<TrendsChartsPanel"),
         ("Dashboard", "<h2>Dashboard</h2>"),
         ("Calculator", "<h2>Calculator</h2>"),
         ("Tickets", "<h2>Tickets</h2>"),
         ("Holdings", "<h2>Holdings</h2>"),
-        ("Add Position", "<h2>Add Position</h2>"),
+        ("Add Investment", "<h2>Add Investment</h2>"),
         ("Add Lot", "<h2>Add Lot</h2>"),
         ("Shopping Cart", "<h2>Shopping Cart</h2>"),
         ("Unsaved Save orange", "is-unsaved"),
     ] {
         assert!(ui.contains(needle.1), "{} must stay on screen: {}", needle.0, needle.1);
     }
+    assert!(
+        !ui.contains("<span>Misses</span>") && !ui.contains("Misses {missCount}"),
+        "Income Plan week must not show Misses; remaining declarations is the status chip"
+    );
     let trends = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/graphing/TrendsCharts.tsx"),
     )
@@ -322,7 +356,7 @@ async fn live_screens_return_the_numbers_an_owner_would_check() {
         "Dashboard",
         "Tickets",
         "Holdings",
-        "Add Position",
+        "Add Investment",
         "Add Lot",
         "Trends",
         "Cash Management",
@@ -399,7 +433,6 @@ async fn income_plan_export_includes_current_grid_and_week_surfaces() {
 
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
     for action in [
-        "aria-label=\"Print Export\"",
         "aria-label=\"Print to page\"",
         "aria-label=\"Save PDF\"",
         "aria-label=\"Export Excel\"",
@@ -409,4 +442,545 @@ async fn income_plan_export_includes_current_grid_and_week_surfaces() {
             "export dialog must keep {action}"
         );
     }
+}
+
+#[test]
+fn components_catalog_lists_household_income_and_magi_forecast() {
+    let catalog = core_functions_catalog().expect("CoreFunctionsGet modules");
+    let titles: Vec<_> = catalog
+        .modules
+        .iter()
+        .map(|m| m.title.as_str())
+        .collect();
+    assert!(
+        titles
+            .iter()
+            .any(|t| t.contains("Household income") && t.contains("MAGI")),
+        "Components catalog must list Household income / MAGI: {titles:?}"
+    );
+    assert!(
+        titles.iter().any(|t| *t == "MAGI forecast"),
+        "Components catalog must list MAGI forecast: {titles:?}"
+    );
+    let task = catalog
+        .modules
+        .iter()
+        .find(|m| m.id == "task-manager")
+        .expect("task-manager module");
+    assert_eq!(
+        task.folder.as_str(),
+        "apps/desktop/src/features/task-manager/"
+    );
+    assert!(
+        task.core_function_ids
+            .iter()
+            .any(|c| c == "cash-management-magi"),
+        "task-manager must stay wired to weekly MAGI cliff core: {:?}",
+        task.core_function_ids
+    );
+}
+
+#[test]
+fn app_tsx_shell_rule_locks_extract_before_append() {
+    let rule = std::fs::read_to_string(repo_root().join(".cursor/rules/app-tsx-shell.mdc"))
+        .expect("app-tsx-shell.mdc must exist");
+    assert!(
+        rule.contains("alwaysApply: true"),
+        "shell rule must always apply"
+    );
+    assert!(
+        rule.contains("shell"),
+        "shell rule must name App.tsx as a shell"
+    );
+    assert!(
+        rule.contains("~20 lines") || rule.contains("20 lines"),
+        "shell rule must cap App.tsx growth at ~20 lines"
+    );
+    assert!(
+        rule.to_lowercase().contains("never") && rule.to_lowercase().contains("append"),
+        "shell rule must forbid appending new tool bodies into App.tsx"
+    );
+}
+
+/// A live process and HTTP 200 on 1420 do not mean Home painted. The shell writes
+/// `page loaded Home` after the Home button and the home row are in the document.
+#[test]
+fn home_page_loaded_is_logged_after_the_home_screen_commits() {
+    let mark = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shell/HomePaintMark.tsx"),
+    )
+    .expect("HomePaintMark");
+    assert!(
+        mark.contains("button[aria-label='Home']") && mark.contains(".home-top-row"),
+        "the paint mark greps the Home button and the home row"
+    );
+    assert!(
+        mark.contains("page_loaded") && mark.contains("Home"),
+        "the paint mark asks the host to log Home"
+    );
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    assert!(
+        app.contains("<HomePaintMark"),
+        "Home mounts the paint mark"
+    );
+    let boot = std::fs::read_to_string(repo_root().join("apps/desktop/src/main.tsx")).unwrap();
+    assert!(
+        boot.contains("Home failed"),
+        "a render error writes Home failed instead of a paint line"
+    );
+    let host = std::fs::read_to_string(repo_root().join("apps/desktop/src-tauri/src/lib.rs"))
+        .unwrap();
+    assert!(
+        host.contains("page loaded")
+            && host.contains("dev-console.log")
+            && host.contains("page-loaded.log"),
+        "the host writes page loaded into the desktop log"
+    );
+    let rule = std::fs::read_to_string(repo_root().join(".cursor/rules/restart-the-app.mdc"))
+        .unwrap();
+    assert!(
+        rule.contains("page loaded Home") && rule.contains("exactly one"),
+        "restart proof requires one process and a Home paint line"
+    );
+    let check = std::fs::read_to_string(repo_root().join("scripts/app-up.ps1")).unwrap();
+    assert!(
+        check.contains("page loaded Home 20")
+            && check.contains("Home failed")
+            && check.contains("finos-desktop count")
+            && check.contains("start-finos-dev.bat"),
+        "app-up.ps1 counts the desktop and the dev launcher and requires the Home line"
+    );
+}
+
+/// The desktop died at boot on 2026-10-03 with "Cannot read properties of null (reading
+/// 'useState')". Cause: the workspace packages are served from source, not pre-bundled, so
+/// adding one dependency edge inside `@finos/ui-components` re-ran Vite's dep optimizer
+/// mid-session. The page then held `react.js?v=OLD` while the package loaded
+/// `react.js?v=NEW` — two React instances, null hook dispatcher, blank app. Nothing caught
+/// it because no test reads the dev-server config.
+#[test]
+fn vite_config_pins_one_react_copy() {
+    let cfg = std::fs::read_to_string(repo_root().join("apps/desktop/vite.config.ts"))
+        .expect("apps/desktop/vite.config.ts must exist");
+    assert!(
+        cfg.contains("dedupe"),
+        "vite.config must dedupe react so a workspace package cannot load a second copy"
+    );
+    for pkg in ["\"react\"", "\"react-dom\""] {
+        assert!(
+            cfg.contains(pkg),
+            "vite.config dedupe must name {pkg}; a duplicate React blanks the whole app at boot"
+        );
+    }
+    assert!(
+        cfg.contains("optimizeDeps"),
+        "vite.config must pin React's entry points into the first optimizer pass, or a new \
+         workspace import re-optimizes mid-session and splits the browser hash"
+    );
+    for entry in ["react/jsx-dev-runtime", "react-dom/client"] {
+        assert!(
+            cfg.contains(entry),
+            "optimizeDeps.include must list {entry}: it is imported by the workspace packages, \
+             which are the ones that triggered the split"
+        );
+    }
+}
+
+#[tokio::test]
+async fn income_plan_week_declared_positions_have_account_slices() {
+    let dir = profile_a_app_dir();
+    let db = dir.join("local.sqlite");
+    assert!(db.is_file(), "data file missing at {}", db.display());
+    let platform = LocalPlatform::open(&dir).await.expect("open data sqlite");
+    let week = execute_query_on(
+        &platform,
+        &platform,
+        qry(
+            "IncomePlanWeekGet",
+            serde_json::json!({"asOfDate": "2026-09-30"}),
+        ),
+    )
+    .await;
+    assert!(week.ok, "IncomePlanWeekGet {}", week.error_code.unwrap_or_default());
+    let body: serde_json::Value =
+        serde_json::from_str(week.body_json.as_deref().unwrap_or("{}")).unwrap();
+    let positions = body["positions"].as_array().cloned().unwrap_or_default();
+    let declared: Vec<_> = positions
+        .iter()
+        .filter(|p| p["declarationKnown"] == true)
+        .collect();
+    assert!(
+        !declared.is_empty(),
+        "this week should have declared names: {body}"
+    );
+    let sample = declared[0];
+    let accts = sample["accounts"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !accts.is_empty(),
+        "declared {} must carry account slices so by-account Current variance can fill",
+        sample["symbol"]
+    );
+    assert!(
+        accts.iter().any(|a| a["declarationKnown"] == true && a["planKnown"] == true),
+        "declared {} slices need declaration+plan: {accts:?}",
+        sample["symbol"]
+    );
+}
+
+/// Every golden in the gate must be announceable before it runs. The owner cannot see tool
+/// calls, so an unannounced multi-minute suite is indistinguishable from a hang; a suite added
+/// to the Pass block without a duration entry would be announced as unmeasured for ever.
+#[test]
+fn every_pass_suite_has_a_measured_duration() {
+    let root = repo_root();
+    let execution = std::fs::read_to_string(root.join("docs/architecture/execution.md"))
+        .expect("execution.md");
+    let record = std::fs::read_to_string(root.join("docs/architecture/golden-durations.json"))
+        .expect("golden-durations.json");
+    // A byte order mark is "expected value at 1:1" to serde_json. Any Windows editor can add
+    // one, and losing the gate to an invisible character is not a useful failure.
+    let record: serde_json::Value = serde_json::from_str(record.trim_start_matches('\u{feff}'))
+        .expect("golden-durations.json parses");
+    let suites = record["suites"]
+        .as_object()
+        .expect("golden-durations.json has a suites object");
+
+    let mut gated: Vec<&str> = Vec::new();
+    for chunk in execution.split("--test ").skip(1) {
+        let name = chunk
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('`');
+        if !name.is_empty() && !gated.contains(&name) {
+            gated.push(name);
+        }
+    }
+    assert!(
+        !gated.is_empty(),
+        "no --test suites found in execution.md, so this guard proved nothing"
+    );
+
+    let missing: Vec<&str> = gated
+        .iter()
+        .copied()
+        .filter(|name| !suites.contains_key(*name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these gate suites have no entry in docs/architecture/golden-durations.json, so \
+         scripts/golden.ps1 cannot say how long they take: {}",
+        missing.join(", ")
+    );
+
+    assert!(
+        root.join("scripts/golden.ps1").is_file(),
+        "scripts/golden.ps1 is what announces and records the duration"
+    );
+}
+
+/// Live screens, Screen Atlas, the catalog, and Template_UiModules are one set.
+/// A failure means add the missing row. Do not delete a screen to force a match.
+#[test]
+fn live_screens_atlas_catalog_and_snapshot_are_one_set() {
+    let root = repo_root();
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).expect("App.tsx");
+    let screens = union_literals(&app, "Screen");
+    let desks = union_literals(&app, "CmDesk");
+    let atlas = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/screen-atlas/atlasTargets.ts"),
+    )
+    .expect("atlas");
+    let groups = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/components/screenGroups.ts"),
+    )
+    .expect("screen groups");
+    let snapshot_src =
+        std::fs::read_to_string(root.join("crates/application-core/src/data_snapshot.rs"))
+            .expect("data_snapshot");
+    let registry = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/components/ComponentRegistry.tsx"),
+    )
+    .expect("ComponentRegistry");
+    let atlas_ui = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/screen-atlas/ScreenAtlasScreen.tsx"),
+    )
+    .expect("ScreenAtlasScreen");
+
+    assert_eq!(
+        screens,
+        const_string_list(&groups, "SCREEN_ORDER"),
+        "add the missing screen to screenGroups SCREEN_ORDER. Do not delete the screen."
+    );
+    assert_eq!(
+        screens,
+        const_string_list(&atlas, "ATLAS_SCREEN_IDS"),
+        "add the missing screen to ATLAS_SCREEN_IDS. Do not delete the screen."
+    );
+    assert_eq!(
+        screens,
+        const_string_list(&snapshot_src, "UI_SCREEN_ORDER"),
+        "add the missing screen to UI_SCREEN_ORDER. Do not delete the screen."
+    );
+    assert_eq!(
+        desks,
+        const_string_list(&groups, "DESK_ORDER"),
+        "add the missing desk to DESK_ORDER. Do not delete the desk."
+    );
+    assert_eq!(
+        desks,
+        const_string_list(&snapshot_src, "UI_DESK_ORDER"),
+        "add the missing desk to UI_DESK_ORDER. Do not delete the desk."
+    );
+
+    let atlas_screens = quoted_field(&atlas, "screen");
+    let atlas_desks = quoted_field(&atlas, "cmDesk");
+    for screen in &screens {
+        assert!(
+            atlas_screens.iter().any(|id| id == screen),
+            "add the missing Screen Atlas row for `{screen}`. Do not delete the screen."
+        );
+    }
+    for screen in &atlas_screens {
+        assert!(
+            screens.iter().any(|id| id == screen),
+            "Screen Atlas names `{screen}`, which is not a live screen. Add the screen. Do not delete a live screen to force a match."
+        );
+    }
+    for desk in &desks {
+        assert!(
+            atlas_desks.iter().any(|id| id == desk),
+            "add the missing Screen Atlas row for desk `{desk}`. Do not delete the desk."
+        );
+    }
+    for desk in &atlas_desks {
+        assert!(
+            desks.iter().any(|id| id == desk),
+            "Screen Atlas names desk `{desk}`, which is not live. Add the desk. Do not delete a live desk to force a match."
+        );
+    }
+
+    let catalog = core_functions_catalog().expect("catalog");
+    for id in [
+        "graphing",
+        "new-investment-readiness",
+        "shopping-cart",
+        "cash-management",
+        "cash-week-desk",
+        "week-ahead",
+        "household-income",
+        "magi-forecast",
+        "cash-elements",
+        "cash-management-ytd",
+        "cm-element-management",
+        "cm-cashflow-manager",
+        "cm-weekly-updates",
+        "cm-car-account-tax",
+        "cm-coverage",
+        "cm-external",
+        "home",
+        "income-plan",
+        "calculator",
+        "market-impact",
+        "dashboard",
+        "trends",
+        "position-details",
+        "holdings",
+        "add-position",
+        "add-lot",
+        "interest-rate",
+        "contract-positions",
+        "task-manager",
+        "reevaluate-collector",
+        "tickets",
+        "collectors",
+        "import",
+        "lots",
+        "settings",
+        "components",
+        "screen-atlas",
+        "shell",
+    ] {
+        assert!(
+            catalog.modules.iter().any(|module| module.id == id),
+            "add the missing catalog row `{id}`. Do not delete a module to force a match."
+        );
+    }
+    assert!(
+        catalog
+            .modules
+            .iter()
+            .any(|module| module.id == "cm-element-management" && module.title == "Planned Transactions"),
+        "keep the Planned Transactions catalog title. Add a row; do not rename a shipped title away."
+    );
+    for module in &catalog.modules {
+        if !module.screen.is_empty() {
+            assert!(
+                screens.iter().any(|screen| screen == &module.screen),
+                "catalog module {} names screen `{}`, which is not live. Add the screen. Do not delete a live screen.",
+                module.id,
+                module.screen
+            );
+        }
+        if !module.cm_desk.is_empty() {
+            assert!(
+                desks.iter().any(|desk| desk == &module.cm_desk),
+                "catalog module {} names desk `{}`, which is not live. Add the desk. Do not delete a live desk.",
+                module.id,
+                module.cm_desk
+            );
+        }
+    }
+    for screen in &screens {
+        assert!(
+            catalog.modules.iter().any(|module| &module.screen == screen),
+            "add the missing catalog row for screen `{screen}`. Do not delete the screen."
+        );
+    }
+    for desk in &desks {
+        assert!(
+            catalog.modules.iter().any(|module| &module.cm_desk == desk),
+            "add the missing catalog row for desk `{desk}`. Do not delete the desk."
+        );
+    }
+    assert!(
+        catalog.modules.iter().any(|module| module.id == "lots" && module.screen.is_empty())
+            && catalog
+                .modules
+                .iter()
+                .any(|module| module.id == "shell" && module.screen.is_empty()),
+        "lots and shell stay in the catalog with no screen id"
+    );
+
+    let rows = application_core::data_snapshot::ui_module_sheet_rows().expect("module rows");
+    let mut sheet_ids: Vec<_> = rows.iter().map(|row| row[2].clone()).collect();
+    let mut catalog_ids: Vec<_> = catalog.modules.iter().map(|module| module.id.clone()).collect();
+    sheet_ids.sort();
+    catalog_ids.sort();
+    assert_eq!(
+        sheet_ids, catalog_ids,
+        "Template_UiModules id set must equal the catalog. Add the missing row. Do not delete a module."
+    );
+    for screen in &screens {
+        assert!(
+            rows.iter().any(|row| &row[0] == screen),
+            "add the missing Template_UiModules row for screen `{screen}`. Do not delete the screen."
+        );
+    }
+    for desk in &desks {
+        assert!(
+            rows.iter().any(|row| &row[1] == desk),
+            "add the missing Template_UiModules row for desk `{desk}`. Do not delete the desk."
+        );
+    }
+
+    let bytes = application_core::data_snapshot::write_data_workbook(
+        &[
+            "screen",
+            "cmDesk",
+            "id",
+            "title",
+            "status",
+            "folder",
+            "menu areas",
+        ],
+        &rows,
+    )
+    .expect("workbook");
+    let dir = tempfile::tempdir().expect("temp");
+    let path = dir.path().join("Template_UiModules.xlsx");
+    std::fs::write(&path, bytes).expect("write workbook");
+    let read = import_engine::read_data_rows(&path).expect("read workbook");
+    let mut read_ids: Vec<_> = read
+        .iter()
+        .filter_map(|row| row.get("id").cloned())
+        .collect();
+    read_ids.sort();
+    assert_eq!(
+        read_ids, catalog_ids,
+        "Template_UiModules.xlsx id set must equal the catalog. Add the missing row. Do not delete a module."
+    );
+    for screen in &screens {
+        assert!(
+            read.iter()
+                .any(|row| row.get("screen").map(String::as_str) == Some(screen.as_str())),
+            "add the missing Template_UiModules.xlsx row for screen `{screen}`. Do not delete the screen."
+        );
+    }
+    for desk in &desks {
+        assert!(
+            read.iter()
+                .any(|row| row.get("cmDesk").map(String::as_str) == Some(desk.as_str())),
+            "add the missing Template_UiModules.xlsx row for desk `{desk}`. Do not delete the desk."
+        );
+    }
+
+    assert!(
+        app.contains("<ComponentRegistry"),
+        "App mounts the extracted component registry"
+    );
+    assert!(
+        registry.contains("Also registered") && registry.contains("groupByScreen"),
+        "Components groups by screen and keeps modules that have no screen id"
+    );
+    assert!(
+        atlas_ui.contains("groupByScreen") && atlas_ui.contains("Also registered"),
+        "Screen Atlas uses the same groups, including Also registered"
+    );
+}
+
+fn union_literals(src: &str, type_name: &str) -> Vec<String> {
+    let marker = format!("type {type_name} =");
+    let start = src
+        .find(&marker)
+        .unwrap_or_else(|| panic!("App.tsx missing {type_name}"));
+    let rest = &src[start + marker.len()..];
+    let end = rest.find(';').expect("union semicolon");
+    quoted_words(&rest[..end])
+}
+
+fn const_string_list(src: &str, name: &str) -> Vec<String> {
+    let marker = format!("const {name}");
+    let start = src
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing {name}"));
+    let rest = &src[start..];
+    let eq = rest.find('=').unwrap_or_else(|| panic!("{name} equals"));
+    let after = &rest[eq..];
+    let open = after.find('[').unwrap_or_else(|| panic!("{name} array"));
+    let close = after[open..].find(']').unwrap_or_else(|| panic!("{name} end"));
+    quoted_words(&after[open..open + close])
+}
+
+fn quoted_field(src: &str, key: &str) -> Vec<String> {
+    let needle = format!("{key}: \"");
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(at) = rest.find(&needle) {
+        rest = &rest[at + needle.len()..];
+        let Some((value, next)) = rest.split_once('"') else {
+            break;
+        };
+        rest = next;
+        if !out.iter().any(|seen| seen == value) {
+            out.push(value.to_string());
+        }
+    }
+    out
+}
+
+fn quoted_words(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(at) = rest.find('"') {
+        rest = &rest[at + 1..];
+        let Some((value, next)) = rest.split_once('"') else {
+            break;
+        };
+        rest = next;
+        if !value.is_empty() {
+            out.push(value.to_string());
+        }
+    }
+    out
 }

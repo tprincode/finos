@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { AccountTickPicker, formatUsd } from "@finos/ui-components";
 import type { CashRegisterGet, TrendsWeekPoint } from "@finos/app-contracts";
 import { AccountCashFlow } from "./AccountCashFlow";
+import { BusySurface } from "../shared/BusySurface";
+import { useWeekReport, WeekReportTable } from "./DisbursementWeekReport";
 
 const BOOKS = [
   "Income",
@@ -89,6 +91,7 @@ export function CashRegisterPanel({
   register,
   book,
   view,
+  loading,
   asOfDate,
   weeks,
   onBook,
@@ -151,6 +154,9 @@ export function CashRegisterPanel({
     setFocusDay("");
   }, [book, cursor]);
 
+  const reportAsOf = asOfDate || new Date().toISOString().slice(0, 10);
+  const yearTotals = useWeekReport(reportAsOf, "posted");
+  const remainingYear = useWeekReport(reportAsOf, "remaining");
   const monthRows = calendarBody?.rows ?? [];
   const listedRows = focusDay
     ? monthRows.filter((row) => row.occurredOn === focusDay)
@@ -169,7 +175,31 @@ export function CashRegisterPanel({
             Manage Elements
           </button>
         ) : null}
+        <button
+          type="button"
+          aria-label="Current year totals"
+          aria-pressed={yearTotals.open}
+          disabled={yearTotals.busy}
+          onClick={() => void yearTotals.toggle()}
+        >
+          Current year totals
+        </button>
+        <button
+          type="button"
+          aria-label="Remaining this year"
+          aria-pressed={remainingYear.open}
+          disabled={remainingYear.busy}
+          onClick={() => void remainingYear.toggle()}
+        >
+          Remaining this year
+        </button>
       </div>
+      {yearTotals.open ? (
+        <WeekReportTable report={yearTotals.report} error={yearTotals.error} />
+      ) : null}
+      {remainingYear.open ? (
+        <WeekReportTable report={remainingYear.report} error={remainingYear.error} />
+      ) : null}
       <div className="cashflow-picker-row">
         {view === "calendar" ? (
           <AccountTickPicker
@@ -204,7 +234,13 @@ export function CashRegisterPanel({
           </button>
         </div>
       </div>
-      {view === "calendar" && cursor ? (
+      {view === "trend" ? (
+        <div className="register-trend-wrap" aria-label="Register trend">
+          <AccountCashFlow weeks={weeks} asOf={asOfDate} />
+        </div>
+      ) : (
+      <BusySurface busy={!!loading}>
+      {cursor ? (
         <RegisterMonthGrid
           book={book}
           monthOn={cursor}
@@ -220,14 +256,9 @@ export function CashRegisterPanel({
           onFocusDay={setFocusDay}
         />
       ) : null}
-      {view === "trend" ? (
-        <div className="register-trend-wrap" aria-label="Register trend">
-          <AccountCashFlow weeks={weeks} asOf={asOfDate} />
-        </div>
-      ) : null}
-      {view === "calendar" && !focusDay ? (
+      {!focusDay ? (
         <p role="status">Select a date on the calendar to list that day’s transactions.</p>
-      ) : view === "calendar" ? (
+      ) : (
         <div className="table-wrap">
           {focusDay ? (
             <h4 aria-label="Day transactions">{focusDay} transactions</h4>
@@ -277,7 +308,9 @@ export function CashRegisterPanel({
             <p role="status">No transactions on {focusDay}.</p>
           ) : null}
         </div>
-      ) : null}
+      )}
+      </BusySurface>
+      )}
     </section>
   );
 }

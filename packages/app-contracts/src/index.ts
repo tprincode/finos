@@ -29,6 +29,43 @@ export const REGISTERED_DECLARATION_SOURCES = [
   "schwab",
 ] as const;
 
+/**
+ * Money-market symbols that always price at par. Mirrors `is_cash_par_symbol` in
+ * financial-domain/current_price.rs; `cash_symbol_lists_match_the_rust_authority` fails if
+ * the two drift. This is the only copy — screens import it rather than re-listing tickers,
+ * because a second list is a roster that stops growing the day someone adds an account.
+ */
+export const CASH_PAR_SYMBOLS = ["SPAXX", "FDRXX", "SWVXX"] as const;
+
+/** True for a money-market symbol, or for any position whose div type is CASH. */
+export function isCashSymbol(symbol: string, divType = ""): boolean {
+  const s = symbol.trim().toUpperCase();
+  if (divType.trim().toUpperCase() === "CASH" || s === "CASH") {
+    return true;
+  }
+  return (CASH_PAR_SYMBOLS as readonly string[]).includes(s);
+}
+
+/** Which money-market symbol an account sweeps into. */
+export const ACCOUNT_CASH_SYMBOL: Readonly<Record<string, string>> = {
+  Income: "SPAXX",
+  "FI Roth": "SPAXX",
+  Speculation: "SPAXX",
+  Car: "SPAXX",
+  Health: "FDRXX",
+  "9": "SWVXX",
+};
+
+/** Account name picks the money-market symbol. A held symbol is only a fallback. */
+export function accountCashSymbol(accountName: string, heldSymbols: string[] = []): string {
+  const mapped = ACCOUNT_CASH_SYMBOL[accountName.trim()];
+  if (mapped) {
+    return mapped;
+  }
+  const held = heldSymbols.find((symbol) => isCashSymbol(symbol));
+  return held ?? ACCOUNT_CASH_SYMBOL.Income;
+}
+
 /** Fixed-scale money DTO (ADR-0004). Scale is documented in schema metadata. */
 export type Money = {
   amountMinor: number;
@@ -119,6 +156,8 @@ export type CoreFunctionsGet = {
     folder: string;
     status: string;
     menuAreas: string[];
+    screen?: string;
+    cmDesk?: string;
     coreFunctionIds?: string[];
     host?: string;
   }>;
@@ -259,6 +298,8 @@ export type IncomePlanWeekGet = {
     actualKnown?: boolean;
     plannedMinor: number;
     planKnown: boolean;
+    planPerShareMinor?: number | null;
+    planPerShareScale?: number;
     declarationMinor?: number;
     declarationKnown?: boolean;
     declarationPerShareMinor?: number | null;
@@ -445,6 +486,26 @@ export type DataSummaryGet = {
   scale: number;
 };
 
+export type MarketImpactGet = {
+  rows: Array<{
+    symbol: string;
+    securityId: string;
+    bullStart: string;
+    bullEnd: string;
+    /** Price return for the bull window. Null when the series was not calculated. */
+    bullPriceReturnBps: number | null;
+    bullCushionBps: number | null;
+    bullTotalReturnBps: number | null;
+    bearStart: string;
+    bearEnd: string;
+    /** Price return for the bear window. Null when the series was not calculated. */
+    bearPriceReturnBps: number | null;
+    bearCushionBps: number | null;
+    bearTotalReturnBps: number | null;
+    underlying?: string;
+  }>;
+};
+
 export type CalculatorGet = {
   rows: Array<{
     symbol: string;
@@ -510,6 +571,18 @@ export type DashboardBurndownGet = {
   scale: number;
 };
 
+export type HoldingsUnassignedSell = {
+  activityId: string;
+  accountName: string;
+  symbol: string;
+  occurredOn: string;
+  amountMinor: number;
+  scale: number;
+  quantityMinor?: number | null;
+  quantityScale?: number | null;
+  source: string;
+};
+
 export type HoldingsGet = {
   lots: Array<{
     lotId: string;
@@ -522,6 +595,7 @@ export type HoldingsGet = {
     remainingTaxMinor: number;
     scale: number;
   }>;
+  unassignedSells?: HoldingsUnassignedSell[];
   scale: number;
 };
 
@@ -586,10 +660,101 @@ export type WeekAheadRow = {
   scale: number;
 };
 
+export type WeekAheadTaskRow = {
+  taskId: string;
+  code: string;
+  title: string;
+  domain: string;
+  dueOn: string;
+  status: string;
+  weekStart: string;
+  payloadJson: string;
+  scale: number;
+};
+
 export type WeekAheadGet = {
   periodStart: string;
   periodEnd: string;
   rows: WeekAheadRow[];
+  loans?: LoanWeekRow[];
+  tasks?: WeekAheadTaskRow[];
+  scale: number;
+};
+
+export type TaskRule = {
+  ruleId: string;
+  code: string;
+  title: string;
+  enabled: boolean;
+  cadence: string;
+  domain: string;
+  ownerNote: string;
+};
+
+export type TaskRuleListGet = {
+  items: TaskRule[];
+};
+
+export type TaskRecord = {
+  taskId: string;
+  ruleId?: string | null;
+  code: string;
+  title: string;
+  status: string;
+  domain: string;
+  weekStart: string;
+  dueOn: string;
+  ignoreUntil: string;
+  payloadJson: string;
+  createdOn: string;
+  resolvedOn: string;
+};
+
+export type TaskListGet = {
+  items: TaskRecord[];
+};
+
+export type MagiCliffTaskSync = {
+  action: string;
+  task?: TaskRecord | null;
+};
+
+export type OptionContractRecord = {
+  contractId: string;
+  occSymbol: string;
+  underlying: string;
+  expiryOn: string;
+  putCall: string;
+  strikeMinor: number;
+  scale: number;
+  accountId?: string | null;
+  side: string;
+  quantity: number;
+  openPremiumMinor: number;
+  openOn: string;
+  underlyingLastMinor?: number | null;
+  optionMidMinor?: number | null;
+  quoteAsOf: string;
+  status: string;
+  rollToContractId: string;
+  closePremiumMinor?: number | null;
+  closedOn: string;
+  payloadJson: string;
+  createdOn: string;
+  updatedOn: string;
+};
+
+export type OptionContractListGet = {
+  items: OptionContractRecord[];
+};
+
+export type LoanWeekRow = {
+  accountId: string;
+  name: string;
+  dueOn: string;
+  paymentMinor: number;
+  principalMinor: number;
+  interestMinor: number;
   scale: number;
 };
 
@@ -612,6 +777,37 @@ export type CashRegisterSeriesPoint = {
   occurredOn: string;
   netMinor: number;
   runningMinor: number | null;
+};
+
+export type DisbursementWeekColumn = {
+  key: string;
+  group: string;
+  label: string;
+};
+
+export type DisbursementWeekCell = {
+  amountMinor: number;
+  planned: boolean;
+};
+
+export type DisbursementWeekRow = {
+  periodStart: string;
+  periodEnd: string;
+  cells: Array<DisbursementWeekCell | null>;
+};
+
+export type DisbursementWeekReportExportGet = {
+  defaultFileName: string;
+  bytesBase64: string;
+};
+
+export type DisbursementWeekReportGet = {
+  reportKind: "posted" | "remaining";
+  asOfDate: string;
+  columns: DisbursementWeekColumn[];
+  rows: DisbursementWeekRow[];
+  ytdMinor: number[];
+  scale: number;
 };
 
 export type CashRegisterGet = {
@@ -849,6 +1045,13 @@ export type TaxPlanningGroup = {
   totalMinor: number | null;
 };
 
+export type TaxWithholdingRow = {
+  key: string;
+  label: string;
+  ytdMinor: number;
+  remainingMinor: number;
+};
+
 export type TaxPlanningGet = {
   asOfDate: string;
   rows: TaxPlanningRow[];
@@ -856,8 +1059,10 @@ export type TaxPlanningGet = {
   notMagi: TaxPlanningGroup;
   allSources: TaxPlanningGroup;
   scale: number;
+  withholding?: TaxWithholdingRow[];
   car?: CarRocPlanGet | null;
   ytd?: CashYtdGet | null;
+  iraContributionMinor?: number;
 };
 
 export type CarRocPlanGet = {
@@ -1088,6 +1293,46 @@ export type DataSnapshotExport = {
   note: string;
 };
 
+export type MobileHead = {
+  publishedAt: string;
+  asOf: string;
+  publishFolder: string;
+  weekAhead: WeekAheadGet;
+  openTasks: TaskRecord[];
+  magiJson: string;
+  note: string;
+};
+
+export type MobilePublish = {
+  publishedAt: string;
+  asOf: string;
+  folder: string;
+  headPath: string;
+  openTaskCount: number;
+  weekAheadRowCount: number;
+  note: string;
+};
+
+export type MobileOutboxPut = {
+  intentId: string;
+  path: string;
+  kind: string;
+  occurrenceId: string;
+  createdAt: string;
+};
+
+export type MobileOutboxItem = {
+  intentId: string;
+  occurrenceId: string;
+  status: string;
+};
+
+export type MobileOutboxDrain = {
+  applied: MobileOutboxItem[];
+  failed: MobileOutboxItem[];
+  skipped: MobileOutboxItem[];
+};
+
 export type AccountPositionTotal = {
   accountId: string;
   accountName: string;
@@ -1282,6 +1527,7 @@ export type CartSellLine = {
   qtyMinor: number;
   qtyScale: number;
   unitMinor: number;
+  unitScale?: number;
   proceedsMinor: number;
   isCash: boolean;
   originalCostMinor: number | null;
@@ -1297,8 +1543,15 @@ export type CartBuyLine = {
   symbol: string;
   qtyWhole: number;
   lastMinor: number;
+  priceScale?: number;
   spendMinor: number;
   planAnnualMinor: number | null;
+};
+
+export type CartExecuteStep = {
+  kind: string;
+  activityId: string | null;
+  lotId: string | null;
 };
 
 export type CartEval = {
@@ -1333,10 +1586,34 @@ export type CartScenario = {
   sellLines: CartSellLine[];
   buyLines: CartBuyLine[];
   eval: CartEval | null;
+  executeCashBaselineMinor?: number | null;
+  executeSteps?: CartExecuteStep[];
 };
 
 export type CartScenarioList = {
   items: CartScenario[];
+};
+
+/** One executed cart. Dollars are actual; the income delta is Plan only. */
+export type CartExecutedRow = {
+  scenarioId: string;
+  planId: string | null;
+  name: string;
+  accountId: string;
+  accountName: string;
+  asOf: string;
+  nonCashSalesMinor: number;
+  realizedPlMinor: number;
+  investedMinor: number;
+  cashBaselineMinor: number;
+  cashTargetMinor: number;
+  deltaMonthlyIncomeMinor: number | null;
+  deltaAnnualIncomeMinor: number | null;
+  scale: number;
+};
+
+export type CartExecutedList = {
+  items: CartExecutedRow[];
 };
 
 export type CashPileGet = {
@@ -1616,6 +1893,10 @@ export type InvestmentGet = {
     completeness: string;
     source: string;
     calculatedAt: string;
+    underlyingSymbol?: string;
+    underlyingReturnBps?: number | null;
+    spyReturnBps?: number | null;
+    nasdaqReturnBps?: number | null;
   }>;
   evidence: {
     incomeReliability: number | null;
@@ -1626,6 +1907,15 @@ export type InvestmentGet = {
     dataConfidence: number;
     knownComponents: number;
   } | null;
+  windowEvidence?: Array<{
+    periodId: string;
+    incomeReliability: number | null;
+    downsideResilience: number | null;
+    recoveryUpside: number | null;
+    navPersistence: number | null;
+    dataConfidence: number;
+    knownComponents: number;
+  }>;
   suggestion: {
     suggestedTier: string;
     ruleset: string;
@@ -1649,7 +1939,17 @@ export type InvestmentGet = {
   lookthrough?: LookthroughResearch;
   collectorComplete?: boolean;
   collectorGaps?: string[];
+  establishChecklist?: EstablishChecklistItem[];
+  establishComplete?: boolean;
+  establishOpenLabels?: string[];
   scale: number;
+};
+
+export type EstablishChecklistItem = {
+  id: string;
+  label: string;
+  status: string;
+  blocksComplete: boolean;
 };
 
 export type PositionDetailsCoverageRow = {

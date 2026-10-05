@@ -17,6 +17,7 @@ export {
   fleetRocText,
   formatCollectorClock,
   isDeclarationWeekdayToday,
+  ticketCheckUrl,
 } from "./helpers";
 export { CollectorsScreen } from "./CollectorsScreen";
 export type { CollectorsScreenProps } from "./CollectorsScreen";

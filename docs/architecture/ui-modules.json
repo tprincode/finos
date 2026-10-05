@@ -6,6 +6,7 @@
       "folder": "apps/desktop/src/features/graphing/",
       "status": "extracted",
       "menuAreas": ["Home", "Trends", "Cash Management"],
+      "screen": "home",
       "coreFunctionIds": [
         "home-live-by-risk",
         "home-risk-symbol-popup",
@@ -15,11 +16,22 @@
       "host": "queries.rs"
     },
     {
+      "id": "new-investment-readiness",
+      "title": "Add investment readiness checklist",
+      "folder": "apps/desktop/src/features/new-investment/",
+      "status": "extracted",
+      "menuAreas": ["Add Investment"],
+      "screen": "new-investment",
+      "coreFunctionIds": ["InvestmentGet"],
+      "host": "queries.rs"
+    },
+    {
       "id": "shopping-cart",
       "title": "Shopping Cart",
       "folder": "apps/desktop/src/features/shopping-cart/",
       "status": "extracted",
       "menuAreas": ["Shopping Cart"],
+      "screen": "shopping-cart",
       "coreFunctionIds": ["shopping-cart-swap"],
       "host": "cart.rs"
     },
@@ -29,6 +41,7 @@
       "folder": "apps/desktop/src/CashManagement.tsx",
       "status": "in-app",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
       "coreFunctionIds": [
         "cash-management-post",
         "cash-management-ssa",
@@ -51,6 +64,8 @@
       "folder": "apps/desktop/src/features/cash/CashWeekDesk.tsx",
       "status": "extracted",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "weekly",
       "coreFunctionIds": ["TrendsWeekSave"],
       "host": "trends_app.rs"
     },
@@ -60,8 +75,32 @@
       "folder": "apps/desktop/src/features/cash/WeekAhead.tsx",
       "status": "extracted",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "weekly",
       "coreFunctionIds": ["cash-management-week-ahead"],
       "host": "week_ahead.rs"
+    },
+    {
+      "id": "household-income",
+      "title": "Household income / MAGI",
+      "folder": "apps/desktop/src/features/cash/HouseholdIncomeReport.tsx",
+      "status": "extracted",
+      "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "car",
+      "coreFunctionIds": ["cash-management-magi"],
+      "host": "tax_planning.rs"
+    },
+    {
+      "id": "magi-forecast",
+      "title": "MAGI forecast",
+      "folder": "apps/desktop/src/features/cash/magiForecast.ts",
+      "status": "extracted",
+      "menuAreas": ["Cash Management", "Tools"],
+      "screen": "cash-management",
+      "cmDesk": "car",
+      "coreFunctionIds": ["cash-management-magi"],
+      "host": "task.rs"
     },
     {
       "id": "cash-elements",
@@ -69,6 +108,8 @@
       "folder": "apps/desktop/src/features/cash/CashElementsCatalog.tsx",
       "status": "extracted",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "elements",
       "coreFunctionIds": ["cash-management-elements"],
       "host": "cash_register.rs"
     },
@@ -78,33 +119,41 @@
       "folder": "apps/desktop/src/CashManagement.tsx",
       "status": "in-app",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "car",
       "coreFunctionIds": ["cash-management-ytd"],
       "host": "cash_ytd.rs"
     },
     {
       "id": "cm-element-management",
-      "title": "Element Management",
+      "title": "Planned Transactions",
       "folder": "apps/desktop/src/features/cash/CashElementsCatalog.tsx",
       "status": "extracted",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "elements",
       "coreFunctionIds": ["cash-management-elements"],
       "host": "cash_register.rs"
     },
     {
       "id": "cm-cashflow-manager",
-      "title": "Cashflow Manager",
+      "title": "Account Trends and Calendar",
       "folder": "apps/desktop/src/features/cash/CashRegister.tsx",
       "status": "extracted",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "cashflow",
       "coreFunctionIds": ["cash-management-register"],
       "host": "cash_register.rs"
     },
     {
       "id": "cm-weekly-updates",
-      "title": "System update tasks and confirmations",
+      "title": "Weekly Account Checkpoint Tool",
       "folder": "apps/desktop/src/CashManagement.tsx",
       "status": "in-app",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "weekly",
       "coreFunctionIds": ["cash-management-post", "cash-management-week-ahead"],
       "host": "cash_management.rs"
     },
@@ -114,17 +163,32 @@
       "folder": "apps/desktop/src/CashManagement.tsx",
       "status": "in-app",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "car",
       "coreFunctionIds": ["cash-management-car-roc-plan", "cash-management-ytd"],
       "host": "queries.rs"
     },
     {
       "id": "cm-coverage",
-      "title": "Coverage",
+      "title": "Income vs Expense planner",
       "folder": "apps/desktop/src/features/cash/CashCoverage.tsx",
       "status": "extracted",
       "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "coverage",
       "coreFunctionIds": ["cash-management-coverage"],
       "host": "cash_coverage.rs"
+    },
+    {
+      "id": "cm-external",
+      "title": "External accounts",
+      "folder": "apps/desktop/src/features/cash/ExternalRegister.tsx",
+      "status": "extracted",
+      "menuAreas": ["Cash Management"],
+      "screen": "cash-management",
+      "cmDesk": "external",
+      "coreFunctionIds": [],
+      "host": "queries.rs"
     },
     {
       "id": "home",
@@ -132,6 +196,7 @@
       "folder": "apps/desktop/src/App.tsx",
       "status": "in-app",
       "menuAreas": ["Home"],
+      "screen": "home",
       "coreFunctionIds": [
         "home-declarations-coverage",
         "home-open-tickets",
@@ -146,6 +211,7 @@
       "folder": "apps/desktop/src/features/income-plan/",
       "status": "extracted",
       "menuAreas": ["Income Plan"],
+      "screen": "income-plan",
       "coreFunctionIds": [
         "income-week-decl-per-share",
         "income-decl-per-share-color",
@@ -159,6 +225,17 @@
       "folder": "apps/desktop/src/App.tsx",
       "status": "in-app",
       "menuAreas": ["Plan"],
+      "screen": "calculator",
+      "coreFunctionIds": [],
+      "host": "queries.rs"
+    },
+    {
+      "id": "market-impact",
+      "title": "Market impact planner",
+      "folder": "apps/desktop/src/features/market-impact/",
+      "status": "extracted",
+      "menuAreas": ["Plan"],
+      "screen": "market-impact",
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
@@ -168,6 +245,7 @@
       "folder": "apps/desktop/src/App.tsx",
       "status": "in-app",
       "menuAreas": ["Plan"],
+      "screen": "dashboard",
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
@@ -177,6 +255,7 @@
       "folder": "apps/desktop/src/App.tsx",
       "status": "in-app",
       "menuAreas": ["Trends"],
+      "screen": "trends",
       "coreFunctionIds": [
         "home-live-by-risk",
         "home-graphing-period"
@@ -186,9 +265,10 @@
     {
       "id": "position-details",
       "title": "Position Details",
-      "folder": "apps/desktop/src/App.tsx",
-      "status": "in-app",
+      "folder": "apps/desktop/src/features/position-details/",
+      "status": "extracted",
       "menuAreas": ["Positions"],
+      "screen": "position-details",
       "coreFunctionIds": [
         "position-hub-declarations",
         "position-hub-last-price",
@@ -199,29 +279,62 @@
     {
       "id": "holdings",
       "title": "Holdings",
-      "folder": "apps/desktop/src/App.tsx",
-      "status": "in-app",
+      "folder": "apps/desktop/src/features/holdings/",
+      "status": "extracted",
       "menuAreas": ["Positions"],
+      "screen": "holdings",
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
     {
       "id": "add-position",
-      "title": "Add Position",
+      "title": "Add Investment",
       "folder": "apps/desktop/src/App.tsx",
       "status": "in-app",
       "menuAreas": ["Positions"],
+      "screen": "new-investment",
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
     {
       "id": "add-lot",
       "title": "Add Lot",
-      "folder": "apps/desktop/src/App.tsx",
-      "status": "in-app",
+      "folder": "apps/desktop/src/features/add-lot/",
+      "status": "extracted",
       "menuAreas": ["Positions"],
+      "screen": "add-lot",
       "coreFunctionIds": [],
       "host": "queries.rs"
+    },
+    {
+      "id": "interest-rate",
+      "title": "Interest rate calculator",
+      "folder": "apps/desktop/src/features/interest-rate/",
+      "status": "extracted",
+      "menuAreas": ["Tools"],
+      "screen": "interest-rate",
+      "coreFunctionIds": [],
+      "host": ""
+    },
+    {
+      "id": "contract-positions",
+      "title": "Contract positions",
+      "folder": "apps/desktop/src/features/contracts/",
+      "status": "extracted",
+      "menuAreas": ["Tools"],
+      "screen": "contract-positions",
+      "coreFunctionIds": [],
+      "host": ""
+    },
+    {
+      "id": "task-manager",
+      "title": "Task Manager",
+      "folder": "apps/desktop/src/features/task-manager/",
+      "status": "extracted",
+      "menuAreas": ["Tools"],
+      "screen": "task-manager",
+      "coreFunctionIds": ["cash-management-magi"],
+      "host": "task.rs"
     },
     {
       "id": "reevaluate-collector",
@@ -229,6 +342,7 @@
       "folder": "apps/desktop/src/App.tsx",
       "status": "in-app",
       "menuAreas": ["Tools"],
+      "screen": "collector-establish",
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
@@ -238,6 +352,7 @@
       "folder": "apps/desktop/src/App.tsx",
       "status": "in-app",
       "menuAreas": ["Data"],
+      "screen": "tickets",
       "coreFunctionIds": ["tickets-queue"],
       "host": "queries.rs"
     },
@@ -247,6 +362,7 @@
       "folder": "apps/desktop/src/features/collectors/",
       "status": "extracted",
       "menuAreas": ["Data"],
+      "screen": "collectors",
       "coreFunctionIds": [
         "collectors-fleet",
         "collectors-run-enabled",
@@ -261,6 +377,7 @@
       "folder": "apps/desktop/src/ImportWizard.tsx",
       "status": "in-app",
       "menuAreas": ["Data"],
+      "screen": "import",
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
@@ -279,11 +396,32 @@
       "folder": "apps/desktop/src/App.tsx",
       "status": "in-app",
       "menuAreas": ["Tools"],
+      "screen": "settings",
       "coreFunctionIds": [
         "settings-core-functions",
         "settings-retrieval-templates"
       ],
       "host": "queries.rs"
+    },
+    {
+      "id": "components",
+      "title": "Components",
+      "folder": "apps/desktop/src/features/components/",
+      "status": "extracted",
+      "menuAreas": ["Tools"],
+      "screen": "components",
+      "coreFunctionIds": [],
+      "host": ""
+    },
+    {
+      "id": "screen-atlas",
+      "title": "Screen Atlas",
+      "folder": "apps/desktop/src/features/screen-atlas/",
+      "status": "extracted",
+      "menuAreas": ["Tools"],
+      "screen": "screen-atlas",
+      "coreFunctionIds": [],
+      "host": "lib.rs"
     },
     {
       "id": "shell",

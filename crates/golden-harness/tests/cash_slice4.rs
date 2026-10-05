@@ -100,7 +100,7 @@ fn n2_element_dirty_joins_leave_and_restart() {
         "N2: elementDirty joins leaveWithoutSaving"
     );
     assert!(
-        app.contains("pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || weekWizardActive"),
+        app.contains("pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty || weekWizardActive"),
         "N2: elementDirty joins Restart guard"
     );
     let editor = std::fs::read_to_string(
@@ -852,6 +852,16 @@ fn n8_exceptions_screen_and_save() {
         repo_root().join("crates/application-core/src/cash_register.rs"),
     )
     .unwrap();
+    let back = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/navigation/ReturnToPrevious.tsx"),
+    )
+    .unwrap();
+    let css = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.css")).unwrap();
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let return_rule = css
+        .find(".return-previous")
+        .map(|i| &css[i..css.len().min(i + 240)])
+        .unwrap_or("");
     assert!(
         catalog.contains("CashElementExceptions")
             && catalog.contains("onSaveExceptions")
@@ -860,6 +870,13 @@ fn n8_exceptions_screen_and_save() {
             && !editor.contains("Future occurrences")
             && exceptions.contains("Upcoming Transactions")
             && exceptions.contains("aria-label=\"Upcoming transactions\"")
+            && exceptions.contains("Edit exception")
+            && exceptions.contains("initialOccurrenceId")
+            && exceptions.contains("setEditOpen(false)")
+            && catalog.contains("setExceptionsOpen(Boolean(editorOccurrenceId))")
+            && back.contains("aria-label=\"Return to previous menu\"")
+            && app.contains("<ReturnToPrevious")
+            && return_rule.contains("position: absolute")
             && exceptions.contains("CashElementExceptionEdit")
             && edit.contains("Cancel this transaction")
             && edit.contains("Modify this transaction")
@@ -867,7 +884,7 @@ fn n8_exceptions_screen_and_save() {
             && queries.contains("PlannedOccurrenceSave")
             && save.contains("planned_occurrence_edit")
             && save.contains("if row.is_exception"),
-        "N8: Exceptions lists upcoming hits; selected row opens Edit transaction"
+        "N8: Exceptions lists upcoming hits; Return sits above the title; selected row opens Edit transaction"
     );
 }
 
@@ -1053,10 +1070,34 @@ async fn planned_occurrence_edit_moves_selected_upcoming_date() {
         "modified date is listed: {after}"
     );
     assert!(
-        upcoming.iter().any(|o| {
-            o["occurredOn"] == "2026-10-15" && o["isCancelled"] == true
-        }),
-        "original cadence date stays cancelled so horizon does not refill: {after}"
+        !upcoming.iter().any(|o| o["occurredOn"] == "2026-10-15"),
+        "a cancelled date is not Open, so it stays off the exception list: {after}"
+    );
+    let _refill = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-10-15"}),
+    )
+    .await;
+    let kept = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "all", "asOfDate": "2026-09-18"}),
+    )
+    .await;
+    let kept_row = kept["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["note"] == "MyClearbalance")
+        .expect("after horizon");
+    assert!(
+        !kept_row["upcoming"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["occurredOn"] == "2026-10-15"),
+        "the cancelled 15th stays stored, so the week does not refill an Open row: {kept}"
     );
     assert_eq!(got["nextOccurredOn"], "2026-10-01", "{after}");
     assert_eq!(got["nextAmountMinor"], 13_699, "{after}");
@@ -1108,6 +1149,106 @@ fn n9_element_history_section_on_catalog() {
             && client.contains("activityLabel"),
         "N9: page activity is a menubar last-entry chip, not a progress bar; client announces reads/writes"
     );
+}
+
+#[test]
+fn busy_surface_covers_the_loading_chart() {
+    let css = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.css")).unwrap();
+    let chip = css
+        .split(".menubar-activity-chip.is-busy")
+        .nth(1)
+        .expect("chip busy rule");
+    let chip_rule = chip.split('}').next().unwrap_or("");
+    assert!(
+        chip_rule.contains("#e67a12") && chip_rule.contains("#c45f08"),
+        "the Page activity button is orange while a read is open: {chip_rule}"
+    );
+    let cover_rule = css
+        .split(".home-top-right > .busy-surface")
+        .nth(1)
+        .expect("home cover")
+        .split('}')
+        .next()
+        .unwrap_or("");
+    assert!(
+        cover_rule.contains("flex: 1 1 auto"),
+        "the home cash-flow cover stretches to the column: {cover_rule}"
+    );
+    let cover = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shared/BusySurface.tsx"),
+    )
+    .unwrap();
+    let flow = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/AccountCashFlow.tsx"),
+    )
+    .unwrap();
+    let home = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/HomeAccountCharts.tsx"),
+    )
+    .unwrap();
+    let register = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/CashRegister.tsx"),
+    )
+    .unwrap();
+    let week = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/WeekAhead.tsx"),
+    )
+    .unwrap();
+    let atlas = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/screen-atlas/ScreenAtlasScreen.tsx"),
+    )
+    .unwrap();
+    assert!(
+        cover.contains("aria-busy")
+            && cover.contains("busy-surface-status")
+            && flow.contains("<BusySurface")
+            && !flow.contains("Loading account trend")
+            && home.contains("<BusySurface")
+            && register.contains("<BusySurface")
+            && week.contains("<BusySurface")
+            && bar_still_has_aria_busy()
+            && !atlas.contains("orange"),
+        "loading sits on the chart or table, and the chip is no longer called orange"
+    );
+    let status_rule = css
+        .split(".busy-surface-status")
+        .nth(1)
+        .expect("surface status")
+        .split('}')
+        .next()
+        .unwrap_or("");
+    assert!(
+        status_rule.contains("#e67a12"),
+        "the label on the chart or table is the same orange as the button: {status_rule}"
+    );
+    let dividend = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/home/HomeDividendPlan.tsx"),
+    )
+    .unwrap();
+    assert!(
+        dividend.contains("<BusySurface") && !dividend.contains("Loading Dividend Plan"),
+        "Dividend Plan keeps the table and covers it while that read is open"
+    );
+    assert!(
+        flow.contains("cashFlowAcrossWindow") && flow.contains("homeCashPoints"),
+        "the cash-flow chart keeps stored weeks before as-of and the live lot on as-of"
+    );
+    let bar = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shared/PageActivityBar.tsx"),
+    )
+    .unwrap();
+    assert!(
+        bar.contains("!line.done") && bar.contains("\"Idle\""),
+        "the button names the open read, and a finished read does not stay on it"
+    );
+}
+
+fn bar_still_has_aria_busy() -> bool {
+    std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shared/PageActivityBar.tsx"),
+    )
+    .unwrap()
+    .contains("aria-busy")
 }
 
 #[tokio::test]
@@ -1575,6 +1716,109 @@ async fn n12_car_and_ssa_history_use_posted_facts() {
     );
 }
 
+#[tokio::test]
+async fn n12b_health_history_lists_on_schedule_past_plans() {
+    let (_dir, platform) = seeded_platform().await;
+    let _ = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-18"}),
+    )
+    .await;
+    let list = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "all", "asOfDate": "2026-09-18"}),
+    )
+    .await;
+    let hsa1 = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["note"] == "hsa1")
+        .expect("hsa1");
+    must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "Health",
+            "elementId": hsa1["elementId"],
+            "name": "MyClearbalance",
+            "kind": "Withdrawal",
+            "cadence": "monthly",
+            "weekdayOrMonthDay": "15",
+            "amountMinor": 20_300,
+            "asOfDate": "2026-09-18",
+            "startOn": "",
+            "stopOn": "",
+            "occurrences": []
+        }),
+    )
+    .await;
+    let after = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "all", "asOfDate": "2026-09-18"}),
+    )
+    .await;
+    let clear = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["note"] == "MyClearbalance")
+        .expect("MyClearbalance");
+    // Save only keeps/fills from as-of forward; seed past on-schedule 15ths like Profile A.
+    must_ok(
+        &platform,
+        "PlannedOccurrenceSave",
+        serde_json::json!({
+            "elementId": clear["elementId"],
+            "asOfDate": "2026-09-18",
+            "occurrences": [
+                {"occurredOn": "2026-01-15", "amountMinor": 20_300},
+                {"occurredOn": "2026-06-15", "amountMinor": 20_300},
+                {"occurredOn": "2026-09-15", "amountMinor": 20_300}
+            ]
+        }),
+    )
+    .await;
+    let hist = query_json(
+        &platform,
+        "CashElementHistoryGet",
+        serde_json::json!({
+            "elementId": clear["elementId"],
+            "duration": "ytd",
+            "asOfDate": "2026-09-18"
+        }),
+    )
+    .await;
+    let planned_15: Vec<&str> = hist["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| {
+            r["status"] == "Planned"
+                && r["occurredOn"].as_str().unwrap_or("").ends_with("-15")
+                && r["amountMinor"] == 20_300
+        })
+        .map(|r| r["occurredOn"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        planned_15.contains(&"2026-01-15")
+            && planned_15.contains(&"2026-06-15")
+            && planned_15.contains(&"2026-09-15"),
+        "Health YTD must list on-schedule past plans when nothing was confirmed: {hist}"
+    );
+    assert!(
+        !hist["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["occurredOn"].as_str().unwrap_or("").ends_with("-01")),
+        "off-schedule Health leftovers stay off history: {hist}"
+    );
+}
+
 fn upcoming_count(list: &serde_json::Value) -> usize {
     list["items"]
         .as_array()
@@ -1761,11 +2005,15 @@ async fn n14_background_grid_read_does_not_insert_occurrences() {
 #[test]
 fn n14_weekly_grid_opens_from_memory() {
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let income_plan = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/income-plan/IncomePlanScreen.tsx"),
+    )
+    .unwrap();
     let reads = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/shared/backgroundReads.ts"),
     )
     .unwrap();
-    let click = app
+    let click = income_plan
         .split("aria-label=\"Report type\"")
         .nth(1)
         .and_then(|s| s.split("Weekly report").next())
@@ -1795,4 +2043,144 @@ fn n14_weekly_grid_opens_from_memory() {
             "background queue must not call {blocked}"
         );
     }
+    // Idle warm path must call WeekAheadGet; must not call Register/Coverage/Ytd from the idle callback.
+    let idle = app
+        .split("scheduleIdleWarm(() => {")
+        .nth(1)
+        .and_then(|s| s.split("return () => {").next())
+        .unwrap_or("");
+    assert!(
+        idle.contains("WeekAheadGet") && idle.contains("setWeekAhead"),
+        "N14: App idle warm prefetches WeekAheadGet"
+    );
+    assert!(
+        !idle.contains("CashRegisterGet")
+            && !idle.contains("CashCoverageGet")
+            && !idle.contains("CashYtdGet"),
+        "N14: App idle warm must not call Register / Coverage / Ytd"
+    );
+}
+
+#[tokio::test]
+async fn withdrawal_rows_count_withdrawals_not_dividends() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "ira"}),
+    )
+    .await;
+    let roth = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "FI Roth", "kind": "fi_roth"}),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "DividendActualRecord",
+        serde_json::json!({
+            "accountId": roth["accountId"],
+            "occurredOn": "2026-06-15",
+            "amountMinor": 50_000,
+            "scale": 2,
+            "idempotencyKey": "roth-div-not-a-withdrawal"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CashDistributionPost",
+        serde_json::json!({
+            "accountId": roth["accountId"],
+            "activityType": "Roth_Distribution",
+            "occurredOn": "2026-05-01",
+            "grossMinor": 19_500,
+            "federalWithholdingMinor": 0,
+            "stateWithholdingMinor": 0,
+            "scale": 2,
+            "idempotencyKey": "roth-wd"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CashDistributionPost",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "activityType": "IRA_Distribution",
+            "occurredOn": "2026-02-06",
+            "grossMinor": 100_000,
+            "federalWithholdingMinor": 0,
+            "stateWithholdingMinor": 0,
+            "scale": 2,
+            "idempotencyKey": "ira-wd"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "FI Roth",
+            "name": "dividend",
+            "kind": "Withdrawal",
+            "cadence": "one-time",
+            "weekdayOrMonthDay": "",
+            "amountMinor": 99_900,
+            "asOfDate": "2026-09-26",
+            "occurrences": [{ "occurredOn": "2026-10-15", "amountMinor": 99_900 }]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "Income",
+            "name": "net",
+            "kind": "Withdrawal",
+            "cadence": "weekly",
+            "weekdayOrMonthDay": "Sat",
+            "amountMinor": 100_000,
+            "asOfDate": "2026-09-26"
+        }),
+    )
+    .await;
+    let plan = query_json(
+        &platform,
+        "TaxPlanningGet",
+        serde_json::json!({"asOfDate": "2026-09-26"}),
+    )
+    .await;
+    let row = |key: &str| {
+        plan["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == key)
+            .unwrap_or_else(|| panic!("missing {key}"))
+            .clone()
+    };
+    let roth_row = row("roth");
+    assert_eq!(roth_row["ytdMinor"].as_i64(), Some(19_500));
+    assert_eq!(roth_row["projectedMinor"].as_i64(), Some(0));
+    assert_eq!(roth_row["totalMinor"].as_i64(), Some(19_500));
+    let ira = row("ira");
+    assert_eq!(ira["ytdMinor"].as_i64(), Some(100_000));
+    assert_eq!(ira["projectedMinor"].as_i64(), Some(14 * 100_000));
+    assert_eq!(ira["totalMinor"].as_i64(), Some(100_000 + 14 * 100_000));
+}
+
+#[test]
+fn home_chart_hits_are_not_printed_on_the_error_stream() {
+    let src = std::fs::read_to_string(repo_root().join("crates/application-core/src/cash_register.rs"))
+        .unwrap();
+    assert!(
+        !src.contains("cash-flow hits") && !src.contains("eprintln!"),
+        "Home chart hits must stay off stderr; that stream paints red"
+    );
 }

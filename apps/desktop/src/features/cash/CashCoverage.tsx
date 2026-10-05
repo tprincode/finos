@@ -20,6 +20,7 @@ function comparisonTitle(period: CoveragePeriod): string {
 
 function cadenceLabel(periods: number | null | undefined): string {
   if (periods === 52) return "Weekly";
+  if (periods === 24) return "Twice monthly";
   if (periods === 12) return "Monthly";
   if (periods === 4) return "Quarterly";
   if (periods === 1) return "Annual";
@@ -28,21 +29,16 @@ function cadenceLabel(periods: number | null | undefined): string {
 }
 
 function incomeRule(periods: number | null | undefined): string {
-  if (periods === 52) return "Current plan payment × 52";
-  if (periods === 12) return "Current plan payment × 12";
-  if (periods === 4) return "Current plan payment × 4";
-  if (periods === 1) return "Current plan payment × 1";
-  if (periods == null) return "Held, but the current plan amount is missing";
-  return `Current plan payment × ${periods}`;
+  if (periods === 52) return "Current plan × 52";
+  if (periods === 12) return "Current plan × 12";
+  if (periods === 4) return "Current plan × 4";
+  if (periods === 1) return "Current plan × 1";
+  if (periods == null) return "No planned dividends";
+  return `Current plan × ${periods}`;
 }
 
-function expenseRule(cadence: string): string {
-  const key = cadence.trim().toLowerCase();
-  if (key === "weekly") return "Scheduled amount × weeks still ahead, 52 if it runs all year";
-  if (key === "monthly") return "Scheduled amount × months still ahead, 12 if it runs all year";
-  if (key === "annual" || key === "yearly") return "Scheduled amount × 1 if that payment is still ahead";
-  if (key === "one-time") return "Counted once, only if the date is still ahead";
-  return "Scheduled amount × occurrences still ahead";
+function expenseRule(_cadence: string): string {
+  return "Scheduled amounts projected forward 12 Months";
 }
 
 function MoneyRows({
@@ -81,26 +77,44 @@ function IncomeMath({
 }) {
   const money = (minor: number | null | undefined) =>
     minor == null ? "—" : formatUsd(minor, scale);
-  const groups = new Map<string, { count: number; payment: number | null; year: number | null; periods: number | null }>();
+  const groups = new Map<
+    string,
+    {
+      symbols: Set<string>;
+      payment: number | null;
+      year: number | null;
+      periods: number | null;
+    }
+  >();
   for (const line of lines) {
     const key = String(line.periods ?? "none");
-    const group = groups.get(key) ?? { count: 0, payment: null, year: null, periods: line.periods };
-    group.count += 1;
+    const group = groups.get(key) ?? {
+      symbols: new Set<string>(),
+      payment: null,
+      year: null,
+      periods: line.periods,
+    };
+    group.symbols.add(line.symbol);
     if (line.perPeriodMinor != null) group.payment = (group.payment ?? 0) + line.perPeriodMinor;
     if (line.yearMinor != null) group.year = (group.year ?? 0) + line.yearMinor;
     groups.set(key, group);
   }
-  const rows = [...groups.values()];
+  const rows = [...groups.values()].map((group) => ({
+    count: group.symbols.size,
+    payment: group.payment,
+    year: group.year,
+    periods: group.periods,
+  }));
   return (
     <div className="table-wrap cash-coverage-table-wrap">
+      <p className="cash-coverage-caption">
+        Amount per payment × periods for the next 12 months. Week above = year ÷ 52; Month = year ÷ 12.
+      </p>
       <table aria-label="Coverage income math">
-        <caption className="cash-coverage-caption">
-          Dividends use the current plan amount per payment, annualized for the next 12 months. Amount per payment × periods. Week above is this year ÷ 52. Month above is this year ÷ 12.
-        </caption>
         <thead>
           <tr>
             <th>Plan</th>
-            <th className="numeric">Positions</th>
+            <th className="numeric">Symbols</th>
             <th>How the year is made</th>
             <th className="numeric">Current payments</th>
             <th className="numeric">Annualized dividends</th>
@@ -146,10 +160,10 @@ function ExpenseMath({
   const rows = [...groups.entries()];
   return (
     <div className="table-wrap cash-coverage-table-wrap">
+      <p className="cash-coverage-caption">
+        Scheduled amount × remaining occurrences in the next 12 months. Week above = year ÷ 52; Month = year ÷ 12. Schedules past their stop date are left out.
+      </p>
       <table aria-label="Coverage expense math">
-        <caption className="cash-coverage-caption">
-          Withdrawals use the scheduled amount, counted for the occurrences still ahead in the next 12 months. Week above is this year ÷ 52. Month above is this year ÷ 12. A withdrawal that has already ended is omitted.
-        </caption>
         <thead>
           <tr>
             <th>Schedule</th>
@@ -206,7 +220,7 @@ export function CashCoveragePanel({
     <section
       className="cash-coverage"
       id="cash-coverage"
-      aria-label="Cash Management Coverage"
+      aria-label="Income vs Expense planner"
     >
       <header className="cash-coverage-head">
         <h2>{title}</h2>
@@ -240,10 +254,10 @@ export function CashCoveragePanel({
       {loading ? null : (
       <>
       <div className="table-wrap cash-coverage-table-wrap">
+        <p className="cash-coverage-caption">
+          {title} · planned income vs planned withdrawals · {divisor}
+        </p>
         <table aria-label="Coverage plan">
-          <caption className="cash-coverage-caption">
-            {title} · planned income vs planned withdrawals · {divisor}
-          </caption>
           <thead>
             <tr>
               <th>Account</th>

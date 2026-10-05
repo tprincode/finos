@@ -7,6 +7,7 @@ export type TrendsCashReference = {
   displayName: string;
   cashSymbol: string;
   referenceMinor: number | null;
+  pileMinor?: number | null;
 };
 
 export type TrendsWeekCapture = {
@@ -163,26 +164,46 @@ function seventyFromEtfTotal(raw: string, scale: number): number | null {
   return Math.round((total * 70) / 100);
 }
 
+function livePileMinor(c: TrendsWeekCapture, accountName: string): number | null {
+  const row = (c.cashReferences ?? []).find((ref) => ref.accountName === accountName);
+  if (row?.pileMinor == null) return null;
+  return row.pileMinor;
+}
+
+/** Open week shows the cash lot. A closed Friday stays the accepted snapshot. */
+function cashField(
+  c: TrendsWeekCapture,
+  accountName: string,
+  stored: number | null | undefined,
+  scale: number,
+): string {
+  if (!c.closed) {
+    const live = livePileMinor(c, accountName);
+    if (live != null) return minorToInput(live, scale);
+  }
+  return minorToInput(stored ?? null, scale);
+}
+
 function draftFromCapture(c: TrendsWeekCapture): Draft {
   const cur = c.current;
   const scale = c.scale ?? 2;
   const savedSeventy = cur?.acct9EtfValueMinor;
   return {
     incomeBalanceMinor: minorToInput(c.incomeBalanceMinor, scale),
-    incomeCashMinor: minorToInput(cur?.incomeCashMinor ?? null, scale),
+    incomeCashMinor: cashField(c, "Income", cur?.incomeCashMinor ?? null, scale),
     rothBalanceMinor: minorToInput(c.rothBalanceMinor, scale),
-    rothCashMinor: minorToInput(c.rothCashMinor, scale),
+    rothCashMinor: cashField(c, "FI Roth", c.rothCashMinor, scale),
     speculationBalanceMinor: minorToInput(c.speculationBalanceMinor, scale),
-    speculationCashMinor: minorToInput(c.speculationCashMinor, scale),
+    speculationCashMinor: cashField(c, "Speculation", c.speculationCashMinor, scale),
     healthBalanceMinor: minorToInput(c.healthBalanceMinor, scale),
-    healthCashMinor: minorToInput(c.healthCashMinor, scale),
+    healthCashMinor: cashField(c, "Health", c.healthCashMinor, scale),
     carBalanceMinor: minorToInput(c.carBalanceMinor, scale),
-    carCashMinor: minorToInput(c.carCashMinor, scale),
+    carCashMinor: cashField(c, "Car", c.carCashMinor, scale),
     acct9BalanceMinor: minorToInput(
       c.acct9BalanceMinor ?? cur?.schwabTotalMinor,
       scale,
     ),
-    acct9CashMinor: minorToInput(cur?.acct9CashMinor, scale),
+    acct9CashMinor: cashField(c, "9", cur?.acct9CashMinor, scale),
     acct9EtfTotalMinor: etfTotalFromStoredSeventy(savedSeventy, scale),
   };
 }
@@ -204,6 +225,11 @@ function weekHydrateKey(c: TrendsWeekCapture): string {
     String(c.incomeBalanceMinor ?? ""),
     String(c.rothCashMinor ?? ""),
     String(c.carCashMinor ?? ""),
+    ...(c.closed
+      ? []
+      : (c.cashReferences ?? []).map(
+          (ref) => `${ref.accountName}:${ref.pileMinor ?? ""}`,
+        )),
   ].join("|");
 }
 
@@ -218,7 +244,7 @@ export function TrendsCapturePanel({
   capture: TrendsWeekCapture | null;
   busy?: boolean;
   onReload: (asOf: string) => void;
-  onSave: (body: Record<string, unknown>, correct: boolean) => Promise<void>;
+  onSave: (body: Record<string, unknown>, correct: boolean) => Promise<string | null | void>;
   onClose: (periodEnd: string) => Promise<void>;
   onWizardActive?: (active: boolean) => void;
 }) {
@@ -226,6 +252,7 @@ export function TrendsCapturePanel({
   const [dirty, setDirty] = useState(false);
   const [weekPicked, setWeekPicked] = useState(false);
   const [reasons, setReasons] = useState<Record<string, { kind: string; detail: string }>>({});
+  const [saveError, setSaveError] = useState<string | null>(null);
   const openedGap = useRef(false);
   const lastHydrateKey = useRef<string>("");
   /** Keeps last typed draft so Edit never blanks the same table. */
@@ -264,15 +291,13 @@ export function TrendsCapturePanel({
   }, [dirty, onWizardActive]);
 
   if (!capture || !draft) {
+    if (!busy) return null;
     return (
       <div className="trends-capture" aria-label="Trends weekly capture">
-        <p>Loading weekly capture…</p>
-        {busy ? (
-          <div className="trends-capture-busy" aria-busy="true" role="status">
-            <div className="process-a-research-spinner" aria-hidden="true" />
-            <span>Working…</span>
-          </div>
-        ) : null}
+        <div className="trends-capture-busy" aria-busy="true" role="status">
+          <div className="process-a-research-spinner" aria-hidden="true" />
+          <span>Working…</span>
+        </div>
       </div>
     );
   }
@@ -298,12 +323,18 @@ export function TrendsCapturePanel({
     setDirty(true);
   };
 
-  const incomeBal = inputToMinor(draft.incomeBalanceMinor, scale) ?? 0;
-  const rothBal = inputToMinor(draft.rothBalanceMinor, scale) ?? 0;
-  const specBal = inputToMinor(draft.speculationBalanceMinor, scale) ?? 0;
-  const healthBal = inputToMinor(draft.healthBalanceMinor, scale) ?? 0;
-  const carBal = inputToMinor(draft.carBalanceMinor, scale) ?? 0;
-  const acct9Bal = inputToMinor(draft.acct9BalanceMinor, scale) ?? 0;
+  const incomeEntered = inputToMinor(draft.incomeBalanceMinor, scale);
+  const rothEntered = inputToMinor(draft.rothBalanceMinor, scale);
+  const specEntered = inputToMinor(draft.speculationBalanceMinor, scale);
+  const healthEntered = inputToMinor(draft.healthBalanceMinor, scale);
+  const carEntered = inputToMinor(draft.carBalanceMinor, scale);
+  const acct9Entered = inputToMinor(draft.acct9BalanceMinor, scale);
+  const incomeBal = incomeEntered ?? 0;
+  const rothBal = rothEntered ?? 0;
+  const specBal = specEntered ?? 0;
+  const healthBal = healthEntered ?? 0;
+  const carBal = carEntered ?? 0;
+  const acct9Bal = acct9Entered ?? 0;
   const incomeCash = inputToMinor(draft.incomeCashMinor, scale);
   const rothCash = inputToMinor(draft.rothCashMinor, scale);
   const specCash = inputToMinor(draft.speculationCashMinor, scale);
@@ -322,6 +353,10 @@ export function TrendsCapturePanel({
     (carCash ?? 0) +
     (acct9Cash ?? 0) +
     etfValueForTotals;
+  const fidEntered = [incomeEntered, rothEntered, specEntered, healthEntered, carEntered].every(
+    (value) => value != null,
+  );
+  const schwabEntered = acct9Entered != null;
   const fidChange = fid - (capture.prior?.fidelityTotalMinor ?? 0);
   const schChange = schwab - (capture.prior?.schwabTotalMinor ?? 0);
   const plannedIncome = capture.plannedWeeklyIncomeMinor ?? null;
@@ -533,20 +568,24 @@ export function TrendsCapturePanel({
         </div>
         <div>
           <dt>Fidelity week-to-week</dt>
-          <dd>{formatUsd(fidChange, scale)}</dd>
+          <dd>{fidEntered ? formatUsd(fidChange, scale) : "TBD"}</dd>
         </div>
         <div>
           <dt>Schwab week-to-week</dt>
-          <dd>{formatUsd(schChange, scale)}</dd>
+          <dd>{schwabEntered ? formatUsd(schChange, scale) : "TBD"}</dd>
         </div>
       </dl>
       <div className="trends-cash-recon" aria-label="Week cash recon">
+        <p>
+          Expected is last week’s cash plus this week’s dividends minus withdrawals.
+          The gap is what you typed minus that expected cash.
+        </p>
         <table>
           <thead>
             <tr>
               <th>Account</th>
               <th>Typed</th>
-              <th>Reference</th>
+              <th>Expected</th>
               <th>Gap</th>
               <th>Reason</th>
             </tr>
@@ -615,6 +654,11 @@ export function TrendsCapturePanel({
           {acceptBlockedReason}
         </p>
       ) : null}
+      {saveError ? (
+        <p aria-live="assertive" aria-label="Accept failed">
+          {saveError}
+        </p>
+      ) : null}
       <div className="buttons">
         <button
           type="button"
@@ -622,7 +666,10 @@ export function TrendsCapturePanel({
           className={dirty ? "is-unsaved" : undefined}
           disabled={acceptBlocked}
           onClick={() => {
-            void onSave(buildBody(), false);
+            void (async () => {
+              const message = await onSave(buildBody(), false);
+              setSaveError(typeof message === "string" ? message : null);
+            })();
           }}
         >
           Accept
@@ -645,7 +692,12 @@ export function TrendsCapturePanel({
           type="button"
           aria-label="Correct Trends week"
           disabled={busy || !capture.exists || (materialGaps.length > 0 && !reasonsReady)}
-          onClick={() => void onSave(buildBody(), true)}
+          onClick={() => {
+            void (async () => {
+              const message = await onSave(buildBody(), true);
+              setSaveError(typeof message === "string" ? message : null);
+            })();
+          }}
         >
           Correct week
         </button>

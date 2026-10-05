@@ -278,13 +278,13 @@ export function IncomePlanScreen({
                   <div className="income-print-export">
                     <button
                       type="button"
-                      aria-label="Print Export"
+                      aria-label="Export"
                       aria-busy={incomeExportLoading}
                       className={incomeExportLoading ? "is-loading" : undefined}
                       disabled={incomeWeekLoading || incomeExportLoading}
                       onClick={() => void requestIncomeExport()}
                     >
-                      Print Export
+                      Export
                     </button>
                   </div>
                 </div>
@@ -296,7 +296,7 @@ export function IncomePlanScreen({
                 </p>
                 <AccountTickPicker
                   legend="Accounts"
-                  allLabel="All Dividend accounts"
+                  allLabel="All"
                   mode="anyCombination"
                   accounts={chips}
                   allAccounts={INCOME_PLAN_DEFAULT_ACCOUNTS}

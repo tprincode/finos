@@ -44,6 +44,14 @@ path = "src/bin/collector_miss_loop.rs"
 name = "owner-lock-apply"
 path = "src/bin/owner_lock_apply.rs"
 
+[[bin]]
+name = "collector-cadence-heal"
+path = "src/bin/collector_cadence_heal.rs"
+
+[[bin]]
+name = "owner-ticket-diag-rewrite"
+path = "src/bin/owner_ticket_diag_rewrite.rs"
+
 [dev-dependencies]
 financial-domain = { path = "../financial-domain" }
 tempfile.workspace = true

@@ -1,20 +1,4 @@
-const CASH = new Set(["SPAXX", "CASH", "FDRXX", "SWVXX"]);
-
-export function isCashSymbol(symbol: string): boolean {
-  return CASH.has(symbol.trim().toUpperCase());
-}
-
-/** Account name picks the money-market symbol. A held symbol is only a fallback. */
-export function accountCashSymbol(accountName: string, heldSymbols: string[] = []): string {
-  const name = accountName.trim();
-  if (name === "Health") return "FDRXX";
-  if (name === "9") return "SWVXX";
-  if (name === "Income" || name === "FI Roth" || name === "Speculation" || name === "Car") {
-    return "SPAXX";
-  }
-  const held = heldSymbols.find((symbol) => isCashSymbol(symbol));
-  return held ?? "SPAXX";
-}
+export { accountCashSymbol, isCashSymbol } from "@finos/app-contracts";
 
 export function roundedWeekMonth(yearMinor: number | null): {
   weekMinor: number | null;

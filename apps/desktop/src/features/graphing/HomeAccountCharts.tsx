@@ -4,10 +4,13 @@ import type {
   AccountValueHomeGet,
   AccountValueSeries,
   RiskGroupValue,
+  RiskSymbolValue,
   RiskValueHome,
   RiskValuePoint,
 } from "@finos/app-contracts";
 import { formatUsd } from "@finos/ui-components";
+import { BusySurface } from "../shared/BusySurface";
+import { subscribePageActivity, type PageActivityLine } from "../shared/pageActivity";
 import {
   DEFAULT_GRAPH_PERIOD,
   GRAPH_PERIOD_OPTIONS,
@@ -15,7 +18,9 @@ import {
   inGraphPeriod,
   type GraphPeriod,
 } from "./graphPeriod";
+import { DefaultTick, initialChartDefault } from "./chartDefault";
 import { riskDayShares } from "./riskChart";
+import { atlasChartExtras } from "../screen-atlas/atlasSession";
 
 const COLORS = [
   "#1b6b4a",
@@ -69,6 +74,25 @@ function filterPoints<T extends { asOf: string }>(
   period: GraphPeriod,
 ): T[] {
   return (points ?? []).filter((p) => inGraphPeriod(p.asOf, asOf, period));
+}
+
+/** Chart window runs through the newer of the account-value as-of and the newest stored point. */
+export function chartAsOfIncludingLatest(asOf: string, latestPoint: string): string {
+  const storedAsOf = asOf.slice(0, 10);
+  const storedPoint = latestPoint.slice(0, 10);
+  if (!storedPoint) return storedAsOf;
+  if (!storedAsOf) return storedPoint;
+  return storedPoint > storedAsOf ? storedPoint : storedAsOf;
+}
+
+if (
+  chartAsOfIncludingLatest("2026-10-03", "2026-10-09") !== "2026-10-09" ||
+  chartAsOfIncludingLatest("2026-10-09", "2026-10-03") !== "2026-10-09" ||
+  chartAsOfIncludingLatest("2026-10-04", "") !== "2026-10-04" ||
+  !inGraphPeriod("2026-10-09", chartAsOfIncludingLatest("2026-10-03", "2026-10-09"), "6m") ||
+  inGraphPeriod("2026-10-09", "2026-10-03", "6m")
+) {
+  throw new Error("chartAsOfIncludingLatest drifted");
 }
 
 export function filterSeries(series: AccountValueSeries, asOf: string, period: GraphPeriod): AccountValueSeries {
@@ -169,6 +193,7 @@ export function accountChartOption(
   }
   const showLegend = chrome === "trends" && (hasTrends || hasIncome);
   return {
+    ...atlasChartExtras(),
     tooltip: {
       trigger: "axis",
       formatter: (
@@ -463,9 +488,13 @@ export function LiveByRiskCharts({
     points: [],
     scale: 2,
   };
+  const chartAsOf = chartAsOfIncludingLatest(
+    asOf,
+    [...data.points].map((point) => point.asOf).sort().at(-1) ?? "",
+  );
   const points = useMemo(
-    () => filterPoints(data.points, asOf, period),
-    [data.points, asOf, period],
+    () => filterPoints(data.points, chartAsOf, period),
+    [data.points, chartAsOf, period],
   );
   const scale = data.scale ?? 2;
   const total =
@@ -475,6 +504,7 @@ export function LiveByRiskCharts({
   const hasDonut = visibleGroups.some((g) => g.currentMinor != null);
   const hasSymbols = visibleGroups.some((g) => g.symbols.length > 0);
   const [symbolOpen, setSymbolOpen] = useState(false);
+  const [symbolSort, setSymbolSort] = useState<"amount" | "name">("amount");
   useEffect(() => {
     if (!symbolOpen) return;
     const onKey = (event: KeyboardEvent) => {
@@ -500,7 +530,7 @@ export function LiveByRiskCharts({
               <p className="home-av-empty">No live points yet.</p>
             ) : (
               <ReactECharts
-                option={riskLevelOption(points, data.groups, scale, asOf, total)}
+                option={riskLevelOption(points, data.groups, scale, chartAsOf, total)}
                 style={{ height: 180, width: "100%" }}
                 opts={{ renderer: "canvas" }}
                 notMerge
@@ -551,6 +581,19 @@ export function LiveByRiskCharts({
           >
             <header>
               <h3>Symbols by risk</h3>
+              <label>
+                Sort
+                <select
+                  aria-label="Sort symbol list"
+                  value={symbolSort}
+                  onChange={(event) =>
+                    setSymbolSort(event.target.value === "name" ? "name" : "amount")
+                  }
+                >
+                  <option value="amount">$ amount</option>
+                  <option value="name">Name</option>
+                </select>
+              </label>
               <button
                 type="button"
                 aria-label="Exit symbol totals"
@@ -572,7 +615,7 @@ export function LiveByRiskCharts({
                     <p className="home-av-empty">No symbols</p>
                   ) : (
                     <ul>
-                      {group.symbols.map((row) => (
+                      {symbolsInOrder(group.symbols, symbolSort).map((row) => (
                         <li key={row.symbol}>
                           {row.symbol}{" "}
                           {row.marketValueMinor == null
@@ -590,6 +633,26 @@ export function LiveByRiskCharts({
       ) : null}
     </article>
   );
+}
+
+function symbolsInOrder(rows: RiskSymbolValue[], sort: "amount" | "name"): RiskSymbolValue[] {
+  const next = [...rows];
+  if (sort === "name") {
+    next.sort((a, b) => a.symbol.localeCompare(b.symbol));
+    return next;
+  }
+  next.sort((a, b) => {
+    if (a.marketValueMinor == null && b.marketValueMinor == null) {
+      return a.symbol.localeCompare(b.symbol);
+    }
+    if (a.marketValueMinor == null) return 1;
+    if (b.marketValueMinor == null) return -1;
+    if (a.marketValueMinor !== b.marketValueMinor) {
+      return b.marketValueMinor - a.marketValueMinor;
+    }
+    return a.symbol.localeCompare(b.symbol);
+  });
+  return next;
 }
 
 function rangeCaption(
@@ -622,13 +685,35 @@ function uniqueDays(values: AccountValueHomeGet): string[] {
   return [...days].sort();
 }
 
+function accountValueReadOpen(lines: PageActivityLine[]): boolean {
+  return lines.some(
+    (line) =>
+      !line.done &&
+      (line.label === "Reading HomeOpen" || line.label === "Reading AccountValueHome"),
+  );
+}
+
 export function HomeAccountCharts({
   values,
 }: {
   values: AccountValueHomeGet | null;
 }) {
-  const [period, setPeriod] = useState<GraphPeriod>(DEFAULT_GRAPH_PERIOD);
-  const asOf = values?.asOf ?? "";
+  const [valueRead, setValueRead] = useState(false);
+  useEffect(
+    () => subscribePageActivity((lines) => setValueRead(accountValueReadOpen(lines))),
+    [],
+  );
+  const [period, setPeriod] = useState<GraphPeriod>(() =>
+    initialChartDefault(
+      "home-period",
+      DEFAULT_GRAPH_PERIOD,
+      GRAPH_PERIOD_OPTIONS.map((opt) => opt.value),
+    ),
+  );
+  const asOf = chartAsOfIncludingLatest(
+    values?.asOf ?? "",
+    values ? (uniqueDays(values).at(-1) ?? "") : "",
+  );
   const filtered = useMemo(() => {
     if (!values) return null;
     return {
@@ -638,8 +723,16 @@ export function HomeAccountCharts({
     };
   }, [values, asOf, period]);
 
+  const chartBusy = !values || !filtered || valueRead;
+
   if (!values || !filtered) {
-    return <p role="status">Loading account values…</p>;
+    return (
+      <BusySurface busy={chartBusy}>
+        <section className="home-account-values" aria-label="Account values">
+          <h2>Account values</h2>
+        </section>
+      </BusySurface>
+    );
   }
   const schwab = filtered.schwab ?? {
     accountId: "schwab-total",
@@ -660,6 +753,7 @@ export function HomeAccountCharts({
   }).length;
 
   return (
+    <BusySurface busy={chartBusy}>
     <section className="home-account-values" aria-label="Account values">
       <header className="home-av-heading">
         <h2>Account values</h2>
@@ -667,17 +761,20 @@ export function HomeAccountCharts({
           <div className="trends-period-bar">
             <label className="trends-period-label">
               Graphing period
-              <select
-                aria-label="Home graphing period"
-                value={period}
-                onChange={(e) => setPeriod(e.target.value as GraphPeriod)}
-              >
-                {GRAPH_PERIOD_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+              <span className="chart-default-choice">
+                <select
+                  aria-label="Home graphing period"
+                  value={period}
+                  onChange={(e) => setPeriod(e.target.value as GraphPeriod)}
+                >
+                  {GRAPH_PERIOD_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <DefaultTick storageKey="home-period" value={period} />
+              </span>
             </label>
             <p className="trends-period-caption">
               {rangeCaption(asOf, period, visibleDays, storedDays)}
@@ -725,5 +822,6 @@ export function HomeAccountCharts({
           ))}
       </div>
     </section>
+    </BusySurface>
   );
 }

@@ -555,7 +555,7 @@ async fn g_ip_09_default_accounts_exclude_speculation() {
     let ui = std::fs::read_to_string(repo_root().join("packages/ui-components/src/index.tsx")).unwrap();
     assert!(ui.contains("INCOME_PLAN_DEFAULT_ACCOUNTS"));
     assert!(ui.contains("Speculation"));
-    assert!(ui.contains("allLabel=\"All Dividend accounts\""));
+    assert!(ui.contains("allLabel=\"All\""));
     assert!(ui.contains("allAccounts={INCOME_PLAN_DEFAULT_ACCOUNTS}"));
     assert!(ui.contains("mode=\"anyCombination\""));
 }
@@ -766,14 +766,22 @@ async fn g_ip_p06_excel_table2_has_last_update_not_qty() {
 #[test]
 fn g_ip_p07_file_menu_delegates() {
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let screen = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/income-plan/IncomePlanScreen.tsx"),
+    )
+    .unwrap();
     let ui = std::fs::read_to_string(
         repo_root().join("packages/ui-components/src/index.tsx"),
     )
     .unwrap();
     assert!(!app.contains("Print current view"));
     assert!(!app.contains("Export current view"));
-    assert!(app.contains("requestIncomeExport()"));
-    assert!(app.contains("aria-label=\"Print Export\""));
+    assert!(
+        app.contains("requestIncomeExport={requestIncomeExport}")
+            && screen.contains("requestIncomeExport()")
+    );
+    assert!(screen.contains("aria-label=\"Export\""));
+    assert!(ui.contains("aria-label=\"Export\""));
     assert!(
         !app.contains("onPrintExport(\"print\")")
             && app.contains("commitIncomeExport(\"print\")")
@@ -837,7 +845,7 @@ async fn g_ip_p09_pdf_write_local_first() {
     assert_eq!(exp["destinationKind"], "local");
     let lib = std::fs::read_to_string(repo_root().join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
     assert!(lib.contains("save_local_bytes"));
-    assert!(lib.contains("finos-exports"));
+    assert!(lib.contains(r"C:\Users\EVTom\Documents\Financial"));
     assert!(!lib.to_ascii_lowercase().contains("drive.google"));
 }
 
@@ -942,3 +950,43 @@ fn b64_decode(s: &str) -> Vec<u8> {
     }
     out
 }
+
+#[test]
+fn twice_monthly_is_income_plan_cadence_group() {
+    let display = std::fs::read_to_string(
+        repo_root().join("crates/application-core/src/income_plan_display.rs"),
+    )
+    .unwrap();
+    assert!(
+        display.contains("CADENCE_GROUP_ORDER"),
+        "Income Plan groups must use shared CADENCE_GROUP_ORDER"
+    );
+    let domain = std::fs::read_to_string(
+        repo_root().join("crates/financial-domain/src/income_plan.rs"),
+    )
+    .unwrap();
+    assert!(
+        domain.contains("\"Twice monthly\"")
+            && domain.contains("CADENCE_GROUP_ORDER")
+            && domain.contains("\"Twice monthly\""),
+        "domain cadence_group / order must include Twice monthly"
+    );
+    let ui = std::fs::read_to_string(
+        repo_root().join("packages/ui-components/src/index.tsx"),
+    )
+    .unwrap();
+    assert!(
+        ui.contains("\"Twice monthly\"")
+            && ui.contains("f.includes(\"twice\")"),
+        "Pattern B must bucket Twice monthly before includes(month)"
+    );
+    let helpers = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/collectors/helpers.ts"),
+    )
+    .unwrap();
+    assert!(
+        helpers.contains("twice monthly") || helpers.contains("\"24\""),
+        "collectors income filter must include twice monthly"
+    );
+}
+

@@ -371,7 +371,7 @@ async fn tr_pd_25_calculate_does_not_write_tier_apply_does() {
         "BacktestPeriodRecord",
         serde_json::json!({
             "kind": "Bear",
-            "name": "owner stress",
+            "name": "Bear HAKY",
             "startOn": "2026-01-02",
             "endOn": "2026-04-07",
             "benchmarkSymbol": "SPY",
@@ -385,7 +385,7 @@ async fn tr_pd_25_calculate_does_not_write_tier_apply_does() {
         "BacktestPeriodRecord",
         serde_json::json!({
             "kind": "Recovery",
-            "name": "owner recovery",
+            "name": "Recovery HAKY",
             "startOn": "2026-04-08",
             "endOn": "2026-07-01",
             "benchmarkSymbol": "SPY",
@@ -1390,11 +1390,22 @@ async fn ac_pd_20_lifetime_distributions_use_original_cost() {
     let gof = master_row(&master, "GOF");
     assert_eq!(haky["distributionsScope"], "complete");
     assert_eq!(haky["totalDistributionsReceivedMinor"].as_i64(), Some(10_000));
-    assert_eq!(haky["rocDistributionsMinor"].as_i64(), Some(3_000));
+    assert_eq!(
+        haky["rocDistributionsMinor"].as_i64(),
+        Some(0),
+        "Income-account characterization is not Car current-year ROC: {haky}"
+    );
     assert_eq!(haky["costRecoveryBps"].as_i64(), Some(1_000));
-    assert_eq!(gof["distributionsScope"], "incomplete");
-    assert!(gof["totalDistributionsReceivedMinor"].is_null());
-    assert!(gof["costRecoveryBps"].is_null());
+    assert_eq!(
+        gof["distributionsScope"], "complete",
+        "an open lot with no dividend yet is a known zero, not an incomplete retrieve"
+    );
+    assert_eq!(gof["totalDistributionsReceivedMinor"].as_i64(), Some(0));
+    assert_eq!(
+        gof["costRecoveryBps"].as_i64(),
+        Some(0),
+        "0 received over a positive cost is 0%"
+    );
     let inv = query_body(
         &platform,
         "InvestmentGet",
@@ -1403,6 +1414,96 @@ async fn ac_pd_20_lifetime_distributions_use_original_cost() {
     .await;
     assert_eq!(inv["remainingPerformanceMinor"].as_i64(), Some(100_000));
     assert_eq!(inv["costRecoveryBps"].as_i64(), Some(1_000));
+}
+
+/// A stored pay date still ahead, and no pay on or before today, is not due.
+#[tokio::test]
+async fn future_pay_date_is_not_due() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let (income_id, _, _, gof_id) = seed_two_accounts(&platform).await;
+    open_lot(&platform, &income_id, &gof_id, 5, 50_000, 40_000).await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": gof_id,
+            "dates": [{ "payOn": "2027-03-16", "source": "issuer" }]
+        }),
+    )
+    .await;
+    let master = query_json(&platform, "PositionMasterGet").await;
+    assert_eq!(
+        master_row(&master, "GOF")["declarationFreshness"].as_str(),
+        Some("not due")
+    );
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": gof_id,
+            "dates": [{ "payOn": "2026-01-15", "source": "issuer" }]
+        }),
+    )
+    .await;
+    let again = query_json(&platform, "PositionMasterGet").await;
+    assert_ne!(
+        master_row(&again, "GOF")["declarationFreshness"].as_str(),
+        Some("not due"),
+        "a pay date already past is not 'not due'"
+    );
+}
+
+/// Calculator unknowns that stay unknown, and the ROC % cell that must not.
+#[test]
+fn calculator_unknowns_that_stay_unknown() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let sheet = std::fs::read_to_string(root.join("packages/ui-components/src/index.tsx")).unwrap();
+    assert!(
+        sheet.contains("export function calculatorRocPercent"),
+        "ROC % is one function: current-year actual, else estimate, else 2025 actual"
+    );
+    assert!(
+        sheet.contains("master.rocPct2026ActualMinor ??")
+            && sheet.contains("master.rocPct2026EstimateMinor ??")
+            && sheet.contains("master.rocPct2025ActualMinor ??"),
+        "the cell must read the stored current-year percent before the prior-year actual"
+    );
+    assert!(
+        sheet.contains("const roc = calculatorRocPercent(master);"),
+        "the Calculator ROC % cell uses that function"
+    );
+    assert!(
+        sheet.contains("lastPriceMinor == null") && sheet.contains("? \"unknown\""),
+        "a missing last price stays unknown"
+    );
+    assert!(
+        sheet.contains("accountsBySymbol?.[row.symbol] || \"unknown\""),
+        "a missing account stays unknown"
+    );
+    assert!(
+        sheet.contains(": \"unknown\"}") || sheet.contains(": \"unknown\"\n"),
+        "a missing master row leaves shares unknown"
+    );
+    assert!(
+        sheet.contains("if (bps == null) return \"unknown\";"),
+        "YOC, FWD, MC FWD, TVAL, and cost recovery stay unknown when the bps figure is missing"
+    );
+    assert!(
+        sheet.contains("return avg == null ? \"unknown\" : formatUsd(avg, 2);"),
+        "Avg 6 stays unknown until six paid declarations exist"
+    );
+    assert!(
+        sheet.contains("cell.amountPerShareMinor == null")
+            && sheet.contains("? \"\""),
+        "a week with no stored declaration stays blank, not $0"
+    );
+    assert!(
+        sheet.contains("master?.declarationWeekday || \"—\""),
+        "Declares, Ex-date, and Payday stay an em dash until a pattern is stored"
+    );
 }
 
 /// Position hub shows parseable characteristics. Suggested tier is not auto-applied.
@@ -1446,10 +1547,15 @@ async fn pay1_characteristics_are_visible_risk_not_auto_applied() {
 
 #[test]
 fn position_information_table_edits_owner_facts_in_row() {
-    let ui = std::fs::read_to_string(
-        golden_harness::repo_root().join("apps/desktop/src/App.tsx"),
-    )
-    .unwrap();
+    let root = golden_harness::repo_root();
+    let ui = [
+        std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap(),
+        std::fs::read_to_string(
+            root.join("apps/desktop/src/features/position-details/PositionDetailsScreen.tsx"),
+        )
+        .unwrap(),
+    ]
+    .join("\n");
     let identity = ui
         .split("id=\"hub-identity\"")
         .nth(1)
@@ -1459,14 +1565,15 @@ fn position_information_table_edits_owner_facts_in_row() {
         .next()
         .expect("hub-calculator after identity");
     assert!(
-        identity.contains("aria-label=\"Position risk\""),
-        "Risk must edit in the Position information table, not only a collapsed details block"
+        !identity.contains("aria-label=\"Position risk\""),
+        "tier is the Assigned tier dropdown, not a second control in Position information"
     );
+    assert!(ui.contains("aria-label=\"Owner risk choice\""));
     assert!(identity.contains("aria-label=\"Position frequency\""));
     assert!(identity.contains("aria-label=\"Position name\""));
     assert!(identity.contains("aria-label=\"Position provider\""));
     assert!(identity.contains("aria-label=\"Position underlying\""));
-    assert!(identity.contains("RISK_TIERS"));
+    assert!(ui.contains("RISK_TIERS"));
     assert!(
         !identity.contains("Undecided"),
         "Undecided is not a permitted owner risk"

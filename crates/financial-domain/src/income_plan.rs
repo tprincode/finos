@@ -225,12 +225,17 @@ pub fn table2_cell_tone(
 pub fn cadence_group(frequency: &str) -> &'static str {
     match PaymentCadence::parse(frequency) {
         Some(PaymentCadence::Weekly) => "Weekly",
+        Some(PaymentCadence::TwiceMonthly) => "Twice monthly",
         Some(PaymentCadence::Monthly) => "Monthly",
         Some(PaymentCadence::Quarterly) => "Quarterly",
         Some(PaymentCadence::None) => "Other",
         None => "Other",
     }
 }
+
+/// Display / export section order for Income Plan Table2 and week Pattern B.
+pub const CADENCE_GROUP_ORDER: &[&str] =
+    &["Monthly", "Twice monthly", "Quarterly", "Weekly", "Other"];
 
 pub fn is_income_cash_activity(activity_type: &str) -> bool {
     matches!(
@@ -414,6 +419,14 @@ pub fn declaration_belongs_in_week(
     if pay_on.trim().is_empty() || !occurred_in_week(pay_on, week_start, week_end) {
         return false;
     }
+    // Twice monthly: leftover attaches only within the twin-gap window, not whole month.
+    if periods_per_year == 24 {
+        return crate::schedule::vendor_payables_same_period(
+            "Twice monthly",
+            payment_period,
+            pay_on,
+        );
+    }
     year_month(payment_period) == year_month(pay_on)
 }
 
@@ -525,6 +538,9 @@ mod tests {
         );
         assert_eq!(cadence_group(""), "Other");
         assert_eq!(cadence_group("Weekly"), "Weekly");
+        assert_eq!(cadence_group("Twice monthly"), "Twice monthly");
+        assert_eq!(cadence_group("24"), "Twice monthly");
+        assert!(CADENCE_GROUP_ORDER.contains(&"Twice monthly"));
         assert!(is_income_cash_activity("interest"));
         assert_eq!(last_update_success(Some(false), "2026-09-01"), None);
         assert_eq!(

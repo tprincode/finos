@@ -1,6 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { BusySurface } from "../shared/BusySurface";
 import ReactECharts from "echarts-for-react";
-import type { CashRegisterGet, HoldingsGet, TrendsWeekPoint } from "@finos/app-contracts";
+import {
+  ACCOUNT_CASH_SYMBOL,
+  type CashRegisterGet,
+  type HoldingsGet,
+  type TrendsWeekPoint,
+} from "@finos/app-contracts";
 import {
   addUtcDays,
   formatFridayEnding,
@@ -8,7 +14,11 @@ import {
   weekIdContaining,
 } from "@finos/ui-components";
 import { TRENDS_CASH_ACCOUNT_CHARTS } from "../graphing/TrendsCharts";
-import { GRAPH_PERIOD_OPTIONS, type GraphPeriod } from "../graphing/graphPeriod";
+import {
+  GRAPH_PERIOD_OPTIONS,
+  type GraphPeriod,
+} from "../graphing/graphPeriod";
+import { DefaultTick, initialChartDefault } from "../graphing/chartDefault";
 import { LocalTauriFinanceClient } from "../../financeClient";
 
 /** One Account cash flow projection for Home and Cash Management Register. Grid/Trends stay on 6m / All data. */
@@ -16,23 +26,6 @@ export const HOME_FOCUS_DEFAULT_PERIOD: GraphPeriod = "2m";
 export const HOME_FOCUS_DEFAULT_ACCOUNT = "healthCashMinor";
 
 const client = new LocalTauriFinanceClient();
-export const HOME_REGISTER_TIMEOUT_MS = 30_000;
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
 
 type CashFlowEvent = {
   occurredOn: string;
@@ -50,16 +43,12 @@ type HomeCashPoint = {
   scale: number;
 };
 
-function startingPlottedCash(
+function openingPlottedCash(
   points: HomeCashPoint[],
-  prior?: { minor: number; scale: number; asOf: string } | null,
-): { minor: number; scale: number } | null {
+): { minor: number; scale: number; periodEnd: string } | null {
   const first = points.find((point) => point.cashMinor != null);
-  if (first?.cashMinor != null) {
-    return { minor: first.cashMinor, scale: first.scale };
-  }
-  if (prior) return { minor: prior.minor, scale: prior.scale };
-  return null;
+  if (!first || first.cashMinor == null) return null;
+  return { minor: first.cashMinor, scale: first.scale, periodEnd: first.periodEnd };
 }
 
 function endingPlottedCash(
@@ -162,15 +151,20 @@ if (
   throw new Error("homeCashWindow examples drifted");
 }
 
-/** Cash symbol whose open lot is the current total for that Register book. */
-export const CASH_FLOW_LOT: Record<string, { account: string; symbol: string }> = {
-  Income: { account: "Income", symbol: "SPAXX" },
-  "FI Roth": { account: "FI Roth", symbol: "SPAXX" },
-  Car: { account: "Car", symbol: "SPAXX" },
-  Health: { account: "Health", symbol: "FDRXX" },
-  Speculation: { account: "Speculation", symbol: "SPAXX" },
-  "Account 9": { account: "9", symbol: "SWVXX" },
-};
+/**
+ * Cash symbol whose open lot is the current total for that Register book, keyed by the
+ * Register's display name. Only the display name differs from the book account ("Account 9"
+ * is booked as "9"); the symbols come from the one shared map.
+ */
+const REGISTER_DISPLAY_NAME: Record<string, string> = { "9": "Account 9" };
+
+export const CASH_FLOW_LOT: Record<string, { account: string; symbol: string }> =
+  Object.fromEntries(
+    Object.entries(ACCOUNT_CASH_SYMBOL).map(([account, symbol]) => [
+      REGISTER_DISPLAY_NAME[account] ?? account,
+      { account, symbol },
+    ]),
+  );
 
 export function cashLotCents(
   lots: Array<{
@@ -197,8 +191,10 @@ export function cashLotCents(
 }
 
 /**
- * Line starts at the cash lot on as-of. Only deposits and withdrawals after
- * that day move later Fridays. Weeks before as-of are omitted.
+ * Line starts at the cash lot on as-of. Only hits after that day move later
+ * Fridays. A pile deposit or contribution on or before as-of is a mark: the
+ * lot already holds the cash, so it is not added again. Weeks before as-of
+ * are omitted.
  */
 export function cashFlowFromLot(
   lotMinor: number,
@@ -372,10 +368,26 @@ export function homeCashPoints(
   period: GraphPeriod,
   asOfIso?: string,
 ): HomeCashPoint[] {
-  const { start, end } = homeCashWindow(asOfIso ?? "", period);
+  const window = homeCashWindow(asOfIso ?? "", period);
+  let start = window.start;
+  let end = window.end;
+  if (period === "all" && weeks.length > 0) {
+    const starts = weeks
+      .map((week) =>
+        (week.periodStart || weekIdContaining(week.periodEnd.slice(0, 10)).start).slice(0, 10),
+      )
+      .sort();
+    if (starts[0]) start = starts[0];
+    const latest = weeks
+      .map((week) => week.periodEnd.slice(0, 10))
+      .sort()
+      .at(-1);
+    const forward = addMonthsFromDay(asOfIso || start, 12);
+    end = [latest, forward].filter((day): day is string => !!day).sort().at(-1) ?? forward;
+  }
   const points: HomeCashPoint[] = [];
   let sat = weekIdContaining(start).start;
-  for (let i = 0; i < 80; i += 1) {
+  for (let i = 0; i < 520; i += 1) {
     const id = weekIdContaining(sat);
     if (id.start > end) break;
     if (id.end >= start && id.start <= end) {
@@ -390,6 +402,23 @@ export function homeCashPoints(
     sat = addUtcDays(sat, 7);
   }
   return points;
+}
+
+const julyStoredWeek = homeCashPoints(
+  [
+    {
+      periodStart: "2026-06-27",
+      periodEnd: "2026-07-03",
+      incomeCashMinor: 12_500,
+      scale: 2,
+    } as TrendsWeekPoint,
+  ],
+  "incomeCashMinor",
+  "3m",
+  "2026-10-03",
+);
+if (julyStoredWeek.some((point) => point.periodEnd < "2026-10-01")) {
+  throw new Error("homeCashPoints drew a week before the current month");
 }
 
 /** Last snapshot Friday before `beforeDay` — opening cash when the visible month has no Friday fact yet. */
@@ -471,6 +500,51 @@ export function projectHomeCashPoints(
     cursor = point.periodEnd;
     return { ...point, cashMinor: running, scale };
   });
+}
+
+/**
+ * Stored weeks fill the graphing period before as-of. The live cash lot is the
+ * point on as-of, and only later hits move the Fridays after that.
+ */
+export function cashFlowAcrossWindow(
+  stored: HomeCashPoint[],
+  lotMinor: number | null,
+  asOf: string,
+  windowEnd: string,
+  events: Array<{ occurredOn: string; amountMinor: number }>,
+): HomeCashPoint[] {
+  const asOfDay = asOf.slice(0, 10);
+  const projected = projectHomeCashPoints(stored, events as CashFlowEvent[]);
+  if (lotMinor == null || !asOfDay) return projected;
+  const forward = cashFlowFromLot(lotMinor, asOfDay, windowEnd, events);
+  const forwardFriday = new Map(
+    forward
+      .filter((point) => point.periodEnd > asOfDay)
+      .map((point) => [point.periodEnd, point]),
+  );
+  const past = projected.filter((point) => point.periodEnd < asOfDay);
+  const open = forward.find((point) => point.periodEnd === asOfDay);
+  const future = projected
+    .filter((point) => point.periodEnd > asOfDay)
+    .map((point) => forwardFriday.get(point.periodEnd) ?? point);
+  return [...past, ...(open ? [open] : []), ...future];
+}
+
+if (
+  (() => {
+    const across = cashFlowAcrossWindow(
+      julyStoredWeek,
+      527_822,
+      "2026-10-03",
+      "2027-01-03",
+      [],
+    );
+    const july = across.find((point) => point.periodEnd === "2026-07-03");
+    const today = across.find((point) => point.periodEnd === "2026-10-03");
+    return july != null || today?.cashMinor !== 527_822;
+  })()
+) {
+  throw new Error("cashFlowAcrossWindow dropped the stored week or the live lot");
 }
 
 /** Dot Y is this week's Friday line cash. Do not invent a second series. */
@@ -667,7 +741,7 @@ if (
     const events: CashFlowEvent[] = [
       {
         occurredOn: HOME_CASH_PROJECTION_EXAMPLE.payOn,
-        name: "QYLD",
+        name: "Example payer",
         amountMinor: HOME_CASH_PROJECTION_EXAMPLE.depositMinor,
         scale: 2,
         source: "income-plan",
@@ -736,6 +810,33 @@ if (
     if (firstFact < 0 || chartEnd.slice(firstFact).some((point) => point.cashMinor == null)) {
       return true;
     }
+    const etfWeek = projectHomeCashPoints(
+      [
+        {
+          periodStart: "2026-09-26",
+          periodEnd: "2026-10-02",
+          cashMinor: 588_471,
+          scale: 2,
+        },
+        {
+          periodStart: "2026-10-03",
+          periodEnd: "2026-10-09",
+          cashMinor: null,
+          scale: 2,
+        },
+      ],
+      [
+        {
+          occurredOn: "2026-10-04",
+          name: "ETF Purchase",
+          amountMinor: -60_649,
+          scale: 2,
+          source: "activity",
+          cashY: null,
+        },
+      ],
+    );
+    if (etfWeek[1]?.cashMinor !== 588_471 - 60_649) return true;
     const debitY = eventProjectedCashY(chartEnd, [
       ...events,
       {
@@ -816,6 +917,22 @@ export function combineLikeColorDots(
   );
 }
 
+function escapeTip(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function hitTipTable(hits: CashFlowEvent[]): string {
+  const rows = hits
+    .map((event) => {
+      const date = escapeTip(event.occurredOn.slice(0, 10));
+      const name = escapeTip(event.name);
+      const amount = escapeTip(formatUsd(event.amountMinor, event.scale));
+      return `<tr><td>${date}</td><td>${name}</td><td class="acfp-tip-amt">${amount}</td></tr>`;
+    })
+    .join("");
+  return `<table><thead><tr><th>Date</th><th>Name</th><th>Amount</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 function cashFlowChartOption(
   points: HomeCashPoint[],
   events: CashFlowEvent[],
@@ -845,6 +962,9 @@ function cashFlowChartOption(
   return {
     tooltip: {
       trigger: "item",
+      appendToBody: true,
+      confine: true,
+      extraCssText: "max-width:min(42rem,90vw);",
       formatter: (param: {
         seriesName?: string;
         value?: [string, number];
@@ -874,22 +994,19 @@ function cashFlowChartOption(
           ].join("<br/>");
         }
         const group = param.data;
-        const friday = group?.occurredOn ?? "";
+        if (!group || Array.isArray(group)) {
+          return "";
+        }
+        const friday = group.occurredOn ?? "";
         const sat = group?.weekStart ?? weekIdContaining(friday).start;
         const hits = group?.hits ?? [];
         const tone = group?.debit ? "Withdrawals" : "Deposits";
         const scale = hits[0]?.scale ?? 2;
         const totalMinor = hits.reduce((sum, event) => sum + event.amountMinor, 0);
-        const lines = [
-          `${formatFridayEnding(friday)} · Sat ${sat} – Fri ${friday} · ${tone} (${hits.length})`,
-          ...hits.map(
-            (event) =>
-              `${event.occurredOn.slice(0, 10)} ${event.name} ${formatUsd(event.amountMinor, event.scale)}`,
-          ),
-          `Total ${formatUsd(totalMinor, scale)}`,
-          group?.projectedCash ?? formatProjectedCash(group?.value?.[1] ?? 0),
-        ];
-        return lines.filter(Boolean).join("<br/>");
+        const head = `${formatFridayEnding(friday)} · Sat ${sat} – Fri ${friday} · ${tone} (${hits.length})`;
+        const total = `Total ${formatUsd(totalMinor, scale)}`;
+        const projected = group?.projectedCash ?? formatProjectedCash(group?.value?.[1] ?? 0);
+        return `<div class="acfp-tip"><div class="acfp-tip-head">${escapeTip(head)}</div><div class="acfp-tip-scroll">${hitTipTable(hits)}</div><div class="acfp-tip-foot">${escapeTip(total)}<br/>${escapeTip(projected)}</div></div>`;
       },
     },
     grid: { left: 48, right: 12, top: 12, bottom: 28 },
@@ -935,11 +1052,23 @@ export function AccountCashFlow({
   weeks: TrendsWeekPoint[] | null | undefined;
   asOf?: string;
 }) {
-  const [accountKey, setAccountKey] = useState<keyof TrendsWeekPoint>(
-    HOME_FOCUS_DEFAULT_ACCOUNT,
+  const [accountKey, setAccountKey] = useState<keyof TrendsWeekPoint>(() =>
+    initialChartDefault(
+      "account-trend-account",
+      HOME_FOCUS_DEFAULT_ACCOUNT,
+      TRENDS_CASH_ACCOUNT_CHARTS.map((row) => String(row.key)),
+    ) as keyof TrendsWeekPoint,
   );
-  const [period, setPeriod] = useState<GraphPeriod>(HOME_FOCUS_DEFAULT_PERIOD);
+  const [period, setPeriod] = useState<GraphPeriod>(() =>
+    initialChartDefault(
+      "account-trend-period",
+      HOME_FOCUS_DEFAULT_PERIOD,
+      GRAPH_PERIOD_OPTIONS.map((opt) => opt.value),
+    ),
+  );
   const [events, setEvents] = useState<CashFlowEvent[]>([]);
+  const [hitsBusy, setHitsBusy] = useState(false);
+  const cashHitsRequestId = useRef(0);
   const [lotByBook, setLotByBook] = useState<Record<string, number | null> | null>(null);
   const selected =
     TRENDS_CASH_ACCOUNT_CHARTS.find((row) => row.key === accountKey) ??
@@ -952,31 +1081,39 @@ export function AccountCashFlow({
   const asOfDay = (asOf ?? "").slice(0, 10);
   const book = registerBook(selected.key);
   const lotMinor = book == null || lotByBook == null ? null : (lotByBook[book] ?? null);
-  const forwardEvents = useMemo(
-    () => events.filter((event) => event.occurredOn.slice(0, 10) > asOfDay),
-    [events, asOfDay],
+  const windowEvents = useMemo(
+    () =>
+      events.filter((event) => {
+        const day = event.occurredOn.slice(0, 10);
+        return day >= window.start && day <= window.end;
+      }),
+    [events, window.start, window.end],
   );
-  const visible = useMemo(() => {
-    if (lotMinor == null || !asOfDay) return [];
-    return cashFlowFromLot(lotMinor, asOfDay, window.end, forwardEvents);
-  }, [lotMinor, asOfDay, window.end, forwardEvents]);
+  const stored = useMemo(
+    () => homeCashPoints(weeks ?? [], selected.key, period, asOf ?? ""),
+    [weeks, selected.key, period, asOf],
+  );
+  const visible = useMemo(
+    () => cashFlowAcrossWindow(stored, lotMinor, asOfDay, window.end, windowEvents),
+    [stored, lotMinor, asOfDay, window.end, windowEvents],
+  );
   const axisEnd = window.end;
   const plottedEvents = useMemo(
     () =>
-      forwardEvents.map((event) => ({
+      windowEvents.map((event) => ({
         ...event,
-        cashY: eventProjectedCashY(visible, forwardEvents, event.occurredOn),
+        cashY: eventProjectedCashY(visible, windowEvents, event.occurredOn),
       })),
-    [forwardEvents, visible],
+    [windowEvents, visible],
   );
-  const starting = lotMinor == null ? null : { minor: lotMinor, scale: 2 };
+  const starting = openingPlottedCash(visible) ?? (lotMinor == null ? null : { minor: lotMinor, scale: 2 });
   const ending = endingPlottedCash(visible);
   const startValue =
     starting == null ? "unknown" : formatUsd(starting.minor, starting.scale);
   const endValue = ending == null ? "unknown" : formatUsd(ending.minor, ending.scale);
   const totals = useMemo(
-    () => periodCashFlowTotals(forwardEvents, asOfDay, window.end),
-    [forwardEvents, asOfDay, window.end],
+    () => periodCashFlowTotals(windowEvents, asOfDay, window.end),
+    [windowEvents, asOfDay, window.end],
   );
   const data = visible.map((point) =>
     point.cashMinor == null ? null : point.cashMinor / 10 ** point.scale,
@@ -1007,13 +1144,15 @@ export function AccountCashFlow({
 
   useEffect(() => {
     if (!book || !asOf) {
-      if (weeks == null) setEvents([]);
       setEvents([]);
+      setHitsBusy(false);
       return;
     }
     let cancelled = false;
-    void withTimeout(
-      client.executeQuery("CashRegisterGet", {
+    const requestId = ++cashHitsRequestId.current;
+    setHitsBusy(true);
+    void client
+      .executeQuery("CashRegisterGet", {
         asOfDate: asOf,
         account: book,
         period: "1Y",
@@ -1021,11 +1160,9 @@ export function AccountCashFlow({
         periodEnd: axisEnd,
         includeUnconfirmedPast: true,
         hitsOnly: true,
-      }),
-      HOME_REGISTER_TIMEOUT_MS,
-    )
+      })
       .then((result) => {
-        if (cancelled) return;
+        if (cancelled || requestId !== cashHitsRequestId.current) return;
         if (!result.ok || !result.bodyJson) {
           setEvents([]);
           return;
@@ -1061,72 +1198,96 @@ export function AccountCashFlow({
         setEvents(next);
       })
       .catch(() => {
-        if (!cancelled) setEvents([]);
+        // A superseded request must not wipe hits that a later read already stored.
+        if (cancelled || requestId !== cashHitsRequestId.current) return;
+        setEvents([]);
+      })
+      .finally(() => {
+        if (cancelled || requestId !== cashHitsRequestId.current) return;
+        setHitsBusy(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [book, asOf, weeks, period, selected.key, window.start, axisEnd]);
+  }, [book, asOf, period, selected.key, window.start, axisEnd]);
 
-  if (lotByBook == null) {
-    return (
-      <section className="home-trend-focus" aria-label="Account cash flow projection">
-        <h2>Account cash flow projection</h2>
-        <p role="status">Loading account trend…</p>
-      </section>
-    );
-  }
+  const surfaceBusy = lotByBook == null || hitsBusy;
+  const shown = (text: string) => (surfaceBusy ? "—" : text);
 
   return (
+    <BusySurface busy={surfaceBusy}>
     <section className="home-trend-focus" aria-label="Account cash flow projection">
       <header className="home-trend-focus-title">
         <div className="home-trend-focus-top">
         <h2>Account cash flow projection</h2>
         <div className="home-trend-focus-controls">
-        <select
-          aria-label="Account trend account"
-          value={String(selected.key)}
-          onChange={(e) => setAccountKey(e.target.value as keyof TrendsWeekPoint)}
-        >
-          {TRENDS_CASH_ACCOUNT_CHARTS.map((row) => (
-            <option key={String(row.key)} value={String(row.key)}>
-              {row.title}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Account trend duration"
-          value={period}
-          onChange={(e) => setPeriod(e.target.value as GraphPeriod)}
-        >
-          {GRAPH_PERIOD_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+        <span className="chart-default-choice">
+          <select
+            aria-label="Account trend account"
+            value={String(selected.key)}
+            onChange={(e) => setAccountKey(e.target.value as keyof TrendsWeekPoint)}
+          >
+            {TRENDS_CASH_ACCOUNT_CHARTS.map((row) => (
+              <option key={String(row.key)} value={String(row.key)}>
+                {row.title}
+              </option>
+            ))}
+          </select>
+          <DefaultTick storageKey="account-trend-account" value={String(selected.key)} />
+        </span>
+        <span className="chart-default-choice">
+          <select
+            aria-label="Account trend duration"
+            value={period}
+            onChange={(e) => setPeriod(e.target.value as GraphPeriod)}
+          >
+            {GRAPH_PERIOD_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <DefaultTick storageKey="account-trend-period" value={period} />
+        </span>
         </div>
         </div>
         <div className="home-trend-focus-flow">
           <span className="home-trend-focus-label">Planned Income</span>
           <span className="home-av-value is-income" aria-label="Planned income for period">
-            {formatUsd(totals.incomeMinor, totals.scale)}
+            {shown(formatUsd(totals.incomeMinor, totals.scale))}
           </span>
           <span className="home-trend-focus-label">Starting Balance</span>
           <span className="home-av-value" aria-label="Starting balance for period">
-            {startValue}
+            {shown(startValue)}
           </span>
           <span className="home-trend-focus-label">Planned withdrawals</span>
           <span className="home-av-value is-withdraw" aria-label="Planned withdrawals for period">
-            {formatUsd(totals.withdrawalMinor, totals.scale)}
+            {shown(formatUsd(totals.withdrawalMinor, totals.scale))}
           </span>
           <span className="home-trend-focus-label">Ending balance</span>
           <span className="home-av-value" aria-label="Ending plotted cash">
-            {endValue}
+            {shown(endValue)}
+          </span>
+          <span className="home-trend-focus-label">Income minus withdrawals</span>
+          <span
+            className={
+              totals.incomeMinor - totals.withdrawalMinor < 0
+                ? "home-av-value is-withdraw"
+                : "home-av-value is-income"
+            }
+            aria-label="Planned income minus planned withdrawals"
+          >
+            {shown(
+              totals.incomeMinor - totals.withdrawalMinor > 0
+                ? `+${formatUsd(totals.incomeMinor - totals.withdrawalMinor, totals.scale)}`
+                : formatUsd(totals.incomeMinor - totals.withdrawalMinor, totals.scale),
+            )}
           </span>
         </div>
       </header>
-      {lotMinor == null || !hasChart ? (
+      {surfaceBusy ? (
+        <div className="home-trend-focus-chart" />
+      ) : lotMinor == null || !hasChart ? (
         <p className="home-av-empty">
           {lotMinor == null
             ? "No cash lot for this account."
@@ -1149,6 +1310,7 @@ export function AccountCashFlow({
         </div>
       )}
     </section>
+    </BusySurface>
   );
 }
 

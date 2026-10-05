@@ -1,4 +1,4 @@
-import { formatUsd } from "@finos/ui-components";
+import { formatUsd, formatWeekChooserLabel, saturdayOfWeek } from "@finos/ui-components";
 import type {
   AccountListItem,
   CarRocPlanGet,
@@ -10,13 +10,15 @@ import type {
   TaxPlanningGet,
   TrendsWeekPoint,
 } from "@finos/app-contracts";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   CashWeekDesk,
   type CashWeekOverview,
   type OpenWeekIncome,
   type TrendIncomePoint,
 } from "./features/cash/CashWeekDesk";
+import { HouseholdIncomeReport } from "./features/cash/HouseholdIncomeReport";
+import { incomePlanWeekChoices } from "./features/income-plan/weekChoices";
 
 export type CashDistributionYtd = {
   grossMinor: number;
@@ -73,14 +75,6 @@ const DIST_TYPES = [
 const DIST_STEPS = ["Type", "Account", "Amounts", "Review"] as const;
 const SSA_STEPS = ["Payee", "Account", "Received", "Review"] as const;
 const WITHDRAW_STEPS = ["Account", "Amount", "Review"] as const;
-
-function formatPlanUsd(
-  minor: number | null | undefined,
-  scale: number,
-): string {
-  if (minor == null) return "unknown";
-  return formatUsd(minor, scale);
-}
 
 function formatCarUsd(
   minor: number | null | undefined,
@@ -200,128 +194,6 @@ function CarTaxPlanTable({ plan }: { plan: CarRocPlanGet }) {
   );
 }
 
-function magiImpactLabel(impact: string): string {
-  if (impact === "none") {
-    return "None";
-  }
-  if (impact === "magi_ltcg") {
-    return "MAGI · LTCG rate";
-  }
-  return "MAGI";
-}
-
-function formatPlanCell(
-  minor: number | null | undefined,
-  scale: number,
-  reason?: string | null,
-): string {
-  if (minor == null) {
-    return reason?.trim() ? `— (${reason})` : "—";
-  }
-  return formatUsd(minor, scale);
-}
-
-function HouseholdTaxTable({ plan }: { plan: TaxPlanningGet }) {
-  const scale = plan.scale;
-  const groups = [plan.magiIncluded, plan.notMagi, plan.allSources];
-  return (
-    <div className="table-wrap car-tax-table-wrap">
-      <table aria-label="Tax Planning income">
-        <thead>
-          <tr>
-            <th scope="col"> </th>
-            <th scope="col" className="numeric">
-              YTD
-            </th>
-            <th scope="col" className="numeric">
-              Projected
-            </th>
-            <th scope="col" className="numeric">
-              Total
-            </th>
-            <th scope="col">Tax impact</th>
-          </tr>
-        </thead>
-        <tbody>
-          {plan.rows.map((row) => (
-            <tr key={row.key}>
-              <th scope="row">{row.label}</th>
-              <td className="numeric">{formatPlanCell(row.ytdMinor, scale)}</td>
-              <td className="numeric">{formatPlanCell(row.projectedMinor, scale)}</td>
-              <td className="numeric">{formatPlanCell(row.totalMinor, scale)}</td>
-              <td>{magiImpactLabel(row.magiImpact)}</td>
-            </tr>
-          ))}
-        </tbody>
-        <tfoot>
-          {groups.map((group) => (
-            <tr key={group.label}>
-              <th scope="row">{group.label}</th>
-              <td className="numeric">{formatPlanCell(group.ytdMinor, scale)}</td>
-              <td className="numeric">{formatPlanCell(group.projectedMinor, scale)}</td>
-              <td className="numeric">{formatPlanCell(group.totalMinor, scale)}</td>
-              <td> </td>
-            </tr>
-          ))}
-        </tfoot>
-      </table>
-    </div>
-  );
-}
-
-function MagiThresholdBoard({ magi }: { magi: MagiProjection | null }) {
-  if (!magi) {
-    return <p role="status">Loading MAGI…</p>;
-  }
-  const scale = magi.applicableThreshold.scale;
-  const money = (m: { amountMinor: number; scale: number }) =>
-    formatUsd(m.amountMinor, m.scale ?? scale);
-  return (
-    <div className="table-wrap car-tax-table-wrap">
-      <table aria-label="Tax Planning MAGI">
-        <thead>
-          <tr>
-            <th scope="col">MAGI</th>
-            <th scope="col" className="numeric">
-              Amount
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <th scope="row">Threshold</th>
-            <td className="numeric">{money(magi.applicableThreshold)}</td>
-          </tr>
-          <tr>
-            <th scope="row">YTD included</th>
-            <td className="numeric">{money(magi.actualIncludedYtd)}</td>
-          </tr>
-          <tr>
-            <th scope="row">Known remaining</th>
-            <td className="numeric">{money(magi.knownRemaining)}</td>
-          </tr>
-          <tr>
-            <th scope="row">Forecast</th>
-            <td className="numeric">{money(magi.baseForecast)}</td>
-          </tr>
-          <tr>
-            <th scope="row">Conservative forecast</th>
-            <td className="numeric">{money(magi.conservativeForecast)}</td>
-          </tr>
-          <tr>
-            <th scope="row">Headroom</th>
-            <td className="numeric">{money(magi.protectedHeadroom)}</td>
-          </tr>
-          <tr>
-            <th scope="row">Decision</th>
-            <td>{magi.decisionState}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function dollarsToMinor(raw: string, scale: number): number | null {
   const t = raw.trim();
   if (!t) return null;
@@ -373,7 +245,7 @@ function accountsForCashType(
 export function CashManagementPanel({
   desk = "weekly",
   week,
-  month,
+  month: _month,
   reminders,
   magi,
   accounts,
@@ -424,7 +296,9 @@ export function CashManagementPanel({
   onSsaConfirm: (body: Record<string, unknown>) => Promise<boolean>;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
-  const [asOf, setAsOf] = useState(week?.periodEnd ?? "");
+  const [asOf, setAsOf] = useState(
+    saturdayOfWeek(week?.periodStart || week?.periodEnd || ""),
+  );
   const [activity, setActivity] = useState<CashActivity>(null);
   const [distStep, setDistStep] = useState<(typeof DIST_STEPS)[number]>("Type");
   const [ssaStep, setSsaStep] = useState<(typeof SSA_STEPS)[number]>("Payee");
@@ -454,7 +328,7 @@ export function CashManagementPanel({
 
   useEffect(() => {
     if (week) {
-      setAsOf(week.periodEnd);
+      setAsOf(saturdayOfWeek(week.periodStart || week.periodEnd));
       if (!dirty) {
         setOccurredOn(
           reminders?.saturdayDraft.open
@@ -502,6 +376,12 @@ export function CashManagementPanel({
   }, [dirty, ssaDirty, onDirtyChange]);
 
   const scale = week?.scale ?? reminders?.scale ?? 2;
+  const todaySat = saturdayOfWeek(new Date().toISOString().slice(0, 10));
+  const selectedSat = saturdayOfWeek(asOf || week?.periodStart || todaySat);
+  const weekChoices = useMemo(
+    () => incomePlanWeekChoices(selectedSat),
+    [selectedSat],
+  );
   const postingType =
     activity === "withdrawal" ? "Withdrawal" : activityType;
   const grossMinor = dollarsToMinor(gross, scale);
@@ -602,23 +482,16 @@ export function CashManagementPanel({
     return (
       <div className="cash-management" aria-label="Cash Management">
         <section className="car-tax-plan" aria-label="Cash Management Tax Planning">
-          <h3>MAGI threshold</h3>
-          <MagiThresholdBoard magi={magi} />
           {taxPlanning ? (
-            <>
-              <h3>Income by tax type</h3>
-              <HouseholdTaxTable plan={taxPlanning} />
-            </>
+            <HouseholdIncomeReport plan={taxPlanning} magi={magi} />
           ) : (
             <p role="status">Loading Tax Planning…</p>
           )}
-          {carRocPlan ? (
-            <>
-              <h3>Car</h3>
-              <CarTaxPlanTable plan={carRocPlan} />
-            </>
-          ) : null}
-          {cashYtd}
+          <details className="tax-car-detail" open>
+            <summary>Car lot detail and Cash YTD</summary>
+            {carRocPlan ? <CarTaxPlanTable plan={carRocPlan} /> : null}
+            {cashYtd}
+          </details>
         </section>
       </div>
     );
@@ -1230,33 +1103,27 @@ export function CashManagementPanel({
       {desk === "weekly" ? (
       <>
       <div className="trends-period-bar">
-        <label className="trends-period-label">
+        <label className="income-week-label">
           Week
-          <input
-            type="date"
-            aria-label="Cash management as-of date"
-            value={asOf}
-            onChange={(e) => setAsOf(e.target.value)}
-          />
+          <select
+            aria-label="Select week"
+            value={selectedSat}
+            disabled={busy}
+            onChange={(e) => {
+              const next = e.target.value;
+              setAsOf(next);
+              onReload(next);
+            }}
+          >
+            {weekChoices.map((sat) => (
+              <option key={sat} value={sat}>
+                {formatWeekChooserLabel(sat, todaySat)}
+              </option>
+            ))}
+          </select>
         </label>
-        <button
-          type="button"
-          aria-label="Open cash management week"
-          disabled={busy}
-          onClick={() => onReload(asOf)}
-        >
-          Open week
-        </button>
-        <span>
-          {week.periodStart} to {week.periodEnd}
-        </span>
       </div>
-      <h3>This week</h3>
-      <p>
-        Gross {formatUsd(week.weekGrossMinor, scale)}. Withholding{" "}
-        {formatUsd(week.weekWithholdingMinor, scale)}. Net{" "}
-        {formatUsd(week.weekNetMinor, scale)}.
-      </p>
+      <h3>This week confirmed transactions</h3>
       <div className="table-wrap">
         <table aria-label="Cash management week">
           <thead>
@@ -1291,82 +1158,6 @@ export function CashManagementPanel({
       </div>
       {week.rows.length === 0 ? (
         <p>No non-ROI cash events in this week yet.</p>
-      ) : null}
-      {month ? (
-        <>
-          <h3>This month ({month.yearMonth})</h3>
-          <p>
-            Calendar month uses event date, not a sum of week cells.{" "}
-            {month.periodStart} to {month.periodEnd}. Gross{" "}
-            {formatUsd(month.monthGrossMinor, scale)}. Withholding{" "}
-            {formatUsd(month.monthWithholdingMinor, scale)}. Net{" "}
-            {formatUsd(month.monthNetMinor, scale)}.
-          </p>
-          <div className="table-wrap">
-            <table aria-label="Cash management month">
-              <thead>
-                <tr>
-                  <th>Account</th>
-                  <th>Type</th>
-                  <th>Count</th>
-                  <th>Gross</th>
-                  <th>Fed WH</th>
-                  <th>State WH</th>
-                  <th>Net</th>
-                </tr>
-              </thead>
-              <tbody>
-                {month.rows.map((row) => (
-                  <tr key={`${row.accountId}-${row.activityType}`}>
-                    <td>{row.accountName}</td>
-                    <td>{row.activityType}</td>
-                    <td className="numeric">{row.count}</td>
-                    <td className="numeric">
-                      {formatUsd(row.grossMinor, row.scale)}
-                    </td>
-                    <td className="numeric">
-                      {formatUsd(row.federalWithholdingMinor, row.scale)}
-                    </td>
-                    <td className="numeric">
-                      {formatUsd(row.stateWithholdingMinor, row.scale)}
-                    </td>
-                    <td className="numeric">
-                      {formatUsd(row.netMinor, row.scale)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      ) : null}
-      {reminders && reminders.tomSsa.recent.length > 0 ? (
-        <div className="table-wrap">
-          <table aria-label="Social Security retirement history">
-            <thead>
-              <tr>
-                <th>Paid</th>
-                <th>Payee</th>
-                <th>Amount</th>
-                <th>Account</th>
-                <th>Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {reminders.tomSsa.recent.map((row) => (
-                <tr key={`${row.occurredOn}-${row.amountMinor}-${row.payee}`}>
-                  <td>{row.occurredOn}</td>
-                  <td>{row.payee === "barbara" ? "Barbara" : row.payee === "tom" ? "Tom" : row.payee || "—"}</td>
-                  <td className="numeric">
-                    {formatUsd(row.amountMinor, scale)}
-                  </td>
-                  <td>{row.accountName}</td>
-                  <td>{row.extraAudit ? "unexpected amount" : ""}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       ) : null}
       </>
       ) : null}

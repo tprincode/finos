@@ -4,8 +4,15 @@ import { usd } from "./planMath";
 const TIERS = ["Foundation", "Core", "Risk On"] as const;
 
 function sumMinor(rows: PlanSheetRow[], key: "weekMinor" | "monthMinor" | "yearMinor"): number | null {
-  if (rows.length === 0 || rows.some((row) => row[key] == null)) return null;
-  return rows.reduce((sum, row) => sum + (row[key] ?? 0), 0);
+  let sum = 0;
+  let any = false;
+  for (const row of rows) {
+    const value = row[key];
+    if (value == null) continue;
+    sum += value;
+    any = true;
+  }
+  return any ? sum : null;
 }
 
 function signed(minor: number | null): string {
@@ -92,8 +99,7 @@ export function ScenarioDelta({
   const weekB = rowsB ? pair(weekSell, sumMinor(rowsB, "weekMinor")) : null;
   const monthB = rowsB ? pair(monthSell, sumMinor(rowsB, "monthMinor")) : null;
   const yearB = rowsB ? pair(yearSell, sumMinor(rowsB, "yearMinor")) : null;
-  const cashA = pair(cashBefore, cashAfterA);
-  const cashB = rowsB ? pair(cashBefore, cashAfterB) : null;
+  const cashB = rowsB ? cashAfterB : null;
   const line = (
     label: string,
     sell: string,
@@ -150,10 +156,10 @@ export function ScenarioDelta({
           {line(
             "Remaining cash",
             cashBefore == null ? "" : usd(cashBefore),
-            cashA.text,
-            cashA.delta,
-            cashB?.text,
-            cashB?.delta,
+            cashAfterA == null ? "" : signed(cashAfterA),
+            cashAfterA == null ? "" : signed(cashAfterA),
+            cashB == null ? "" : signed(cashB),
+            cashB == null ? "" : signed(cashB),
           )}
         </tbody>
       </table>

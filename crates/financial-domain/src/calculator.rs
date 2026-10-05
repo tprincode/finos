@@ -1,22 +1,27 @@
 //! Calculator Plan is owner-controlled per share. It is not cash and not a declaration.
 
-use chrono::{Duration, NaiveDate};
+use chrono::{Duration, Months, NaiveDate};
 
 /// One locked cadence: label and period count are the same fact (TR-C-5).
 /// There is no default. Empty is unidentified. `None` means the position does not pay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaymentCadence {
     Weekly,
+    /// Direxion Defined Income Boost and similar — ~24 pays/year (~every 2 weeks).
+    TwiceMonthly,
     Monthly,
     Quarterly,
     None,
 }
 
 impl PaymentCadence {
-    /// Parse a description (`Weekly` / `None`) or a period count (`52` / `12` / `4`).
+    /// Parse a description (`Weekly` / `None`) or a period count (`52` / `24` / `12` / `4`).
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
+        let key = raw.trim().to_ascii_lowercase();
+        match key.as_str() {
             "weekly" | "52" => Some(Self::Weekly),
+            "twice monthly" | "twice-monthly" | "semimonthly" | "semi-monthly" | "semi monthly"
+            | "24" => Some(Self::TwiceMonthly),
             "monthly" | "12" => Some(Self::Monthly),
             "quarterly" | "4" => Some(Self::Quarterly),
             "none" => Some(Self::None),
@@ -27,6 +32,7 @@ impl PaymentCadence {
     pub fn parse_periods(periods: u8) -> Option<Self> {
         match periods {
             52 => Some(Self::Weekly),
+            24 => Some(Self::TwiceMonthly),
             12 => Some(Self::Monthly),
             4 => Some(Self::Quarterly),
             _ => None,
@@ -36,6 +42,7 @@ impl PaymentCadence {
     pub fn periods(self) -> Option<u8> {
         match self {
             Self::Weekly => Some(52),
+            Self::TwiceMonthly => Some(24),
             Self::Monthly => Some(12),
             Self::Quarterly => Some(4),
             Self::None => None,
@@ -45,6 +52,7 @@ impl PaymentCadence {
     pub fn label(self) -> &'static str {
         match self {
             Self::Weekly => "Weekly",
+            Self::TwiceMonthly => "Twice monthly",
             Self::Monthly => "Monthly",
             Self::Quarterly => "Quarterly",
             Self::None => "None",
@@ -52,7 +60,7 @@ impl PaymentCadence {
     }
 }
 
-/// Normalized planning periods from the locked cadence. None means no 52/12/4 schedule.
+/// Normalized planning periods from the locked cadence. None means no paying schedule.
 pub fn periods_from_frequency(frequency: &str) -> Option<u8> {
     PaymentCadence::parse(frequency).and_then(PaymentCadence::periods)
 }
@@ -62,28 +70,43 @@ pub fn is_non_paying(frequency: &str) -> bool {
     matches!(PaymentCadence::parse(frequency), Some(PaymentCadence::None))
 }
 
-/// Infer Weekly / Monthly / Quarterly from paid declaration dates and/or an issuer page label.
-/// Returns `None` (unknown) when history cannot support 52 / 12 / 4 — never invents a cadence.
+/// Infer cadence from paid declaration dates and/or an issuer page label.
+/// Returns `None` (unknown) when history cannot support a locked schedule — never invents a cadence.
 /// Owner does not type frequency; Process A persists the suggestion when present.
+///
+/// Bare "Monthly" page text is weak: pay-date gaps win when they show twice-monthly (11–20d).
 pub fn infer_payment_cadence(
     payment_periods: &[&str],
     page_label: Option<&str>,
 ) -> Option<PaymentCadence> {
+    let mut weak_monthly_label = false;
     if let Some(label) = page_label.map(str::trim).filter(|s| !s.is_empty()) {
         if let Some(c) = PaymentCadence::parse(label) {
-            if c.periods().is_some() {
-                return Some(c);
+            match c {
+                PaymentCadence::Monthly => {
+                    weak_monthly_label = true;
+                }
+                PaymentCadence::None => return Some(c),
+                other if other.periods().is_some() => return Some(other),
+                _ => {}
             }
-        }
-        let lower = label.to_ascii_lowercase();
-        if lower.contains("weekly") {
-            return Some(PaymentCadence::Weekly);
-        }
-        if lower.contains("monthly") {
-            return Some(PaymentCadence::Monthly);
-        }
-        if lower.contains("quarterly") {
-            return Some(PaymentCadence::Quarterly);
+        } else {
+            let lower = label.to_ascii_lowercase();
+            if lower.contains("twice") && lower.contains("month") {
+                return Some(PaymentCadence::TwiceMonthly);
+            }
+            if lower.contains("semi") && lower.contains("month") {
+                return Some(PaymentCadence::TwiceMonthly);
+            }
+            if lower.contains("weekly") {
+                return Some(PaymentCadence::Weekly);
+            }
+            if lower.contains("quarterly") {
+                return Some(PaymentCadence::Quarterly);
+            }
+            if lower.contains("monthly") {
+                weak_monthly_label = true;
+            }
         }
     }
 
@@ -99,25 +122,33 @@ pub fn infer_payment_cadence(
         .collect();
     dates.sort_unstable();
     dates.dedup();
-    if dates.len() < 2 {
-        return None;
+    if dates.len() >= 2 {
+        let mut gaps: Vec<i64> = dates
+            .windows(2)
+            .map(|w| (w[1] - w[0]).num_days().abs())
+            .collect();
+        gaps.sort_unstable();
+        let med = gaps[gaps.len() / 2];
+        // ~weekly (≤10d), ~twice monthly (11–20d), ~monthly (21–40d), ~quarterly (≤110d).
+        let from_gaps = if med <= 10 {
+            Some(PaymentCadence::Weekly)
+        } else if med <= 20 {
+            Some(PaymentCadence::TwiceMonthly)
+        } else if med <= 40 {
+            Some(PaymentCadence::Monthly)
+        } else if med <= 110 {
+            Some(PaymentCadence::Quarterly)
+        } else {
+            None
+        };
+        if from_gaps.is_some() {
+            return from_gaps;
+        }
     }
-    let mut gaps: Vec<i64> = dates
-        .windows(2)
-        .map(|w| (w[1] - w[0]).num_days().abs())
-        .collect();
-    gaps.sort_unstable();
-    let med = gaps[gaps.len() / 2];
-    // ~weekly (≤10d), ~monthly (≤40d), ~quarterly (≤110d). Wider gaps stay unknown.
-    if med <= 10 {
-        Some(PaymentCadence::Weekly)
-    } else if med <= 40 {
-        Some(PaymentCadence::Monthly)
-    } else if med <= 110 {
-        Some(PaymentCadence::Quarterly)
-    } else {
-        None
+    if weak_monthly_label {
+        return Some(PaymentCadence::Monthly);
     }
+    None
 }
 
 /// Position dollars for one period, in USD cents (scale 2).
@@ -185,26 +216,52 @@ pub fn expected_in_week(
     if periods_per_year == 52 {
         return true;
     }
-    let step_days = match periods_per_year {
-        12 => 30,
-        4 => 91,
-        _ => return false,
-    };
     let Some(last) = last_actual_on.and_then(parse_day) else {
         return false;
     };
-    let step = Duration::days(step_days);
+    // Twice monthly (~15d) and monthly (~30d) use a day-step walk from last actual.
+    let step_days = match periods_per_year {
+        24 => Some(15),
+        12 => Some(30),
+        _ => None,
+    };
+    if let Some(days) = step_days {
+        let step = Duration::days(days);
+        let mut d = last;
+        let earliest = start - Duration::days(400);
+        while d > earliest {
+            d -= step;
+        }
+        let latest = end + Duration::days(400);
+        while d <= latest {
+            if d >= start && d <= end {
+                return true;
+            }
+            d += step;
+        }
+        return false;
+    }
+    if periods_per_year != 4 {
+        return false;
+    }
+    // Quarterly: +1 calendar quarter (same day-of-month), not +91 days.
     let mut d = last;
     let earliest = start - Duration::days(400);
     while d > earliest {
-        d -= step;
+        let Some(prev) = d.checked_sub_months(Months::new(3)) else {
+            break;
+        };
+        d = prev;
     }
     let latest = end + Duration::days(400);
     while d <= latest {
         if d >= start && d <= end {
             return true;
         }
-        d += step;
+        let Some(next) = d.checked_add_months(Months::new(3)) else {
+            break;
+        };
+        d = next;
     }
     false
 }
@@ -217,6 +274,11 @@ mod tests {
     fn cadence_is_one_value_label_or_periods() {
         assert_eq!(PaymentCadence::parse("Weekly").unwrap().periods(), Some(52));
         assert_eq!(PaymentCadence::parse("52").unwrap().label(), "Weekly");
+        assert_eq!(
+            PaymentCadence::parse("Twice monthly").unwrap().periods(),
+            Some(24)
+        );
+        assert_eq!(PaymentCadence::parse("24").unwrap().label(), "Twice monthly");
         assert_eq!(PaymentCadence::parse("monthly").unwrap().periods(), Some(12));
         assert_eq!(PaymentCadence::parse("12").unwrap().label(), "Monthly");
         assert_eq!(PaymentCadence::parse("Quarterly").unwrap().periods(), Some(4));
@@ -281,7 +343,26 @@ mod tests {
         assert_eq!(
             infer_payment_cadence(&["2026-01-01", "2026-07-01"], None),
             None,
-            "semi-annual gap is not 52/12/4"
+            "semi-annual gap is not 52/24/12/4"
+        );
+        let twice = [
+            "2026-08-17",
+            "2026-08-31",
+            "2026-09-16",
+            "2026-10-01",
+        ];
+        assert_eq!(
+            infer_payment_cadence(&twice, None),
+            Some(PaymentCadence::TwiceMonthly)
+        );
+        assert_eq!(
+            infer_payment_cadence(&twice, Some("Monthly")),
+            Some(PaymentCadence::TwiceMonthly),
+            "bare Monthly page text must not override ~15d pays"
+        );
+        assert_eq!(
+            infer_payment_cadence(&[], Some("Twice monthly")),
+            Some(PaymentCadence::TwiceMonthly)
         );
     }
 }

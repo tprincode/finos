@@ -377,6 +377,20 @@ pub async fn complete_collector_for_first_lot_as(
                 symbol.to_ascii_lowercase()
             )
         });
+    // Template Dividend blocks complete, so a caller whose template had no source URL
+    // could never be completed by this helper — it silently preserved the blank and the
+    // caller failed later at LotOpen with `collector_incomplete`.
+    let source_url = tpl
+        .get("sourceUrl")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            format!(
+                "https://example.test/{}/distributions",
+                symbol.to_ascii_lowercase()
+            )
+        });
     steps.push((
         "RetrievalTemplateSet",
         serde_json::json!({
@@ -384,7 +398,7 @@ pub async fn complete_collector_for_first_lot_as(
             "priceSource": tpl.get("priceSource").and_then(|v| v.as_str()).unwrap_or("public"),
             "sourceSymbol": tpl.get("sourceSymbol").and_then(|v| v.as_str()).unwrap_or(symbol),
             "declarationSource": tpl.get("declarationSource").and_then(|v| v.as_str()).unwrap_or("issuer"),
-            "sourceUrl": tpl.get("sourceUrl").and_then(|v| v.as_str()).unwrap_or(""),
+            "sourceUrl": source_url,
             "rocSourceUrl": roc_url,
             "calendarPolicy": tpl.get("calendarPolicy").and_then(|v| v.as_str()).unwrap_or("issuer_calendar"),
             "collectorEnabled": tpl.get("collectorEnabled").and_then(|v| v.as_bool()).unwrap_or(true),

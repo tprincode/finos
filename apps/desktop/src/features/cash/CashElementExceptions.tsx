@@ -3,6 +3,7 @@ import { formatUsd } from "@finos/ui-components";
 import type { CashElementRecord } from "@finos/app-contracts";
 import type { EditorOccurrence } from "./CashElementEditor";
 import { CashElementExceptionEdit } from "./CashElementExceptionEdit";
+import { popNavIf, pushNav } from "../navigation/navStack";
 
 function formatUpcomingDate(iso: string): string {
   const day = new Date(`${iso}T00:00:00`);
@@ -38,6 +39,7 @@ export function CashElementExceptions({
   account,
   element,
   occurrences,
+  initialOccurrenceId,
   busy,
   onSave,
   onClose,
@@ -46,6 +48,7 @@ export function CashElementExceptions({
   account: string;
   element: CashElementRecord;
   occurrences: EditorOccurrence[];
+  initialOccurrenceId?: string | null;
   busy?: boolean;
   onSave: (body: {
     elementId: string;
@@ -61,6 +64,9 @@ export function CashElementExceptions({
   const [editOpen, setEditOpen] = useState(false);
   const box = useRef<HTMLElement>(null);
   const rows = occurrences;
+  const openId = rows.some((row) => row.occurrenceId === initialOccurrenceId)
+    ? initialOccurrenceId
+    : null;
   const selected =
     rows.find((row) => (row.occurrenceId || row.occurredOn) === selectedId) ??
     null;
@@ -69,13 +75,20 @@ export function CashElementExceptions({
     rows.filter((row) => row.isException || row.isCancelled).length;
 
   useEffect(() => {
-    setSelectedId(null);
+    setSelectedId(openId ?? null);
     setEditOpen(false);
     onDirtyChange?.(false);
     box.current?.scrollIntoView({ block: "nearest" });
-  }, [element.elementId]);
+  }, [element.elementId, openId]);
 
   const openRow = (row: EditorOccurrence) => {
+    pushNav({
+      id: "exception-edit",
+      restore: () => {
+        setSelectedId(openId ?? null);
+        setEditOpen(false);
+      },
+    });
     setSelectedId(row.occurrenceId || row.occurredOn);
     setEditOpen(true);
   };
@@ -92,7 +105,9 @@ export function CashElementExceptions({
           if (ok) setEditOpen(false);
           return ok;
         }}
-        onClose={() => setEditOpen(false)}
+        onClose={() => {
+          if (!popNavIf("exception-edit")) setEditOpen(false);
+        }}
         onDirtyChange={onDirtyChange}
       />
     );
@@ -122,6 +137,7 @@ export function CashElementExceptions({
           <tr>
             <th>Date</th>
             <th className="numeric">Amount</th>
+            <th>Edit</th>
           </tr>
         </thead>
         <tbody>
@@ -142,6 +158,19 @@ export function CashElementExceptions({
               >
                 <td>{formatUpcomingDate(row.occurredOn)}</td>
                 <td className="numeric">{formatUsd(row.amountMinor, 2)}</td>
+                <td>
+                  <button
+                    type="button"
+                    aria-label={`Edit exception ${row.occurredOn}`}
+                    disabled={busy}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openRow(row);
+                    }}
+                  >
+                    Edit
+                  </button>
+                </td>
               </tr>
             );
           })}

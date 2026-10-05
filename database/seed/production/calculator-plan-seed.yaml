@@ -9,7 +9,6 @@ decision_reason: "Locked Calculator from initial load on 2026-08-12"
 
 symbols:
   - { symbol: CRF, plan: "0.1168", periods: 12 }
-  - { symbol: TSLL, plan: "0.08", periods: 4 }
   - { symbol: AMDW, plan: "0.55", periods: 52 }
   - { symbol: GLAD, plan: "0.15", periods: 12 }
   - { symbol: TOPW, plan: "0.25", periods: 52 }
@@ -36,7 +35,6 @@ symbols:
   - { symbol: SWVXX, plan: "0.0015", periods: 12 }
   - { symbol: EPD, plan: "0.55", periods: 4 }
   - { symbol: XDTE, plan: "0.12", periods: 52 }
-  - { symbol: SOXL, plan: "0.04", periods: 4 }
   - { symbol: SPYI, plan: "0.48", periods: 12 }
   - { symbol: RDTE, plan: "0.16", periods: 52 }
   - { symbol: QDTE, plan: "0.13", periods: 52 }

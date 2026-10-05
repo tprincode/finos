@@ -48,4 +48,19 @@ pub enum DomainError {
     CashAdjustWithholdingNotAllowed,
     #[error("Cash_Adjust amount must be a non-zero signed gap")]
     CashAdjustAmount,
+    #[error("Symbol is not on Position Details. Finish research first. Add a collector only if this symbol needs price or dividend retrieve.")]
+    PositionNotEstablished,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DomainError;
+
+    #[test]
+    fn position_not_established_is_owner_readable() {
+        assert_eq!(
+            DomainError::PositionNotEstablished.to_string(),
+            "Symbol is not on Position Details. Finish research first. Add a collector only if this symbol needs price or dividend retrieve."
+        );
+    }
 }

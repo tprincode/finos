@@ -69,6 +69,7 @@ fn domain_err(err: DomainError) -> PlatformError {
         DomainError::CashAdjustAccount => "cash_adjust_account",
         DomainError::CashAdjustWithholdingNotAllowed => "cash_adjust_withholding_not_allowed",
         DomainError::CashAdjustAmount => "cash_adjust_amount",
+        DomainError::PositionNotEstablished => "position_not_established",
     };
     PlatformError::new(code, err.to_string())
 }
@@ -2399,20 +2400,19 @@ impl Canonical for LocalPlatform {
     }
 
     async fn roi_get(&self) -> Result<RoiBody, PlatformError> {
-        let pool = self.pool.read().await;
-        let row = sqlx::query(
-            "SELECT COALESCE(SUM(proceeds_minor), 0) AS proceeds,
-                    COALESCE(SUM(performance_cost_minor), 0) AS perf,
-                    COALESCE(SUM(tax_cost_minor), 0) AS tax
-             FROM lot_assignment",
-        )
-        .fetch_one(&*pool)
-        .await
-        .map_err(|e| map_err(e.into()))?;
-        let proceeds_minor: i64 = row.try_get("proceeds").map_err(|e| map_err(e.into()))?;
-        let performance_cost_minor: i64 = row.try_get("perf").map_err(|e| map_err(e.into()))?;
-        let tax_cost_minor: i64 = row.try_get("tax").map_err(|e| map_err(e.into()))?;
-        drop(pool);
+        let assigns = self.lot_assignment_list().await?;
+        let mut proceeds_minor = 0_i64;
+        let mut performance_cost_minor = 0_i64;
+        let mut tax_cost_minor = 0_i64;
+        for asgn in &assigns {
+            proceeds_minor += asgn.proceeds_minor;
+            performance_cost_minor += financial_domain::money::to_usd_cents(
+                asgn.performance_cost_minor,
+                asgn.scale,
+            );
+            tax_cost_minor +=
+                financial_domain::money::to_usd_cents(asgn.tax_cost_minor, asgn.scale);
+        }
         let basis = self.basis_get().await?;
         Ok(RoiBody {
             proceeds_minor,
@@ -3015,6 +3015,7 @@ impl Canonical for LocalPlatform {
         qty_minor: i64,
         qty_scale: u8,
         unit_minor: i64,
+        unit_scale: u8,
         proceeds_minor: i64,
         is_cash: bool,
         original_cost_minor: Option<i64>,
@@ -3033,6 +3034,7 @@ impl Canonical for LocalPlatform {
             qty_minor,
             qty_scale,
             unit_minor,
+            unit_scale,
             proceeds_minor,
             is_cash,
             original_cost_minor,
@@ -3059,6 +3061,7 @@ impl Canonical for LocalPlatform {
         line_id: Uuid,
         qty_whole: i64,
         last_minor: i64,
+        price_scale: u8,
         spend_minor: i64,
         plan_annual_minor: Option<i64>,
     ) -> Result<(), PlatformError> {
@@ -3068,6 +3071,7 @@ impl Canonical for LocalPlatform {
             line_id,
             qty_whole,
             last_minor,
+            price_scale,
             spend_minor,
             plan_annual_minor,
         )
@@ -3081,6 +3085,7 @@ impl Canonical for LocalPlatform {
         symbol: String,
         qty_whole: i64,
         last_minor: i64,
+        price_scale: u8,
         spend_minor: i64,
         plan_annual_minor: Option<i64>,
     ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
@@ -3092,6 +3097,7 @@ impl Canonical for LocalPlatform {
             symbol,
             qty_whole,
             last_minor,
+            price_scale,
             spend_minor,
             plan_annual_minor,
         )
@@ -3155,6 +3161,40 @@ impl Canonical for LocalPlatform {
             .await
     }
 
+    async fn cart_execute_cash_baseline_set_if_empty(
+        &self,
+        scenario_id: Uuid,
+        baseline_minor: i64,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::execute_cash_baseline_set_if_empty(&*pool, scenario_id, baseline_minor).await
+    }
+
+    async fn cart_execute_cash_baseline_get(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<Option<i64>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::execute_cash_baseline_get(&*pool, scenario_id).await
+    }
+
+    async fn cart_execute_steps_list(
+        &self,
+        scenario_id: Uuid,
+    ) -> Result<Vec<application_core::contracts::CartExecuteStepBody>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::execute_steps_list(&*pool, scenario_id).await
+    }
+
+    async fn cart_scenario_status_set(
+        &self,
+        scenario_id: Uuid,
+        status: String,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::scenario_status_set(&*pool, scenario_id, &status).await
+    }
+
     async fn cart_scenario_discard(&self, scenario_id: Uuid) -> Result<(), PlatformError> {
         let pool = self.pool.read().await;
         crate::cart::scenario_discard(&*pool, scenario_id).await
@@ -3167,6 +3207,34 @@ impl Canonical for LocalPlatform {
     ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
         let pool = self.pool.read().await;
         crate::cart::sell_line_remove(&*pool, scenario_id, line_id).await
+    }
+
+    async fn cart_sell_line_unit_set(
+        &self,
+        scenario_id: Uuid,
+        line_id: Uuid,
+        unit_minor: i64,
+        unit_scale: u8,
+        proceeds_minor: i64,
+        performance_cost_minor: Option<i64>,
+        tax_cost_minor: Option<i64>,
+        performance_gain_minor: Option<i64>,
+        tax_gain_minor: Option<i64>,
+    ) -> Result<application_core::contracts::CartScenarioBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::sell_line_unit_set(
+            &*pool,
+            scenario_id,
+            line_id,
+            unit_minor,
+            unit_scale,
+            proceeds_minor,
+            performance_cost_minor,
+            tax_cost_minor,
+            performance_gain_minor,
+            tax_gain_minor,
+        )
+        .await
     }
 
     async fn cart_sell_symbol_clear(
@@ -3602,9 +3670,10 @@ impl Canonical for LocalPlatform {
         &self,
         line_ids: Vec<Uuid>,
         step: String,
+        ticked_on: Option<String>,
     ) -> Result<application_core::contracts::ExternalRegisterGetBody, PlatformError> {
         let pool = self.pool.read().await;
-        crate::external_register::mark_step(&pool, line_ids, &step).await
+        crate::external_register::mark_step(&pool, line_ids, &step, ticked_on).await
     }
 
     async fn external_register_import(
@@ -3613,6 +3682,156 @@ impl Canonical for LocalPlatform {
     ) -> Result<application_core::contracts::ExternalRegisterGetBody, PlatformError> {
         let pool = self.pool.read().await;
         crate::external_register::import_workbook(&pool, std::path::Path::new(&path)).await
+    }
+
+    async fn external_account_manager_get(
+        &self,
+    ) -> Result<application_core::contracts::ExternalManagedGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_account::get(&pool).await
+    }
+
+    async fn external_account_manager_save(
+        &self,
+        accounts: Vec<application_core::contracts::ExternalManagedAccountSave>,
+    ) -> Result<application_core::contracts::ExternalManagedGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_account::save(&pool, accounts).await
+    }
+
+    async fn external_loans_due(
+        &self,
+        start: String,
+        end: String,
+    ) -> Result<Vec<application_core::contracts::LoanWeekRow>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_account::loans_due(&pool, &start, &end).await
+    }
+
+    async fn external_loan_confirm(
+        &self,
+        account_id: Uuid,
+        due_on: String,
+        principal_minor: i64,
+        interest_minor: i64,
+    ) -> Result<application_core::contracts::ExternalManagedGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_account::confirm_loan_payment(
+            &pool,
+            account_id,
+            due_on,
+            principal_minor,
+            interest_minor,
+        )
+        .await
+    }
+
+    async fn task_rule_list(
+        &self,
+    ) -> Result<Vec<application_core::contracts::TaskRuleRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::task::task_rule_list(&pool).await
+    }
+
+    async fn task_rule_set(
+        &self,
+        code: String,
+        enabled: bool,
+    ) -> Result<application_core::contracts::TaskRuleRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::task::task_rule_set(&pool, &code, enabled).await
+    }
+
+    async fn task_list(
+        &self,
+        week_start: Option<String>,
+        status: Option<String>,
+    ) -> Result<Vec<application_core::contracts::TaskRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::task::task_list(&pool, week_start, status).await
+    }
+
+    async fn task_get(
+        &self,
+        task_id: Uuid,
+    ) -> Result<application_core::contracts::TaskRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::task::task_get(&pool, task_id).await
+    }
+
+    async fn task_by_code_week(
+        &self,
+        code: String,
+        week_start: String,
+    ) -> Result<Option<application_core::contracts::TaskRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::task::task_by_code_week(&pool, &code, &week_start).await
+    }
+
+    async fn task_insert(
+        &self,
+        record: application_core::contracts::TaskRecord,
+    ) -> Result<application_core::contracts::TaskRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::task::task_insert(&pool, record).await
+    }
+
+    async fn task_update(
+        &self,
+        record: application_core::contracts::TaskRecord,
+    ) -> Result<application_core::contracts::TaskRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::task::task_update(&pool, record).await
+    }
+
+    async fn option_contract_list(
+        &self,
+        status: Option<String>,
+    ) -> Result<Vec<application_core::contracts::OptionContractRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_contract_list(&pool, status).await
+    }
+
+    async fn option_contract_get(
+        &self,
+        contract_id: Uuid,
+    ) -> Result<application_core::contracts::OptionContractRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_contract_get(&pool, contract_id).await
+    }
+
+    async fn option_contract_insert(
+        &self,
+        record: application_core::contracts::OptionContractRecord,
+    ) -> Result<application_core::contracts::OptionContractRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_contract_insert(&pool, record).await
+    }
+
+    async fn option_contract_update(
+        &self,
+        record: application_core::contracts::OptionContractRecord,
+    ) -> Result<application_core::contracts::OptionContractRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_contract_update(&pool, record).await
+    }
+
+    async fn external_loan_apply_element(
+        &self,
+        element_id: Uuid,
+        occurrence_id: Uuid,
+        occurred_on: String,
+        amount_minor: i64,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_account::apply_element_payment(
+            &pool,
+            element_id,
+            occurrence_id,
+            occurred_on,
+            amount_minor,
+        )
+        .await
     }
 }
 

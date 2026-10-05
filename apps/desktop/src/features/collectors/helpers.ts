@@ -1,4 +1,40 @@
+import { isCashSymbol, type WorkTicketRecord } from "@finos/app-contracts";
 import type { CollectorSetItem } from "./types";
+
+/** Template Dividend or last tried URL for declaration miss tickets. */
+export function ticketCheckUrl(
+  ticket: WorkTicketRecord,
+  collectorItems: CollectorSetItem[],
+): string | null {
+  const row = collectorItems.find(
+    (i) => i.symbol.trim().toUpperCase() === ticket.symbol.trim().toUpperCase(),
+  );
+  const stored = row?.sourceUrl?.trim() ?? "";
+  if (/^https?:\/\//i.test(stored)) {
+    if (stored.includes("/api/distributionsummary")) {
+      return stored;
+    }
+    if (row?.declarationSource?.trim().toLowerCase() === "proshares") {
+      const year = new Date().getFullYear();
+      return `https://www.proshares.com/api/distributionsummary/?fund=${ticket.symbol.trim().toUpperCase()}&year=${year}`;
+    }
+    return stored;
+  }
+  try {
+    const tried = JSON.parse(ticket.urlsTried || "[]") as string[];
+    const http = tried.filter((u) => /^https?:\/\//i.test(u));
+    if (http.length > 0) {
+      return http[http.length - 1] ?? null;
+    }
+  } catch {
+    /* ignore */
+  }
+  if (row?.declarationSource?.trim().toLowerCase() === "proshares") {
+    const year = new Date().getFullYear();
+    return `https://www.proshares.com/api/distributionsummary/?fund=${ticket.symbol.trim().toUpperCase()}&year=${year}`;
+  }
+  return null;
+}
 
 export function formatCollectorClock(raw?: string | null): string {
   const opts: Intl.DateTimeFormatOptions = {
@@ -114,9 +150,8 @@ export function collectorCommandBody(
 
 /** Fleet shows income names only — matches storage collector_symbol_pays. */
 export function collectorItemPays(row: CollectorSetItem): boolean {
-  const sym = row.symbol.trim().toUpperCase();
   const div = (row.divType || "").trim().toUpperCase().replace(/\s+/g, "-");
-  if (div === "CASH" || sym === "SPAXX" || sym === "FDRXX" || sym === "SWVXX") {
+  if (collectorIsCash(row)) {
     return true;
   }
   if (div === "DIV-1" || div === "DIV1") {
@@ -126,6 +161,11 @@ export function collectorItemPays(row: CollectorSetItem): boolean {
   return (
     freq === "weekly" ||
     freq === "52" ||
+    freq === "twice monthly" ||
+    freq === "twice-monthly" ||
+    freq === "semimonthly" ||
+    freq === "semi-monthly" ||
+    freq === "24" ||
     freq === "monthly" ||
     freq === "12" ||
     freq === "quarterly" ||
@@ -134,9 +174,7 @@ export function collectorItemPays(row: CollectorSetItem): boolean {
 }
 
 export function collectorIsCash(row: CollectorSetItem): boolean {
-  const sym = row.symbol.trim().toUpperCase();
-  const div = (row.divType || "").trim().toUpperCase().replace(/\s+/g, "-");
-  return div === "CASH" || sym === "SPAXX" || sym === "FDRXX" || sym === "SWVXX";
+  return isCashSymbol(row.symbol, row.divType || "");
 }
 
 export function collectorIsDiv1OrCash(row: CollectorSetItem): boolean {

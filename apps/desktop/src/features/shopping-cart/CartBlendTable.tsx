@@ -1,5 +1,6 @@
 import type { CartBuyLine } from "@finos/app-contracts";
 import { formatBps, formatUsd } from "@finos/ui-components";
+import { priceCents } from "./cartPrice";
 
 export type BlendRow = {
   line: CartBuyLine;
@@ -75,7 +76,7 @@ export function CartBlendTable({
         <tbody>
           {rows.map((row) => (
             <tr key={row.line.lineId}>
-              <td>{money(row.lastMinor)}</td>
+              <td>{money(priceCents(row.line.lastMinor, row.line.priceScale))}</td>
               <td>{row.line.symbol}</td>
               <td>{formatBps(row.allocBps)}</td>
               <td>

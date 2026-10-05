@@ -1,6 +1,7 @@
 use application_core::contracts::{
-    CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
+    CommandRequest, QueryRequest, WorkTicketRecord, FINANCE_CLIENT_CONTRACT_VERSION,
 };
+use application_core::ports::canonical::Canonical;
 use application_core::queries::{execute_command_on, execute_query_on};
 use storage_sqlite::LocalPlatform;
 use uuid::Uuid;
@@ -616,6 +617,83 @@ async fn owner_confirm_100_roc_keeps_cited_url() {
     );
 }
 
+#[tokio::test]
+async fn parsed_19a1_sentence_is_a_hit_not_an_owner_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "RHCQ", "name": "RHCQ"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RocPlanConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "rocPctMinor": 10000,
+            "rocScale": 2,
+            "ownerOverride": true,
+            "source": "19a-1",
+            "sourceUrl": "https://www.roundhillinvestments.com/social-disclosures",
+            "establishedHow": "owner: 100% ROC from Roundhill social-disclosures",
+            "asOfDate": "2026-09-06"
+        }),
+    )
+    .await;
+    let hit = must_ok(
+        &platform,
+        "RocResearchRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "RHCQ",
+            "declarationSource": "roundhill",
+            "sourceUrl": "https://www.roundhillinvestments.com/etf/rhcq/",
+            "asOfDate": "2026-10-05",
+            "candidates": [{
+                "rocPctMinor": 10000,
+                "scale": 2,
+                "taxYear": "2026",
+                "source": "19a-1",
+                "sourceUrl": "https://www.roundhillinvestments.com/etf/rhcq/",
+                "method": "19a-1-current-year",
+                "asOf": "2026-10-05",
+                "kind": "estimate",
+                "establishedHow": "issuer page 19a-1 sentence",
+                "ownerOverride": false
+            }]
+        }),
+    )
+    .await;
+    assert!(!hit["candidates"].as_array().unwrap().is_empty());
+    let research = query_json(
+        &platform,
+        "RocResearchGet",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-10-05"
+        }),
+    )
+    .await;
+    assert_eq!(research["rocPctMinor"].as_i64(), Some(10000));
+    assert_eq!(research["ownerOverride"], false);
+    assert_eq!(research["method"], "19a-1-current-year");
+    assert_ne!(research["source"], "owner-override");
+}
+
 fn roc_19a1_candidate(pct: i64, url: &str) -> serde_json::Value {
     serde_json::json!({
         "rocPctMinor": pct,
@@ -798,6 +876,137 @@ async fn accept_roc_change_updates_current_year_projection() {
 }
 
 #[tokio::test]
+async fn accept_roc_change_files_establish_gap_roc_ticket() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "YMAX", "name": "YMAX"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    let sid = Uuid::parse_str(security_id).unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "divType": "DIV-1",
+            "provider": "YieldMax",
+            "isActive": true,
+            "rocPct2026EstimateMinor": 3590,
+            "rocScale": 2,
+            "needsRocResearch": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": "YMAX",
+            "declarationSource": "yieldmax",
+            "sourceUrl": "https://yieldmaxetfs.com/our-etfs/ymax/",
+            "rocSourceUrl": "https://yieldmaxetfs.com/group1.pdf",
+            "calendarPolicy": "issuer_calendar",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    platform
+        .work_ticket_raise(WorkTicketRecord {
+            ticket_id: Uuid::new_v4(),
+            security_id: sid,
+            symbol: "YMAX".into(),
+            field: "collector".into(),
+            code: "collector_establish_incomplete".into(),
+            tool: "establish_recertify".into(),
+            reason: "Establish recertify (recreate) failed. Gaps: ROC.\nSteps (2):\n  1. ticket_opened — pass\n  2. collector_is_complete — FAIL (Gaps: ROC)\nRemediation:\n  1. Click Recreate adapter.".into(),
+            urls_tried: "[]".into(),
+            opened_on: "2026-10-02".into(),
+            last_seen_on: "2026-10-02".into(),
+            status: "open".into(),
+            filed_on: String::new(),
+            completed_how: String::new(),
+            owner_note: String::new(),
+            retrieve_run_id: String::new(),
+        })
+        .await
+        .expect("raise establish Gaps: ROC");
+    must_ok(
+        &platform,
+        "RocResearchRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "YMAX",
+            "asOfDate": "2026-10-02",
+            "candidates": [roc_19a1_candidate(
+                6869,
+                "https://yieldmaxetfs.com/group1.pdf"
+            )]
+        }),
+    )
+    .await;
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    let ticket_id = tickets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["code"] == "roc_pct_change")
+        .expect("roc_pct_change")["ticketId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    must_ok(
+        &platform,
+        "WorkTicketResolve",
+        serde_json::json!({
+            "ticketId": ticket_id,
+            "tool": "roc_confirm",
+            "action": "accept"
+        }),
+    )
+    .await;
+    let after = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    let open_codes: Vec<&str> = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["code"].as_str())
+        .collect();
+    assert!(
+        !open_codes.iter().any(|c| *c == "roc_pct_change"),
+        "roc_pct_change must file on Accept: {after}"
+    );
+    for t in after["items"].as_array().unwrap() {
+        if t["code"] != "collector_establish_incomplete" {
+            continue;
+        }
+        let reason = t["reason"].as_str().unwrap_or("");
+        assert!(
+            !reason.contains("FAIL (Gaps: ROC)")
+                && !reason.contains("Gaps: ROC."),
+            "Accept must clear Gaps: ROC establish (may leave other establish gaps): {reason}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn reject_roc_change_keeps_previous_projection() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
@@ -947,5 +1156,299 @@ async fn wpay_car_dividends_use_topw_roc_estimate() {
     assert!(
         plan["ytdRocUnknownReason"].is_null(),
         "former ticker is not unclassified: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn roc_retrieve_skips_second_fetch_same_calendar_month_unless_forced() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "AMDW", "name": "AMDW"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "divType": "DIV-1",
+            "isActive": true,
+            "rocScale": 2,
+            "needsRocResearch": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RocResearchRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "AMDW",
+            "asOfDate": "2026-10-02",
+            "forceRoc": true,
+            "candidates": [{
+                "rocPctMinor": 10000,
+                "scale": 2,
+                "taxYear": "2026",
+                "source": "19a-1",
+                "sourceUrl": "https://example.test/amdw/19a-1",
+                "method": "19a-1-current-year",
+                "asOf": "2026-10-02",
+                "kind": "estimate",
+                "establishedHow": "notice",
+                "ownerOverride": false
+            }]
+        }),
+    )
+    .await;
+    let skipped = must_ok(
+        &platform,
+        "RocResearchRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "AMDW",
+            "asOfDate": "2026-10-15",
+            "rocSkippedMonthly": true,
+            "candidates": []
+        }),
+    )
+    .await;
+    assert_eq!(skipped["rocSkippedMonthly"], true, "{skipped}");
+    let forced = must_ok(
+        &platform,
+        "RocResearchRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "AMDW",
+            "asOfDate": "2026-10-15",
+            "forceRoc": true,
+            "candidates": [{
+                "rocPctMinor": 9900,
+                "scale": 2,
+                "taxYear": "2026",
+                "source": "19a-1",
+                "sourceUrl": "https://example.test/amdw/19a-1",
+                "method": "19a-1-current-year",
+                "asOf": "2026-10-15",
+                "kind": "estimate",
+                "establishedHow": "notice",
+                "ownerOverride": false
+            }]
+        }),
+    )
+    .await;
+    assert_ne!(forced.get("rocSkippedMonthly"), Some(&serde_json::json!(true)));
+}
+
+#[tokio::test]
+async fn manual_roc_plan_confirm_clears_needs_research() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "YMAX", "name": "YMAX"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "divType": "DIV-1",
+            "isActive": true,
+            "rocScale": 2,
+            "needsRocResearch": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "RocPlanConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "rocPctMinor": 8500,
+            "rocScale": 2,
+            "source": "owner-override",
+            "method": "owner-override",
+            "kind": "estimate",
+            "establishedHow": "owner typed percent",
+            "ownerOverride": true,
+            "asOfDate": "2026-10-02"
+        }),
+    )
+    .await;
+    let inv = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-10-02" }),
+    )
+    .await;
+    assert_eq!(inv["rocPct2026EstimateMinor"].as_i64(), Some(8500), "{inv}");
+    assert_eq!(inv["needsRocResearch"], false, "{inv}");
+}
+
+/// Latest current-year percent applies to every Car dividend already received
+/// this year. A later percent recomputes that cash. Another account is excluded.
+#[tokio::test]
+async fn current_year_car_roc_recomputes_when_the_percent_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    must_ok(
+        &platform,
+        "MagiRuleSet",
+        serde_json::json!({
+            "thresholdMinor": 50_000_000,
+            "safetyReserveMinor": 1_000_000,
+            "scale": 2
+        }),
+    )
+    .await;
+    let car = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Car", "kind": "taxable"}),
+    )
+    .await;
+    let car_id = car["accountId"].as_str().unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let income_id = income["accountId"].as_str().unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "CARX", "name": "CARX"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "divType": "DIV-1",
+            "rocPct2026EstimateMinor": 10000,
+            "rocScale": 2,
+            "needsRocResearch": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "DividendActualRecord",
+        serde_json::json!({
+            "accountId": car_id,
+            "securityId": security_id,
+            "occurredOn": "2025-11-01",
+            "amountMinor": 2_000,
+            "scale": 2,
+            "idempotencyKey": "carx-prior"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "DividendActualRecord",
+        serde_json::json!({
+            "accountId": car_id,
+            "securityId": security_id,
+            "occurredOn": "2026-03-01",
+            "amountMinor": 10_000,
+            "scale": 2,
+            "idempotencyKey": "carx-car"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "DividendActualRecord",
+        serde_json::json!({
+            "accountId": income_id,
+            "securityId": security_id,
+            "occurredOn": "2026-03-02",
+            "amountMinor": 5_000,
+            "scale": 2,
+            "idempotencyKey": "carx-income"
+        }),
+    )
+    .await;
+
+    let at_100 = query_json(
+        &platform,
+        "CarRocPlanGet",
+        serde_json::json!({ "asOfDate": "2026-10-05" }),
+    )
+    .await;
+    assert!(
+        at_100["ytdRocUnknownReason"].is_null(),
+        "a stored percent is applied while needs_roc_research is set: {at_100}"
+    );
+    assert_eq!(at_100["ytdPaidMinor"].as_i64(), Some(10_000), "{at_100}");
+    assert_eq!(at_100["ytdRocMinor"].as_i64(), Some(10_000), "{at_100}");
+    assert_eq!(at_100["ytdOrdinaryMinor"].as_i64(), Some(0), "{at_100}");
+    assert_eq!(at_100["scale"].as_i64(), Some(2), "{at_100}");
+    let hub_100 = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "symbol": "CARX", "asOfDate": "2026-10-05" }),
+    )
+    .await;
+    assert_eq!(hub_100["rocDistributionsMinor"].as_i64(), Some(10_000), "{hub_100}");
+    assert_eq!(hub_100["scale"].as_i64(), Some(2));
+    let magi_100 = query_json(&platform, "MagiProjectionGet", serde_json::json!({})).await;
+    assert_eq!(
+        magi_100["actualIncludedYtd"]["amountMinor"].as_i64(),
+        Some(0),
+        "100% ROC leaves no ordinary MAGI: {magi_100}"
+    );
+
+    must_ok(
+        &platform,
+        "RocPlanConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "accountId": car_id,
+            "rocPctMinor": 9000,
+            "rocScale": 2,
+            "source": "19a-1",
+            "asOfDate": "2026-10-05"
+        }),
+    )
+    .await;
+
+    let at_90 = query_json(
+        &platform,
+        "CarRocPlanGet",
+        serde_json::json!({ "asOfDate": "2026-10-05" }),
+    )
+    .await;
+    assert_eq!(at_90["ytdPaidMinor"].as_i64(), Some(10_000), "{at_90}");
+    assert_eq!(at_90["ytdRocMinor"].as_i64(), Some(9_000), "{at_90}");
+    assert_eq!(at_90["ytdOrdinaryMinor"].as_i64(), Some(1_000), "{at_90}");
+    assert_eq!(at_90["scale"].as_i64(), Some(2));
+    let hub_90 = query_json(
+        &platform,
+        "InvestmentGet",
+        serde_json::json!({ "symbol": "CARX", "asOfDate": "2026-10-05" }),
+    )
+    .await;
+    assert_eq!(hub_90["rocDistributionsMinor"].as_i64(), Some(9_000), "{hub_90}");
+    let magi_90 = query_json(&platform, "MagiProjectionGet", serde_json::json!({})).await;
+    assert_eq!(
+        magi_90["actualIncludedYtd"]["amountMinor"].as_i64(),
+        Some(1_000),
+        "90% replaces the 100% ordinary fact: {magi_90}"
     );
 }

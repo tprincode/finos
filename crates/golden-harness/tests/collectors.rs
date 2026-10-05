@@ -78,6 +78,16 @@ const MONTHLY_12: &[&str] = &[
     "2026-08-31",
 ];
 
+/// A pay date inside the current month, never after today. Checks that only look at the
+/// current month need this or they stop testing anything once the month turns.
+fn current_month_pay_on() -> String {
+    use chrono::Datelike;
+    let today = chrono::Utc::now().date_naive();
+    let first = today.with_day(1).unwrap_or(today);
+    let yesterday = today.pred_opt().unwrap_or(today);
+    if yesterday >= first { yesterday } else { first }.format("%Y-%m-%d").to_string()
+}
+
 fn monthly_paid_candidates(
     security_id: &str,
     source: &str,
@@ -1617,6 +1627,19 @@ async fn collector_post_checks_c5_amount_mismatch_is_loud_miss() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
     let security_id = seed_div1_monthly(&platform, "PAY1", "amplify").await;
+    // The overlap check deliberately only looks at the current month, so the disputed row
+    // has to be in it. With a fixed August fixture this stopped testing anything the moment
+    // the month turned, and went quietly green-to-red on the calendar alone.
+    let this_month_pay = current_month_pay_on();
+    let mut seeded = monthly_paid_candidates(&security_id, "amplify", 100, 2);
+    seeded.push(serde_json::json!({
+        "securityId": security_id,
+        "amountPerShareMinor": 100,
+        "amountScale": 2,
+        "paymentPeriod": this_month_pay,
+        "source": "amplify",
+        "contentHash": "hash-amplify"
+    }));
     must_ok(
         &platform,
         "CollectorRetrieve",
@@ -1624,13 +1647,14 @@ async fn collector_post_checks_c5_amount_mismatch_is_loud_miss() {
             "securityId": security_id,
             "symbol": "PAY1",
             "declarationSource": "amplify",
-            "candidates": monthly_paid_candidates(&security_id, "amplify", 100, 2),
-            "pagePaid": monthly_paid_candidates(&security_id, "amplify", 100, 2)
+            "candidates": seeded.clone(),
+            "pagePaid": seeded.clone()
         }),
     )
     .await;
-    let mut page = monthly_paid_candidates(&security_id, "amplify", 100, 2);
-    page[11]["amountPerShareMinor"] = serde_json::json!(999);
+    let mut page = seeded.clone();
+    let last = page.len() - 1;
+    page[last]["amountPerShareMinor"] = serde_json::json!(999);
     let mismatch = must_ok(
         &platform,
         "CollectorRetrieve",
@@ -1648,13 +1672,18 @@ async fn collector_post_checks_c5_amount_mismatch_is_loud_miss() {
     let inv = query_json(
         &platform,
         "InvestmentGet",
-        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-07" }),
+        serde_json::json!({ "securityId": security_id, "asOfDate": &this_month_pay }),
     )
     .await;
     let decls = inv["declarations"].as_array().cloned().unwrap_or_default();
-    assert_eq!(decls.len(), 12);
-    let last = decls.iter().find(|d| d["paymentPeriod"] == "2026-08-31");
-    assert_eq!(last.unwrap()["amountPerShareMinor"], 100);
+    let stored = decls
+        .iter()
+        .find(|d| d["paymentPeriod"] == this_month_pay.as_str())
+        .unwrap_or_else(|| panic!("current-month pay missing: {decls:?}"));
+    assert_eq!(
+        stored["amountPerShareMinor"], 100,
+        "the disputed amount must not overwrite the stored fact"
+    );
 }
 
 #[tokio::test]
@@ -1932,6 +1961,100 @@ async fn amplify_retry_accepts_amplify_url_then_retrieve_files_ticket() {
     )
     .await;
     assert_eq!(after["openCount"], 0, "auto-file: {after}");
+}
+
+/// Runtime collect must not fail last_run_ok because the issuer page still lists
+/// months-old pays that are already locked in SQLite (establish history only).
+#[tokio::test]
+async fn declaration_refresh_ignores_historical_page_pays() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "CLM", "cornerstone").await;
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    // Locked paid fact (owner/import) for July — page may reprint a different amount.
+    platform
+        .issuer_declaration_record(
+            sid,
+            Some(100),
+            2,
+            "2026-07-31".into(),
+            "import".into(),
+            "2026-07-31".into(),
+        )
+        .await
+        .unwrap();
+    // Enough paid history so lookback is not in play for this name.
+    for pay in [
+        "2026-04-30",
+        "2026-05-30",
+        "2026-06-30",
+        "2026-08-29",
+        "2026-09-30",
+    ] {
+        platform
+            .issuer_declaration_record(
+                sid,
+                Some(100),
+                2,
+                pay.into(),
+                "cornerstone".into(),
+                pay.into(),
+            )
+            .await
+            .unwrap();
+    }
+    must_ok(
+        &platform,
+        "DeclarationRefresh",
+        serde_json::json!({
+            "asOfDate": "2026-10-01",
+            "declarations": [
+                {
+                    "securityId": security_id,
+                    "amountPerShareMinor": 999,
+                    "amountScale": 2,
+                    "paymentPeriod": "2026-07-31",
+                    "source": "cornerstone",
+                    "contentHash": "hash-hist"
+                },
+                {
+                    "securityId": security_id,
+                    "amountPerShareMinor": 110,
+                    "amountScale": 2,
+                    "paymentPeriod": "2026-10-31",
+                    "source": "cornerstone",
+                    "contentHash": "hash-oct",
+                    "enteredAt": "2026-10-01"
+                }
+            ]
+        }),
+    )
+    .await;
+    let set = query_json(&platform, "CollectorSetGet", serde_json::json!({})).await;
+    let item = set["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["symbol"] == "CLM")
+        .expect("CLM");
+    assert_eq!(
+        item["lastRunOk"], true,
+        "July page reprint must not fail October collect: {item}"
+    );
+    let msg = item["lastRunMessage"].as_str().unwrap_or("");
+    assert!(
+        !msg.contains("missing stored") && !msg.contains("amount mismatch"),
+        "historical verify must stay out of last run: {msg}"
+    );
+    let july = platform
+        .issuer_declaration_list(sid)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|d| d.payment_period == "2026-07-31")
+        .expect("july");
+    assert_eq!(july.amount_per_share_minor, Some(100));
+    assert_eq!(july.source, "import");
 }
 
 /// Fleet / DeclarationRefresh `unchanged` is an ok retrieve. It must file the miss ticket.
@@ -2294,6 +2417,11 @@ fn tickets_nav_opens_all_symbol_queue() {
         "desktop must ticket missed collectors that have no open ticket"
     );
     assert!(
+        app.contains("openTicketCount: openCount")
+            || app.contains("openTicketCount: syncedOpen"),
+        "Home openTicketCount must follow WorkTicketSyncMisses / WorkTicketList, not a stale HomeOpenGet"
+    );
+    assert!(
         collectors.contains("formatCollectorClock")
             && collectors.contains("As of {formatCollectorClock"),
         "declaration status must show date and time"
@@ -2321,6 +2449,36 @@ fn tickets_nav_opens_all_symbol_queue() {
 }
 
 #[test]
+fn work_ticket_roc_research_form_once_per_symbol() {
+    let root = golden_harness::repo_root();
+    let ui = std::fs::read_to_string(root.join("packages/ui-components/src/index.tsx")).unwrap();
+    assert!(
+        ui.contains("function rocResearchOwnerTicketId"),
+        "ROC research strip must pick one owner ticket per symbol"
+    );
+    assert!(
+        ui.contains("rocResearchOwnerTicketId(rows) === t.ticketId"),
+        "only the owner ticket mounts the ROC research form"
+    );
+    assert!(
+        ui.contains("prefer roc_pct_change over establish"),
+        "when both tickets exist, roc_pct_change owns the form"
+    );
+    assert!(
+        ui.contains("aria-label={`Notice ROC ${symbol}`}"),
+        "ticket strip must show Notice ROC after parse"
+    );
+    assert!(
+        ui.contains("aria-label={`ROC parse status ${symbol}`}"),
+        "ticket strip must announce parse success or failure"
+    );
+    assert!(
+        ui.contains("Manual % stays empty until the owner types"),
+        "Manual ROC must not seed from Proposed"
+    );
+}
+
+#[test]
 fn work_ticket_recreate_adapter_opens_add_position() {
     let root = golden_harness::repo_root();
     let ui = std::fs::read_to_string(root.join("packages/ui-components/src/index.tsx")).unwrap();
@@ -2339,16 +2497,35 @@ fn work_ticket_recreate_adapter_opens_add_position() {
     );
     assert!(
         app.contains("openRecreateAdapter"),
-        "desktop must open Add Position from the ticket"
+        "desktop must open Add Investment from the ticket"
     );
     assert!(
         ui.contains("establish_recertify"),
         "Establish recertify ticket must offer Recreate adapter"
     );
-    assert_eq!(
-        app.matches("openRecreateAdapter(t as WorkTicketRecord)").count(),
-        3,
-        "Collectors, Position Details, and Tickets must wire Recreate adapter"
+    // Counting occurrences in App.tsx alone broke the moment Collectors and Position
+    // Details were extracted into feature modules, which the shell rule requires. Assert
+    // each surface in the file that now owns it instead.
+    let collectors =
+        std::fs::read_to_string(root.join("apps/desktop/src/features/collectors/CollectorsScreen.tsx"))
+            .unwrap();
+    let position_details = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/position-details/PositionDetailsScreen.tsx"),
+    )
+    .unwrap();
+    for (surface, source) in [
+        ("Tickets (shell)", &app),
+        ("Collectors", &collectors),
+        ("Position Details", &position_details),
+    ] {
+        assert!(
+            source.contains("onRecreateAdapter={(t) =>"),
+            "{surface} must wire Recreate adapter"
+        );
+    }
+    assert!(
+        app.matches("openRecreateAdapter(t as WorkTicketRecord)").count() >= 2,
+        "the shell must still hand Recreate adapter to its own ticket queues"
     );
     let fn_start = app
         .find("const openRecreateAdapter")
@@ -2356,7 +2533,7 @@ fn work_ticket_recreate_adapter_opens_add_position() {
     let fn_body = &app[fn_start..fn_start + 3600];
     assert!(
         fn_body.contains("setScreen(\"new-investment\")"),
-        "openRecreateAdapter must switch to Add Position: {fn_body}"
+        "openRecreateAdapter must switch to Add Investment: {fn_body}"
     );
     assert!(
         fn_body.contains("setWizSymbol(symbol)"),
@@ -2382,7 +2559,7 @@ fn work_ticket_recreate_adapter_opens_add_position() {
         ui.contains("export function formatPerShare")
             && app.contains("formatPerShare")
             && app.contains("This will change the stored Plan from"),
-        "Recreate / Add Position must show five-decimal per-share and warn when stored Plan would change"
+        "Recreate / Add Investment must show five-decimal per-share and warn when stored Plan would change"
     );
     assert!(
         app.contains("Confirm Plan writes Plan / share only")
@@ -3327,9 +3504,9 @@ async fn research_gaps_are_provider_frequency_div1_roc_not_underlying() {
     assert_eq!(row["underlyingBlank"], true);
 }
 
-/// Planned remaining count must match remaining periods through 31 Dec (cap 4/12/52).
+/// Vendor posts one period: overwrite same-period derived; leftover derived stay; no remaining_year ticket.
 #[tokio::test]
-async fn collector_retrieve_tickets_remaining_year_count_mismatch() {
+async fn collector_vendor_overwrites_derived_same_period_no_remaining_year_ticket() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
     let security_id = seed_div1_monthly(&platform, "PAY1", "issuer").await;
@@ -3339,7 +3516,12 @@ async fn collector_retrieve_tickets_remaining_year_count_mismatch() {
         serde_json::json!({
             "securityId": security_id,
             "asOfDate": "2026-09-05",
-            "dates": [{"payOn": "2026-09-30", "source": "derived_walk"}]
+            "dates": [
+                {"payOn": "2026-09-30", "source": "derived_walk"},
+                {"payOn": "2026-10-31", "source": "derived_walk"},
+                {"payOn": "2026-11-30", "source": "derived_walk"},
+                {"payOn": "2026-12-31", "source": "derived_walk"}
+            ]
         }),
     )
     .await;
@@ -3351,10 +3533,25 @@ async fn collector_retrieve_tickets_remaining_year_count_mismatch() {
             "symbol": "PAY1",
             "declarationSource": "issuer",
             "asOfDate": "2026-09-05",
-            "upcomingPays": [{"payOn": "2026-10-15", "source": "issuer"}]
+            "upcomingPays": [{"payOn": "2026-09-15", "source": "issuer"}]
         }),
     )
     .await;
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let pays = platform.issuer_pay_date_list(sid).await.unwrap();
+    let sep = pays.iter().find(|p| p.pay_on == "2026-09-15");
+    assert!(sep.is_some(), "vendor Sep 15 must be stored: {pays:?}");
+    assert!(
+        !sep.unwrap().source.eq_ignore_ascii_case("derived_walk"),
+        "Sep 15 must not stay derived: {}",
+        sep.unwrap().source
+    );
+    assert!(
+        pays.iter().any(|p| {
+            p.pay_on == "2026-10-31" && p.source.eq_ignore_ascii_case("derived_walk")
+        }),
+        "Oct derived filler must remain: {pays:?}"
+    );
     let tickets = query_json(
         &platform,
         "WorkTicketList",
@@ -3366,8 +3563,67 @@ async fn collector_retrieve_tickets_remaining_year_count_mismatch() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t["code"] == "remaining_year"),
-        "{tickets}"
+            .all(|t| t["code"] != "remaining_year"),
+        "leftover derived + vendor subset must not ticket remaining_year: {tickets}"
+    );
+}
+
+/// Planned remaining count must match remaining periods through 31 Dec (cap 4/12/52).
+#[tokio::test]
+async fn collector_retrieve_tickets_remaining_year_count_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "PAY1", "issuer").await;
+    // Two authoritative (non-derived) dates for the same month after a partial bad state.
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-05",
+            "dates": [
+                {"payOn": "2026-10-01", "source": "vendor_payable"},
+                {"payOn": "2026-11-15", "source": "vendor_payable"}
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "PAY1",
+            "declarationSource": "issuer",
+            "asOfDate": "2026-09-05",
+            "upcomingPays": [
+                {"payOn": "2026-10-15", "source": "issuer"},
+                {"payOn": "2026-11-15", "source": "issuer"}
+            ]
+        }),
+    )
+    .await;
+    // After merge, Oct 1 should move to Oct 15 — no remaining_year from derived fillers.
+    // Authoritative conflict ticket only if merge leaves disagreeing vendor rows.
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let pays = platform.issuer_pay_date_list(sid).await.unwrap();
+    assert!(
+        pays.iter().any(|p| p.pay_on == "2026-10-15"),
+        "merge must store vendor Oct 15: {pays:?}"
+    );
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id, "status": "open" }),
+    )
+    .await;
+    assert!(
+        tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["code"] != "remaining_year"),
+        "successful vendor overwrite must not leave remaining_year: {tickets}"
     );
 }
 
@@ -3493,7 +3749,7 @@ async fn collector_set_exposes_standing_template_copy() {
 }
 
 /// Footer grid: same collector_is_complete fields LotOpen uses on first create
-/// or after Recreate adapter (Add Position). E11 backtest is optional. E12 last
+/// or after Recreate adapter (Add Investment). E11 backtest is optional. E12 last
 /// price is not in REQUIRED_FIELDS.
 #[tokio::test]
 async fn fleet_row_matches_complete_gate_and_template() {
@@ -3703,29 +3959,24 @@ async fn recertify_runs_after_first_create_and_after_recreate() {
     )
     .await;
     assert_eq!(dropped["recertified"], true, "{dropped}");
-    assert_eq!(dropped["collectorComplete"], false, "{dropped}");
-    assert!(
-        dropped["collectorGaps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|g| g.as_str() == Some("Template ROC") || g.as_str() == Some("ROC")),
-        "{dropped}"
-    );
 
-    let tickets = query_json(
-        &platform,
-        "WorkTicketList",
-        serde_json::json!({ "securityId": security_id, "status": "open" }),
-    )
-    .await;
+    // This step used to assert that blanking the template made the collector incomplete.
+    // Recreate deliberately no longer works that way: a blank field means "unchanged", so a
+    // recreate cannot wipe a fact the owner already stored. Assert that rule instead — it
+    // is the one that had no test, and erased research is what kept coming back.
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let kept = platform
+        .retrieval_template_get(sid)
+        .await
+        .expect("template")
+        .expect("template row");
     assert!(
-        tickets["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|t| t["code"] == "collector_establish_incomplete"),
-        "{tickets}"
+        !kept.roc_source_url.trim().is_empty(),
+        "a recreate must not erase the stored Template ROC: {kept:?}"
+    );
+    assert_eq!(
+        kept.source_url, "https://example.test/pay1/distributions",
+        "the URL the owner pasted into the recreate is in force: {kept:?}"
     );
 
     must_ok(
@@ -4493,11 +4744,30 @@ async fn pay1_overlap_amount_change_tickets_keeps_stored() {
     golden_harness::complete_collector_for_first_lot(&platform, &security_id, "PAY1")
         .await
         .expect("complete before 30% rule");
-    let mut page = monthly_paid_candidates(&security_id, "amplify", 100, 2)
-        .into_iter()
-        .rev()
-        .take(2)
-        .collect::<Vec<_>>();
+    // The overlap rule is current-month only, so the disputed pay has to sit in this month
+    // or the fixture rots the moment the calendar turns.
+    let this_month_pay = current_month_pay_on();
+    let stored_row = serde_json::json!({
+        "securityId": security_id,
+        "amountPerShareMinor": 100,
+        "amountScale": 2,
+        "paymentPeriod": this_month_pay,
+        "source": "amplify",
+        "contentHash": "hash-amplify"
+    });
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "PAY1",
+            "declarationSource": "amplify",
+            "candidates": [stored_row.clone()],
+            "pagePaid": [stored_row.clone()]
+        }),
+    )
+    .await;
+    let mut page = vec![stored_row];
     page[0]["amountPerShareMinor"] = serde_json::json!(999);
     let second = must_ok(
         &platform,
@@ -4519,8 +4789,11 @@ async fn pay1_overlap_amount_change_tickets_keeps_stored() {
         .iter()
         .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
         .collect();
-    assert_eq!(paid.len(), 12);
-    let last = paid.iter().find(|d| d.payment_period == "2026-08-31").unwrap();
+    assert!(paid.len() >= 12, "stored pays are facts: {}", paid.len());
+    let last = paid
+        .iter()
+        .find(|d| d.payment_period == this_month_pay)
+        .unwrap_or_else(|| panic!("{this_month_pay} stays stored: {paid:?}"));
     assert_eq!(last.amount_per_share_minor, Some(100));
     let tickets = query_json(&platform, "WorkTicketList", serde_json::json!({})).await;
     assert!(
@@ -4530,6 +4803,411 @@ async fn pay1_overlap_amount_change_tickets_keeps_stored() {
             .iter()
             .any(|t| t["code"] == "declaration_amount_variation" && t["status"] == "open"),
         "{tickets}"
+    );
+}
+
+/// Establish seeds a whole page in one run, so the runtime "new vs prior" check has no
+/// stored row to compare against. MUIB came in that way: $0.24931 then $0.57925 in the same
+/// batch, no ticket, and the owner found it on the cart. Every cadence seeds the same way.
+#[tokio::test]
+async fn establish_batch_tickets_an_in_history_amount_jump_every_cadence() {
+    for (symbol, frequency, pays) in [
+        (
+            "WKLY",
+            "Weekly",
+            vec!["2026-08-04", "2026-08-11", "2026-08-18", "2026-08-25"],
+        ),
+        (
+            "MUIB",
+            "Twice monthly",
+            vec!["2026-08-17", "2026-08-31", "2026-09-16", "2026-10-01"],
+        ),
+        (
+            "MNTH",
+            "Monthly",
+            vec!["2026-06-30", "2026-07-31", "2026-08-31", "2026-09-30"],
+        ),
+        (
+            "QRTR",
+            "Quarterly",
+            vec!["2025-12-31", "2026-03-31", "2026-06-30", "2026-09-30"],
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+        let security_id = seed_div1_monthly(&platform, symbol, "issuer").await;
+        must_ok(
+            &platform,
+            "PositionCharacteristicUpsert",
+            serde_json::json!({
+                "securityId": security_id,
+                "paymentFrequency": frequency,
+                "provider": "Issuer",
+                "divType": "DIV-1",
+                "isActive": true,
+                "replaceCadence": true
+            }),
+        )
+        .await;
+        // Flat, flat, then +132% — the last pay is the one the owner has to rule on.
+        let amounts = [23_461, 23_967, 24_931, 57_925];
+        let page: Vec<serde_json::Value> = pays
+            .iter()
+            .zip(amounts)
+            .map(|(pay, amount)| {
+                serde_json::json!({
+                    "securityId": security_id,
+                    "amountPerShareMinor": amount,
+                    "amountScale": 5,
+                    "paymentPeriod": pay,
+                    "source": "issuer"
+                })
+            })
+            .collect();
+        let seed = must_ok(
+            &platform,
+            "CollectorRetrieve",
+            serde_json::json!({
+                "securityId": security_id,
+                "symbol": symbol,
+                "declarationSource": "issuer",
+                "candidates": page,
+                "pagePaid": page
+            }),
+        )
+        .await;
+        assert_eq!(seed["ok"], true, "{symbol} seed is not a miss: {seed}");
+        let tickets = query_json(&platform, "WorkTicketList", serde_json::json!({})).await;
+        let jump = tickets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["code"] == "declaration_amount_variation" && t["status"] == "open");
+        let jump = jump.unwrap_or_else(|| panic!("{symbol} establish jump must ticket: {tickets}"));
+        assert_eq!(jump["tool"], "amount_confirm", "{symbol}: {jump}");
+        assert!(
+            jump["reason"].as_str().unwrap_or_default().contains(pays[3]),
+            "{symbol} ticket names the latest pay: {jump}"
+        );
+        let sid = Uuid::parse_str(&security_id).unwrap();
+        let paid = platform
+            .issuer_declaration_list(sid)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+            .count();
+        assert_eq!(paid, 4, "{symbol} stored pays stay facts: {paid}");
+    }
+}
+
+/// Plan is the only number the cart and Income Plan read. When a pay lands far from Plan the
+/// owner has to re-confirm Plan — the collector never rewrites it and never tells the cart.
+#[tokio::test]
+async fn paid_far_from_plan_raises_plan_vs_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "MNTH", "amplify").await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "MNTH",
+            "declarationSource": "amplify",
+            "candidates": monthly_paid_candidates(&security_id, "amplify", 1_000, 2),
+            "pagePaid": monthly_paid_candidates(&security_id, "amplify", 1_000, 2)
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1_000,
+            "amountScale": 2,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-09-01",
+            "decisionReason": "collector",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    let this_month_pay = current_month_pay_on();
+    let jumped = serde_json::json!({
+        "securityId": security_id,
+        "amountPerShareMinor": 1_400,
+        "amountScale": 2,
+        "paymentPeriod": this_month_pay,
+        "source": "amplify"
+    });
+    let second = must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "MNTH",
+            "declarationSource": "amplify",
+            "candidates": [jumped.clone()],
+            "pagePaid": [jumped]
+        }),
+    )
+    .await;
+    assert_eq!(second["ok"], true, "Plan drift is not a retrieve miss: {second}");
+    let tickets = query_json(&platform, "WorkTicketList", serde_json::json!({})).await;
+    let drift = tickets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["code"] == "declaration_plan_mismatch" && t["status"] == "open")
+        .unwrap_or_else(|| panic!("paid $14.00 vs Plan $10.00 must ticket: {tickets}"));
+    assert_eq!(drift["tool"], "plan_vs_declaration", "{drift}");
+    assert!(
+        drift["reason"].as_str().unwrap_or_default().contains("Plan $10.00/unit"),
+        "the ticket names the Plan amount the cart is using: {drift}"
+    );
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let in_force = platform
+        .plan_history_list()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|p| p.security_id == sid)
+        .max_by(|a, b| a.effective_from.cmp(&b.effective_from))
+        .expect("Plan stays in force");
+    assert_eq!(
+        in_force.amount_per_share_minor, 1_000,
+        "a declaration never rewrites Plan: {in_force:?}"
+    );
+}
+
+/// An over-plan ticket stays open when a later pay falls back inside 30%.
+/// It files only after a dividend deposit matches that declared cash.
+#[tokio::test]
+async fn over_plan_ticket_stays_open_until_matching_deposit() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "OVR1", "amplify").await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "OVR1",
+            "declarationSource": "amplify",
+            "candidates": monthly_paid_candidates(&security_id, "amplify", 1_000, 2),
+            "pagePaid": monthly_paid_candidates(&security_id, "amplify", 1_000, 2)
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1_000,
+            "amountScale": 2,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-08-01",
+            "decisionReason": "collector",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1_400,
+            "amountScale": 2,
+            "paymentPeriod": "2026-09-30",
+            "source": "amplify",
+            "enteredAt": "2026-09-30"
+        }),
+    )
+    .await;
+    must_ok(&platform, "WorkTicketSyncMisses", serde_json::json!({})).await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1_000,
+            "amountScale": 2,
+            "paymentPeriod": "2026-10-31",
+            "source": "amplify",
+            "enteredAt": "2026-10-31"
+        }),
+    )
+    .await;
+    must_ok(&platform, "WorkTicketSyncMisses", serde_json::json!({})).await;
+    let tickets = query_json(&platform, "WorkTicketList", serde_json::json!({})).await;
+    let open = tickets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["code"] == "declaration_plan_mismatch" && t["status"] == "open")
+        .unwrap_or_else(|| panic!("no matching deposit leaves the over-plan ticket open: {tickets}"));
+    let accounts = query_json(&platform, "AccountList", serde_json::json!({})).await;
+    let account_id = accounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "Income")
+        .unwrap_or_else(|| panic!("seed account: {accounts}"))["accountId"]
+        .as_str()
+        .unwrap();
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": security_id,
+            "activityType": "dividend",
+            "amountMinor": 14_000,
+            "scale": 2,
+            "occurredOn": "2026-09-30",
+            "idempotencyKey": "ovr1-aug-deposit"
+        }),
+    )
+    .await;
+    must_ok(&platform, "WorkTicketSyncMisses", serde_json::json!({})).await;
+    let after = query_json(&platform, "WorkTicketList", serde_json::json!({})).await;
+    let filed = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["ticketId"] == open["ticketId"])
+        .unwrap_or_else(|| panic!("ticket missing after deposit: {after}"));
+    assert_eq!(filed["status"], "done", "matching deposit files the ticket: {filed}");
+}
+
+/// An open Plan ticket keeps the old "away from Plan" sentence until sync
+/// rewrites it. A filed ticket with that sentence stays filed.
+#[tokio::test]
+async fn open_plan_ticket_away_from_plan_is_rewritten_on_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "PLN1", "amplify").await;
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "PLN1",
+            "declarationSource": "amplify",
+            "candidates": monthly_paid_candidates(&security_id, "amplify", 1_000, 2),
+            "pagePaid": monthly_paid_candidates(&security_id, "amplify", 1_000, 2)
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1_000,
+            "amountScale": 2,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-08-01",
+            "decisionReason": "collector",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1_400,
+            "amountScale": 2,
+            "paymentPeriod": "2026-09-30",
+            "source": "amplify",
+            "enteredAt": "2026-09-30"
+        }),
+    )
+    .await;
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let open_id = Uuid::new_v4();
+    let filed_id = Uuid::new_v4();
+    platform
+        .work_ticket_raise(WorkTicketRecord {
+            ticket_id: open_id,
+            security_id: sid,
+            symbol: "PLN1".into(),
+            field: "last_run".into(),
+            code: "declaration_plan_mismatch".into(),
+            tool: "plan_vs_declaration".into(),
+            reason: "Paid $14.00/unit on 2026-09-30 is more than 30% away from Plan $10.00/unit."
+                .into(),
+            urls_tried: "[]".into(),
+            opened_on: "2026-09-30".into(),
+            last_seen_on: "2026-09-30".into(),
+            status: "open".into(),
+            filed_on: String::new(),
+            completed_how: String::new(),
+            owner_note: String::new(),
+            retrieve_run_id: String::new(),
+        })
+        .await
+        .expect("raise stale open plan ticket");
+    platform
+        .work_ticket_raise(WorkTicketRecord {
+            ticket_id: filed_id,
+            security_id: sid,
+            symbol: "PLN1".into(),
+            field: "last_run".into(),
+            code: "declaration_plan_mismatch".into(),
+            tool: "plan_vs_declaration".into(),
+            reason: "Paid $14.00/unit on 2026-09-30 is more than 30% away from Plan $10.00/unit."
+                .into(),
+            urls_tried: "[]".into(),
+            opened_on: "2026-09-01".into(),
+            last_seen_on: "2026-09-01".into(),
+            status: "done".into(),
+            filed_on: "2026-09-02".into(),
+            completed_how: "owner".into(),
+            owner_note: String::new(),
+            retrieve_run_id: String::new(),
+        })
+        .await
+        .expect("raise filed plan ticket");
+    must_ok(&platform, "WorkTicketSyncMisses", serde_json::json!({})).await;
+    let tickets = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "securityId": security_id }),
+    )
+    .await;
+    let items = tickets["items"].as_array().unwrap();
+    let open = items
+        .iter()
+        .find(|t| t["ticketId"] == open_id.to_string())
+        .unwrap_or_else(|| panic!("open ticket missing: {tickets}"));
+    assert_eq!(open["status"], "open", "{open}");
+    let reason = open["reason"].as_str().unwrap_or("");
+    assert!(
+        reason.contains(" over "),
+        "open reason uses the current over sentence: {reason}"
+    );
+    assert!(
+        !reason.contains("away from Plan"),
+        "open reason drops away from Plan: {reason}"
+    );
+    let filed = items
+        .iter()
+        .find(|t| t["ticketId"] == filed_id.to_string())
+        .unwrap_or_else(|| panic!("filed ticket missing: {tickets}"));
+    assert_eq!(filed["status"], "done", "{filed}");
+    assert!(
+        filed["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("away from Plan"),
+        "a filed ticket keeps its stored sentence: {filed}"
     );
 }
 
@@ -4637,6 +5315,642 @@ async fn implausible_amount_variation_ticket_auto_files() {
         .expect("variation ticket");
     assert_eq!(row["status"], "done", "{tickets}");
     assert_eq!(row["completedHow"], "auto_resolved", "{tickets}");
+}
+
+/// EPD-shaped 14d ex+pay twins under Quarterly: retrieve repairs to payable only.
+/// Next plan pay must not stay on the early ex-like date (10/30) when 11/13 exists.
+#[tokio::test]
+async fn enterprise_quarterly_twins_repair_keeps_payable_not_ex() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "EPD", "enterprise").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Quarterly",
+            "replaceCadence": true,
+            "provider": "Enterprise",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    let twins = [
+        ("2025-07-31", 545i64, 3u8),
+        ("2025-08-14", 545, 3),
+        ("2025-10-31", 545, 3),
+        ("2025-11-14", 545, 3),
+        ("2026-07-31", 56, 2),
+        ("2026-08-14", 56, 2),
+    ];
+    for (period, amt, scale) in twins {
+        must_ok(
+            &platform,
+            "IssuerDeclarationRecord",
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": amt,
+                "amountScale": scale,
+                "paymentPeriod": period,
+                "source": "enterprise",
+                "enteredAt": period
+            }),
+        )
+        .await;
+    }
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-01",
+            "dates": [
+                {"payOn": "2026-08-14", "source": "enterprise"},
+                {"payOn": "2026-10-30", "source": "enterprise"},
+                {"payOn": "2026-11-13", "source": "vendor_payable"},
+                {"payOn": "2090-08-17", "source": "vendor_payable"}
+            ]
+        }),
+    )
+    .await;
+    let page = serde_json::json!([
+        {
+            "amountPerShareMinor": 545,
+            "amountScale": 3,
+            "paymentPeriod": "2025-08-14",
+            "exDate": "2025-07-31",
+            "recordDate": "2025-07-31",
+            "source": "enterprise"
+        },
+        {
+            "amountPerShareMinor": 545,
+            "amountScale": 3,
+            "paymentPeriod": "2025-11-14",
+            "exDate": "2025-10-31",
+            "recordDate": "2025-10-31",
+            "source": "enterprise"
+        },
+        {
+            "amountPerShareMinor": 56,
+            "amountScale": 2,
+            "paymentPeriod": "2026-08-14",
+            "exDate": "2026-07-31",
+            "recordDate": "2026-07-31",
+            "source": "enterprise"
+        },
+        {
+            "amountPerShareMinor": 56,
+            "amountScale": 2,
+            "paymentPeriod": "2026-11-13",
+            "exDate": "2026-10-30",
+            "recordDate": "2026-10-30",
+            "source": "enterprise"
+        }
+    ]);
+    let retrieved = must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "EPD",
+            "declarationSource": "enterprise",
+            "paymentFrequency": "Quarterly",
+            "asOfDate": "2026-09-20",
+            "candidates": page,
+            "pagePaid": page,
+            "upcomingPays": [
+                {"payOn": "2026-11-13", "source": "enterprise"}
+            ]
+        }),
+    )
+    .await;
+    let payload: serde_json::Value =
+        serde_json::from_str(retrieved["payloadJson"].as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(
+        payload["postChecks"]["cadenceOk"],
+        true,
+        "twins repaired before spacing check: {payload}"
+    );
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let decls = platform.issuer_declaration_list(sid).await.unwrap();
+    let active: Vec<_> = decls
+        .iter()
+        .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+        .map(|d| d.payment_period.as_str())
+        .collect();
+    assert!(
+        !active.iter().any(|p| *p == "2025-07-31" || *p == "2026-07-31" || *p == "2025-10-31"),
+        "ex/record leftovers must be superseded: {active:?}"
+    );
+    assert!(
+        active.iter().any(|p| *p == "2025-08-14") && active.iter().any(|p| *p == "2026-08-14"),
+        "payables must remain: {active:?}"
+    );
+    let pays = platform.issuer_pay_date_list(sid).await.unwrap();
+    let upcoming: Vec<_> = pays
+        .iter()
+        .filter(|p| p.pay_on.as_str() >= "2026-09-20")
+        .map(|p| p.pay_on.as_str())
+        .collect();
+    assert!(
+        !upcoming.iter().any(|p| *p == "2026-10-30"),
+        "ex-like 10/30 must not remain as next plan pay: {upcoming:?}"
+    );
+    assert!(
+        !upcoming.iter().any(|p| p.starts_with("2090")),
+        "implausible far-future pay_ons dropped: {upcoming:?}"
+    );
+    assert!(
+        upcoming.iter().any(|p| *p == "2026-11-13"),
+        "payable ~11/13 must be the upcoming plan date: {upcoming:?}"
+    );
+}
+
+/// CadenceHeal alone (no page HTML) collapses seeded twins for any locked cadence.
+#[tokio::test]
+async fn collector_cadence_heal_collapses_seeded_quarterly_twins() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "EPD", "enterprise").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Quarterly",
+            "replaceCadence": true,
+            "provider": "Enterprise",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    for (period, amt, scale) in [
+        ("2026-07-31", 56i64, 2u8),
+        ("2026-08-14", 56, 2),
+        ("2026-10-30", 56, 2),
+        ("2026-11-13", 56, 2),
+    ] {
+        must_ok(
+            &platform,
+            "IssuerDeclarationRecord",
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": amt,
+                "amountScale": scale,
+                "paymentPeriod": period,
+                "source": "enterprise",
+                "enteredAt": period
+            }),
+        )
+        .await;
+    }
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-01",
+            "dates": [
+                {"payOn": "2026-10-30", "source": "enterprise"},
+                {"payOn": "2026-11-13", "source": "vendor_payable"}
+            ]
+        }),
+    )
+    .await;
+    let healed = must_ok(
+        &platform,
+        "CollectorCadenceHeal",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-20"
+        }),
+    )
+    .await;
+    assert!(
+        healed["repaired"].as_u64().unwrap_or(0) >= 1,
+        "heal must repair twins: {healed}"
+    );
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let pays = platform.issuer_pay_date_list(sid).await.unwrap();
+    let upcoming: Vec<_> = pays
+        .iter()
+        .filter(|p| p.pay_on.as_str() >= "2026-09-20")
+        .map(|p| p.pay_on.as_str())
+        .collect();
+    assert!(
+        !upcoming.iter().any(|p| *p == "2026-10-30"),
+        "CadenceHeal must drop 10/30 twin: {upcoming:?}"
+    );
+    assert!(
+        upcoming.iter().any(|p| *p == "2026-11-13"),
+        "CadenceHeal must keep 11/13 payable: {upcoming:?}"
+    );
+}
+
+/// Monthly cadence: ~10d ex→pay twin collapses; ~30d series stays.
+#[tokio::test]
+async fn collector_cadence_heal_collapses_monthly_ex_pay_twin() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "HAKY", "amplify").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "provider": "Amplify",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    for (period, amt) in [
+        ("2026-08-21", 38i64),
+        ("2026-08-29", 38),
+        ("2026-09-29", 38),
+    ] {
+        must_ok(
+            &platform,
+            "IssuerDeclarationRecord",
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": amt,
+                "amountScale": 2,
+                "paymentPeriod": period,
+                "source": "amplify",
+                "enteredAt": period
+            }),
+        )
+        .await;
+    }
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-01",
+            "dates": [
+                {"payOn": "2026-08-21", "source": "amplify"},
+                {"payOn": "2026-08-29", "source": "vendor_payable"},
+                {"payOn": "2026-09-29", "source": "vendor_payable"}
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorCadenceHeal",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-20" }),
+    )
+    .await;
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let decls = platform.issuer_declaration_list(sid).await.unwrap();
+    let active: Vec<_> = decls
+        .iter()
+        .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+        .map(|d| d.payment_period.as_str())
+        .collect();
+    assert!(
+        !active.iter().any(|p| *p == "2026-08-21"),
+        "monthly ex twin must drop: {active:?}"
+    );
+    assert!(
+        active.iter().any(|p| *p == "2026-08-29") && active.iter().any(|p| *p == "2026-09-29"),
+        "monthly payables remain: {active:?}"
+    );
+}
+
+/// Unoccurred dates carry no amount, so the paid-twin repair never saw them and a derived
+/// guess the issuer had already contradicted survived forever. Vendor dates are the standard;
+/// derived is the fallback. BITO's live shape, run for every cadence.
+#[tokio::test]
+async fn collector_cadence_heal_drops_the_derived_date_the_vendor_replaced() {
+    for (symbol, freq, derived, vendor, keep) in [
+        ("YMAX", "Weekly", "2026-10-05", "2026-10-07", "2026-10-14"),
+        ("MUIB", "Twice monthly", "2026-10-03", "2026-10-07", "2026-10-23"),
+        ("BITO", "Monthly", "2026-10-03", "2026-10-07", "2026-11-03"),
+        ("EPD", "Quarterly", "2026-10-03", "2026-10-07", "2026-12-20"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+        let security_id = seed_div1_monthly(&platform, symbol, "proshares").await;
+        must_ok(
+            &platform,
+            "PositionCharacteristicUpsert",
+            serde_json::json!({
+                "securityId": security_id,
+                "paymentFrequency": freq,
+                "replaceCadence": true,
+                "provider": "ProShares",
+                "divType": "DIV-1",
+                "isActive": true
+            }),
+        )
+        .await;
+        let sid = Uuid::parse_str(&security_id).unwrap();
+        must_ok(
+            &platform,
+            "IssuerPayDateReplace",
+            serde_json::json!({
+                "securityId": security_id,
+                "asOfDate": "2026-10-01",
+                "dates": [
+                    {"payOn": derived, "source": "derived_walk"},
+                    {"payOn": vendor, "source": "vendor_payable"},
+                    {"payOn": keep, "source": "derived_walk"}
+                ]
+            }),
+        )
+        .await;
+        let before: Vec<String> = platform
+            .issuer_pay_date_list(sid)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.pay_on)
+            .collect();
+        assert!(
+            before.iter().any(|d| d == keep),
+            "{symbol} {freq}: fixture did not store the fallback: {before:?}"
+        );
+        // The seed locks Monthly, and cadence is one value: without replaceCadence the
+        // upsert silently keeps Monthly and the case under test never runs.
+        let stored_freq = platform
+            .position_characteristic_list()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.security_id == sid)
+            .map(|c| c.payment_frequency)
+            .unwrap_or_default();
+        assert_eq!(stored_freq, freq, "{symbol}: fixture cadence did not stick");
+
+        must_ok(
+            &platform,
+            "CollectorCadenceHeal",
+            serde_json::json!({ "securityId": security_id, "asOfDate": "2026-10-01" }),
+        )
+        .await;
+
+        let after: Vec<String> = platform
+            .issuer_pay_date_list(sid)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.pay_on)
+            .collect();
+        assert!(
+            !after.iter().any(|d| d == derived),
+            "{symbol} {freq}: the guess the vendor replaced must go: {after:?}"
+        );
+        assert!(
+            after.iter().any(|d| d == vendor),
+            "{symbol} {freq}: the published date must stay: {after:?}"
+        );
+        assert!(
+            after.iter().any(|d| d == keep),
+            "{symbol} {freq}: an uncontradicted fallback must stay: {after:?}"
+        );
+    }
+}
+
+/// Weekly cadence: 2d same-dollar twin collapses; ~7d series stays.
+#[tokio::test]
+async fn collector_cadence_heal_collapses_weekly_same_dollar_twin() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "YMAX", "yieldmax").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "replaceCadence": true,
+            "provider": "YieldMax",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    for (period, amt) in [
+        ("2026-09-17", 15i64),
+        ("2026-09-18", 15),
+        ("2026-09-25", 15),
+        ("2026-10-02", 15),
+    ] {
+        must_ok(
+            &platform,
+            "IssuerDeclarationRecord",
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": amt,
+                "amountScale": 2,
+                "paymentPeriod": period,
+                "source": "yieldmax",
+                "enteredAt": period
+            }),
+        )
+        .await;
+    }
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-09-01",
+            "dates": [
+                {"payOn": "2026-09-17", "source": "yieldmax"},
+                {"payOn": "2026-09-18", "source": "vendor_payable"},
+                {"payOn": "2026-09-25", "source": "vendor_payable"},
+                {"payOn": "2026-10-02", "source": "vendor_payable"}
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CollectorCadenceHeal",
+        serde_json::json!({ "securityId": security_id, "asOfDate": "2026-09-20" }),
+    )
+    .await;
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let decls = platform.issuer_declaration_list(sid).await.unwrap();
+    let active: Vec<_> = decls
+        .iter()
+        .filter(|d| d.amount_per_share_minor.unwrap_or(0) > 0)
+        .map(|d| d.payment_period.as_str())
+        .collect();
+    assert!(
+        !active.iter().any(|p| *p == "2026-09-17"),
+        "weekly twin early day must drop: {active:?}"
+    );
+    assert!(
+        active.iter().any(|p| *p == "2026-09-18"),
+        "weekly later twin day must remain: {active:?}"
+    );
+    assert!(
+        active.iter().any(|p| *p == "2026-10-02"),
+        "weekly ~7d series must remain: {active:?}"
+    );
+}
+
+/// Failed retrieve tickets carry Steps + retrieveRunId for harden diagnostics.
+#[tokio::test]
+async fn retrieve_ticket_includes_steps_and_run_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "EPD", "enterprise").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Quarterly",
+            "replaceCadence": true,
+            "provider": "Enterprise",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    // Seed only the early twin half so post-heal still leaves a spacing issue if we force miss.
+    must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "EPD",
+            "declarationSource": "enterprise",
+            "paymentFrequency": "Quarterly",
+            "asOfDate": "2026-09-20",
+            "candidates": [],
+            "pagePaid": [],
+            "misses": [{
+                "securityId": security_id,
+                "symbol": "EPD",
+                "code": "declaration_retrieve_miss",
+                "reason": "Issuer page empty"
+            }]
+        }),
+    )
+    .await;
+    let sid = Uuid::parse_str(&security_id).unwrap();
+    let tickets = platform
+        .work_ticket_list(Some(sid), Some("open".into()))
+        .await
+        .unwrap();
+    let miss = tickets
+        .iter()
+        .find(|t| t.code == "declaration_retrieve_miss")
+        .expect("miss ticket");
+    assert!(
+        !miss.retrieve_run_id.trim().is_empty(),
+        "open raise must link retrieve_run_id: {:?}",
+        miss
+    );
+    assert!(
+        miss.reason.contains("Steps (")
+            && miss.reason.contains("pass")
+            && miss.reason.contains("FAIL")
+            && miss.reason.contains("Remediation:"),
+        "ticket reason must list Steps pass+FAIL and Remediation: {}",
+        miss.reason
+    );
+    assert!(
+        miss.reason
+            .split("Remediation:")
+            .nth(1)
+            .unwrap_or("")
+            .lines()
+            .any(|l| l.trim().starts_with("1.")),
+        "Remediation needs numbered action: {}",
+        miss.reason
+    );
+}
+
+/// Clean ~90d quarterly series passes spacing (no twin repair needed).
+#[tokio::test]
+async fn quarterly_clean_ninety_day_spacing_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let security_id = seed_div1_monthly(&platform, "MPLX", "mplx").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Quarterly",
+            "provider": "MPLX",
+            "divType": "DIV-1",
+            "isActive": true
+        }),
+    )
+    .await;
+    let clean = [
+        ("2025-02-14", 9565i64),
+        ("2025-05-16", 9565),
+        ("2025-08-15", 9565),
+        ("2025-11-14", 10765),
+        ("2026-02-17", 10765),
+        ("2026-05-15", 10765),
+        ("2026-08-14", 10765),
+    ];
+    for (period, amt) in clean {
+        must_ok(
+            &platform,
+            "IssuerDeclarationRecord",
+            serde_json::json!({
+                "securityId": security_id,
+                "amountPerShareMinor": amt,
+                "amountScale": 4,
+                "paymentPeriod": period,
+                "source": "mplx",
+                "enteredAt": period
+            }),
+        )
+        .await;
+    }
+    let page: Vec<serde_json::Value> = clean
+        .iter()
+        .map(|(period, amt)| {
+            serde_json::json!({
+                "amountPerShareMinor": amt,
+                "amountScale": 4,
+                "paymentPeriod": period,
+                "source": "mplx"
+            })
+        })
+        .collect();
+    let retrieved = must_ok(
+        &platform,
+        "CollectorRetrieve",
+        serde_json::json!({
+            "securityId": security_id,
+            "symbol": "MPLX",
+            "declarationSource": "mplx",
+            "paymentFrequency": "Quarterly",
+            "asOfDate": "2026-09-20",
+            "candidates": page,
+            "pagePaid": page
+        }),
+    )
+    .await;
+    let payload: serde_json::Value =
+        serde_json::from_str(retrieved["payloadJson"].as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(payload["postChecks"]["cadenceOk"], true, "{payload}");
+    assert!(
+        payload["postChecks"]["issues"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .all(|i| i["code"] != "declaration_cadence_spacing"),
+        "{payload}"
+    );
 }
 
 const MLP1_AUG_8K: &str =
@@ -5685,11 +6999,19 @@ async fn profile_a_income_fleet_is_forty_and_still_miss_zero() {
     )
     .await;
 
+    // The 13 Sep 2026 owner lock was "still-miss 0 on those 40" — a floor, not a ceiling.
+    // Asserting equality made adding an investment break a test instead of being covered by
+    // one. A locked name that disappears is still a hard failure; a new payer is allowed to
+    // join and is held to the same still-miss 0 rule below.
     let enabled = enabled_template_symbols(&platform).await;
-    assert_eq!(
-        enabled,
-        financial_domain::collector::INCOME_FLEET_SYMBOLS,
-        "enabled collectors must be the 40-name income fleet, not 43"
+    let dropped: Vec<&str> = financial_domain::collector::INCOME_FLEET_SYMBOLS
+        .iter()
+        .copied()
+        .filter(|locked| !enabled.iter().any(|e| e == locked))
+        .collect();
+    assert!(
+        dropped.is_empty(),
+        "locked income-fleet names are no longer enabled: {dropped:?}"
     );
 
     for symbol in financial_domain::collector::PARKED_LONG_HOLD_SYMBOLS {
@@ -5742,9 +7064,17 @@ async fn profile_a_income_fleet_is_forty_and_still_miss_zero() {
         .collect();
     run_queue.sort();
     assert_eq!(
-        run_queue,
-        financial_domain::collector::INCOME_FLEET_SYMBOLS,
-        "Run enabled must be the 40, not 43: {fleet}"
+        run_queue, enabled,
+        "the Run enabled queue and the enabled templates must be the same set: {fleet}"
+    );
+    let missing_from_queue: Vec<&str> = financial_domain::collector::INCOME_FLEET_SYMBOLS
+        .iter()
+        .copied()
+        .filter(|locked| !run_queue.iter().any(|q| q == locked))
+        .collect();
+    assert!(
+        missing_from_queue.is_empty(),
+        "locked income-fleet names fell out of Run enabled: {missing_from_queue:?}"
     );
 
     let stats = query_json(
@@ -5755,14 +7085,43 @@ async fn profile_a_income_fleet_is_forty_and_still_miss_zero() {
     .await;
     assert_eq!(
         stats["enabled"].as_u64(),
-        Some(40),
-        "desktop Run enabled is the 40: {stats}"
+        Some(enabled.len() as u64),
+        "desktop Run enabled must count every enabled template: {stats}"
     );
-    assert_eq!(
-        stats["stillMiss"].as_u64(),
-        Some(0),
-        "desktop still-miss must be 0 on the 40: {stats}"
+    assert!(
+        stats["enabled"].as_u64().unwrap_or(0)
+            >= financial_domain::collector::INCOME_FLEET_SYMBOLS.len() as u64,
+        "the fleet may grow but never shrink below the locked roster: {stats}"
     );
+    // The durable form of the owner's still-miss 0 lock, and it applies to every enabled
+    // payer including one added today. `stillMiss` counts names that have not succeeded
+    // *today*, so it reads 41 every morning before anyone clicks Run — asserting on it
+    // directly made this test fail on the calendar rather than on the book. An open
+    // retrieve-miss ticket is the signal that survives the day boundary.
+    let open_misses: Vec<String> = query_json(
+        &platform,
+        "WorkTicketList",
+        serde_json::json!({ "status": "open" }),
+    )
+    .await["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| t["code"] == "declaration_retrieve_miss")
+        .filter_map(|t| t["symbol"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        open_misses.is_empty(),
+        "enabled collectors with an open retrieve miss: {open_misses:?}"
+    );
+    // Only meaningful once a run has happened today; otherwise there is nothing to judge.
+    if stats["ranToday"].as_u64().unwrap_or(0) > 0 {
+        assert_eq!(
+            stats["stillMiss"].as_u64(),
+            Some(0),
+            "a fleet run happened today and left misses: {stats}"
+        );
+    }
     let empty: Vec<serde_json::Value> = Vec::new();
     let outside: Vec<&str> = stats["ranOutsideFleet"]
         .as_array()
@@ -5776,4 +7135,66 @@ async fn profile_a_income_fleet_is_forty_and_still_miss_zero() {
             "{symbol} must not appear as a live run: {stats}"
         );
     }
+}
+
+/// The "how verified" sweep: run the Add-investment readiness list over every name the live
+/// book has enabled, not just the one the owner happens to be looking at. A position that
+/// reads established while its Plan misses the next pay, its adapter is blank, or its rate
+/// has no period count is exactly the failure this is here to surface.
+#[tokio::test]
+async fn every_enabled_position_passes_the_add_investment_readiness_list() {
+    let dir = profile_a_app_dir();
+    let db = dir.join("local.sqlite");
+    if !db.is_file() {
+        eprintln!("no live book at {}; readiness sweep skipped", db.display());
+        return;
+    }
+    let platform = LocalPlatform::open(&dir).await.expect("open data sqlite");
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    let mut gaps: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for security in platform.security_list().await.expect("securities") {
+        let Some(template) = platform
+            .retrieval_template_get(security.security_id)
+            .await
+            .expect("template")
+        else {
+            continue;
+        };
+        if !template.collector_enabled {
+            continue;
+        }
+        let inv = query_json(
+            &platform,
+            "InvestmentGet",
+            serde_json::json!({ "securityId": security.security_id, "asOfDate": today }),
+        )
+        .await;
+        checked += 1;
+        let open: Vec<String> = inv["establishChecklist"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["status"] == "open")
+            .filter(|r| r["blocksComplete"] == true)
+            .filter_map(|r| r["id"].as_str().map(str::to_string))
+            .collect();
+        if !open.is_empty() {
+            gaps.push(format!("{} -> {}", security.symbol, open.join(", ")));
+        }
+    }
+
+    assert!(
+        checked >= financial_domain::collector::INCOME_FLEET_SYMBOLS.len(),
+        "readiness swept only {checked} enabled names"
+    );
+    gaps.sort();
+    assert!(
+        gaps.is_empty(),
+        "{} enabled positions are not fully wired ({} swept):\n  {}",
+        gaps.len(),
+        checked,
+        gaps.join("\n  ")
+    );
 }

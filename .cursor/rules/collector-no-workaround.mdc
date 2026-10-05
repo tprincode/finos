@@ -1,0 +1,13 @@
+---
+description: Collector code is the shared machine. No one-symbol workaround.
+globs: crates/**/*collector*.rs,crates/**/*declaration*.rs,crates/**/*schedule*.rs
+alwaysApply: false
+---
+
+# No one-symbol collector workaround
+
+Collector code is the shared machine. Per-symbol facts live on the position or template. The code reads those settings. It does not embed them.
+
+A workaround is a fail when it exists so one symbol works: a hardcoded URL, percent, amount, interval, or `if symbol == …` branch. The fix is to read the stored setting, or add a setting if the machine cannot express the case, then use that path for every name that has the setting.
+
+A new interval is allowed when it is data. It is not allowed as a special case in code for one ticker.

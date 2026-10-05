@@ -3,6 +3,7 @@
 use crate::cash_management::{cash_distribution_post, ssa_confirm};
 use crate::contracts::{
     ActivityRecord, CashElementRecord, PlannedOccurrenceRecord, WeekAheadBody, WeekAheadRow,
+    WeekAheadTaskRow,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
@@ -74,6 +75,36 @@ fn series_window(
 
 fn is_saturday(on: &str) -> bool {
     parse_iso_date(on).is_some_and(|d| d.weekday() == Weekday::Sat)
+}
+
+/// One-time date: start date, else a calendar day in the schedule field.
+/// `10/5` uses the year of `as_of`. A bare weekday token is not a date.
+pub(crate) fn one_time_occurred_on(start_on: &str, schedule: &str, as_of: &str) -> Option<String> {
+    if let Some(day) = parse_iso_date(start_on.trim()) {
+        return Some(day.format("%Y-%m-%d").to_string());
+    }
+    let schedule = schedule.trim();
+    if let Some(day) = parse_iso_date(schedule) {
+        return Some(day.format("%Y-%m-%d").to_string());
+    }
+    let year = parse_iso_date(as_of).map(|d| d.year())?;
+    let parts: Vec<&str> = schedule.split('/').collect();
+    let (month, day, year) = match parts.as_slice() {
+        [month, day] => {
+            let month = month.parse::<u32>().ok()?;
+            let day = day.parse::<u32>().ok()?;
+            (month, day, year)
+        }
+        [month, day, year_text] => {
+            let month = month.parse::<u32>().ok()?;
+            let day = day.parse::<u32>().ok()?;
+            let parsed = year_text.parse::<i32>().ok()?;
+            let year = if parsed < 100 { 2000 + parsed } else { parsed };
+            (month, day, year)
+        }
+        _ => return None,
+    };
+    NaiveDate::from_ymd_opt(year, month, day).map(|d| d.format("%Y-%m-%d").to_string())
 }
 
 /// Drop leftover seed Saturdays and off-schedule future rows so Week Ahead
@@ -230,6 +261,30 @@ pub(crate) async fn ensure_horizon(
         if element.amount_minor <= 0 {
             continue;
         }
+        if element.cadence == "one-time" {
+            if let Some(on) = one_time_occurred_on(&element.start_on, &element.weekday_or_month_day, end)
+            {
+                let has = existing.iter().any(|o| o.element_id == element.element_id);
+                if !has {
+                    let row = canonical
+                        .planned_occurrence_upsert(PlannedOccurrenceRecord {
+                            occurrence_id: Uuid::new_v4(),
+                            element_id: element.element_id,
+                            account: element.account.clone(),
+                            kind: element.kind.clone(),
+                            occurred_on: on,
+                            amount_minor: element.amount_minor,
+                            confirmed_at: None,
+                            note: element.note.clone(),
+                            is_exception: false,
+                            is_cancelled: false,
+                        })
+                        .await?;
+                    existing.push(row);
+                }
+            }
+            continue;
+        }
         let mut range_start = start_d;
         let mut range_end = end_d;
         if let Some(s) = parse_iso_date(&element.start_on) {
@@ -325,12 +380,75 @@ pub async fn week_ahead_get(
             .then(a.account.cmp(&b.account))
             .then(a.note.cmp(&b.note))
     });
+    let loans = canonical.external_loans_due(start.clone(), end.clone()).await?;
+    let tasks = week_ahead_tasks(canonical, as_of, &start, &end).await?;
     Ok(WeekAheadBody {
         period_start: start,
         period_end: end,
         rows,
+        loans,
+        tasks,
         scale: 2,
     })
+}
+
+async fn week_ahead_tasks(
+    canonical: &dyn Canonical,
+    as_of: &str,
+    start: &str,
+    end: &str,
+) -> Result<Vec<WeekAheadTaskRow>, PlatformError> {
+    let as_of = &as_of[..as_of.len().min(10)];
+    let items = canonical.task_list(None, None).await?;
+    let mut out: Vec<WeekAheadTaskRow> = items
+        .into_iter()
+        .filter(|t| t.status == crate::task::STATUS_OPEN)
+        .filter(|t| t.week_start == start || (t.due_on.as_str() >= start && t.due_on.as_str() <= end))
+        .filter(|t| {
+            if t.status == crate::task::STATUS_IGNORED
+                && !t.ignore_until.is_empty()
+                && as_of < t.ignore_until.as_str()
+            {
+                return false;
+            }
+            true
+        })
+        .map(|t| {
+            let payload = serde_json::from_str::<serde_json::Value>(&t.payload_json).ok();
+            let overage = payload
+                .as_ref()
+                .and_then(|v| v.get("overageMinor").and_then(|n| n.as_i64()))
+                .unwrap_or(0);
+            let title = if t.code == crate::task::CODE_MAGI_CLIFF_OVER {
+                crate::task::magi_week_title(overage)
+            } else if t.code.starts_with("plan_under:") || t.code.starts_with("plan_over:") {
+                match payload
+                    .as_ref()
+                    .and_then(|v| v.get("symbol"))
+                    .and_then(|s| s.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(symbol) => format!("{symbol} — {}", t.title),
+                    None => t.title.clone(),
+                }
+            } else {
+                t.title.clone()
+            };
+            WeekAheadTaskRow {
+                task_id: t.task_id,
+                code: t.code,
+                title,
+                domain: t.domain,
+                due_on: t.due_on,
+                status: t.status,
+                week_start: t.week_start,
+                payload_json: t.payload_json,
+                scale: 2,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.due_on.cmp(&b.due_on).then(a.title.cmp(&b.title)));
+    Ok(out)
 }
 
 pub async fn week_ahead_edit(
@@ -457,6 +575,21 @@ pub async fn week_ahead_confirm(
             Some(format!("week-ahead-{}", row.occurrence_id)),
         )
         .await?
+    } else if row.account.eq_ignore_ascii_case("FI Roth")
+        || row.account.eq_ignore_ascii_case("Roth")
+    {
+        cash_distribution_post(
+            canonical,
+            account_id,
+            "Roth_Distribution".into(),
+            row.occurred_on.clone(),
+            Some(row.amount_minor),
+            0,
+            0,
+            2,
+            Some(format!("week-ahead-{}", row.occurrence_id)),
+        )
+        .await?
     } else {
         return Err(PlatformError::new(
             "cash_account_kind",
@@ -464,6 +597,14 @@ pub async fn week_ahead_confirm(
         ));
     };
     row.confirmed_at = Some(chrono::Utc::now().to_rfc3339());
-    canonical.planned_occurrence_upsert(row).await?;
+    canonical.planned_occurrence_upsert(row.clone()).await?;
+    canonical
+        .external_loan_apply_element(
+            row.element_id,
+            row.occurrence_id,
+            row.occurred_on,
+            row.amount_minor,
+        )
+        .await?;
     Ok(posted)
 }

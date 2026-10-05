@@ -156,6 +156,281 @@ pub struct CollectorCompleteStatus {
     pub gaps: Vec<String>,
 }
 
+/// Process A establish checklist row status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EstablishRowStatus {
+    Done,
+    Open,
+    Na,
+}
+
+impl EstablishRowStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Open => "open",
+            Self::Na => "na",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EstablishChecklistRow {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub status: EstablishRowStatus,
+    /// When false, Open status blocks the establish footer Complete.
+    pub blocks_complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EstablishChecklist {
+    pub rows: Vec<EstablishChecklistRow>,
+    pub complete: bool,
+    pub open_labels: Vec<String>,
+}
+
+fn gap_open(gaps: &[String], code: &str) -> bool {
+    gaps.iter().any(|g| g.eq_ignore_ascii_case(code))
+}
+
+fn row(
+    id: &'static str,
+    label: &'static str,
+    status: EstablishRowStatus,
+    blocks_complete: bool,
+) -> EstablishChecklistRow {
+    EstablishChecklistRow {
+        id,
+        label,
+        status,
+        blocks_complete,
+    }
+}
+
+/// Everything the readiness checklist needs that is not a collector gap code.
+/// A struct, not more positional bools: a new MUST-satisfy step is a field, so adding one
+/// is a compile error at every call site instead of a silently-skipped check.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReadinessFacts<'a> {
+    pub plan_known: bool,
+    pub calculator_eligible: bool,
+    pub price_ok: bool,
+    pub has_open_lot: bool,
+    pub roc_in_scope: bool,
+    /// False for cash and holdings-only names: they are never collected, so the adapter
+    /// and enabled rows are N/A rather than open forever.
+    pub collectable: bool,
+    /// Issuer adapter slug on the template. Blank or unregistered means no declaration is
+    /// ever retrieved for this name — the silent failure behind a payer with no history.
+    pub declaration_source: &'a str,
+    /// Template row says Run enabled may collect this symbol.
+    pub collector_enabled: bool,
+    /// Periods the cart and Calculator annualise with. Zero means no rate can be formed,
+    /// which is how a Twice monthly name shipped a rate built on the wrong period count.
+    pub plan_periods_per_year: u8,
+    /// Next unoccurred pay date, blank when none is known.
+    pub next_pay_on: &'a str,
+    /// A confirmed Plan window covers `next_pay_on`. A Plan that starts after the pay date
+    /// leaves the week grid with no Plan $/sh even though the name looks established.
+    pub plan_covers_next_pay: bool,
+}
+
+/// Establish checklist for Add Investment. Lot does not block Complete.
+pub fn establish_checklist(
+    status: &CollectorCompleteStatus,
+    facts: ReadinessFacts<'_>,
+) -> EstablishChecklist {
+    let ReadinessFacts {
+        plan_known,
+        calculator_eligible,
+        price_ok,
+        has_open_lot,
+        roc_in_scope,
+        collectable,
+        declaration_source,
+        collector_enabled,
+        plan_periods_per_year,
+        next_pay_on,
+        plan_covers_next_pay,
+    } = facts;
+    let gaps = &status.gaps;
+    let mut rows = Vec::new();
+    let done_or_open = |code: &str| {
+        if gap_open(gaps, code) {
+            EstablishRowStatus::Open
+        } else {
+            EstablishRowStatus::Done
+        }
+    };
+    rows.push(row(
+        "template_dividend",
+        "Template Dividend URL",
+        done_or_open("template_dividend"),
+        true,
+    ));
+    rows.push(row(
+        "template_roc",
+        "Template ROC URL",
+        if !roc_in_scope {
+            EstablishRowStatus::Na
+        } else {
+            done_or_open("template_roc")
+        },
+        roc_in_scope,
+    ));
+    rows.push(row(
+        "div_type",
+        "DIV-1 or CASH",
+        done_or_open("div_type"),
+        true,
+    ));
+    rows.push(row(
+        "frequency",
+        "Payment frequency",
+        done_or_open("frequency"),
+        true,
+    ));
+    rows.push(row(
+        "provider",
+        "Provider",
+        done_or_open("provider"),
+        true,
+    ));
+    rows.push(row(
+        "underlying",
+        "Underlying",
+        done_or_open("underlying"),
+        true,
+    ));
+    rows.push(row(
+        "risk_tier",
+        "Risk tier",
+        done_or_open("risk_tier"),
+        true,
+    ));
+    rows.push(row(
+        "paid_history",
+        "Paid history / inception",
+        done_or_open("paid_history"),
+        true,
+    ));
+    rows.push(row(
+        "remaining_year",
+        "Remaining-year pay dates",
+        done_or_open("remaining_year"),
+        true,
+    ));
+    rows.push(row(
+        "roc_estimate",
+        "ROC estimate confirmed",
+        if !roc_in_scope {
+            EstablishRowStatus::Na
+        } else {
+            done_or_open("roc_estimate")
+        },
+        roc_in_scope,
+    ));
+    rows.push(row(
+        "plan",
+        "Confirm Plan",
+        if plan_known {
+            EstablishRowStatus::Done
+        } else {
+            EstablishRowStatus::Open
+        },
+        true,
+    ));
+    rows.push(row(
+        "calculator",
+        "Calculator / Cart eligible",
+        if calculator_eligible {
+            EstablishRowStatus::Done
+        } else {
+            EstablishRowStatus::Open
+        },
+        true,
+    ));
+    rows.push(row(
+        "last_price",
+        "Last price (non-$0)",
+        if price_ok {
+            EstablishRowStatus::Done
+        } else {
+            EstablishRowStatus::Open
+        },
+        true,
+    ));
+    rows.push(row(
+        "declaration_adapter",
+        "Issuer declaration adapter",
+        if !collectable {
+            EstablishRowStatus::Na
+        } else if crate::div1::is_registered_declaration_source(declaration_source) {
+            EstablishRowStatus::Done
+        } else {
+            EstablishRowStatus::Open
+        },
+        collectable,
+    ));
+    rows.push(row(
+        "collector_enabled",
+        "Collector enabled (Run enabled collects it)",
+        if !collectable {
+            EstablishRowStatus::Na
+        } else if collector_enabled {
+            EstablishRowStatus::Done
+        } else {
+            EstablishRowStatus::Open
+        },
+        collectable,
+    ));
+    rows.push(row(
+        "plan_periods",
+        "Annual periods for the rate",
+        if plan_periods_per_year > 0 {
+            EstablishRowStatus::Done
+        } else {
+            EstablishRowStatus::Open
+        },
+        true,
+    ));
+    rows.push(row(
+        "plan_window",
+        "Plan window covers the next pay date",
+        if next_pay_on.trim().is_empty() {
+            EstablishRowStatus::Na
+        } else if plan_covers_next_pay {
+            EstablishRowStatus::Done
+        } else {
+            EstablishRowStatus::Open
+        },
+        !next_pay_on.trim().is_empty(),
+    ));
+    rows.push(row(
+        "first_lot",
+        "First lot (optional — unlocks Collectors, Income Plan $, managed count)",
+        if has_open_lot {
+            EstablishRowStatus::Done
+        } else {
+            EstablishRowStatus::Na
+        },
+        false,
+    ));
+
+    let open_labels: Vec<String> = rows
+        .iter()
+        .filter(|r| r.blocks_complete && r.status == EstablishRowStatus::Open)
+        .map(|r| r.label.to_string())
+        .collect();
+    let complete = open_labels.is_empty();
+    EstablishChecklist {
+        rows,
+        complete,
+        open_labels,
+    }
+}
+
 pub fn collector_is_complete(spec: &CollectorCompleteSpec<'_>) -> bool {
     collector_status(spec).complete
 }
@@ -262,15 +537,21 @@ fn remaining_year_matches(spec: &CollectorCompleteSpec<'_>) -> bool {
         Some(issuer) => {
             let issuer_u = issuer.min(i64::from(u8::MAX)) as u8;
             if periods == 52 {
-                planned_u.abs_diff(issuer_u) <= 1
-            } else {
-                planned_u == issuer_u
+                return planned_u.abs_diff(issuer_u) <= 1;
             }
+            // Equality made every name permanently incomplete whenever the issuer had
+            // published fewer months ahead than the derived walk filled — a monthly payer
+            // that posts one month at a time could never be complete. The real rules are
+            // that no published date is missing, and that the walk has not invented more
+            // pays than the year has left.
+            let year_cap = remaining_periods_to_year_end(spec.as_of, periods).unwrap_or(periods);
+            planned_u >= issuer_u && planned_u <= year_cap.max(issuer_u)
         }
     }
 }
 
-/// True when both lists have unoccurred dates through 31 Dec and they differ.
+/// True when both lists have unoccurred dates through 31 Dec and the **sets** differ.
+/// Prefer [`remaining_year_authoritative_disagree`] when derived fillers may remain.
 pub fn remaining_year_dates_disagree(stored: &[&str], issuer: &[&str], as_of: &str) -> bool {
     let year = as_of.get(..4).unwrap_or("");
     if year.len() != 4 {
@@ -291,6 +572,68 @@ pub fn remaining_year_dates_disagree(stored: &[&str], issuer: &[&str], as_of: &s
     };
     let issuer_set = filt(issuer);
     !issuer_set.is_empty() && filt(stored) != issuer_set
+}
+
+/// True when **authoritative** (non-derived) stored future dates disagree with the
+/// vendor list for the same cadence period through 31 Dec.
+///
+/// Leftover `derived_walk` / invented fillers for periods the vendor has not posted
+/// must **not** be passed in `stored_authoritative` — they are not a ticket.
+pub fn remaining_year_authoritative_disagree(
+    stored_authoritative: &[&str],
+    vendor: &[&str],
+    as_of: &str,
+    payment_frequency: &str,
+) -> bool {
+    let year = as_of.get(..4).unwrap_or("");
+    if year.len() != 4 {
+        return false;
+    }
+    let year_end = format!("{year}-12-31");
+    let in_window = |on: &str| -> Option<String> {
+        let p = on.trim();
+        if p.len() >= 10 && p >= as_of && p <= year_end.as_str() {
+            Some(p[..10].to_string())
+        } else {
+            None
+        }
+    };
+    let stored: Vec<String> = stored_authoritative
+        .iter()
+        .filter_map(|on| in_window(on))
+        .collect();
+    let vendor: Vec<String> = vendor.iter().filter_map(|on| in_window(on)).collect();
+    if vendor.is_empty() {
+        return false;
+    }
+    for v in &vendor {
+        let same: Vec<&String> = stored
+            .iter()
+            .filter(|s| {
+                crate::schedule::vendor_payables_same_period(payment_frequency, s, v)
+            })
+            .collect();
+        if same.is_empty() {
+            return true;
+        }
+        if !same.iter().any(|s| s.as_str() == v.as_str()) {
+            return true;
+        }
+    }
+    for s in &stored {
+        let covered = vendor.iter().any(|v| {
+            crate::schedule::vendor_payables_same_period(payment_frequency, s, v)
+        });
+        if !covered {
+            return true;
+        }
+    }
+    false
+}
+
+/// Pay-date `source` values that are projections — overwritten when vendor posts.
+pub fn is_derived_pay_source(source: &str) -> bool {
+    crate::mlp_sec::is_invented_horizon_source(source)
 }
 
 fn risk_accepted(raw: &str) -> bool {
@@ -390,6 +733,12 @@ pub fn calculator_view_includes(div_type: &str, symbol: &str, payment_frequency:
         return false;
     }
     is_div1_or_cash(div_type, symbol)
+}
+
+/// A held position or a stored Plan stays on the Calculator sheet unless the cadence is None.
+/// Home plan count still uses `calculator_view_includes`.
+pub fn calculator_row_listed(payment_frequency: &str) -> bool {
+    !crate::calculator::is_non_paying(payment_frequency)
 }
 
 /// Failing DIV-1/CASH collector with an empty seed URL. Never-run may probe once.
@@ -730,6 +1079,33 @@ mod tests {
             &["2026-10-15", "2026-11-13", "2026-12-15"],
             "2026-09-06"
         ));
+        // Derived fillers + vendor subset must not ticket when authoritative matches.
+        assert!(!remaining_year_authoritative_disagree(
+            &["2026-10-15"],
+            &["2026-10-15"],
+            "2026-09-06",
+            "Monthly",
+        ));
+        assert!(!remaining_year_authoritative_disagree(
+            &["2026-10-15"],
+            &["2026-10-15"],
+            "2026-09-06",
+            "Monthly",
+        ));
+        // Same month, different day → authoritative conflict.
+        assert!(remaining_year_authoritative_disagree(
+            &["2026-10-01"],
+            &["2026-10-15"],
+            "2026-09-06",
+            "Monthly",
+        ));
+        // Extra authoritative date vendor did not list.
+        assert!(remaining_year_authoritative_disagree(
+            &["2026-10-15", "2026-11-15"],
+            &["2026-10-15"],
+            "2026-09-06",
+            "Monthly",
+        ));
     }
 
     #[test]
@@ -829,6 +1205,172 @@ mod tests {
             last_run_ok: None,
         };
         assert!(collector_is_complete(&spec));
+    }
+
+    /// A fully wired payer: every readiness field satisfied. Tests below break one field
+    /// at a time so each MUST-satisfy step is pinned to exactly one failure.
+    fn wired<'a>() -> ReadinessFacts<'a> {
+        ReadinessFacts {
+            plan_known: true,
+            calculator_eligible: true,
+            price_ok: true,
+            has_open_lot: true,
+            roc_in_scope: false,
+            collectable: true,
+            declaration_source: "amplify",
+            collector_enabled: true,
+            plan_periods_per_year: 24,
+            next_pay_on: "2026-10-16",
+            plan_covers_next_pay: true,
+        }
+    }
+
+    fn row_status(list: &EstablishChecklist, id: &str) -> EstablishRowStatus {
+        list.rows
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("no readiness row {id}"))
+            .status
+    }
+
+    /// BITO's live shape: ProShares had posted only October, so the walk supplied Nov and
+    /// Dec. Demanding stored == published made that name incomplete forever.
+    #[test]
+    fn derived_fillers_past_the_published_horizon_are_not_a_remaining_year_gap() {
+        let mut spec = base(&[]);
+        spec.as_of = "2026-10-03";
+        spec.payment_frequency = "Monthly";
+        spec.planned_remaining = Some(3);
+        spec.issuer_remaining = Some(1);
+        assert!(
+            !collector_status(&spec).gaps.iter().any(|g| g == "remaining_year"),
+            "one published month plus two fallbacks is the normal shape"
+        );
+
+        // A published date that is missing from the stored series is still a gap.
+        spec.planned_remaining = Some(1);
+        spec.issuer_remaining = Some(3);
+        assert!(
+            collector_status(&spec).gaps.iter().any(|g| g == "remaining_year"),
+            "stored must cover every date the issuer published"
+        );
+
+        // And the walk may not invent more pays than the year has left.
+        spec.planned_remaining = Some(9);
+        spec.issuer_remaining = Some(1);
+        assert!(
+            collector_status(&spec).gaps.iter().any(|g| g == "remaining_year"),
+            "9 remaining monthly pays cannot fit between October and December"
+        );
+    }
+
+    #[test]
+    fn a_fully_wired_payer_has_no_open_readiness_rows() {
+        let ok = CollectorCompleteStatus {
+            complete: true,
+            gaps: Vec::new(),
+        };
+        let list = establish_checklist(&ok, wired());
+        assert!(
+            list.complete,
+            "every field satisfied must be Complete, open: {:?}",
+            list.open_labels
+        );
+    }
+
+    /// The silent killer: a blank or unregistered adapter means no declaration is ever
+    /// retrieved, so the name looks established and never pays history.
+    #[test]
+    fn missing_declaration_adapter_blocks_complete() {
+        let ok = CollectorCompleteStatus {
+            complete: true,
+            gaps: Vec::new(),
+        };
+        let mut facts = wired();
+        facts.declaration_source = "";
+        let blank = establish_checklist(&ok, facts);
+        assert_eq!(row_status(&blank, "declaration_adapter"), EstablishRowStatus::Open);
+        assert!(!blank.complete);
+
+        facts.declaration_source = "a-provider-we-never-registered";
+        let unknown = establish_checklist(&ok, facts);
+        assert_eq!(
+            row_status(&unknown, "declaration_adapter"),
+            EstablishRowStatus::Open,
+            "an unregistered slug is as dead as a blank one"
+        );
+
+        // Cash and holdings-only names are never collected: N/A, not open forever.
+        facts.collectable = false;
+        facts.declaration_source = "";
+        facts.collector_enabled = false;
+        let cash = establish_checklist(&ok, facts);
+        assert_eq!(row_status(&cash, "declaration_adapter"), EstablishRowStatus::Na);
+        assert_eq!(row_status(&cash, "collector_enabled"), EstablishRowStatus::Na);
+        assert!(cash.complete);
+    }
+
+    #[test]
+    fn collector_not_enabled_blocks_complete() {
+        let ok = CollectorCompleteStatus {
+            complete: true,
+            gaps: Vec::new(),
+        };
+        let mut facts = wired();
+        facts.collector_enabled = false;
+        let list = establish_checklist(&ok, facts);
+        assert_eq!(row_status(&list, "collector_enabled"), EstablishRowStatus::Open);
+        assert!(!list.complete);
+    }
+
+    /// MUIB shipped a cart rate built on the wrong period count. Zero periods means no
+    /// rate can be formed at all, so it is a blocking gap, not a display detail.
+    #[test]
+    fn zero_annual_periods_blocks_complete() {
+        let ok = CollectorCompleteStatus {
+            complete: true,
+            gaps: Vec::new(),
+        };
+        let mut facts = wired();
+        facts.plan_periods_per_year = 0;
+        let list = establish_checklist(&ok, facts);
+        assert_eq!(row_status(&list, "plan_periods"), EstablishRowStatus::Open);
+        assert!(!list.complete);
+    }
+
+    /// HAKY's symptom: a Plan that starts after the pay date leaves the week grid with no
+    /// Plan $/sh while every establish field reads done.
+    #[test]
+    fn plan_that_misses_the_next_pay_blocks_complete() {
+        let ok = CollectorCompleteStatus {
+            complete: true,
+            gaps: Vec::new(),
+        };
+        let mut facts = wired();
+        facts.plan_covers_next_pay = false;
+        let list = establish_checklist(&ok, facts);
+        assert_eq!(row_status(&list, "plan_window"), EstablishRowStatus::Open);
+        assert!(!list.complete);
+
+        // No published pay date yet is unknown, not a failure.
+        facts.next_pay_on = "";
+        let unknown = establish_checklist(&ok, facts);
+        assert_eq!(row_status(&unknown, "plan_window"), EstablishRowStatus::Na);
+        assert!(unknown.complete);
+    }
+
+    /// The owner's rule: a researched name with zero lots is valid.
+    #[test]
+    fn no_lot_is_still_complete() {
+        let ok = CollectorCompleteStatus {
+            complete: true,
+            gaps: Vec::new(),
+        };
+        let mut facts = wired();
+        facts.has_open_lot = false;
+        let list = establish_checklist(&ok, facts);
+        assert_eq!(row_status(&list, "first_lot"), EstablishRowStatus::Na);
+        assert!(list.complete, "no lot required to be established");
     }
 
     #[test]
@@ -1002,5 +1544,8 @@ mod tests {
         assert!(!calculator_view_includes("", "BTC-USD", ""));
         assert!(!calculator_view_includes("", "SOXL", "None"));
         assert!(!calculator_view_includes("DIV-1", "MSTU", "None"));
+        assert!(calculator_row_listed("Monthly"));
+        assert!(calculator_row_listed(""));
+        assert!(!calculator_row_listed("None"));
     }
 }

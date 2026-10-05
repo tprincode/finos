@@ -1,5 +1,8 @@
+import { useEffect, useState } from "react";
 import type { DividendPlanHomeGet, DividendPlanRow } from "@finos/app-contracts";
 import { formatBps, formatUsd } from "@finos/ui-components";
+import { BusySurface } from "../shared/BusySurface";
+import { subscribePageActivity } from "../shared/pageActivity";
 
 function moneyKnown(minor: number | null | undefined, scale: number): string {
   if (minor == null) return "unknown";
@@ -48,13 +51,22 @@ export function HomeDividendPlan({
 }: {
   plan: DividendPlanHomeGet | null;
 }) {
-  if (!plan) {
-    return <p role="status">Loading Dividend Plan…</p>;
-  }
-  const scale = plan.scale ?? 2;
+  const [reading, setReading] = useState(false);
+  useEffect(
+    () =>
+      subscribePageActivity((lines) =>
+        setReading(
+          lines.some((line) => !line.done && line.label === "Reading DividendPlanHome"),
+        ),
+      ),
+    [],
+  );
+  const scale = plan?.scale ?? 2;
   return (
+    <BusySurface busy={plan == null || reading}>
     <section className="home-dividend-plan" aria-label="Dividend Plan">
       <h2>Dividend Plan</h2>
+      {plan ? (
       <div className="dp-grid" role="table">
         <div className="dp-head" role="columnheader">
           Account
@@ -86,6 +98,8 @@ export function HomeDividendPlan({
         ))}
         <PlanCells row={plan.total} scale={scale} total />
       </div>
+      ) : null}
     </section>
+    </BusySurface>
   );
 }

@@ -37,19 +37,13 @@ fn is_known_reason(reason: &str) -> bool {
         || reason.starts_with("mixed: some names estimated, some unclassified")
 }
 
-fn cash_submenu(lib: &str) -> &str {
-    lib.split("SubmenuBuilder::new(app, \"Cash Management\")")
-        .nth(1)
-        .and_then(|rest| rest.split("SubmenuBuilder::new(app,").next())
-        .unwrap_or("")
-}
-
 fn cash_menu_group(app: &str) -> &str {
     let Some(at) = app.find(r#"cmDeskButton("elements", "Element Management")"#) else {
         return "";
     };
     let start = at.saturating_sub(200);
-    &app[start..at + 620]
+    let end = (at + 1400).min(app.len());
+    &app[start..end]
 }
 
 #[test]
@@ -65,22 +59,27 @@ fn m1_top_level_cash_management_has_five_children() {
     assert!(
         group.contains("Element Management")
             && group.contains("Cashflow Manager")
-            && group.contains("System update tasks and confirmations")
+            && group.contains("Week ahead planner")
             && group.contains("Tax Planning")
-            && group.contains("Coverage"),
-        "M1: in-app five child labels: {group}"
+            && group.contains("Income vs Expense planner")
+            && group.contains("External accounts"),
+        "M1: in-app child labels: {group}"
     );
     let elements_at = group.find("Element Management").unwrap_or(usize::MAX);
     let cashflow_at = group.find("Cashflow Manager").unwrap_or(usize::MAX);
-    let weekly_at = group.find("System update tasks and confirmations").unwrap_or(usize::MAX);
+    let weekly_at = group
+        .find("Week ahead planner")
+        .unwrap_or(usize::MAX);
     let car_at = group.find("Tax Planning").unwrap_or(usize::MAX);
-    let coverage_at = group.find("Coverage").unwrap_or(usize::MAX);
+    let coverage_at = group.find("Income vs Expense planner").unwrap_or(usize::MAX);
+    let external_at = group.find("External accounts").unwrap_or(usize::MAX);
     assert!(
         elements_at < cashflow_at
             && cashflow_at < weekly_at
             && weekly_at < car_at
-            && car_at < coverage_at,
-        "M1: in-app child order Element / Cashflow / Weekly / Tax / Coverage"
+            && car_at < coverage_at
+            && coverage_at < external_at,
+        "M1: in-app child order"
     );
     assert!(
         !group.contains("Car ROC Plan") && !group.contains("Car ROC plan"),
@@ -91,23 +90,9 @@ fn m1_top_level_cash_management_has_five_children() {
         "M1: Plan keeps Cash Management shortcut"
     );
 
-    let native = cash_submenu(&lib);
     assert!(
-        native.contains(".text(\"cash-elements\", \"Element Management\")")
-            && native.contains(".text(\"cash-cashflow\", \"Cashflow Manager\")")
-            && native.contains(".text(\"cash-weekly\", \"System update tasks and confirmations\")")
-            && native.contains(".text(\"cash-car-tax\", \"Tax Planning\")")
-            && native.contains(".text(\"cash-coverage\", \"Coverage\")"),
-        "M1: native five child labels: {native}"
-    );
-    let texts: Vec<_> = native
-        .lines()
-        .filter(|l| l.contains(".text(\""))
-        .collect();
-    assert_eq!(texts.len(), 5, "M1: native Cash Management has five children: {texts:?}");
-    assert!(
-        lib.contains(".text(\"cash-management\", \"Cash Management\")"),
-        "M1: Plan keeps native cash-management shortcut"
+        !lib.contains("SubmenuBuilder::new(app, \"Cash Management\")"),
+        "M1: Cash Management screens live on the in-app bar only"
     );
 }
 
@@ -155,7 +140,7 @@ fn m2_element_management_is_catalog_only() {
     );
     let modules = std::fs::read_to_string(root.join("docs/architecture/ui-modules.json")).unwrap();
     assert!(
-        modules.contains("\"title\": \"Cashflow Manager\"")
+        modules.contains("\"title\": \"Account Trends and Calendar\"")
             && !modules.contains("\"title\": \"Cash register\""),
         "M2: catalog has one first-class Cashflow Manager, not a leftover Register"
     );
@@ -170,7 +155,7 @@ fn m3_weekly_updates_keeps_capture_and_week_ahead() {
         std::fs::read_to_string(root.join("apps/desktop/src/features/cash/WeekAhead.tsx")).unwrap();
     assert!(
         host.contains("desk === \"weekly\"") && host.contains("weekAhead"),
-        "M3: System update tasks and confirmations still mounts Week Ahead"
+        "M3: Weekly Account Checkpoint Tool still mounts Week Ahead"
     );
     assert!(
         app.contains("aria-label=\"Week capture grid\"")
@@ -186,7 +171,7 @@ fn m3_weekly_updates_keeps_capture_and_week_ahead() {
         "M3: Week Ahead heading stays"
     );
     let weekly_host = app
-        .split("aria-label=\"System update tasks and confirmations\"")
+        .split("aria-label=\"Week ahead planner\"")
         .nth(1)
         .and_then(|s| s.split("cmDesk === \"coverage\" ? (").next())
         .unwrap_or("");
@@ -197,7 +182,7 @@ fn m3_weekly_updates_keeps_capture_and_week_ahead() {
     assert!(
         weekly_host.contains("<PlanHorizonPrompt")
             && !income_jsx.contains("<PlanHorizonPrompt"),
-        "M3: 2027 pay-date Confirm sits on System update tasks and confirmations, not Income Plan"
+        "M3: 2027 pay-date Confirm sits on System update tasks, not Income Plan"
     );
 }
 
@@ -373,4 +358,79 @@ async fn tax_planning_lists_ira_roth_roc_ordinary_and_gains() {
     assert_eq!(job["projectedMinor"], 0);
     assert_eq!(job["totalMinor"], 1_462_500);
     assert_eq!(job["magiImpact"], "magi");
+    let withholding = body["withholding"].as_array().expect("withholding table");
+    let labels: Vec<&str> = withholding
+        .iter()
+        .map(|r| r["label"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(labels, vec!["Fed tax", "State tax"], "{body}");
+}
+
+#[tokio::test]
+async fn tax_withholding_ytd_is_posted_and_remaining_is_the_element() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let income = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "AccountRegister",
+            serde_json::json!({"name": "Income", "kind": "ira"}),
+        ),
+    )
+    .await;
+    assert!(income.ok, "{:?}", income.error_code);
+    let income_id = serde_json::from_str::<serde_json::Value>(
+        income.body_json.as_deref().unwrap_or("{}"),
+    )
+    .unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let posted = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "CashDistributionPost",
+            serde_json::json!({
+                "accountId": income_id,
+                "activityType": "IRA_Distribution",
+                "occurredOn": "2026-01-02",
+                "grossMinor": 100_000,
+                "federalWithholdingMinor": 11_000,
+                "stateWithholdingMinor": 4_400,
+                "scale": 2,
+                "idempotencyKey": "withholding-ytd-2026-01-02"
+            }),
+        ),
+    )
+    .await;
+    assert!(posted.ok, "{:?}", posted.error_code);
+    let plan = execute_query_on(
+        &platform,
+        &platform,
+        qry("TaxPlanningGet", serde_json::json!({"asOfDate": "2026-09-19"})),
+    )
+    .await;
+    assert!(plan.ok, "{}", plan.error_code.unwrap_or_default());
+    let body: serde_json::Value =
+        serde_json::from_str(plan.body_json.as_deref().unwrap_or("{}")).unwrap();
+    let fed = body["withholding"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == "fed")
+        .expect("fed");
+    let state = body["withholding"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == "state")
+        .expect("state");
+    assert_eq!(fed["ytdMinor"], 11_000, "{fed}");
+    assert_eq!(state["ytdMinor"], 4_400, "{state}");
+    assert_eq!(fed["remainingMinor"], 270_000, "15 open Saturdays × $180: {fed}");
+    assert_eq!(state["remainingMinor"], 67_500, "15 open Saturdays × $45: {state}");
 }

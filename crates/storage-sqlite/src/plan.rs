@@ -278,12 +278,31 @@ pub async fn plan_history_confirm(
     Ok(record)
 }
 
+async fn stored_owner_tier(
+    pool: &SqlitePool,
+    security_id: Uuid,
+) -> Result<Option<String>, PlatformError> {
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT risk_tier FROM position_characteristic WHERE security_id = ?",
+    )
+    .bind(security_id.to_string())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    Ok(stored.filter(|tier| financial_domain::plan_review::owner_risk_accepted(tier)))
+}
+
 pub async fn position_characteristic_upsert(
     pool: &SqlitePool,
     record: PositionCharacteristicRecord,
 ) -> Result<PositionCharacteristicRecord, PlatformError> {
     let mut record = record;
     record.risk_tier = financial_domain::plan_review::normalize_risk_tier(&record.risk_tier);
+    if !financial_domain::plan_review::owner_risk_accepted(&record.risk_tier) {
+        if let Some(stored) = stored_owner_tier(pool, record.security_id).await? {
+            record.risk_tier = stored;
+        }
+    }
     // Process A may persist provider / lookthrough / needs_roc before cadence is known.
     // Owner PositionCharacteristicUpsert still requires cadence via locked_cadence in queries.
     if record.payment_frequency.trim().is_empty() {
@@ -345,7 +364,7 @@ pub async fn position_characteristic_upsert(
         .ok_or_else(|| {
             PlatformError::new(
                 "payment_cadence_required",
-                "Weekly (52), Monthly (12), Quarterly (4), or None (does not pay) must be identified; there is no default",
+                "Weekly (52), Twice monthly (24), Monthly (12), Quarterly (4), or None (does not pay) must be identified; there is no default",
             )
         })?;
     record.payment_frequency = cadence.label().to_string();

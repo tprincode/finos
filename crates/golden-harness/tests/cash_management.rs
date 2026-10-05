@@ -1029,14 +1029,93 @@ fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
     assert!(cm.contains("aria-label=\"Distribution tax sections\""));
     assert!(cm.contains("aria-label=\"Cash Management tax and ACA monitor\""));
     assert!(cm.contains("aria-label=\"Cash Management Tax Planning\""));
-    assert!(cm.contains("<h3>Car</h3>"));
     assert!(cm.contains("aria-label=\"Car account tax planning\""));
-    assert!(cm.contains("aria-label=\"Tax Planning income\""));
-    assert!(cm.contains("aria-label=\"Tax Planning MAGI\""));
+    assert!(cm.contains("HouseholdIncomeReport"));
+    let report = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/HouseholdIncomeReport.tsx"),
+    )
+    .unwrap();
+    let forecast = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/magiForecast.ts"),
+    )
+    .unwrap();
+    let src = format!("{report}\n{forecast}");
+    assert!(report.contains("aria-label=\"Tax Planning income\""));
+    assert!(report.contains("aria-label=\"Tax Planning MAGI\""));
     assert!(
-        cm.contains("desk === \"weekly\" && activity == null")
-            && cm.contains("Add cash activity"),
-        "Add cash activity stays on System update tasks and confirmations only"
+        report.contains("Barbara LTCG")
+            && report.contains("Long-term capital gains")
+            && report.contains("Short-term capital gains"),
+        "household income lists Barbara and Car gains"
+    );
+    assert!(
+        report.contains("Traditional IRA contribution")
+            && src.contains("plan.iraContributionMinor")
+            && !src.contains("IRA_CONTRIBUTION_MINOR"),
+        "IRA contribution is the sum of ira-contribution activities"
+    );
+    assert!(
+        !report.contains("770_000")
+            && !report.contains("7,700")
+            && !report.contains("23,000")
+            && !report.contains("23000"),
+        "do not invent a $7,700 IRA contribution or a $23k premium"
+    );
+    assert!(
+        report.contains("APTC_ACCRUAL_DAY = 25")
+            && report.contains("aptcYtdMinor")
+            && report.contains("13,540"),
+        "APTC YTD accrues on the 25th; 9 months of $18,054 is $13,540"
+    );
+    assert!(!report.contains("divorce") && !report.contains("Divorce"));
+    assert!(report.contains("1095-A"));
+    let income_at = report.find("<h4>Income</h4>").expect("Income heading");
+    let aptc_at = report
+        .find("Marketplace application and 1095-A")
+        .expect("1095-A heading");
+    assert!(
+        aptc_at > income_at,
+        "Marketplace application and 1095-A sit below Income"
+    );
+    assert!(
+        report.contains("Application versus current MAGI")
+            && report.contains("APPLICATION_MAGI_MINOR = 8_084_400")
+            && src.contains("APPLICATION_APTC_MINOR = 1_805_400"),
+        "application MAGI $80,844 and APTC $18,054 are the awarded facts"
+    );
+    assert!(
+        report.contains("aria-label=\"MAGI forecast\"")
+            && report.contains("MAGI after estimates vs")
+            && report.contains("aria-label=\"MAGI confidence\"")
+            && src.contains("isIndeterminate")
+            && src.contains("Book the missing fact")
+            && report.contains("Estimate")
+            && !src.contains("if (isIndeterminate) return null")
+            && !src.contains("decisionState === \"INDETERMINATE\" ? null"),
+        "INDETERMINATE still fills the hero and labels Estimate"
+    );
+    assert!(
+        report.contains("aria-label=\"MAGI suggestions\"")
+            && src.contains("Cut remaining Traditional IRA draws by")
+            && src.contains("Or book a Traditional IRA contribution of")
+            && src.contains("Or both, split")
+            && !src.contains("Roth contribution")
+            && report.contains("Medical expenses")
+            && report.contains("No effect"),
+        "over-cliff suggestions are cut-IRA / contribute-IRA; medical is not a MAGI cut"
+    );
+    assert!(
+        report.contains("aria-label=\"MAGI estimates\"")
+            && report.contains("household-estimate-tag")
+            && report.contains("Estimate rows feed the forecast tile"),
+        "scratch HSA / computer / SE / IRA / Barbara stay labeled Estimate"
+    );
+    assert!(
+        cm.contains("This week confirmed transactions")
+            && !cm.contains("Add cash activity")
+            && !cm.contains("Cash management month")
+            && !cm.contains("weekGrossMinor"),
+        "Week desk lists confirmed transactions only; no Add cash activity or month rollup"
     );
     assert!(
         cm.contains("if (desk === \"car\")"),
@@ -1067,5 +1146,184 @@ fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
     assert!(!trends.contains("Saved Trends weeks"));
     assert!(!trends.contains("FID+SCH"));
     assert!(cm.contains("CashWeekDesk") || cm.contains("weekDesk"));
-    assert!(cm.contains("Cash week follow-up") || cm.contains("cash-follow-up"));
+    assert!(
+        cm.contains("This week confirmed transactions"),
+        "confirmed week table stays on the System update week desk"
+    );
+}
+
+#[test]
+fn tax_lot_sale_gain_converts_assignment_scale_to_cents() {
+    let queries = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/queries.rs"),
+    )
+    .unwrap();
+    let lot = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/financial-domain/src/lot.rs"),
+    )
+    .unwrap();
+    assert!(
+        queries.contains("assignment_tax_gain_cents("),
+        "Car/Tax Planning must convert lot-scale cost before proceeds − cost"
+    );
+    assert!(
+        lot.contains("fn assignment_tax_gain_cents"),
+        "scale-6 TSLW cost is $350.81, not $3.5M"
+    );
+}
+
+#[test]
+fn cct_open_table_drops_duplicate_bill_pay_column() {
+    let register = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/ExternalRegister.tsx"),
+    )
+    .unwrap();
+    assert!(
+        register.contains("Bill Pay Deposit") && register.contains("Bill Pay Withdrawal"),
+        "keep deposit and withdrawal"
+    );
+    assert!(
+        !register.contains("sortStepHead(\"Bill\", \"Pay\", \"billpay\")")
+            && !register.contains("stepTotal(\"Bill Pay\", \"billpay\""),
+        "Bill Pay column is a duplicate of Bill Pay Deposit"
+    );
+}
+
+#[test]
+fn cct_open_shows_pay_type_subtotals_above_mark_steps() {
+    let register = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/ExternalRegister.tsx"),
+    )
+    .unwrap();
+    let css = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.css"))
+        .unwrap();
+    assert!(
+        register.contains("className=\"external-steps-row\"")
+            && register.contains("aria-label=\"Open totals by pay type\"")
+            && register.contains("openPayTypeTotals")
+            && register.contains("external-open-paytype-totals"),
+        "Open CCT must subtotal each pay type (e.g. UCARD) beside the steps list"
+    );
+    assert!(
+        css.contains(".external-steps-row")
+            && css.contains("display: flex")
+            && css.contains(".external-open-paytype-totals")
+            && css.contains("border:")
+            && css.contains(".external-open-paytype-total"),
+        "pay-type subtotals sit in a bordered box to the right of the 1-2-3 steps"
+    );
+}
+
+#[test]
+fn completed_section_stamps_and_greens_only_the_completed_date() {
+    let register = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/ExternalRegister.tsx"),
+    )
+    .unwrap();
+    let css = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.css"))
+        .unwrap();
+    let storage = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/storage-sqlite/src/external_register.rs"),
+    )
+    .unwrap();
+    assert!(
+        register.contains("completedDateOf")
+            && register.contains("className=\"external-green-date\"")
+            && register.contains("aria-label=\"Completed external charges\""),
+        "Completed table must show a dated green Completed cell"
+    );
+    assert!(
+        css.contains(".external-register-wrap tr.is-complete td")
+            && css.contains("background: transparent")
+            && css.contains("td.external-green-date")
+            && css.contains("background: #7dcea0"),
+        "only the Completed date cell stays green; the whole row must not"
+    );
+    assert!(
+        !css.contains("tr.is-complete td {\r\n  background: #d9f2df;")
+            && !css.contains("tr.is-complete td {\n  background: #d9f2df;"),
+        "row-wide pale green on completed lines must stay removed"
+    );
+    assert!(
+        storage.contains("fill_missing_completed_dates")
+            && storage.contains("true_up_on = CASE")
+            && storage.contains("AND step_withdrawal = 1"),
+        "last CCT step and get() must stamp true_up_on (today when unknown)"
+    );
+}
+
+#[test]
+fn cct_completed_export_offers_print_pdf_excel() {
+    let register = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/ExternalRegister.tsx"),
+    )
+    .unwrap();
+    let core = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/external_register.rs"),
+    )
+    .unwrap();
+    let queries = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/queries.rs"),
+    )
+    .unwrap();
+    assert!(
+        register.contains("aria-label=\"Export\"")
+            && register.contains("aria-label=\"CCT Completed export preview\"")
+            && register.contains("aria-label=\"Print to page\"")
+            && register.contains("aria-label=\"Save PDF\"")
+            && register.contains("aria-label=\"Export Excel\"")
+            && register.contains("ExternalRegisterExportGet"),
+        "Completed section must offer the same Print / PDF / Excel export path as Income Plan"
+    );
+    assert!(
+        queries.contains("\"ExternalRegisterExportGet\"")
+            && core.contains("export_completed_from_json")
+            && core.contains("cct-completed-"),
+        "host must format completed CCT rows for html/pdf/xlsx"
+    );
+}
+
+#[test]
+fn tax_planning_forecast_stays_visible_when_indeterminate() {
+    let report = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/HouseholdIncomeReport.tsx"),
+    )
+    .unwrap();
+    let forecast = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/magiForecast.ts"),
+    )
+    .unwrap();
+    let src = format!("{report}\n{forecast}");
+    assert!(
+        report.contains("aria-label=\"MAGI forecast\"")
+            && report.contains("MAGI after estimates vs")
+            && report.contains("aria-label=\"MAGI confidence\"")
+            && src.contains("isIndeterminate")
+            && src.contains("Book the missing fact")
+            && report.contains("confidence = isEstimate ? \"Estimate\" : \"Booked\"")
+            && !src.contains("if (isIndeterminate) return null")
+            && !src.contains("decisionState === \"INDETERMINATE\" ? null"),
+        "INDETERMINATE still fills the hero and labels Estimate"
+    );
+    assert!(
+        report.contains("aria-label=\"MAGI suggestions\"")
+            && src.contains("Cut remaining Traditional IRA draws by")
+            && src.contains("Or book a Traditional IRA contribution of")
+            && src.contains("Or both, split")
+            && !src.contains("Roth contribution")
+            && report.contains("Medical expenses")
+            && report.contains("No effect"),
+        "over-cliff suggestions are cut-IRA / contribute-IRA; medical is not a MAGI cut"
+    );
+    assert!(
+        report.contains("aria-label=\"MAGI estimates\"")
+            && report.contains("household-estimate-tag")
+            && report.contains("Estimate rows feed the forecast tile")
+            && src.contains("plan.iraContributionMinor"),
+        "scratch HSA / computer / SE / IRA / Barbara stay labeled Estimate"
+    );
+    assert!(
+        !report.contains("MagiFactRecord") && !report.contains("magi_fact"),
+        "this patch does not write APTC into magi_fact"
+    );
 }

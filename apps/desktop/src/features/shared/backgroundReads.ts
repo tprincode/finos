@@ -45,7 +45,8 @@ function parseBody<T>(ok: boolean, bodyJson?: string): T | undefined {
   }
 }
 
-/** One read at a time. Week Ahead, Register, Coverage, and Cash YTD stay off this list. */
+/** One read at a time. Register, Coverage, and Cash YTD stay off this list.
+ * Week Ahead warms from App idle (after this queue), not here — early horizon. */
 export async function runBackgroundReads(
   client: LocalTauriFinanceClient,
   args: {

@@ -77,6 +77,7 @@ async fn data_snapshot_writes_importable_individual_workbooks() {
         "Template_PayDates.xlsx",
         "Template_LastPrices.xlsx",
         "Template_RetrievalTemplates.xlsx",
+        "Template_UiModules.xlsx",
         "calculator-plan-seed.yaml",
         "local.sqlite",
         "MANIFEST.md",

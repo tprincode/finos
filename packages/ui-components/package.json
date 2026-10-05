@@ -6,6 +6,9 @@
   "type": "module",
   "main": "./src/index.tsx",
   "types": "./src/index.tsx",
+  "dependencies": {
+    "@finos/app-contracts": "*"
+  },
   "peerDependencies": {
     "react": "^19.1.0"
   },

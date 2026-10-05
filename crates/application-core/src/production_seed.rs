@@ -706,10 +706,40 @@ async fn park_long_hold_collectors(canonical: &dyn Canonical) -> Result<u64, Pla
 /// Never overwrites edgar, sec-edgar, or a registered vendor adapter.
 /// Re-enables a registered vendor that is assigned but collector_enabled=0.
 /// MSTU / TSLL / SOXL are not collectors and stay disabled.
+async fn normalize_proshares_template_urls(canonical: &dyn Canonical) -> Result<u64, PlatformError> {
+    let year = chrono::Utc::now().format("%Y").to_string();
+    let mut updated = 0u64;
+    for security in canonical.security_list().await? {
+        let Some(mut row) =
+            skip_ni(canonical.retrieval_template_get(security.security_id).await)?.flatten()
+        else {
+            continue;
+        };
+        if !row.declaration_source.eq_ignore_ascii_case("proshares") {
+            continue;
+        }
+        if row.source_url.contains("/api/distributionsummary") {
+            continue;
+        }
+        let api = format!(
+            "https://www.proshares.com/api/distributionsummary/?fund={}&year={year}",
+            security.symbol.trim().to_ascii_uppercase()
+        );
+        if row.source_url == api {
+            continue;
+        }
+        row.source_url = api;
+        canonical.retrieval_template_set(row).await?;
+        updated += 1;
+    }
+    Ok(updated)
+}
+
 pub async fn apply_provider_declaration_sources(
     canonical: &dyn Canonical,
 ) -> Result<u64, PlatformError> {
-    let mut updated = park_long_hold_collectors(canonical).await?;
+    let mut updated = normalize_proshares_template_urls(canonical).await?;
+    updated += park_long_hold_collectors(canonical).await?;
     let securities = canonical.security_list().await?;
     let chars = canonical.position_characteristic_list().await?;
     let char_by: HashMap<_, _> = chars.iter().map(|c| (c.security_id, c)).collect();

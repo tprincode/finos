@@ -1,5 +1,6 @@
 import type { CartBuyLine, CashLedgerGet, CashPileGet } from "@finos/app-contracts";
 import { formatUsd } from "@finos/ui-components";
+import { cartPriceInput } from "./cartPrice";
 
 export function AccountCashPlan({
   pile,
@@ -61,7 +62,10 @@ export function AccountCashPlan({
               {line.symbol} fill $/sh
               <input
                 aria-label={`Cart fill price ${line.symbol}`}
-                value={fills[line.lineId] ?? (line.lastMinor / 100).toFixed(2)}
+                value={
+                  fills[line.lineId] ??
+                  cartPriceInput(line.lastMinor, line.priceScale ?? 2)
+                }
                 onChange={(e) => onFill(line.lineId, e.target.value)}
                 disabled={busy || writesBlocked || filled}
               />

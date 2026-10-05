@@ -1,26 +1,12 @@
 ---
-description: Keep finos milestone work moving step-by-step without waiting for “do the next step”
+description: Auto-continue after a green step. Do not delete shipped screens while continuing.
 alwaysApply: true
 ---
 
 # Execution framework
 
-Read [docs/architecture/execution.md](docs/architecture/execution.md) at the start of implementation work. Follow the **Now** item until it is validated, then start **Next** in the same turn.
+Read docs/architecture/execution.md. Do the current Now step, run its pass check, then start Next in the same turn. Do not wait for "continue."
 
-## Loop (do not skip)
+Do not remove a shipped screen, menu child, or command while continuing. If the next step needs an owner choice or a MAGI oracle change, stop.
 
-1. Name the current step and its pass check.
-2. Do that step (code or the listed command).
-3. Run the pass check. If it fails, stop and fix — do not regenerate MAGI oracles.
-4. If it passes, immediately start the next numbered step. Do not wait for the user to say “continue” or re-attach the plan.
-
-## Stop only when
-
-- Owner must approve or change golden MAGI numbers (ADR-0013).
-- The step needs a Mac (M1 macOS gate) and this machine is Windows.
-- The next milestone is M6+ AI, Postgres, OIDC, or signed installers and the user has not unlocked it.
-- The user named a different item.
-
-## After a gate is green
-
-Update the **Now / Next** lines in `docs/architecture/execution.md`, then begin Next (thin first slice, itemized). Do not end the turn with only “say proceed.”
+Update Now / Next in execution.md after a gate is green, then begin Next.

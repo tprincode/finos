@@ -552,6 +552,33 @@ fn mplx_q4_dividendtable_uses_pay_date_not_year_total() {
 }
 
 #[test]
+fn enterprise_epd_table_keys_payable_not_ex_record_or_sept_30() {
+    let html = fixture("enterprise_epd_distributions.html");
+    let parsed = parse_generic_distributions("enterprise", &html);
+    assert!(parsed.len() >= 4, "{parsed:?}");
+    assert_eq!(parsed[0]["paymentPeriod"], "2026-08-14");
+    assert_eq!(parsed[0]["exDate"], "2026-07-31");
+    assert_eq!(parsed[0]["recordDate"], "2026-07-31");
+    assert_eq!(parsed[0]["amountPerShareMinor"], 56);
+    assert!(
+        parsed.iter().any(|c| c["paymentPeriod"] == "2025-11-14"),
+        "payable 11/14 must be the week key: {parsed:?}"
+    );
+    assert!(
+        parsed
+            .iter()
+            .all(|c| c["paymentPeriod"] != "2025-09-30" && c["paymentPeriod"] != "2025-10-31"),
+        "Sept 30 narrative and ex/record must not be paymentPeriod: {parsed:?}"
+    );
+    assert!(
+        parsed
+            .iter()
+            .all(|c| c["paymentPeriod"] != "2025-07-31" && c["paymentPeriod"] != "2026-07-31"),
+        "ex/record month-ends must not be paymentPeriod: {parsed:?}"
+    );
+}
+
+#[test]
 fn mlp_sec_8k_parses_common_unit_not_preferred_and_derives_remaining() {
     let html = fixture("energytransfer_et_8k.html");
     let parsed = parse_div1_distributions("mlp_sec_8k", &html);

@@ -216,6 +216,8 @@ pub struct CartSellLineBody {
     pub qty_minor: i64,
     pub qty_scale: u8,
     pub unit_minor: i64,
+    #[serde(default = "default_cart_price_scale")]
+    pub unit_scale: u8,
     pub proceeds_minor: i64,
     pub is_cash: bool,
     pub original_cost_minor: Option<i64>,
@@ -237,8 +239,22 @@ pub struct CartBuyLineBody {
     pub symbol: String,
     pub qty_whole: i64,
     pub last_minor: i64,
+    #[serde(default = "default_cart_price_scale")]
+    pub price_scale: u8,
     pub spend_minor: i64,
     pub plan_annual_minor: Option<i64>,
+}
+
+fn default_cart_price_scale() -> u8 {
+    2
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CartExecuteStepBody {
+    pub kind: String,
+    pub activity_id: Option<Uuid>,
+    pub lot_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -282,6 +298,10 @@ pub struct CartScenarioBody {
     pub sell_lines: Vec<CartSellLineBody>,
     pub buy_lines: Vec<CartBuyLineBody>,
     pub eval: Option<CartEvalBody>,
+    #[serde(default)]
+    pub execute_cash_baseline_minor: Option<i64>,
+    #[serde(default)]
+    pub execute_steps: Vec<CartExecuteStepBody>,
 }
 
 fn default_cart_funding_source() -> String {
@@ -332,6 +352,32 @@ pub struct CashLedgerBody {
 #[serde(rename_all = "camelCase")]
 pub struct CartScenarioListBody {
     pub items: Vec<CartScenarioBody>,
+}
+
+/// One executed (complete) cart. Dollars are actual; income is Plan only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CartExecutedRowBody {
+    pub scenario_id: Uuid,
+    pub plan_id: Option<Uuid>,
+    pub name: String,
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub as_of: String,
+    pub non_cash_sales_minor: i64,
+    pub realized_pl_minor: i64,
+    pub invested_minor: i64,
+    pub cash_baseline_minor: i64,
+    pub cash_target_minor: i64,
+    pub delta_monthly_income_minor: Option<i64>,
+    pub delta_annual_income_minor: Option<i64>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CartExecutedListBody {
+    pub items: Vec<CartExecutedRowBody>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -735,6 +781,9 @@ pub struct TrendsCashReference {
     pub display_name: String,
     pub cash_symbol: String,
     pub reference_minor: Option<i64>,
+    /// Open cash-lot dollars. The capture box uses this while the week is open.
+    #[serde(default)]
+    pub pile_minor: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -965,7 +1014,21 @@ pub struct ExternalRegisterLine {
     #[serde(default)]
     pub step_billpay: bool,
     #[serde(default)]
+    pub step_billpay_deposit: bool,
+    #[serde(default)]
     pub step_pay: bool,
+    #[serde(default)]
+    pub step_withdrawal: bool,
+    #[serde(default)]
+    pub step_transfer_on: Option<String>,
+    #[serde(default)]
+    pub step_billpay_on: Option<String>,
+    #[serde(default)]
+    pub step_billpay_deposit_on: Option<String>,
+    #[serde(default)]
+    pub step_pay_on: Option<String>,
+    #[serde(default)]
+    pub step_withdrawal_on: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -976,6 +1039,127 @@ pub struct ExternalRegisterGetBody {
     pub categories: Vec<String>,
     pub vendors: Vec<String>,
     pub total_count: u64,
+}
+
+/// One Completed-section row for ExternalRegisterExportGet (client sends the filtered set).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRegisterExportLine {
+    pub pay_type: String,
+    #[serde(default)]
+    pub occurred_on: Option<String>,
+    pub amount_minor: i64,
+    #[serde(default = "external_export_scale")]
+    pub scale: u8,
+    pub category: String,
+    pub vendor: String,
+    pub description: String,
+    #[serde(default)]
+    pub true_up_on: Option<String>,
+}
+
+fn external_export_scale() -> u8 {
+    2
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRegisterExportGetBody {
+    pub format: String,
+    pub default_file_name: String,
+    pub bytes_base64: String,
+    pub print_html: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LoanVendorLine {
+    pub line_id: Uuid,
+    pub occurred_on: String,
+    pub amount_minor: i64,
+    pub due_on: String,
+    pub description: String,
+    pub principal_minor: i64,
+    pub interest_minor: i64,
+    pub escrow_minor: i64,
+    pub late_minor: i64,
+    pub principal_balance_minor: i64,
+    pub escrow_balance_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LoanVendorData {
+    pub term_payments: i64,
+    pub payments_made: i64,
+    pub principal_paid_minor: i64,
+    pub interest_paid_minor: i64,
+    pub escrow_paid_minor: i64,
+    pub principal_balance_minor: i64,
+    pub escrow_balance_minor: i64,
+    #[serde(default)]
+    pub note: Option<String>,
+    pub lines: Vec<LoanVendorLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalManagedAccount {
+    pub account_id: Uuid,
+    pub name: String,
+    pub kind: String,
+    pub charges_interest: bool,
+    pub starting_minor: Option<i64>,
+    pub current_minor: Option<i64>,
+    pub payment_minor: Option<i64>,
+    pub reduction_minor: Option<i64>,
+    pub pending_minor: i64,
+    pub finance_minor: Option<i64>,
+    pub paid_through: Option<String>,
+    pub due_on: Option<String>,
+    #[serde(default)]
+    pub apr_ppm: Option<i64>,
+    #[serde(default)]
+    pub frequency: Option<String>,
+    pub register_key: String,
+    #[serde(default)]
+    pub pay_process: Option<String>,
+    #[serde(default)]
+    pub linked_element_id: Option<Uuid>,
+    pub lines: Vec<ExternalRegisterLine>,
+    #[serde(default)]
+    pub vendor: Option<LoanVendorData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalManagedGetBody {
+    pub accounts: Vec<ExternalManagedAccount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalManagedAccountSave {
+    pub account_id: Uuid,
+    pub name: String,
+    pub starting_minor: Option<i64>,
+    pub current_minor: Option<i64>,
+    pub payment_minor: Option<i64>,
+    pub reduction_minor: Option<i64>,
+    pub finance_minor: Option<i64>,
+    pub paid_through: Option<String>,
+    #[serde(default)]
+    pub due_on: Option<String>,
+    #[serde(default)]
+    pub apr_ppm: Option<i64>,
+    #[serde(default)]
+    pub frequency: Option<String>,
+    #[serde(default)]
+    pub register_key: String,
+    #[serde(default)]
+    pub pay_process: String,
+    #[serde(default)]
+    pub linked_element_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1014,6 +1198,22 @@ pub struct WeekAheadBody {
     pub period_start: String,
     pub period_end: String,
     pub rows: Vec<WeekAheadRow>,
+    #[serde(default)]
+    pub loans: Vec<LoanWeekRow>,
+    #[serde(default)]
+    pub tasks: Vec<WeekAheadTaskRow>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LoanWeekRow {
+    pub account_id: Uuid,
+    pub name: String,
+    pub due_on: String,
+    pub payment_minor: i64,
+    pub principal_minor: i64,
+    pub interest_minor: i64,
     pub scale: u8,
 }
 
@@ -1057,6 +1257,48 @@ pub struct CashRegisterBody {
     pub rows: Vec<CashRegisterRow>,
     pub series: Vec<CashRegisterSeriesPoint>,
     pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisbursementWeekColumn {
+    pub key: String,
+    pub group: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisbursementWeekCell {
+    pub amount_minor: i64,
+    pub planned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisbursementWeekRow {
+    pub period_start: String,
+    pub period_end: String,
+    pub cells: Vec<Option<DisbursementWeekCell>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisbursementWeekReportBody {
+    /// `posted` is current-year totals. `remaining` is the element plan still left this year.
+    pub report_kind: String,
+    pub as_of_date: String,
+    pub columns: Vec<DisbursementWeekColumn>,
+    pub rows: Vec<DisbursementWeekRow>,
+    pub ytd_minor: Vec<i64>,
+    pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisbursementWeekReportExportBody {
+    pub default_file_name: String,
+    pub bytes_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1712,6 +1954,10 @@ pub struct IncomePlanPositionBody {
     pub planned_minor: i64,
     pub plan_known: bool,
     #[serde(default)]
+    pub plan_per_share_minor: Option<i64>,
+    #[serde(default)]
+    pub plan_per_share_scale: u8,
+    #[serde(default)]
     pub declaration_minor: i64,
     #[serde(default)]
     pub declaration_known: bool,
@@ -1959,10 +2205,29 @@ pub struct HoldingsLotBody {
     pub scale: u8,
 }
 
+/// Posted sell / option_close with no lot_assignment. Cart Confirm sell assigns
+/// in the same command, so those rows do not appear here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HoldingsUnassignedSellBody {
+    pub activity_id: Uuid,
+    pub account_name: String,
+    pub symbol: String,
+    pub occurred_on: String,
+    pub amount_minor: i64,
+    pub scale: u8,
+    pub quantity_minor: Option<i64>,
+    pub quantity_scale: Option<u8>,
+    /// `cart` when qty was recovered from an unmatched shopping-cart sell line.
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HoldingsGetBody {
     pub lots: Vec<HoldingsLotBody>,
+    #[serde(default)]
+    pub unassigned_sells: Vec<HoldingsUnassignedSellBody>,
     pub scale: u8,
 }
 
@@ -2281,6 +2546,31 @@ pub struct CalculatorGetBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct MarketImpactRowBody {
+    pub symbol: String,
+    pub security_id: Uuid,
+    pub bull_start: String,
+    pub bull_end: String,
+    pub bull_price_return_bps: Option<i64>,
+    pub bull_cushion_bps: Option<i64>,
+    pub bull_total_return_bps: Option<i64>,
+    pub bear_start: String,
+    pub bear_end: String,
+    pub bear_price_return_bps: Option<i64>,
+    pub bear_cushion_bps: Option<i64>,
+    pub bear_total_return_bps: Option<i64>,
+    #[serde(default)]
+    pub underlying: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketImpactGetBody {
+    pub rows: Vec<MarketImpactRowBody>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CashManagementWeekRow {
     pub activity_id: Uuid,
     pub account_id: Uuid,
@@ -2411,6 +2701,15 @@ pub struct TaxPlanningGroup {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct TaxWithholdingRow {
+    pub key: String,
+    pub label: String,
+    pub ytd_minor: i64,
+    pub remaining_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct TaxPlanningBody {
     pub as_of_date: String,
     pub rows: Vec<TaxPlanningRow>,
@@ -2418,10 +2717,16 @@ pub struct TaxPlanningBody {
     pub not_magi: TaxPlanningGroup,
     pub all_sources: TaxPlanningGroup,
     pub scale: u8,
+    /// Fed and state tax collected this year, plus unpaid Element amounts through 31 Dec.
+    #[serde(default)]
+    pub withholding: Vec<TaxWithholdingRow>,
     #[serde(default)]
     pub car: Option<CarRocPlanBody>,
     #[serde(default)]
     pub ytd: Option<CashYtdBody>,
+    /// Sum of `ira-contribution` activities whose date is in the as-of year.
+    #[serde(default)]
+    pub ira_contribution_minor: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2735,6 +3040,8 @@ pub struct InvestmentGetBody {
     pub periods: Vec<BacktestPeriodRecord>,
     pub results: Vec<PositionBacktestResultBody>,
     pub evidence: Option<EvidenceDimensionsBody>,
+    #[serde(default)]
+    pub window_evidence: Vec<WindowEvidenceBody>,
     pub suggestion: Option<TierSuggestionBody>,
     #[serde(default)]
     pub total_distributions_received_minor: Option<i64>,
@@ -2770,7 +3077,23 @@ pub struct InvestmentGetBody {
     pub collector_complete: bool,
     #[serde(default)]
     pub collector_gaps: Vec<String>,
+    #[serde(default)]
+    pub establish_checklist: Vec<EstablishChecklistItemBody>,
+    #[serde(default)]
+    pub establish_complete: bool,
+    #[serde(default)]
+    pub establish_open_labels: Vec<String>,
     pub scale: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EstablishChecklistItemBody {
+    pub id: String,
+    pub label: String,
+    /// done | open | na
+    pub status: String,
+    pub blocks_complete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2807,6 +3130,26 @@ pub struct PositionBacktestResultBody {
     pub completeness: String,
     pub source: String,
     pub calculated_at: String,
+    #[serde(default)]
+    pub underlying_symbol: String,
+    #[serde(default)]
+    pub underlying_return_bps: Option<i64>,
+    #[serde(default)]
+    pub spy_return_bps: Option<i64>,
+    #[serde(default)]
+    pub nasdaq_return_bps: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowEvidenceBody {
+    pub period_id: Uuid,
+    pub income_reliability: Option<i64>,
+    pub downside_resilience: Option<i64>,
+    pub recovery_upside: Option<i64>,
+    pub nav_persistence: Option<i64>,
+    pub data_confidence: i64,
+    pub known_components: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3447,6 +3790,12 @@ pub struct UiModuleItem {
     pub folder: String,
     pub status: String,
     pub menu_areas: Vec<String>,
+    /// App `Screen` id. Empty for modules that are not a screen (shell, lots).
+    #[serde(default)]
+    pub screen: String,
+    /// Cash Management desk when `screen` is `cash-management`.
+    #[serde(default)]
+    pub cm_desk: String,
     #[serde(default)]
     pub core_function_ids: Vec<String>,
     #[serde(default)]
@@ -3461,4 +3810,167 @@ pub struct CoreFunctionsGetBody {
     pub items: Vec<CoreFunctionItem>,
     #[serde(default)]
     pub modules: Vec<UiModuleItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRuleRecord {
+    pub rule_id: String,
+    pub code: String,
+    pub title: String,
+    pub enabled: bool,
+    pub cadence: String,
+    pub domain: String,
+    pub owner_note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRuleListBody {
+    pub items: Vec<TaskRuleRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRecord {
+    pub task_id: Uuid,
+    pub rule_id: Option<String>,
+    pub code: String,
+    pub title: String,
+    pub status: String,
+    pub domain: String,
+    pub week_start: String,
+    pub due_on: String,
+    pub ignore_until: String,
+    pub payload_json: String,
+    pub created_on: String,
+    pub resolved_on: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskListBody {
+    pub items: Vec<TaskRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MagiCliffTaskSyncBody {
+    pub action: String,
+    pub task: Option<TaskRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanSaturdayTaskSyncBody {
+    pub opened: i64,
+    pub refreshed: i64,
+    pub completed: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionContractRecord {
+    pub contract_id: Uuid,
+    pub occ_symbol: String,
+    pub underlying: String,
+    pub expiry_on: String,
+    pub put_call: String,
+    pub strike_minor: i64,
+    pub scale: u8,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    pub side: String,
+    pub quantity: i64,
+    pub open_premium_minor: i64,
+    pub open_on: String,
+    #[serde(default)]
+    pub underlying_last_minor: Option<i64>,
+    #[serde(default)]
+    pub option_mid_minor: Option<i64>,
+    #[serde(default)]
+    pub quote_as_of: String,
+    pub status: String,
+    #[serde(default)]
+    pub roll_to_contract_id: String,
+    #[serde(default)]
+    pub close_premium_minor: Option<i64>,
+    #[serde(default)]
+    pub closed_on: String,
+    #[serde(default)]
+    pub payload_json: String,
+    pub created_on: String,
+    pub updated_on: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionContractListBody {
+    pub items: Vec<OptionContractRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WeekAheadTaskRow {
+    pub task_id: Uuid,
+    pub code: String,
+    pub title: String,
+    pub domain: String,
+    pub due_on: String,
+    pub status: String,
+    pub week_start: String,
+    pub payload_json: String,
+    pub scale: u8,
+}
+
+/// Phone read-head written by MobilePublish into FINOS_MOBILE_PUBLISH_DIR (or app-data/mobile-publish).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileHeadBody {
+    pub published_at: String,
+    pub as_of: String,
+    pub publish_folder: String,
+    pub week_ahead: WeekAheadBody,
+    pub open_tasks: Vec<TaskRecord>,
+    /// JSON object string: threshold / forecast / overage / decisionState / scale.
+    pub magi_json: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobilePublishBody {
+    pub published_at: String,
+    pub as_of: String,
+    pub folder: String,
+    pub head_path: String,
+    pub open_task_count: u64,
+    pub week_ahead_row_count: u64,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileOutboxPutBody {
+    pub intent_id: String,
+    pub path: String,
+    pub kind: String,
+    pub occurrence_id: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileOutboxItem {
+    pub intent_id: String,
+    pub occurrence_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileOutboxDrainBody {
+    pub applied: Vec<MobileOutboxItem>,
+    pub failed: Vec<MobileOutboxItem>,
+    pub skipped: Vec<MobileOutboxItem>,
 }

@@ -8,7 +8,13 @@ use crate::ports::platform::PlatformError;
 use financial_domain::cart::{cash_dollars_minor, cash_qty_for_dollars, no_cash_account};
 use financial_domain::current_price::is_cash_par_symbol;
 
-const LEDGER_TYPES: &[&str] = &["deposit", "withdrawal"];
+const LEDGER_TYPES: &[&str] = &[
+    "deposit",
+    "withdrawal",
+    "ira-contribution",
+    "ETF Purchase",
+    "ETF Sale",
+];
 
 pub struct CashPile {
     pub lot_id: Uuid,
@@ -171,6 +177,35 @@ pub async fn deposit(
     amount_minor: i64,
     occurred_on: String,
 ) -> Result<CashPileBody, PlatformError> {
+    deposit_labeled(canonical, account_id, amount_minor, occurred_on, "deposit").await
+}
+
+pub async fn deposit_labeled(
+    canonical: &dyn Canonical,
+    account_id: Uuid,
+    amount_minor: i64,
+    occurred_on: String,
+    activity_type: &str,
+) -> Result<CashPileBody, PlatformError> {
+    deposit_labeled_keyed(
+        canonical,
+        account_id,
+        amount_minor,
+        occurred_on,
+        activity_type,
+        None,
+    )
+    .await
+}
+
+pub async fn deposit_labeled_keyed(
+    canonical: &dyn Canonical,
+    account_id: Uuid,
+    amount_minor: i64,
+    occurred_on: String,
+    activity_type: &str,
+    idempotency_key: Option<&str>,
+) -> Result<CashPileBody, PlatformError> {
     if amount_minor <= 0 {
         return Err(PlatformError::new(
             "invalid_qty",
@@ -190,6 +225,12 @@ pub async fn deposit(
             "this account has no money-market position",
         ));
     };
+    if let Some(key) = idempotency_key {
+        let existing = canonical.activity_list().await?;
+        if existing.iter().any(|row| row.idempotency_key == key) {
+            return pile_get(canonical, account_id).await;
+        }
+    }
     let qty = cash_qty_for_dollars(amount_minor, pile.quantity_scale);
     if qty <= 0 {
         return Err(PlatformError::new(
@@ -201,13 +242,13 @@ pub async fn deposit(
         .activity_post(
             account_id,
             Some(pile.security_id),
-            "deposit".into(),
+            activity_type.into(),
             Some(amount_minor),
             2,
             occurred_on,
             None,
             None,
-            None,
+            idempotency_key.map(str::to_string),
         )
         .await?;
     canonical
@@ -221,6 +262,16 @@ pub async fn withdraw(
     account_id: Uuid,
     amount_minor: i64,
     occurred_on: String,
+) -> Result<CashPileBody, PlatformError> {
+    withdraw_labeled(canonical, account_id, amount_minor, occurred_on, "withdrawal").await
+}
+
+pub async fn withdraw_labeled(
+    canonical: &dyn Canonical,
+    account_id: Uuid,
+    amount_minor: i64,
+    occurred_on: String,
+    activity_type: &str,
 ) -> Result<CashPileBody, PlatformError> {
     if amount_minor <= 0 {
         return Err(PlatformError::new(
@@ -251,7 +302,7 @@ pub async fn withdraw(
         .activity_post(
             account_id,
             Some(pile.security_id),
-            "withdrawal".into(),
+            activity_type.into(),
             Some(amount_minor),
             2,
             occurred_on,

@@ -100,7 +100,7 @@ Read models are not authoritative (ADR-0008). Week snapshot writes are Reporting
 |-----------|----------|---------|--------|
 | Allocation | `AllocationTargetSet` | `AllocationGet` | `AllocationTargetChanged` |
 | Shopping Cart | `CartItemAdd`, `CartItemRemove` | `CartGet` | `CartChanged` |
-| Shopping Cart scenarios | `CartScenarioCreate`, `CartSellLineAdd`, `CartBuyLineAdd`, `CartBuyLineQtySet`, `CartScenarioSave`, `CartScenarioAgree`, `CartExecuteSell`, `CartExecuteFill`, `CartExecuteBuyStep`, `CartScenarioDiscard`, `CartScenarioRename`, `CartScenarioDuplicate`, `CashDeposit`, `CashWithdraw` | `CartScenarioEvaluate`, `CartScenarioGet`, `CartScenarioList` | — |
+| Shopping Cart scenarios | `CartScenarioCreate`, `CartSellLineAdd`, `CartBuyLineAdd`, `CartBuyLineQtySet`, `CartScenarioSave`, `CartScenarioAgree`, `CartExecuteSell`, `CartExecuteFill`, `CartExecuteBuyStep`, `CartExecuteCashAlign`, `CartScenarioDiscard`, `CartScenarioRename`, `CartScenarioDuplicate`, `CashDeposit`, `CashWithdraw` | `CartScenarioEvaluate`, `CartScenarioGet`, `CartScenarioList`, `CartExecutedList` | — |
 | Backtesting | `BacktestRun` | `BacktestGet` | `BacktestCompleted` |
 | Classification Review | `ClassificationReviewRecord` | `ClassificationReviewGet` | `ClassificationReviewChanged` |
 | Tax Projection | — | `TaxProjectionGet` | — |

@@ -197,6 +197,43 @@ async fn trends_week_get_defaults_to_first_unpopulated() {
     assert!(chooser.iter().any(|s| s == "2026-09-12"));
 }
 
+/// System update tasks (cash-management, weekly desk) hosts the account totals and cash
+/// grid. Without the trends pack TrendsWeekGet never runs and the grid renders nothing.
+#[test]
+fn system_update_weekly_desk_loads_the_week_capture_pack() {
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let branch = app
+        .split("} else if (screen === \"cash-management\") {")
+        .nth(1)
+        .expect("cash-management loader branch")
+        .split("} else if (screen === \"position-details\"")
+        .next()
+        .expect("end of cash-management branch");
+    assert!(
+        branch.contains("cmDesk === \"weekly\"") && branch.contains("loadTrendsPack(asOfDate)"),
+        "weekly desk must load the trends pack so the week capture grid has a capture: {branch}"
+    );
+    assert!(
+        branch.contains("loadIncomePack(asOfDate)"),
+        "weekly desk needs the income week for planned weekly income: {branch}"
+    );
+    let capture = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/TrendsCapture.tsx"),
+    )
+    .unwrap();
+    assert!(
+        capture.contains("aria-label=\"Week capture grid\"")
+            && capture.contains("Total Balance")
+            && capture.contains("Cash Balance")
+            && capture.contains("aria-label=\"Accept failed\""),
+        "a failed Accept shows the error next to the button"
+    );
+    assert!(
+        app.contains("loadTrendsPack(savedAsOf)") && app.contains("WeekCaptureAccept"),
+        "Accept reloads the saved-week table"
+    );
+}
+
 #[tokio::test]
 async fn trends_week_save_cash_and_derived_totals_hit_charts() {
     let root = repo_root();
@@ -367,15 +404,36 @@ async fn t1_no_gap_posts_zero_cash_adjust() {
     assert_eq!(count_cash_adjust(&platform, "2026-08-28").await, 0);
 }
 
+async fn register_capture_accounts(platform: &LocalPlatform) {
+    for (name, kind) in [
+        ("Income", "ira"),
+        ("FI Roth", "fi_roth"),
+        ("Speculation", "ira"),
+        ("Health", "hsa"),
+        ("Car", "taxable"),
+        ("9", "ira"),
+    ] {
+        must_cmd(
+            platform,
+            "AccountRegister",
+            serde_json::json!({"name": name, "kind": kind}),
+        )
+        .await;
+    }
+}
+
 #[tokio::test]
 async fn t2_car_gap_posts_one_adjust_and_snapshot_cash() {
-    let root = repo_root();
-    let production = root.join("database/seed/production");
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
-    load_production_seed_via_commands(&platform, &production)
-        .await
-        .expect("seed");
+    register_capture_accounts(&platform).await;
+    let prior = [10_000, 20_000, 30_000, 40_000, 80_000, 50_000];
+    must_cmd(
+        &platform,
+        "WeekCaptureAccept",
+        capture_body("2026-08-15", "2026-08-21", &prior, serde_json::json!([])),
+    )
+    .await;
 
     let view = query_json(
         &platform,
@@ -391,7 +449,8 @@ async fn t2_car_gap_posts_one_adjust_and_snapshot_cash() {
         .expect("Car ref");
     let car_reference = car_ref["referenceMinor"]
         .as_i64()
-        .expect("Car needs a reference for T2");
+        .expect("Car needs last week's cash for T2");
+    assert_eq!(car_reference, 80_000);
     let car_id = car_ref["accountId"].as_str().unwrap().to_string();
     let typed_car = car_reference - 825;
     let cash = cash_from_references(&view, |name, ref_minor| {
@@ -437,13 +496,16 @@ async fn t2_car_gap_posts_one_adjust_and_snapshot_cash() {
 
 #[tokio::test]
 async fn t3_blank_reason_blocks_week_capture_accept() {
-    let root = repo_root();
-    let production = root.join("database/seed/production");
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
-    load_production_seed_via_commands(&platform, &production)
-        .await
-        .expect("seed");
+    register_capture_accounts(&platform).await;
+    let prior = [10_000, 20_000, 30_000, 40_000, 80_000, 50_000];
+    must_cmd(
+        &platform,
+        "WeekCaptureAccept",
+        capture_body("2026-08-15", "2026-08-21", &prior, serde_json::json!([])),
+    )
+    .await;
 
     let view = query_json(
         &platform,
@@ -540,6 +602,107 @@ async fn t4_null_reference_skips_adjust() {
 }
 
 #[tokio::test]
+async fn roth_expected_cash_is_last_week_plus_dividends_minus_withdrawals() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    register_capture_accounts(&platform).await;
+    let prior = [10_000, 40_000, 30_000, 40_000, 80_000, 50_000];
+    must_cmd(
+        &platform,
+        "WeekCaptureAccept",
+        capture_body("2026-08-15", "2026-08-21", &prior, serde_json::json!([])),
+    )
+    .await;
+    let accounts = query_json(&platform, "AccountList", None).await;
+    let roth_id = accounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "FI Roth")
+        .unwrap()["accountId"]
+        .as_str()
+        .unwrap();
+    let security = must_cmd(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "ROTHX", "name": "Roth test"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_cmd(
+        &platform,
+        "DividendActualRecord",
+        serde_json::json!({
+            "accountId": roth_id,
+            "securityId": security_id,
+            "occurredOn": "2026-08-26",
+            "amountMinor": 2_500,
+            "scale": 2,
+            "idempotencyKey": "roth-div-2026-08-26"
+        }),
+    )
+    .await;
+    must_cmd(
+        &platform,
+        "CashDistributionPost",
+        serde_json::json!({
+            "accountId": roth_id,
+            "activityType": "Roth_Distribution",
+            "occurredOn": "2026-08-27",
+            "grossMinor": 1_000,
+            "federalWithholdingMinor": 0,
+            "stateWithholdingMinor": 0,
+            "scale": 2,
+            "idempotencyKey": "roth-wd-2026-08-27"
+        }),
+    )
+    .await;
+    must_cmd(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": roth_id,
+            "activityType": "ETF Purchase",
+            "occurredOn": "2026-08-27",
+            "amountMinor": 500,
+            "scale": 2,
+            "idempotencyKey": "roth-etf-buy-2026-08-27"
+        }),
+    )
+    .await;
+    must_cmd(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": roth_id,
+            "activityType": "ETF Sale",
+            "occurredOn": "2026-08-27",
+            "amountMinor": 200,
+            "scale": 2,
+            "idempotencyKey": "roth-etf-sale-2026-08-27"
+        }),
+    )
+    .await;
+    let view = query_json(
+        &platform,
+        "TrendsWeekGet",
+        Some(r#"{"asOfDate":"2026-08-28"}"#),
+    )
+    .await;
+    let roth_ref = view["cashReferences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["accountName"] == "FI Roth")
+        .unwrap();
+    assert_eq!(
+        roth_ref["referenceMinor"],
+        40_000 + 2_500 - 1_000 - 500 + 200,
+        "expected cash subtracts ETF Purchase and adds ETF Sale"
+    );
+}
+
+#[tokio::test]
 async fn t6_cash_adjust_post_refuses_withholding() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
@@ -613,6 +776,17 @@ async fn t9_blank_etf_total_stays_zero_no_proxy_invent() {
         "blank ETF total must not be replaced by suggested 70% proxy on Accept"
     );
     assert_eq!(count_cash_adjust(&platform, "2026-08-28").await, 0);
+    let trends = query_json(&platform, "TrendsGet", Some(r#"{"asOfDate":"2026-08-28"}"#)).await;
+    let week = trends["weeks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["periodEnd"] == "2026-08-28")
+        .expect("accepted Saturday is on the saved-week table");
+    assert_eq!(week["periodStart"], "2026-08-22");
+    assert_eq!(week["incomeCashMinor"], cash[0]);
+    assert!(week["fidelityTotalMinor"].as_i64().unwrap() > 0);
+    assert_eq!(week["schwabTotalMinor"], 3_500_000);
 }
 
 #[tokio::test]

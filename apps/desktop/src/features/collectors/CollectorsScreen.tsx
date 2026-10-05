@@ -61,10 +61,24 @@ export type CollectorsScreenProps = {
   onOpenExceptionLog: () => void;
   onRetryTicket: (ticket: WorkTicketRecord) => void;
   onRecreateAdapter: (ticket: WorkTicketRecord) => void;
+  onFixRemainingYear: (ticket: WorkTicketRecord) => void;
   onExceptTicket: (ticket: WorkTicketRecord) => void;
   onRejectTicket: (ticket: WorkTicketRecord) => void;
   onEnterAmount: (ticket: WorkTicketRecord, amount: string) => void;
   onFileTicket: (ticket: WorkTicketRecord) => void;
+  resolveTicketCheckUrl?: (ticket: WorkTicketRecord) => string | null;
+  onOpenCheckUrl?: (url: string) => void;
+  resolveTicketRocContext?: (ticket: WorkTicketRecord) => {
+    rocSourceUrl?: string;
+    rocEstimateMinor?: number | null;
+    rocScale?: number;
+  } | null;
+  onStoreTicketRocUrl?: (
+    ticket: WorkTicketRecord,
+    url: string,
+  ) => Promise<{ ok: boolean; parsedPct?: string; message: string }>;
+  onStoreTicketManualRoc?: (ticket: WorkTicketRecord, pct: string) => void;
+  onOpenTicketRocResearch?: (ticket: WorkTicketRecord) => void;
 };
 
 export function CollectorsScreen(props: CollectorsScreenProps) {
@@ -102,16 +116,23 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
     onOpenExceptionLog,
     onRetryTicket,
     onRecreateAdapter,
+    onFixRemainingYear,
     onExceptTicket,
     onRejectTicket,
     onEnterAmount,
     onFileTicket,
+    resolveTicketCheckUrl,
+    onOpenCheckUrl,
+    resolveTicketRocContext,
+    onStoreTicketRocUrl,
+    onStoreTicketManualRoc,
+    onOpenTicketRocResearch,
   } = props;
   return (
     <section aria-label="Collectors">
               <h2>Collectors</h2>
               <p>
-                Income names only (DIV-1, CASH, Weekly/Monthly/Quarterly). Non-payers
+                Income names only (DIV-1, CASH, Weekly/Twice monthly/Monthly/Quarterly). Non-payers
                 are excluded. Collect fresh distribution data is the daily run —
                 declarations only. Establish and Reevaluate collector are on Tools.
                 Yahoo last price is separate and does not fill this page. Yahoo is
@@ -629,8 +650,36 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                   retryingSymbol={retryingTicket?.symbol}
                   pendingTicketId={ticketDecision?.ticketId}
                   pendingAction={ticketDecision?.action}
+                  resolveCheckUrl={
+                    resolveTicketCheckUrl
+                      ? (t) => resolveTicketCheckUrl(t as WorkTicketRecord)
+                      : undefined
+                  }
+                  onOpenCheckUrl={onOpenCheckUrl}
+                  resolveRocContext={
+                    resolveTicketRocContext
+                      ? (t) => resolveTicketRocContext(t as WorkTicketRecord)
+                      : undefined
+                  }
+                  onStoreRocUrl={
+                    onStoreTicketRocUrl
+                      ? (t, url) => onStoreTicketRocUrl(t as WorkTicketRecord, url)
+                      : undefined
+                  }
+                  onStoreManualRoc={
+                    onStoreTicketManualRoc
+                      ? (t, pct) =>
+                          onStoreTicketManualRoc(t as WorkTicketRecord, pct)
+                      : undefined
+                  }
+                  onOpenRocResearch={
+                    onOpenTicketRocResearch
+                      ? (t) => onOpenTicketRocResearch(t as WorkTicketRecord)
+                      : undefined
+                  }
                   onRetry={(t) => onRetryTicket(t as WorkTicketRecord)}
                   onRecreateAdapter={(t) => onRecreateAdapter(t as WorkTicketRecord)}
+                  onFixRemainingYear={(t) => onFixRemainingYear(t as WorkTicketRecord)}
                   onExcept={(t) => onExceptTicket(t as WorkTicketRecord)}
                   onReject={(t) => onRejectTicket(t as WorkTicketRecord)}
                   onEnterAmount={(t, amount) => onEnterAmount(t as WorkTicketRecord, amount)}

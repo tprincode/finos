@@ -2,7 +2,10 @@ import type {
   AccountListItem,
   CalculatorGet,
   CartBuyLine,
+  CartExecutedList,
+  CartExecutedRow,
   CurrentPriceGet,
+  DeclarationHistoryGet,
   CartScenario,
   CartScenarioList,
   CartSellLine,
@@ -11,9 +14,15 @@ import type {
   InvestmentGet,
   PositionMasterGet,
 } from "@finos/app-contracts";
-import { formatUsd } from "@finos/ui-components";
+import {
+  CALCULATOR_CADENCE_FILTERS,
+  CALCULATOR_PERFORMANCE_VIEWS,
+  formatBps,
+  formatUsd,
+  matchesCalculatorPerformanceView,
+} from "@finos/ui-components";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { rankLowestCost, type LotCostOption } from "../shared/pickers";
+import { rankLowestCost } from "../shared/pickers";
 import type { ResearchedSymbolOption } from "../shared/pickers";
 import {
   CartStartWizard,
@@ -21,8 +30,9 @@ import {
   type CartWizardPrompt,
   type SavedCartPlan,
 } from "./CartStartWizard";
-import { planAnnualCents } from "./cartPlan";
-import { ExecutePanel } from "./ExecutePanel";
+import { periodsForPlan, planAnnualCents, planBasisText } from "./cartPlan";
+import { ExecutePlanPanel } from "./ExecutePlanPanel";
+import { IncomeCompare } from "./IncomeCompare";
 import { PlanSheetTable, type PlanSheetRow } from "./PlanSheets";
 import { ScenarioDelta } from "./ScenarioDelta";
 import {
@@ -33,6 +43,16 @@ import {
   roundedWeekMonth,
   scenarioCritique,
 } from "./planMath";
+import { cashConfirmPreview, lotCostCents } from "./cartCashConfirm";
+import {
+  CART_UNIT_SCALE,
+  executeUnitMinor,
+  priceCents,
+  rescaleMinor,
+  spendCentsFromPrice,
+} from "./cartPrice";
+import { clearCartResume, readCartResume, writeCartResume } from "./cartResume";
+import { cashRemainderRow, withSymbolSubtotals } from "./planSheetRollups";
 import { StepRail } from "./StepRail";
 
 export type CartClient = {
@@ -49,10 +69,12 @@ export type CartClient = {
 export type CartBuyPrefill = {
   scenarioId: string;
   accountId: string;
+  planId: string;
   securityId: string;
   symbol: string;
   qtyWhole: number;
   lastMinor: number;
+  priceScale?: number;
   openedOn: string;
 };
 
@@ -110,12 +132,27 @@ async function loadSymbolFacts(
     tier: normalizeTier(body.riskTier ?? ""),
     planPerShareMinor: body.planPerShareMinor,
     planScale: body.planScale,
-    periods: body.planningPeriodsPerYear || periodsPerYear(body.paymentFrequency) || 0,
+    periods: periodsForPlan(body.paymentFrequency, body.planningPeriodsPerYear),
     remainingQuantityMinor: body.remainingQuantityMinor,
     quantityScale: body.quantityScale,
     remainingPerformanceMinor: body.remainingPerformanceMinor,
     remainingTaxMinor: body.remainingTaxMinor,
   };
+}
+
+function agreeStopMessage(code: string | undefined): string {
+  switch (code) {
+    case "insufficient_lot_qty":
+      return "Execute stopped: a sell quantity is larger than the shares still in that lot.";
+    case "mix_override_required":
+      return "Execute stopped: this plan would worsen the target mix, and Agree requires a typed reason.";
+    case "scenario_already_agreed":
+      return "Execute stopped: another scenario on this account is already agreed.";
+    case "cash_floor_override_required":
+      return "Execute stopped at the cash-floor check. That check should not block a sell-and-rebuy — reload the desktop and try again.";
+    default:
+      return `Execute stopped at agree (${code ?? "error"}).`;
+  }
 }
 
 function priceToCents(minor: number, scale: number | null | undefined): number {
@@ -151,20 +188,17 @@ function cashYieldBps(
   const row = masterRow(master, symbol);
   if (row?.planFwdYieldBps != null) return row.planFwdYieldBps;
   const calc = calculator?.rows.find((item) => item.symbol === symbol);
-  if (!calc?.planKnown || !calc.planPerShareMinor || !calc.planningPeriodsPerYear) return null;
+  if (!calc?.planKnown || !calc.planPerShareMinor) return null;
+  const periods = periodsForPlan(
+    row?.paymentFrequency ?? "",
+    calc.planningPeriodsPerYear ?? 0,
+  );
+  if (!periods) return null;
   const priceCents = isCashSymbol(symbol) ? 100 : calc.lastPriceMinor;
   if (priceCents == null || priceCents <= 0) return null;
   const denom = 10 ** calc.planScale * priceCents;
   if (denom === 0) return null;
-  return Math.round((calc.planPerShareMinor * calc.planningPeriodsPerYear * 1_000_000) / denom);
-}
-
-function periodsPerYear(freq: string): number | null {
-  const key = freq.trim().toLowerCase();
-  if (key === "weekly") return 52;
-  if (key === "monthly") return 12;
-  if (key === "quarterly") return 4;
-  return null;
+  return Math.round((calc.planPerShareMinor * periods * 1_000_000) / denom);
 }
 
 function planAnnualForSymbol(
@@ -176,22 +210,50 @@ function planAnnualForSymbol(
   const calc = calculator?.rows.find(
     (row) => row.symbol.toUpperCase() === symbol.toUpperCase(),
   );
-  if (calc?.planKnown && calc.planPerShareMinor && calc.planningPeriodsPerYear) {
+  const row = masterRow(master, symbol);
+  // Frequency wins over a stale Calculator planningPeriodsPerYear (Twice monthly = 24).
+  const periods = periodsForPlan(
+    row?.paymentFrequency ?? calc?.paymentFrequency ?? "",
+    calc?.planningPeriodsPerYear ?? 0,
+  );
+  if (calc?.planKnown && calc.planPerShareMinor && periods) {
     const annual = planAnnualCents(
       calc.planPerShareMinor,
       calc.planScale,
-      calc.planningPeriodsPerYear,
+      periods,
       qtyWhole,
     );
     if (annual != null) return annual;
   }
-  const row = masterRow(master, symbol);
-  const periods = (row ? periodsPerYear(row.paymentFrequency) : null) ?? calc?.planningPeriodsPerYear ?? null;
   if (row?.planPerShareMinor && periods) {
     const annual = planAnnualCents(row.planPerShareMinor, row.planScale, periods, qtyWhole);
     if (annual != null) return annual;
   }
   return null;
+}
+
+/** Same Plan $ and periods the rate came from, so a wrong rate is readable on the sheet. */
+function planBasisForSymbol(
+  calculator: CalculatorGet | null,
+  master: PositionMasterGet | null,
+  symbol: string,
+): string {
+  const calc = calculator?.rows.find(
+    (row) => row.symbol.toUpperCase() === symbol.toUpperCase(),
+  );
+  const row = masterRow(master, symbol);
+  const periods = periodsForPlan(
+    row?.paymentFrequency ?? calc?.paymentFrequency ?? "",
+    calc?.planningPeriodsPerYear ?? 0,
+  );
+  if (calc?.planKnown && calc.planPerShareMinor) {
+    const text = planBasisText(calc.planPerShareMinor, calc.planScale, periods);
+    if (text) return text;
+  }
+  if (row?.planPerShareMinor) {
+    return planBasisText(row.planPerShareMinor, row.planScale, periods);
+  }
+  return "";
 }
 
 function annualForQty(
@@ -257,22 +319,30 @@ function finiteMinor(value: unknown): number | null {
 
 /** Same dollars the open sell table shows: quantity times last price. */
 function sellLineMinor(line: CartSellLine): number {
+  const proceeds = finiteMinor(line.proceedsMinor);
+  if (proceeds != null && proceeds > 0) return proceeds;
   const qtyMinor = finiteMinor(line.qtyMinor);
   const unit = finiteMinor(line.unitMinor);
-  const scale = finiteMinor(line.qtyScale) ?? 0;
+  const qtyScale = finiteMinor(line.qtyScale) ?? 0;
   if (qtyMinor != null && unit != null && unit > 0) {
-    const denom = 10 ** scale;
-    if (Number.isFinite(denom) && denom > 0) return Math.round((qtyMinor * unit) / denom);
+    const shares = qtyMinor / 10 ** qtyScale;
+    if (Number.isFinite(shares) && shares > 0) {
+      return spendCentsFromPrice(shares, unit, line.unitScale ?? 2);
+    }
   }
-  return finiteMinor(line.proceedsMinor) ?? 0;
+  return 0;
 }
 
 /** Same dollars the open buy table shows: whole shares times last price. */
 function buyLineMinor(line: CartBuyLine): number {
+  const spend = finiteMinor(line.spendMinor);
+  if (spend != null && spend > 0) return spend;
   const qty = finiteMinor(line.qtyWhole);
   const last = finiteMinor(line.lastMinor);
-  if (qty != null && last != null && last > 0) return Math.round(qty * last);
-  return finiteMinor(line.spendMinor) ?? 0;
+  if (qty != null && last != null && last > 0) {
+    return spendCentsFromPrice(qty, last, line.priceScale ?? 2);
+  }
+  return 0;
 }
 
 function sellSheetRows(
@@ -284,7 +354,7 @@ function sellSheetRows(
 ): PlanSheetRow[] {
   return lines.map((line) => {
     const qty = qtyOf(line);
-    const priceMinor = line.unitMinor > 0 ? line.unitMinor : null;
+    const priceMinor = line.unitMinor > 0 ? priceCents(line.unitMinor, line.unitScale) : null;
     const marketMinor = priceMinor == null ? null : line.proceedsMinor;
     const planned = annualForQty(calculator, master, line.symbol, qty);
     const yearMinor = line.isCash
@@ -307,6 +377,7 @@ function sellSheetRows(
       yearMinor,
       eachMinor,
       yieldText: pctOf(yearMinor, marketMinor, 2),
+      planBasis: planBasisForSymbol(calculator, master, line.symbol),
       tier: tierOf(master, line.symbol),
       taxGainMinor: line.isCash ? null : line.taxGainMinor ?? null,
       performanceGainMinor: line.isCash ? null : line.performanceGainMinor ?? null,
@@ -322,7 +393,7 @@ function buySheetRows(
   facts: Record<string, SymbolFacts>,
 ): PlanSheetRow[] {
   return lines.map((line) => {
-    const priceMinor = line.lastMinor > 0 ? line.lastMinor : null;
+    const priceMinor = line.lastMinor > 0 ? priceCents(line.lastMinor, line.priceScale) : null;
     const known = facts[line.symbol.toUpperCase()];
     const yearMinor =
       planAnnualForSymbol(calculator, master, line.symbol, line.qtyWhole) ??
@@ -331,7 +402,12 @@ function buySheetRows(
     const parts = roundedWeekMonth(yearMinor);
     const eachMinor =
       yearMinor == null || line.qtyWhole <= 0 ? null : Math.round(yearMinor / line.qtyWhole);
-    const marketMinor = priceMinor == null ? null : line.qtyWhole * priceMinor;
+    const marketMinor =
+      priceMinor == null
+        ? null
+        : line.spendMinor > 0
+          ? line.spendMinor
+          : spendCentsFromPrice(line.qtyWhole, line.lastMinor, line.priceScale ?? 2);
     return {
       key: line.lineId,
       priceMinor,
@@ -344,6 +420,9 @@ function buySheetRows(
       yearMinor,
       eachMinor,
       yieldText: pctOf(yearMinor, marketMinor, 2),
+      planBasis:
+        planBasisForSymbol(calculator, master, line.symbol) ||
+        planBasisText(known?.planPerShareMinor ?? 0, known?.planScale ?? 0, known?.periods ?? 0),
       tier: tierOf(master, line.symbol) || known?.tier || "",
     };
   });
@@ -356,7 +435,7 @@ function factsFromMaster(master: PositionMasterGet | null, symbol: string): Symb
     tier: normalizeTier(row.riskTier),
     planPerShareMinor: row.planPerShareMinor,
     planScale: row.planScale,
-    periods: periodsPerYear(row.paymentFrequency) ?? 0,
+    periods: periodsForPlan(row.paymentFrequency, 0),
     remainingQuantityMinor: row.remainingQuantityMinor,
     quantityScale: row.quantityScale,
     remainingPerformanceMinor: row.remainingPerformanceMinor,
@@ -375,13 +454,27 @@ function dollarsOf(rows: PlanSheetRow[]): number | null {
 }
 
 function monthOf(rows: PlanSheetRow[]): number | null {
-  if (rows.length === 0 || rows.some((row) => row.monthMinor == null)) return null;
-  return rows.reduce((sum, row) => sum + (row.monthMinor ?? 0), 0);
+  if (rows.length === 0) return null;
+  let sum = 0;
+  let any = false;
+  for (const row of rows) {
+    if (row.monthMinor == null) continue;
+    sum += row.monthMinor;
+    any = true;
+  }
+  return any ? sum : null;
 }
 
 function yearOf(rows: PlanSheetRow[]): number | null {
-  if (rows.length === 0 || rows.some((row) => row.yearMinor == null)) return null;
-  return rows.reduce((sum, row) => sum + (row.yearMinor ?? 0), 0);
+  if (rows.length === 0) return null;
+  let sum = 0;
+  let any = false;
+  for (const row of rows) {
+    if (row.yearMinor == null) continue;
+    sum += row.yearMinor;
+    any = true;
+  }
+  return any ? sum : null;
 }
 
 export function ShoppingCartScreen({
@@ -391,6 +484,7 @@ export function ShoppingCartScreen({
   calculator,
   researched,
   positionMaster,
+  declHistory,
   asOfDate,
   busy,
   writesBlocked,
@@ -398,6 +492,9 @@ export function ShoppingCartScreen({
   onBusy,
   onDirtyChange,
   onOpenBuyLot,
+  cartRefreshKey = 0,
+  resumeScenarioId = null,
+  onCartResumed,
 }: {
   client: CartClient;
   accounts: AccountListItem[];
@@ -405,9 +502,14 @@ export function ShoppingCartScreen({
   calculator: CalculatorGet | null;
   researched: ResearchedSymbolOption[];
   positionMaster: PositionMasterGet | null;
+  declHistory: DeclarationHistoryGet | null;
   asOfDate: string;
   busy?: boolean;
   writesBlocked?: boolean;
+  cartRefreshKey?: number;
+  /** Survives Add Lot remount — host keeps this while screen === add-lot. */
+  resumeScenarioId?: string | null;
+  onCartResumed?: () => void;
   onMessage: (message: string) => void;
   onBusy: (busy: boolean) => void;
   onDirtyChange: (dirty: boolean) => void;
@@ -418,16 +520,17 @@ export function ShoppingCartScreen({
   const suggestedName = useRef("Draft");
   const buyLock = useRef(false);
   const [symbolFacts, setSymbolFacts] = useState<Record<string, SymbolFacts>>({});
-  const [accountCashMinor, setAccountCashMinor] = useState<number | null>(null);
   const [cashPile, setCashPile] = useState<CashPileGet | null>(null);
-  const cashAlignedPlan = useRef<string | null>(null);
   const loadedFacts = useRef(new Set<string>());
   const [wizardPrompt, setWizardPrompt] = useState<CartWizardPrompt>("account");
   const [savedPlans, setSavedPlans] = useState<SavedCartPlan[]>([]);
+  const [executedCarts, setExecutedCarts] = useState<CartExecutedRow[]>([]);
   const [planId, setPlanId] = useState("");
   const [scenarioA, setScenarioA] = useState<CartScenario | null>(null);
   const [scenarioB, setScenarioB] = useState<CartScenario | null>(null);
-  const [cashQty, setCashQty] = useState("");
+  const [resumingCart, setResumingCart] = useState(
+    () => Boolean(resumeScenarioId) || readCartResume() != null,
+  );
   const [sellSymbol, setSellSymbol] = useState("");
   const [lotSellQty, setLotSellQty] = useState<Record<string, string>>({});
   const [quotedSellMinor, setQuotedSellMinor] = useState<number | null>(null);
@@ -437,11 +540,13 @@ export function ShoppingCartScreen({
     annualPerShare: number | null;
   } | null>(null);
   const [sellNote, setSellNote] = useState("");
+  const [cashQty, setCashQty] = useState("");
   const [cashTier, setCashTier] = useState("");
   const [buyA, setBuyA] = useState({ securityId: "", qty: "" });
   const [buyB, setBuyB] = useState({ securityId: "", qty: "" });
   const [depositAmount, setDepositAmount] = useState("");
   const [sold, setSold] = useState(false);
+  const [executeStatusMessage, setExecuteStatusMessage] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
   const accountName = accounts.find((account) => account.accountId === accountId)?.name ?? "";
@@ -484,6 +589,111 @@ export function ShoppingCartScreen({
     bindPlan(body.items, id);
   };
 
+  useEffect(() => {
+    if (planId && accountId) void refreshPlan(planId, accountId);
+  }, [cartRefreshKey, planId, accountId]);
+
+  /** After Add Lot, this screen remounts empty — reload the in-progress execute scenario. */
+  useEffect(() => {
+    let cancelled = false;
+    setResumingCart(true);
+    void (async () => {
+      const stored = readCartResume();
+      let scenarioId = resumeScenarioId || stored?.scenarioId || "";
+      if (!scenarioId) {
+        // Always recover an executing plan (sells posted / buys in flight).
+        // After Add Lot (cartRefreshKey > 0) also recover agreed-not-yet-executing.
+        for (const account of accounts) {
+          const listed = await client.executeQuery("CartScenarioList", {
+            accountId: account.accountId,
+          });
+          if (cancelled) return;
+          if (!listed.ok || !listed.bodyJson) continue;
+          const body = JSON.parse(listed.bodyJson) as CartScenarioList;
+          const items = body.items ?? [];
+          const executing = items.find((item) => item.status === "executing");
+          const agreed =
+            cartRefreshKey > 0
+              ? items.find((item) => item.status === "agreed")
+              : null;
+          const pick = executing ?? agreed ?? null;
+          if (pick) {
+            scenarioId = pick.scenarioId;
+            break;
+          }
+        }
+      }
+      if (!scenarioId) {
+        setResumingCart(false);
+        return;
+      }
+      const got = await client.executeQuery("CartScenarioGet", { scenarioId });
+      if (cancelled) return;
+      if (!got.ok || !got.bodyJson) {
+        clearCartResume();
+        onCartResumed?.();
+        setResumingCart(false);
+        onMessage("In-progress cart could not be restored — pick it from Saved plans.");
+        return;
+      }
+      const scene = JSON.parse(got.bodyJson) as CartScenario;
+      if (scene.status === "discarded") {
+        clearCartResume();
+        onCartResumed?.();
+        setResumingCart(false);
+        return;
+      }
+      const nextPlanId = scene.planId || scene.scenarioId;
+      const nextAccountId = scene.accountId;
+      setAccountId(nextAccountId);
+      setPlanId(nextPlanId);
+      if (scene.status === "complete") {
+        // Cash already aligned — land on the close summary read-only, not an empty sell
+        // sheet. The key is dropped so the next visit starts a new cart.
+        clearCartResume();
+      } else {
+        writeCartResume({
+          scenarioId: scene.scenarioId,
+          accountId: nextAccountId,
+          planId: nextPlanId,
+        });
+      }
+      const listed = await client.executeQuery("CartScenarioList", {
+        accountId: nextAccountId,
+      });
+      if (cancelled) return;
+      if (listed.ok && listed.bodyJson) {
+        const body = JSON.parse(listed.bodyJson) as CartScenarioList;
+        bindPlan(body.items, nextPlanId);
+      } else {
+        setScenarioA(scene);
+        setScenarioB(null);
+      }
+      onCartResumed?.();
+      setResumingCart(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally omit onMessage / onCartResumed — parent passes unstable lambdas.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeScenarioId, cartRefreshKey, client, accounts]);
+
+  /**
+   * Completed carts are history, not drafts, and they belong on the Shopping Cart home screen
+   * rather than inside the build flow. No accountId is sent on purpose: home lists every
+   * account's completed carts, which is what the table's Account column is for.
+   */
+  const loadExecutedCarts = async () => {
+    const result = await client.executeQuery("CartExecutedList", {});
+    if (!result.ok || !result.bodyJson) {
+      setExecutedCarts([]);
+      return;
+    }
+    const body = JSON.parse(result.bodyJson) as CartExecutedList;
+    setExecutedCarts(body.items ?? []);
+  };
+
   const loadSavedPlans = async (account: string) => {
     const result = await client.executeQuery("CartScenarioList", { accountId: account });
     if (!result.ok || !result.bodyJson) {
@@ -491,9 +701,18 @@ export function ShoppingCartScreen({
       return;
     }
     const body = JSON.parse(result.bodyJson) as CartScenarioList;
+    // A plan with an executed slot is not an open cart. Filtering only the complete scenario
+    // left its sibling behind, so one cart appeared in Open carts and Executed carts at once.
+    const executedPlans = new Set(
+      body.items
+        .filter((scene) => scene.status === "complete")
+        .map((scene) => scene.planId || scene.scenarioId),
+    );
     const grouped = new Map<string, CartScenario[]>();
     for (const item of body.items) {
       const id = item.planId || item.scenarioId;
+      if (executedPlans.has(id)) continue;
+      if (item.status === "complete" || item.status === "superseded") continue;
       const current = grouped.get(id) ?? [];
       current.push(item);
       grouped.set(id, current);
@@ -501,34 +720,61 @@ export function ShoppingCartScreen({
     setSavedPlans(
       [...grouped.entries()]
         .map(([id, scenes]) => {
-          const slotA = scenes.find((item) => (item.slot ?? "A") === "A") ?? scenes[0];
+          // No `?? scenes[0]` fallback. When slot A was filtered out that let the surviving
+          // slot B stand in as slot A and be counted as both, which is how a single empty
+          // draft read "Scenarios 2" with "A $0.00 · B $0.00".
+          const slotA = scenes.find((item) => (item.slot ?? "A") === "A") ?? null;
           const slotB = scenes.find((item) => item.slot === "B") ?? null;
-          const discardOrder = [slotB, slotA].filter((item): item is CartScenario => item != null);
+          const slots = [slotB, slotA].filter((item): item is CartScenario => item != null);
+          const head = slotA ?? slotB;
+          if (!head) return null;
           return {
             planId: id,
-            name: slotA.name?.trim() || "Draft",
-            asOf: slotA.asOf,
+            name: head.name?.trim() || "Draft",
+            asOf: head.asOf,
             status:
-              slotB && slotB.status !== slotA.status
+              slotA && slotB && slotB.status !== slotA.status
                 ? `A ${slotA.status} · B ${slotB.status}`
-                : slotA.status,
-            scenarioCount: slotB ? 2 : 1,
-            sellMinor: (slotA.sellLines ?? []).reduce((sum, line) => sum + sellLineMinor(line), 0),
-            buyAMinor: (slotA.buyLines ?? []).reduce((sum, line) => sum + buyLineMinor(line), 0),
+                : head.status,
+            scenarioCount: slots.length,
+            // Sell lines are keyed by plan, so either slot reports the same sale.
+            sellMinor: (head.sellLines ?? []).reduce((sum, line) => sum + sellLineMinor(line), 0),
+            buyAMinor: slotA
+              ? (slotA.buyLines ?? []).reduce((sum, line) => sum + buyLineMinor(line), 0)
+              : 0,
             buyBMinor: slotB
               ? (slotB.buyLines ?? []).reduce((sum, line) => sum + buyLineMinor(line), 0)
               : null,
-            scenarioIds: [...new Set(discardOrder.map((item) => item.scenarioId))],
+            scenarioIds: [...new Set(slots.map((item) => item.scenarioId))],
           };
         })
+        .filter((plan): plan is SavedCartPlan => plan !== null)
         .reverse(),
     );
   };
 
   useEffect(() => {
+    // Home: completed carts for every account, under the account picker.
+    if (wizardPrompt === "account") {
+      void loadExecutedCarts();
+      return;
+    }
+    // Picking an account leaves home for that account's open carts.
     if (wizardPrompt !== "plans" || !accountId) return;
     void loadSavedPlans(accountId);
-  }, [wizardPrompt, accountId]);
+  }, [wizardPrompt, accountId, cartRefreshKey]);
+
+  useEffect(() => {
+    if (!planId) {
+      setSold(false);
+      return;
+    }
+    try {
+      setSold(sessionStorage.getItem(`cart-sells-posted-${planId}`) === "1");
+    } catch {
+      setSold(false);
+    }
+  }, [planId]);
 
   const deleteSavedPlan = async (plan: SavedCartPlan) => {
     if (!accountId) return;
@@ -570,6 +816,31 @@ export function ShoppingCartScreen({
     bindPlan(body.items, id);
     markDirty(false);
     onMessage("Plan opened.");
+  };
+
+  /**
+   * Home lists every account and the account picker is empty, so the draft opener
+   * (`if (!accountId) return`) never ran. Open the scenario on the row itself.
+   */
+  const openExecutedCart = async (row: CartExecutedRow) => {
+    const account = row.accountId;
+    if (!account || !row.scenarioId) {
+      onMessage("That cart could not be opened.");
+      return;
+    }
+    const got = await client.executeQuery("CartScenarioGet", { scenarioId: row.scenarioId });
+    if (!got.ok || !got.bodyJson) {
+      onMessage("That cart could not be opened.");
+      return;
+    }
+    const scene = JSON.parse(got.bodyJson) as CartScenario;
+    setAccountId(scene.accountId || account);
+    setPlanId(scene.planId || scene.scenarioId);
+    setScenarioA(scene);
+    setScenarioB(null);
+    clearCartResume();
+    markDirty(false);
+    onMessage("Cart opened.");
   };
 
   const run = async (name: string, body: Record<string, unknown>) => {
@@ -614,30 +885,10 @@ export function ShoppingCartScreen({
     setScenarioA(next);
     setScenarioB(null);
     markDirty(true);
-    const pile = await client.executeQuery("CashPileGet", { accountId });
-    if (pile.ok && pile.bodyJson) {
-      const body = JSON.parse(pile.bodyJson) as CashPileGet;
-      if (body.found && body.lotId && body.remainingQtyMinor > 0) {
-        const cleared = await run("CartSellSymbolClear", {
-          scenarioId: next.scenarioId,
-          symbol: body.symbol || cashSymbol,
-        });
-        if (cleared) {
-          const added = await run("CartSellLineAdd", {
-            scenarioId: next.scenarioId,
-            lotId: body.lotId,
-            qtyMinor: body.remainingQtyMinor,
-            unitMinor: 100,
-            isCash: true,
-          });
-          if (added) await refreshPlan(next.planId, accountId);
-        }
-      }
-    }
     onMessage("Plan opened.");
   };
 
-  const cashLine = scenarioA?.sellLines.find((line) => line.isCash);
+  const cashLine = scenarioA?.sellLines.find((line) => line.isCash || isCashSymbol(line.symbol));
   useEffect(() => {
     if (!cashLine) {
       setCashQty("");
@@ -671,7 +922,8 @@ export function ShoppingCartScreen({
       if (body.symbol.toUpperCase() !== symbol.toUpperCase()) return;
       const px = body.price?.priceMinor;
       if (px != null && px > 0) setQuotedSellMinor(priceToCents(px, body.price?.scale));
-      const periods = body.planningPeriodsPerYear || periodsPerYear(body.paymentFrequency) || 0;
+      // Frequency wins over a stale Calculator planningPeriodsPerYear (Twice monthly = 24).
+      const periods = periodsForPlan(body.paymentFrequency, body.planningPeriodsPerYear);
       setSellPlan({
         symbol: symbol.toUpperCase(),
         tier: normalizeTier(body.riskTier ?? ""),
@@ -685,22 +937,35 @@ export function ShoppingCartScreen({
 
   useEffect(() => {
     const lines = [...(scenarioA?.buyLines ?? []), ...(scenarioB?.buyLines ?? [])];
-    const pending = lines.filter(
-      (line) => line.securityId && !loadedFacts.current.has(line.securityId),
-    );
-    if (pending.length === 0) return;
-    for (const line of pending) loadedFacts.current.add(line.securityId);
+    const ids = [
+      ...new Set(
+        lines
+          .map((line) => line.securityId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    if (ids.length === 0) return;
+    let cancel = false;
     void (async () => {
       const next: Record<string, SymbolFacts> = {};
-      for (const line of pending) {
-        const facts = await loadSymbolFacts(client, line.securityId);
-        if (facts) next[line.symbol.toUpperCase()] = facts;
-        else loadedFacts.current.delete(line.securityId);
+      for (const securityId of ids) {
+        const line = lines.find((row) => row.securityId === securityId);
+        if (!line) continue;
+        const facts = await loadSymbolFacts(client, securityId);
+        if (cancel) return;
+        if (facts) {
+          next[line.symbol.toUpperCase()] = facts;
+          loadedFacts.current.add(securityId);
+        } else {
+          loadedFacts.current.delete(securityId);
+        }
       }
-      if (Object.keys(next).length > 0) {
-        setSymbolFacts((current) => ({ ...current, ...next }));
-      }
+      if (cancel || Object.keys(next).length === 0) return;
+      setSymbolFacts((current) => ({ ...current, ...next }));
     })();
+    return () => {
+      cancel = true;
+    };
   }, [client, scenarioA, scenarioB]);
 
   useEffect(() => {
@@ -732,45 +997,11 @@ export function ShoppingCartScreen({
       if (cancelled || !result.ok || !result.bodyJson) return;
       const body = JSON.parse(result.bodyJson) as CashPileGet;
       setCashPile(body.found ? body : null);
-      if (body.found && body.dollarsMinor > 0) setAccountCashMinor(body.dollarsMinor);
     });
     return () => {
       cancelled = true;
     };
-  }, [accountId, client, scenarioA]);
-
-  useEffect(() => {
-    cashAlignedPlan.current = null;
-  }, [planId]);
-
-  useEffect(() => {
-    if (!scenarioA || !planId || !accountId || !cashPile?.found || !cashPile.lotId) return;
-    if (cashPile.dollarsMinor <= 0) return;
-    if (cashAlignedPlan.current === planId) return;
-    const lineDollars = cashLine ? Math.round(qtyOf(cashLine) * 100) : null;
-    if (lineDollars === cashPile.dollarsMinor) {
-      cashAlignedPlan.current = planId;
-      return;
-    }
-    cashAlignedPlan.current = planId;
-    const scenarioId = scenarioA.scenarioId;
-    const pile = cashPile;
-    void (async () => {
-      const cleared = await run("CartSellSymbolClear", {
-        scenarioId,
-        symbol: pile.symbol || cashSymbol,
-      });
-      if (!cleared) return;
-      const added = await run("CartSellLineAdd", {
-        scenarioId,
-        lotId: pile.lotId,
-        qtyMinor: pile.remainingQtyMinor,
-        unitMinor: 100,
-        isCash: true,
-      });
-      if (added) await refreshPlan(planId, accountId);
-    })();
-  }, [scenarioA, planId, accountId, cashPile, cashLine, cashSymbol]);
+  }, [accountId, client, scenarioA, cartRefreshKey]);
 
   const commitCashQty = async () => {
     if (!scenarioA || !planId || !accountId) return;
@@ -858,19 +1089,40 @@ export function ShoppingCartScreen({
       onMessage(message);
       return;
     }
-    let unitMinor = lastOf(calculator, positionMaster, sellSymbol) ?? quotedSellMinor;
-    if (unitMinor == null || unitMinor <= 0) {
+    let unitMinorRaw: number | null =
+      calculator?.rows.find((row) => row.symbol.toUpperCase() === sellSymbol.toUpperCase())
+        ?.lastPriceMinor ?? null;
+    let unitFromScale =
+      calculator?.rows.find((row) => row.symbol.toUpperCase() === sellSymbol.toUpperCase())
+        ?.lastPriceScale ?? 2;
+    if (unitMinorRaw == null || unitMinorRaw <= 0) {
+      const master = masterRow(positionMaster, sellSymbol);
+      if (master?.lastPriceMinor != null && master.lastPriceMinor > 0) {
+        unitMinorRaw = master.lastPriceMinor;
+        unitFromScale = master.lastPriceScale ?? 2;
+      }
+    }
+    if (unitMinorRaw == null || unitMinorRaw <= 0) {
+      unitMinorRaw = quotedSellMinor;
+      unitFromScale = 2;
+    }
+    if (unitMinorRaw == null || unitMinorRaw <= 0) {
       const securityId = masterRow(positionMaster, sellSymbol)?.securityId;
       if (securityId) {
         const priced = await client.executeQuery("CurrentPriceGet", { securityId });
         if (priced.ok && priced.bodyJson) {
           const price = JSON.parse(priced.bodyJson) as CurrentPriceGet;
           if (price.priceMinor != null && price.priceMinor > 0) {
-            unitMinor = priceToCents(price.priceMinor, price.scale);
+            unitMinorRaw = price.priceMinor;
+            unitFromScale = price.scale ?? 2;
           }
         }
       }
     }
+    const unitMinor =
+      unitMinorRaw != null && unitMinorRaw > 0
+        ? rescaleMinor(unitMinorRaw, unitFromScale, CART_UNIT_SCALE)
+        : null;
     if (unitMinor == null || unitMinor <= 0) {
       const message = "Last price unknown — will not invent $0.";
       setSellNote(message);
@@ -891,6 +1143,7 @@ export function ShoppingCartScreen({
         lotId: take.lotId,
         qtyMinor: take.qtyMinor,
         unitMinor,
+        unitScale: CART_UNIT_SCALE,
         isCash: false,
       });
       if (!next) {
@@ -905,13 +1158,16 @@ export function ShoppingCartScreen({
     onMessage(`${sellSymbol} split across lowest-cost lots.`);
   };
 
-  const removeSellSymbol = async (symbol: string) => {
-    if (!scenarioA || !planId || !accountId || isCashSymbol(symbol)) return;
-    const next = await run("CartSellSymbolClear", {
+  const removeSellLine = async (lineId: string) => {
+    if (!scenarioA || !planId || !accountId) return;
+    const line = scenarioA.sellLines.find((item) => item.lineId === lineId);
+    if (!line) return;
+    const next = await run("CartSellLineRemove", {
       scenarioId: scenarioA.scenarioId,
-      symbol,
+      lineId,
     });
     if (next) {
+      if (line.isCash || isCashSymbol(line.symbol)) setCashQty("");
       await refreshPlan(planId, accountId);
       edited();
     }
@@ -935,12 +1191,16 @@ export function ShoppingCartScreen({
     }
     buyLock.current = true;
     try {
-      let known = symbolFacts[row.symbol.toUpperCase()];
-      if (!known) {
-        known = (await loadSymbolFacts(client, row.securityId)) ?? undefined;
-        if (known) {
-          setSymbolFacts((current) => ({ ...current, [row.symbol.toUpperCase()]: known as SymbolFacts }));
-        }
+      // Always re-read Plan — a line added before Confirm Plan must not keep a blank year.
+      const known =
+        (await loadSymbolFacts(client, row.securityId)) ??
+        symbolFacts[row.symbol.toUpperCase()];
+      if (known) {
+        setSymbolFacts((current) => ({
+          ...current,
+          [row.symbol.toUpperCase()]: known,
+        }));
+        loadedFacts.current.add(row.securityId);
       }
       let lastMinor = lastOf(calculator, positionMaster, row.symbol);
       if (lastMinor == null) {
@@ -954,14 +1214,20 @@ export function ShoppingCartScreen({
         onMessage("Last price unknown — will not invent $0.");
         return;
       }
+      const planAnnual =
+        planAnnualForSymbol(calculator, positionMaster, row.symbol, qtyWhole) ??
+        factsAnnual(known, qtyWhole);
+      if (planAnnual == null) {
+        onMessage(
+          `${row.symbol}: week/month/year need a stored Plan / share. Confirm Plan on Add Investment, then add this buy again.`,
+        );
+      }
       const next = await run("CartBuyLineAdd", {
         scenarioId: scene.scenarioId,
         securityId: row.securityId,
         qtyWhole,
         lastMinor,
-        planAnnualMinor:
-          planAnnualForSymbol(calculator, positionMaster, row.symbol, qtyWhole) ??
-          factsAnnual(known, qtyWhole),
+        planAnnualMinor: planAnnual,
       });
       if (!next) return;
       if (slot === "A") {
@@ -982,7 +1248,20 @@ export function ShoppingCartScreen({
     if (!planId || !accountId) return;
     const line = scene.buyLines.find((item) => item.lineId === lineId);
     if (!line || !Number.isInteger(qtyWhole) || qtyWhole <= 0) return;
-    const lastMinor = lastOf(calculator, positionMaster, line.symbol) ?? line.lastMinor;
+    const cents = lastOf(calculator, positionMaster, line.symbol);
+    const lastMinor =
+      cents != null
+        ? rescaleMinor(cents, 2, line.priceScale ?? 2)
+        : line.lastMinor;
+    const known =
+      (await loadSymbolFacts(client, line.securityId)) ??
+      symbolFacts[line.symbol.toUpperCase()];
+    if (known) {
+      setSymbolFacts((current) => ({
+        ...current,
+        [line.symbol.toUpperCase()]: known,
+      }));
+    }
     const next = await run("CartBuyLineQtySet", {
       scenarioId: scene.scenarioId,
       lineId,
@@ -990,7 +1269,7 @@ export function ShoppingCartScreen({
       lastMinor,
       planAnnualMinor:
         planAnnualForSymbol(calculator, positionMaster, line.symbol, qtyWhole) ??
-        factsAnnual(symbolFacts[line.symbol.toUpperCase()], qtyWhole),
+        factsAnnual(known, qtyWhole),
     });
     if (next) {
       await refreshPlan(planId, accountId);
@@ -1065,20 +1344,125 @@ export function ShoppingCartScreen({
     }
   };
 
-  const confirmSell = async () => {
-    const scene = [scenarioA, scenarioB].find(
-      (item) => item && (item.status === "agreed" || item.status === "executing"),
-    );
-    if (!scene) return;
+  const confirmSell = async (scene: CartScenario) => {
     const next = await run("CartExecuteSell", {
       scenarioId: scene.scenarioId,
       occurredOn: asOfDate,
     });
     if (next && planId && accountId) {
       setSold(true);
+      try {
+        sessionStorage.setItem(`cart-sells-posted-${planId}`, "1");
+      } catch {
+        /* ignore */
+      }
       await refreshPlan(planId, accountId);
-      onMessage("Sell posted and assigned. Open Add Lot to buy.");
+      const msg =
+        "Position sells posted (if any). SPAXX in the plan is not sold here — leftover cash aligns after the last purchase.";
+      setExecuteStatusMessage(msg);
+      onMessage(msg);
     }
+  };
+
+  const alignCash = async (scene: CartScenario, endingCashMinor: number | null) => {
+    const next = await run("CartExecuteCashAlign", {
+      scenarioId: scene.scenarioId,
+      occurredOn: asOfDate,
+      ...(endingCashMinor != null ? { targetMinor: endingCashMinor } : {}),
+    });
+    if (next && planId && accountId) {
+      await refreshPlan(planId, accountId);
+      if (next.status === "complete") {
+        clearCartResume();
+      }
+      onMessage("Cash aligned to actual sale proceeds and purchase dollars.");
+      return true;
+    }
+    return false;
+  };
+
+  const executePlanSells = async () => {
+    if (!scenarioA || !planId || !accountId) {
+      const msg = "Plan is not ready — reopen this plan from Saved plans.";
+      setExecuteStatusMessage(msg);
+      onMessage(msg);
+      return;
+    }
+    onBusy(true);
+    setExecuteStatusMessage("Running Evaluate and Agree, then posting sells…");
+    try {
+      const evaluated = await client.executeQuery("CartScenarioEvaluate", {
+        scenarioId: scenarioA.scenarioId,
+      });
+      if (!evaluated.ok) {
+        const msg = `Evaluate failed: ${evaluated.errorCode ?? "error"}`;
+        setExecuteStatusMessage(msg);
+        onMessage(msg);
+        return;
+      }
+      await refreshPlan(planId, accountId);
+      if (scenarioA.status === "draft") {
+        const agreed = await client.executeCommand("CartScenarioAgree", {
+          scenarioId: scenarioA.scenarioId,
+          mixWorsens: false,
+        });
+        if (!agreed.ok) {
+          const msg = agreeStopMessage(agreed.errorCode);
+          setExecuteStatusMessage(msg);
+          onMessage(msg);
+          return;
+        }
+        await refreshPlan(planId, accountId);
+        const scene = parseScenario(agreed.bodyJson);
+        if (!scene) {
+          const msg = "Agree succeeded but scenario could not be read.";
+          setExecuteStatusMessage(msg);
+          onMessage(msg);
+          return;
+        }
+        markDirty(false);
+        await confirmSell(scene);
+        return;
+      }
+      if (scenarioA.status === "agreed" || scenarioA.status === "executing") {
+        markDirty(false);
+        await confirmSell(scenarioA);
+      }
+    } finally {
+      onBusy(false);
+    }
+  };
+
+  const openBuyLine = (lineId: string) => {
+    const scene = [scenarioA, scenarioB].find(
+      (item) => item && (item.status === "agreed" || item.status === "executing"),
+    );
+    const buy = scene?.buyLines.find((line) => line.lineId === lineId);
+    if (!scene || !buy) {
+      onMessage("Post sells first, then confirm each purchase.");
+      return;
+    }
+    onOpenBuyLot({
+      scenarioId: scene.scenarioId,
+      accountId: scene.accountId,
+      planId: planId || scene.planId || scene.scenarioId,
+      securityId: buy.securityId,
+      symbol: buy.symbol,
+      qtyWhole: buy.qtyWhole,
+      lastMinor: executeUnitMinor(buy.lastMinor, buy.priceScale, buy.qtyWhole, buy.spendMinor),
+      priceScale: CART_UNIT_SCALE,
+      // Confirm on a later calendar day must not backdate the lot to a stale cart asOf.
+      openedOn: (() => {
+        const today = new Date().toISOString().slice(0, 10);
+        const asOf = (asOfDate || "").slice(0, 10);
+        return asOf && asOf < today ? today : asOf || today;
+      })(),
+    });
+    writeCartResume({
+      scenarioId: scene.scenarioId,
+      accountId: scene.accountId,
+      planId: planId || scene.planId || scene.scenarioId,
+    });
   };
 
   const discard = async () => {
@@ -1099,6 +1483,7 @@ export function ShoppingCartScreen({
       setScenarioB(null);
       setPlanId("");
       setSold(false);
+      clearCartResume();
       setWizardPrompt("plans");
       markDirty(false);
       if (accountId) await loadSavedPlans(accountId);
@@ -1108,21 +1493,21 @@ export function ShoppingCartScreen({
     }
   };
 
-  const openLot = () => {
-    const scene = [scenarioA, scenarioB].find(
-      (item) => item && (item.status === "agreed" || item.status === "executing"),
-    );
-    const buy = scene?.buyLines[0];
-    if (!scene || !buy) return;
-    onOpenBuyLot({
-      scenarioId: scene.scenarioId,
-      accountId: scene.accountId,
-      securityId: buy.securityId,
-      symbol: buy.symbol,
-      qtyWhole: buy.qtyWhole,
-      lastMinor: buy.lastMinor,
-      openedOn: asOfDate,
-    });
+  /**
+   * Back to the Shopping Cart home screen from an open cart, a new cart, or a completed cart
+   * opened read-only. There was no way out before: once a scenario loaded, the wizard stopped
+   * rendering. `clearCartResume` is the part that cannot be skipped — the resume effect would
+   * otherwise pull the same cart straight back open and leaving would look broken.
+   */
+  const returnToCartHome = () => {
+    setScenarioA(null);
+    setScenarioB(null);
+    setPlanId("");
+    setSold(false);
+    clearCartResume();
+    markDirty(false);
+    setWizardPrompt("account");
+    onMessage("Shopping Cart home.");
   };
 
   const sellLines = scenarioA?.sellLines ?? [];
@@ -1131,98 +1516,79 @@ export function ShoppingCartScreen({
     scenarioA && scenarioA.cashYieldBps > 0
       ? scenarioA.cashYieldBps
       : cashYieldBps(calculator, positionMaster, cashSymbol);
-  const cashQtyNumber = Number(cashQty);
-  const cashMarketMinor =
-    Number.isFinite(cashQtyNumber) && cashQtyNumber > 0 ? Math.round(cashQtyNumber * 100) : null;
-  const cashYearMinor = (() => {
-    if (cashMarketMinor == null) return null;
-    const planned = annualForQty(calculator, positionMaster, cashSymbol, cashQtyNumber);
-    if (planned != null) return planned;
-    if (yieldBps != null && yieldBps > 0) return Math.round((cashMarketMinor * yieldBps) / 10_000);
-    return null;
-  })();
+  const depositMinor = scenarioA?.depositMinor ?? 0;
   const positionRows = sellSheetRows(positionLines, null, calculator, positionMaster, yieldBps);
   const positionDollars = dollarsOf(positionRows);
-  const sellTotal =
-    cashMarketMinor == null && positionDollars == null
-      ? null
-      : (cashMarketMinor ?? 0) + (positionDollars ?? 0);
+  const cashQtyNumber = Number(cashQty);
+  const plannedCashMinor =
+    cashLine != null
+      ? Math.round(qtyOf(cashLine) * 100)
+      : Number.isFinite(cashQtyNumber) && cashQtyNumber > 0
+        ? Math.round(cashQtyNumber * 100)
+        : null;
+  const cashYearMinor = (() => {
+    if (plannedCashMinor == null) return null;
+    const qty = plannedCashMinor / 100;
+    const planned = annualForQty(calculator, positionMaster, cashSymbol, qty);
+    if (planned != null) return planned;
+    if (yieldBps != null && yieldBps > 0) return Math.round((plannedCashMinor * yieldBps) / 10_000);
+    return null;
+  })();
   const cashParts = roundedWeekMonth(cashYearMinor);
+  const sellTotal =
+    plannedCashMinor == null && positionDollars == null
+      ? null
+      : (plannedCashMinor ?? 0) + (positionDollars ?? 0);
   const cashRow: PlanSheetRow = {
-    key: "account-cash",
+    key: cashLine?.lineId ?? "account-cash",
     priceMinor: 100,
     symbol: cashSymbol,
-    alloc: pctOf(cashMarketMinor, sellTotal, 1),
+    alloc: pctOf(plannedCashMinor, sellTotal, 1),
     qty: cashQty,
     qtyNode: (
       <input
-        aria-label="Sell cash qty"
+        aria-label={`${cashSymbol} qty to use in this plan`}
         value={cashQty}
         disabled={busy || writesBlocked}
         onChange={(event) => setCashQty(event.target.value)}
         onBlur={() => void commitCashQty()}
       />
     ),
-    marketMinor: cashMarketMinor,
+    marketMinor: plannedCashMinor,
     weekMinor: cashParts.weekMinor,
     monthMinor: cashParts.monthMinor,
     yearMinor: cashYearMinor,
     eachMinor:
-      cashYearMinor == null || !(cashQtyNumber > 0) ? null : Math.round(cashYearMinor / cashQtyNumber),
-    yieldText: pctOf(cashYearMinor, cashMarketMinor, 2),
+      cashYearMinor == null || !(plannedCashMinor != null && plannedCashMinor > 0)
+        ? null
+        : Math.round(cashYearMinor / (plannedCashMinor / 100)),
+    yieldText: pctOf(cashYearMinor, plannedCashMinor, 2),
     tier: tierOf(positionMaster, cashSymbol) || cashTier,
     taxGainMinor: null,
     performanceGainMinor: null,
   };
   const sellRowsAllocated = [
     cashRow,
-    ...sellSheetRows(positionLines, sellTotal, calculator, positionMaster, yieldBps),
+    ...withSymbolSubtotals(
+      sellSheetRows(positionLines, sellTotal, calculator, positionMaster, yieldBps),
+    ),
   ];
-  const accountCash = accountCashMinor ?? cashMarketMinor;
-  const planCash = cashMarketMinor;
-  const unsoldMinor =
-    accountCash != null && planCash != null ? Math.max(0, accountCash - planCash) : 0;
-  const cashStillHeld = (buySpend: number | null): number | null => {
-    if (planCash == null || buySpend == null) return null;
-    const fromPositions = positionDollars ?? 0;
-    const cashSpent = Math.min(planCash, Math.max(0, buySpend - fromPositions));
-    return Math.max(0, planCash - cashSpent);
+  const budgetBalance = (buySpend: number | null): number | null => {
+    if (sellTotal == null || buySpend == null) return null;
+    return sellTotal - buySpend;
   };
-  const cashHeldRow = (key: string, marketMinor: number | null): PlanSheetRow | null => {
-    if (marketMinor == null || marketMinor <= 0) return null;
-    const qty = marketMinor / 100;
-    const planned = annualForQty(calculator, positionMaster, cashSymbol, qty);
-    const yearMinor =
-      planned ?? (yieldBps != null && yieldBps > 0 ? Math.round((marketMinor * yieldBps) / 10_000) : null);
-    const parts = roundedWeekMonth(yearMinor);
-    return {
-      key,
-      priceMinor: 100,
-      symbol: `Remaining ${cashSymbol}`,
-      alloc: pctOf(marketMinor, sellTotal, 1),
-      qty: String(Math.round(qty * 100) / 100),
-      marketMinor,
-      weekMinor: parts.weekMinor,
-      monthMinor: parts.monthMinor,
-      yearMinor,
-      eachMinor: yearMinor == null || qty <= 0 ? null : Math.round(yearMinor / qty),
-      yieldText: pctOf(yearMinor, marketMinor, 2),
-      tier: tierOf(positionMaster, cashSymbol) || cashTier,
-    };
-  };
-  const unsoldRow = cashHeldRow("unsold-cash", unsoldMinor > 0 ? unsoldMinor : null);
+  const buyBudgetMinor = sellTotal;
   const purchasesA = scenarioA
-    ? buySheetRows(scenarioA.buyLines, sellTotal, calculator, positionMaster, symbolFacts)
+    ? buySheetRows(scenarioA.buyLines, buyBudgetMinor, calculator, positionMaster, symbolFacts)
     : [];
   const purchasesB = scenarioB
-    ? buySheetRows(scenarioB.buyLines, sellTotal, calculator, positionMaster, symbolFacts)
+    ? buySheetRows(scenarioB.buyLines, buyBudgetMinor, calculator, positionMaster, symbolFacts)
     : [];
   const withQty = (
     slot: "A" | "B",
     rows: PlanSheetRow[],
     lines: CartScenario["buyLines"],
     onQty: (lineId: string, qtyWhole: number) => void,
-    onRemove: (lineId: string) => void,
   ): PlanSheetRow[] =>
     rows.map((row) => {
       const line = lines.find((item) => item.lineId === row.key);
@@ -1230,38 +1596,25 @@ export function ShoppingCartScreen({
       return {
         ...row,
         qtyNode: (
-          <>
-            <input
-              aria-label={`Scenario ${slot} qty ${line.symbol}`}
-              key={`${line.lineId}-${line.qtyWhole}`}
-              defaultValue={String(line.qtyWhole)}
-              disabled={busy || writesBlocked}
-              onBlur={(event) => {
-                const qty = Number(event.target.value);
-                if (Number.isInteger(qty) && qty > 0 && qty !== line.qtyWhole) onQty(line.lineId, qty);
-              }}
-            />
-            <button
-              type="button"
-              aria-label={`Remove scenario ${slot} ${line.symbol}`}
-              disabled={busy || writesBlocked}
-              onClick={() => onRemove(line.lineId)}
-            >
-              Remove
-            </button>
-          </>
+          <input
+            aria-label={`Scenario ${slot} qty ${line.symbol}`}
+            key={`${line.lineId}-${line.qtyWhole}`}
+            defaultValue={String(line.qtyWhole)}
+            disabled={busy || writesBlocked}
+            onBlur={(event) => {
+              const qty = Number(event.target.value);
+              if (Number.isInteger(qty) && qty > 0 && qty !== line.qtyWhole) onQty(line.lineId, qty);
+            }}
+          />
         ),
       };
     });
-  const remainA = cashHeldRow("remaining-cash-a", cashStillHeld(dollarsOf(purchasesA)));
-  const remainB = scenarioB ? cashHeldRow("remaining-cash-b", cashStillHeld(dollarsOf(purchasesB))) : null;
   const buyRowsA = scenarioA
     ? withQty(
         "A",
         purchasesA,
         scenarioA.buyLines,
         (lineId, qty) => void setBuyQty(scenarioA, lineId, qty),
-        (lineId) => void removeBuy(scenarioA, lineId),
       )
     : [];
   const buyRowsB = scenarioB
@@ -1270,20 +1623,218 @@ export function ShoppingCartScreen({
         purchasesB,
         scenarioB.buyLines,
         (lineId, qty) => void setBuyQty(scenarioB, lineId, qty),
-        (lineId) => void removeBuy(scenarioB, lineId),
       )
     : [];
-  const depositMinor = scenarioA?.depositMinor ?? 0;
+  /** "complete" stays here so the close summary is visible after cash aligns. */
   const agreedScene = [scenarioA, scenarioB].find(
-    (item) => item && (item.status === "agreed" || item.status === "executing"),
+    (item) =>
+      item &&
+      (item.status === "agreed" ||
+        item.status === "executing" ||
+        item.status === "complete"),
   );
+  const executeSteps = scenarioA?.executeSteps ?? [];
+  const sellsPosted =
+    sold ||
+    scenarioA?.executeCashBaselineMinor != null ||
+    scenarioA?.status === "executing" ||
+    scenarioA?.status === "complete" ||
+    executeSteps.some((step) => step.kind === "sell" || step.kind === "cash_align");
+  const buySpendA = spendOf(buyRowsA);
+  const sellFooterRows = (() => {
+    const remainder = cashRemainderRow({
+      cashSymbol,
+      startingCashMinor: plannedCashMinor,
+      positionProceedsMinor: positionDollars,
+      buySpendMinor: buySpendA,
+      budgetMinor: sellTotal,
+      tier: tierOf(positionMaster, cashSymbol) || cashTier,
+      yearMinorOnCash: (qtyWhole) => {
+        if (!(qtyWhole > 0)) return null;
+        const planned = annualForQty(calculator, positionMaster, cashSymbol, qtyWhole);
+        if (planned != null) return planned;
+        if (yieldBps != null && yieldBps > 0) {
+          return Math.round(qtyWhole * 100 * yieldBps) / 10_000;
+        }
+        return null;
+      },
+    });
+    return remainder ? [remainder] : [];
+  })();
+  const executeBlockReason = (() => {
+    if (!scenarioA || scenarioA.buyLines.length === 0) {
+      return "Add at least one buy row on Scenario A.";
+    }
+    if (sellLines.length === 0) {
+      return "Add at least one sell line.";
+    }
+    if (sellTotal == null || buySpendA == null) {
+      return "Enter sell and buy amounts so totals are known.";
+    }
+    if (!scenarioA.eval) {
+      return "Run Evaluate A first — Execute plan needs a fresh rollup.";
+    }
+    const ev = scenarioA.eval;
+    if (ev?.insufficientLotQty) {
+      return "Spend exceeds live lot remaining (Evaluate shows insufficient_lot_qty).";
+    }
+    return null;
+  })();
+  const executePlanWarning = (() => {
+    if (sellTotal == null || buySpendA == null) return null;
+    const parts: string[] = [];
+    if (buySpendA > sellTotal + depositMinor) {
+      parts.push(
+        `Plan buy ${formatUsd(buySpendA, 2)} exceeds plan budget ${formatUsd(sellTotal + depositMinor, 2)} (${cashSymbol} + sale proceeds).`,
+      );
+    }
+    const ev = scenarioA?.eval;
+    if (ev != null && ev.leftoverMinor < 0) {
+      parts.push("Evaluate shows plan cash short at plan prices.");
+    }
+    if (parts.length === 0) return null;
+    return `${parts.join(" ")} You can still confirm sells — SPAXX is reconciled on Confirm cash after actual prices.`;
+  })();
+  const canExecutePlan = executeBlockReason == null && !sellsPosted;
+  const executeSellRows = sellLines
+    .filter((line) => !line.isCash && !isCashSymbol(line.symbol))
+    .map((line) => ({
+      lineId: line.lineId,
+      symbol: line.symbol,
+      qtyLabel: sharesOf(line.qtyMinor, line.qtyScale ?? 0),
+      priceMinor: rescaleMinor(line.unitMinor, line.unitScale ?? 2, CART_UNIT_SCALE),
+      unitScale: CART_UNIT_SCALE,
+      proceedsMinor: line.proceedsMinor,
+      taxGainMinor: line.taxGainMinor ?? null,
+      performanceGainMinor: line.performanceGainMinor ?? null,
+    }));
+  /** Confirmed by the lot’s symbol on the buy step — never by buy-line index (HAKY≠MUIB). */
+  const confirmedBuySymbols = new Set(
+    executeSteps
+      .filter((step) => step.kind === "buy" && step.lotId)
+      .map((step) => {
+        const lot = holdings?.lots.find((item) => item.lotId === step.lotId);
+        return lot?.symbol.trim().toUpperCase() ?? "";
+      })
+      .filter((symbol) => symbol.length > 0),
+  );
+  const executeBuyRows = (scenarioA?.buyLines ?? []).map((line) => ({
+    lineId: line.lineId,
+    symbol: line.symbol,
+    qtyWhole: line.qtyWhole,
+    lastMinor: executeUnitMinor(line.lastMinor, line.priceScale, line.qtyWhole, line.spendMinor),
+    priceScale: CART_UNIT_SCALE,
+    spendMinor: line.spendMinor,
+    confirmed:
+      sellsPosted && confirmedBuySymbols.has(line.symbol.trim().toUpperCase()),
+  }));
+  const buysConfirmed =
+    (scenarioA?.buyLines.length ?? 0) > 0 &&
+    (scenarioA?.buyLines ?? []).every((line) =>
+      confirmedBuySymbols.has(line.symbol.trim().toUpperCase()),
+    );
+  const cashAligned = executeSteps.some((step) => step.kind === "cash_align");
+  const canAlignCash = sellsPosted && buysConfirmed && !cashAligned;
+  const cashPreview = (() => {
+    const buyLotIds = executeSteps
+      .filter((step) => step.kind === "buy" && step.lotId)
+      .map((step) => step.lotId as string);
+    let lotSpend = 0;
+    let found = 0;
+    for (const id of buyLotIds) {
+      const lot = holdings?.lots.find((item) => item.lotId === id);
+      if (!lot) continue;
+      lotSpend += lotCostCents(lot);
+      found += 1;
+    }
+    const buySpendMinor =
+      buyLotIds.length > 0 && found === buyLotIds.length
+        ? lotSpend
+        : executeBuyRows.filter((row) => row.confirmed).reduce((sum, row) => sum + row.spendMinor, 0);
+    return cashConfirmPreview({
+      baselineMinor: scenarioA?.executeCashBaselineMinor,
+      sellProceedsMinor: executeSellRows.reduce((sum, row) => sum + row.proceedsMinor, 0),
+      buySpendMinor,
+      currentMinor: cashPile?.dollarsMinor,
+    });
+  })();
+  const purchaseCostMinor = cashPreview?.buySpendMinor ?? null;
+  /**
+   * The monthly income change the owner agreed to, read straight off the scenario's stored
+   * evaluation. This used to be re-derived from the live calculator, and on a reopened cart
+   * `annualForQty` returned null for every buy; the `null ? sum` skip collapsed the buy term to
+   * zero and left only the cash interest on the dollars spent, so the Income cart's close
+   * summary read -$31.36 where its own snapshot said +$7.13. Blank stays blank, not $0.
+   */
+  const netDividendMinor = scenarioA?.eval?.netMonthlyMinor ?? null;
+  const spaxxQtyLabel =
+    plannedCashMinor != null && plannedCashMinor > 0
+      ? (plannedCashMinor / 100).toLocaleString("en-US", { maximumFractionDigits: 2 })
+      : null;
+
+  const commitSellExecutePrice = async (lineId: string, unitMinor: number) => {
+    if (!scenarioA || !planId || !accountId || sellsPosted) return;
+    const next = await run("CartSellLineUnitSet", {
+      scenarioId: scenarioA.scenarioId,
+      lineId,
+      unitMinor,
+    });
+    if (next) {
+      setScenarioA(next);
+      await refreshPlan(planId, accountId);
+      edited();
+      setExecuteStatusMessage("Sell price updated for that line.");
+    }
+  };
+
+  const commitBuyExecutePrice = async (lineId: string, lastMinor: number) => {
+    if (!scenarioA || !planId || !accountId) return;
+    if (executeBuyRows.some((row) => row.lineId === lineId && row.confirmed)) return;
+    const next = await run("CartBuyLineLastSet", {
+      scenarioId: scenarioA.scenarioId,
+      lineId,
+      lastMinor,
+      priceScale: CART_UNIT_SCALE,
+    });
+    if (next) {
+      setScenarioA(next);
+      await refreshPlan(planId, accountId);
+      edited();
+      setExecuteStatusMessage("Buy plan price updated.");
+    }
+  };
+
+  const autoAlignKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!canAlignCash || !scenarioA || busy || writesBlocked) return;
+    if (scenarioA.fundingSource === "accountCash") return;
+    const key = scenarioA.scenarioId;
+    if (autoAlignKey.current === key) return;
+    if (cashPreview && cashPreview.targetMinor < 0) {
+      autoAlignKey.current = key;
+      setExecuteStatusMessage("Leftover cash is negative — purchases exceed sale proceeds.");
+      return;
+    }
+    autoAlignKey.current = key;
+    // align leftover cash after the last purchase — computed SPAXX target, no owner click
+    void alignCash(scenarioA, null).then((ok) => {
+      if (!ok) {
+        setExecuteStatusMessage("Leftover cash did not align.");
+      }
+    });
+  }, [canAlignCash, scenarioA, busy, writesBlocked, cashPreview]);
+
   const step = !scenarioA
     ? wizardRailStep(wizardPrompt)
     : !agreedScene
       ? "Evaluate"
-      : !sold
+      : !sellsPosted
         ? "Confirm sell"
-        : "Open lot";
+        : cashAligned
+          ? "Done"
+          : !buysConfirmed
+            ? "Confirm purchase"
+            : "Confirm cash";
 
   const critiqueFor = (slot: string, rows: PlanSheetRow[], offerAnother: boolean) =>
     scenarioCritique({
@@ -1298,19 +1849,15 @@ export function ShoppingCartScreen({
       offerAnother,
     });
 
+  const availableForBuy = (sellTotal ?? 0) + depositMinor;
   const short =
-    sellTotal != null &&
-    ((spendOf(buyRowsA) ?? 0) > sellTotal + depositMinor ||
-      (scenarioB != null && (spendOf(buyRowsB) ?? 0) > sellTotal + depositMinor));
+    (spendOf(buyRowsA) ?? 0) > availableForBuy ||
+    (scenarioB != null && (spendOf(buyRowsB) ?? 0) > availableForBuy);
 
   const returnText = (rows: PlanSheetRow[]) => {
     const year = yearOf(rows);
     return sellTotal != null && year != null ? pctOf(year, sellTotal, 2) : "";
   };
-
-  const sellSymbols = [
-    ...new Set(sellLines.filter((line) => !line.isCash).map((line) => line.symbol)),
-  ];
 
   const planFor = sellPlan?.symbol === sellSymbol.toUpperCase() ? sellPlan : null;
   const sellLastMinor = sellSymbol
@@ -1343,12 +1890,17 @@ export function ShoppingCartScreen({
   return (
     <section aria-label="Shopping Cart" className="shopping-cart">
       <h2>Shopping Cart</h2>
-      <p>
-        One sell table funds Scenario A and, if you add it, Scenario B. Drafts do not change
-        Holdings or Income Plan.
-      </p>
+      {!agreedScene ? (
+        <p>
+          One sell table funds Scenario A and, if you add it, Scenario B. Enter{" "}
+          <strong>{cashSymbol} qty to use</strong> (tab out to save) plus position sells; scenario buys
+          compare to that total. Drafts do not change Holdings or Income Plan.
+        </p>
+      ) : null}
       <StepRail current={step} />
-      {!scenarioA ? (
+      {resumingCart ? (
+        <p role="status">Returning to in-progress cart…</p>
+      ) : !scenarioA ? (
         <CartStartWizard
           prompt={wizardPrompt}
           accounts={accounts}
@@ -1356,6 +1908,7 @@ export function ShoppingCartScreen({
           accountName={accountName || "this account"}
           planName={draftName}
           savedPlans={savedPlans}
+          executedCarts={executedCarts}
           busy={busy}
           writesBlocked={writesBlocked}
           onAccountId={(id) => {
@@ -1365,6 +1918,7 @@ export function ShoppingCartScreen({
           onPlanName={setDraftName}
           onOpenPlan={(id) => void openSavedPlan(id)}
           onDeletePlan={(plan) => void deleteSavedPlan(plan)}
+          onOpenExecuted={(row) => void openExecutedCart(row)}
           onNewPlan={() => {
             suggestPlanName(accountId);
             setWizardPrompt("planName");
@@ -1392,16 +1946,70 @@ export function ShoppingCartScreen({
           <p aria-label="Open cart plan">
             {accountName} · {scenarioA.name?.trim() || "Draft"}
           </p>
+          <button
+            type="button"
+            aria-label="Shopping Cart home"
+            disabled={busy}
+            onClick={returnToCartHome}
+          >
+            Back to carts
+          </button>
+          {agreedScene ? (
+            <>
+            <ExecutePlanPanel
+              scenarioLabel={`Scenario ${scenarioA.slot ?? "A"}`}
+              scenarioStatus={scenarioA.status}
+              cashSymbol={cashSymbol}
+              spaxxQtyLabel={spaxxQtyLabel}
+              sellRows={executeSellRows}
+              buyRows={executeBuyRows}
+              startingCashMinor={plannedCashMinor}
+              sellBudgetMinor={sellTotal}
+              buySpendMinor={buySpendA}
+              budgetBalanceMinor={budgetBalance(buySpendA)}
+              canExecute={canExecutePlan}
+              blockReason={executeBlockReason}
+              sellsPosted={sellsPosted}
+              busy={busy}
+              writesBlocked={writesBlocked}
+              statusMessage={executeStatusMessage}
+              onExecuteSells={() => void executePlanSells()}
+              onOpenBuyLot={openBuyLine}
+              onSellPriceCommit={(lineId, unitMinor) => void commitSellExecutePrice(lineId, unitMinor)}
+              onBuyPriceCommit={(lineId, lastMinor) => void commitBuyExecutePrice(lineId, lastMinor)}
+              buysConfirmed={buysConfirmed}
+              cashAligned={cashAligned}
+              canAlignCash={canAlignCash}
+              alignBlockReason={null}
+              executeWarning={executePlanWarning}
+              cashPreview={cashPreview}
+              accountName={accountName || "Account"}
+              purchaseCostMinor={purchaseCostMinor}
+              netDividendMinor={netDividendMinor}
+            />
+            {/*
+              What the scenario change was, off the evaluation stored when the owner agreed.
+              An agreed or completed cart used to show the close summary alone, so the week /
+              month / year detail that the decision was made on disappeared the moment the cart
+              closed. IncomeCompare reads `eval` directly, so nothing here is recomputed.
+            */}
+            <IncomeCompare eval={scenarioA.eval ?? null} />
+            </>
+          ) : (
+            <>
           {sellNote ? <p aria-label="Sell note">{sellNote}</p> : null}
           <PlanSheetTable
             title="Sell"
             ariaLabel="Sell plan"
             budgetMinor={sellTotal}
             rows={sellRowsAllocated}
-            footerRows={unsoldRow ? [unsoldRow] : undefined}
             showPnl
+            footerRows={sellFooterRows}
             returnText={returnText(sellRowsAllocated)}
             returnLabel="Return"
+            onRemoveRow={(lineId) => void removeSellLine(lineId)}
+            canRemoveRow={(row) => row.key !== "account-cash" || cashLine != null}
+            removeDisabled={busy || writesBlocked}
             editor={
               <>
                 {sellLots.map((lot) => {
@@ -1466,6 +2074,7 @@ export function ShoppingCartScreen({
                       <td>{tierFor(lot.symbol)}</td>
                       <td>{market == null || taxBasis == null ? "" : moneyText(market - taxBasis)}</td>
                       <td>{market == null || perfBasis == null ? "" : moneyText(market - perfBasis)}</td>
+                      <td />
                     </tr>
                   );
                 })}
@@ -1513,72 +2122,69 @@ export function ShoppingCartScreen({
                   <td />
                   <td />
                   <td />
+                  <td />
                 </tr>
               </>
             }
           />
-          <div className="form-grid">
-            {sellSymbols.map((symbol) => (
-              <button
-                key={symbol}
-                type="button"
-                aria-label={`Remove sell ${symbol}`}
-                disabled={busy || writesBlocked}
-                onClick={() => void removeSellSymbol(symbol)}
-              >
-                Remove {symbol}
-              </button>
-            ))}
-          </div>
           <BuyBlock
             slot="A"
             rows={buyRowsA}
-            budgetMinor={sellTotal}
+            budgetMinor={buyBudgetMinor}
             returnText={returnText(buyRowsA)}
             choices={buyChoices}
             client={client}
             calculator={calculator}
             positionMaster={positionMaster}
+            declHistory={declHistory}
             symbolFacts={symbolFacts}
             onFacts={(symbol, facts) =>
               setSymbolFacts((current) => ({ ...current, [symbol.toUpperCase()]: facts }))
             }
             form={buyA}
             onForm={setBuyA}
-            footerRows={remainA ? [remainA] : undefined}
             busy={busy}
             writesBlocked={writesBlocked}
             onAdd={() => void addBuy("A")}
+            onRemoveRow={(lineId) => void removeBuy(scenarioA, lineId)}
           />
+          {buyRowsA.some((row) => row.yearMinor == null && !isCashSymbol(row.symbol)) ? (
+            <p role="status" aria-label="Buy plan missing">
+              Week / month / year stay blank when Plan / share is not stored yet. Open Add
+              Investment → Confirm Plan (Incomplete analysis reason required under 6 pays), then
+              re-add or refresh this buy row.
+            </p>
+          ) : null}
           {scenarioB ? (
             <BuyBlock
               slot="B"
               rows={buyRowsB}
-              budgetMinor={sellTotal}
+              budgetMinor={buyBudgetMinor}
               returnText={returnText(buyRowsB)}
             choices={buyChoices}
             client={client}
             calculator={calculator}
             positionMaster={positionMaster}
+            declHistory={declHistory}
             symbolFacts={symbolFacts}
             onFacts={(symbol, facts) =>
               setSymbolFacts((current) => ({ ...current, [symbol.toUpperCase()]: facts }))
             }
               form={buyB}
               onForm={setBuyB}
-              footerRows={remainB ? [remainB] : undefined}
               busy={busy}
               writesBlocked={writesBlocked}
               onAdd={() => void addBuy("B")}
+              onRemoveRow={(lineId) => scenarioB && void removeBuy(scenarioB, lineId)}
             />
           ) : null}
           <ScenarioDelta
             sellRows={sellRowsAllocated}
             rowsA={buyRowsA}
             rowsB={scenarioB ? buyRowsB : null}
-            cashBefore={planCash}
-            cashAfterA={cashStillHeld(spendOf(buyRowsA))}
-            cashAfterB={scenarioB ? cashStillHeld(spendOf(buyRowsB)) : null}
+            cashBefore={sellTotal}
+            cashAfterA={budgetBalance(spendOf(buyRowsA))}
+            cashAfterB={scenarioB ? budgetBalance(spendOf(buyRowsB)) : null}
           />
           <section aria-label="Plan critique">
             <p>{critiqueFor("A", buyRowsA, scenarioB == null)}</p>
@@ -1587,29 +2193,23 @@ export function ShoppingCartScreen({
                 <p>{critiqueFor("B", buyRowsB, false)}</p>
                 <p>
                   {compareCritique({
-                    sellDollars: sellTotal,
+                    sellDollars: buyBudgetMinor,
                     aMonth: monthOf(buyRowsA),
                     bMonth: monthOf(buyRowsB),
                     aYear: yearOf(buyRowsA),
                     bYear: yearOf(buyRowsB),
-                    aUnspent:
-                      sellTotal == null || spendOf(buyRowsA) == null
-                        ? null
-                        : sellTotal - (spendOf(buyRowsA) ?? 0),
-                    bUnspent:
-                      sellTotal == null || spendOf(buyRowsB) == null
-                        ? null
-                        : sellTotal - (spendOf(buyRowsB) ?? 0),
+                    aUnspent: budgetBalance(spendOf(buyRowsA)),
+                    bUnspent: budgetBalance(spendOf(buyRowsB)),
                     aTypes: [...new Set(buyRowsA.map((row) => row.tier).filter(Boolean))].join(" and "),
                     bTypes: [...new Set(buyRowsB.map((row) => row.tier).filter(Boolean))].join(" and "),
                     aEnough:
-                      sellTotal == null || spendOf(buyRowsA) == null
+                      spendOf(buyRowsA) == null
                         ? null
-                        : (spendOf(buyRowsA) ?? 0) <= sellTotal + depositMinor,
+                        : (spendOf(buyRowsA) ?? 0) <= availableForBuy,
                     bEnough:
-                      sellTotal == null || spendOf(buyRowsB) == null
+                      spendOf(buyRowsB) == null
                         ? null
-                        : (spendOf(buyRowsB) ?? 0) <= sellTotal + depositMinor,
+                        : (spendOf(buyRowsB) ?? 0) <= availableForBuy,
                   })}
                 </p>
               </>
@@ -1694,14 +2294,8 @@ export function ShoppingCartScreen({
               Cancel
             </button>
           </div>
-          <ExecutePanel
-            agreed={Boolean(agreedScene)}
-            sold={sold}
-            busy={busy}
-            writesBlocked={writesBlocked}
-            onConfirmSell={() => void confirmSell()}
-            onOpenLot={openLot}
-          />
+            </>
+          )}
         </>
       )}
     </section>
@@ -1717,6 +2311,7 @@ function BuyBlock({
   client,
   calculator,
   positionMaster,
+  declHistory,
   symbolFacts,
   onFacts,
   form,
@@ -1725,6 +2320,7 @@ function BuyBlock({
   writesBlocked,
   onAdd,
   footerRows,
+  onRemoveRow,
 }: {
   slot: "A" | "B";
   rows: PlanSheetRow[];
@@ -1734,6 +2330,7 @@ function BuyBlock({
   client: CartClient;
   calculator: CalculatorGet | null;
   positionMaster: PositionMasterGet | null;
+  declHistory: DeclarationHistoryGet | null;
   symbolFacts: Record<string, SymbolFacts>;
   onFacts: (symbol: string, facts: SymbolFacts) => void;
   form: { securityId: string; qty: string };
@@ -1742,7 +2339,10 @@ function BuyBlock({
   writesBlocked?: boolean;
   onAdd: () => void;
   footerRows?: PlanSheetRow[];
+  onRemoveRow?: (lineId: string) => void;
 }) {
+  const [filterView, setFilterView] = useState<string | null>(null);
+  const [filterCadence, setFilterCadence] = useState("all");
   const selected = choices.find((choice) => choice.securityId === form.securityId);
   const knownMinor = selected ? lastOf(calculator, positionMaster, selected.symbol) : null;
   const [quotedMinor, setQuotedMinor] = useState<number | null>(null);
@@ -1797,6 +2397,25 @@ function BuyBlock({
   const draftParts = roundedWeekMonth(draftYear);
   const draftEach =
     draftYear == null || draftQty == null ? null : Math.round(draftYear / draftQty);
+  const filterRows = useMemo(() => {
+    if (!filterView || !declHistory) return [];
+    const masters = positionMaster?.rows ?? [];
+    const matched = [];
+    for (const history of declHistory.rows) {
+      const master = masters.find(
+        (row) => row.symbol.toUpperCase() === history.symbol.toUpperCase(),
+      );
+      if (!matchesCalculatorPerformanceView(history, master, filterView, filterCadence)) {
+        continue;
+      }
+      const choice = choices.find(
+        (item) => item.symbol.toUpperCase() === history.symbol.toUpperCase(),
+      );
+      if (!choice) continue;
+      matched.push({ choice, master });
+    }
+    return matched;
+  }, [choices, declHistory, filterCadence, filterView, positionMaster]);
   const commit = () => {
     if (!form.securityId || form.qty.trim() === "") return;
     onAdd();
@@ -1811,6 +2430,8 @@ function BuyBlock({
         returnText={returnText}
         returnLabel="New Return"
         footerRows={footerRows}
+        onRemoveRow={onRemoveRow}
+        removeDisabled={busy || writesBlocked}
         editor={
           <tr>
             <td>{lastMinor == null ? "" : formatUsd(lastMinor, 2)}</td>
@@ -1819,9 +2440,23 @@ function BuyBlock({
                 aria-label={`Scenario ${slot} symbol`}
                 value={form.securityId}
                 disabled={busy || writesBlocked}
-                onChange={(event) => onForm({ ...form, securityId: event.target.value })}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  const view = CALCULATOR_PERFORMANCE_VIEWS.find((item) => item.id === value);
+                  if (view) {
+                    setFilterView(view.id);
+                    setFilterCadence("all");
+                    return;
+                  }
+                  onForm({ ...form, securityId: value });
+                }}
               >
                 <option value="">Add position</option>
+                {CALCULATOR_PERFORMANCE_VIEWS.map((view) => (
+                  <option key={view.id} value={view.id}>
+                    {view.label}
+                  </option>
+                ))}
                 {choices.map((choice) => {
                   const price = lastOf(calculator, positionMaster, choice.symbol);
                   return (
@@ -1867,9 +2502,87 @@ function BuyBlock({
                 Add row
               </button>
             </td>
+            {onRemoveRow ? <td /> : null}
           </tr>
         }
       />
+      {filterView ? (
+        <div className="home-av-dialog-backdrop" onClick={() => setFilterView(null)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Filter view symbols"
+            className="home-av-dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <h3>
+                {CALCULATOR_PERFORMANCE_VIEWS.find((view) => view.id === filterView)?.label}
+              </h3>
+              <label>
+                Payment frequency
+                <select
+                  aria-label="Filter view frequency"
+                  value={filterCadence}
+                  onChange={(event) => setFilterCadence(event.target.value)}
+                >
+                  {CALCULATOR_CADENCE_FILTERS.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" aria-label="Exit filter view" onClick={() => setFilterView(null)}>
+                Exit
+              </button>
+            </header>
+            <table aria-label="Filter view symbols">
+              <thead>
+                <tr>
+                  <th scope="col">Symbol</th>
+                  <th scope="col">FWD</th>
+                  <th scope="col">MC FWD</th>
+                  <th scope="col">YOC</th>
+                  <th scope="col">Gain %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filterRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>No symbols</td>
+                  </tr>
+                ) : (
+                  filterRows.map(({ choice, master }) => (
+                    <tr key={choice.securityId}>
+                      <td>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onForm({ ...form, securityId: choice.securityId });
+                            setFilterView(null);
+                          }}
+                        >
+                          {choice.symbol}
+                        </button>
+                      </td>
+                      <td>{bpsFace(master?.planFwdYieldBps)}</td>
+                      <td>{bpsFace(master?.mostCurrentFwdYieldBps)}</td>
+                      <td>{bpsFace(master?.planYocBps)}</td>
+                      <td>{bpsFace(master?.unrealizedPnlBps)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
     </>
   );
+}
+
+function bpsFace(bps: number | null | undefined): string {
+  if (bps == null) return "";
+  return formatBps(bps);
 }

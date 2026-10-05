@@ -23,9 +23,9 @@ export function PageActivityBar() {
     return () => document.removeEventListener("pointerdown", onDown);
   }, [open]);
 
-  const busy = lines.some((line) => !line.done);
-  const last = lines[lines.length - 1];
-  const summary = last?.label ?? "Idle";
+  const openLines = lines.filter((line) => !line.done);
+  const busy = openLines.length > 0;
+  const summary = openLines.length > 0 ? openLines[openLines.length - 1].label : "Idle";
 
   return (
     <div className="menubar-activity" ref={rootRef}>
