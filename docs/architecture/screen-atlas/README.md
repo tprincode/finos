@@ -13,7 +13,7 @@ cargo test -p golden-harness
 ## How to run
 
 1. Start the desktop (`finos.bat` / coding launch).
-2. **Tools → Screen Atlas → Run screen atlas**.
+2. **Tools → Component Registry → Capture All**. Capture Page walks one page.
 3. Or drop a token and restart so the app auto-runs:
 
 ```bat
@@ -29,7 +29,7 @@ Then restart the desktop (or write `restart.token` as usual). About 2.5s after h
 - One PNG per target (`home.png`, `cm-weekly.png`, …)
 - `index.md` — menu path, status, pinned asOf
 
-On **Tools → Screen Atlas**:
+On **Tools → Component Registry**:
 
 - **Open folder in Explorer** (or click the folder path) opens that directory in Windows Explorer so you can browse/preview PNGs with the OS viewer.
 - The **Viewer** lists PNG names and loads **one** image at a time on click (avoids webview OOM from bulk base64).

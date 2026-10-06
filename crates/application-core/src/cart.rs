@@ -153,6 +153,21 @@ pub async fn sell_line_add(
         ));
     }
     let lot = canonical.lot_get(lot_id).await?;
+    let reserved = canonical
+        .option_cover_reservations()
+        .await?
+        .into_iter()
+        .find(|row| row.lot_id == lot_id)
+        .map(|row| row.shares)
+        .unwrap_or(0);
+    if qty_minor
+        > crate::option_cover::free_units(lot.remaining_quantity_minor, lot.quantity_scale, reserved)
+    {
+        return Err(PlatformError::new(
+            "shares_promised",
+            "shares are promised to an open contract",
+        ));
+    }
     let security = canonical.security_get(lot.security_id).await?;
     let qty_scale = lot.quantity_scale;
     let proceeds_minor =
@@ -345,11 +360,22 @@ pub async fn evaluate(
             .map(|p| p.dollars_minor)
             .unwrap_or(0);
     }
+    let reservations = canonical.option_cover_reservations().await?;
     for sell in scene.sell_lines.iter().filter(|_| !account_cash) {
         if let Some(basis) = &basis {
             if let Some(lot) = basis.lots.iter().find(|l| l.lot_id == sell.lot_id) {
-                let lot_dollars = proceeds_cents_from_unit(
+                let reserved = reservations
+                    .iter()
+                    .find(|row| row.lot_id == lot.lot_id)
+                    .map(|row| row.shares)
+                    .unwrap_or(0);
+                let free = crate::option_cover::free_units(
                     lot.remaining_quantity_minor,
+                    lot.quantity_scale,
+                    reserved,
+                );
+                let lot_dollars = proceeds_cents_from_unit(
+                    free,
                     lot.quantity_scale,
                     sell.unit_minor,
                     sell.unit_scale,
@@ -360,7 +386,7 @@ pub async fn evaluate(
                     sell.unit_minor,
                     sell.unit_scale,
                 );
-                if sell_dollars > lot_dollars || sell.qty_minor > lot.remaining_quantity_minor {
+                if sell_dollars > lot_dollars || sell.qty_minor > free {
                     live_short = true;
                 }
                 if seen.insert(sell.lot_id) {

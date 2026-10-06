@@ -1,6 +1,4 @@
 import {
-  lazy,
-  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -87,6 +85,7 @@ import { useMagiCliffNav } from "./features/task-manager/magiCutNav";
 import { MarketImpactPlanner } from "./features/market-impact/MarketImpactPlanner";
 import { InterestRateCalculator } from "./features/interest-rate/InterestRateCalculator";
 import { FieldIntentScreen } from "./features/field-intent/FieldIntentScreen";
+import { RoadmapScreen } from "./features/roadmap/RoadmapScreen";
 import { ComponentRegistry } from "./features/components/ComponentRegistry";
 import { ContractPositions } from "./features/contracts/ContractPositions";
 import {
@@ -128,6 +127,8 @@ import { ShoppingCartScreen } from "./features/shopping-cart";
 import { cartPriceInput } from "./features/shopping-cart/cartPrice";
 import { writeCartResume } from "./features/shopping-cart/cartResume";
 import { PositionDetailsScreen } from "./features/position-details";
+import { HoldingsScreen } from "./features/holdings";
+import { AddLotScreen } from "./features/add-lot";
 import {
   atlasPinnedAsOf,
   claimAtlasAutoStart,
@@ -157,11 +158,6 @@ import {
   formatMenuWeek,
 } from "@finos/ui-components";
 import "./App.css";
-
-const ScreenAtlasScreen = lazy(async () => {
-  const m = await import("./features/screen-atlas/ScreenAtlasScreen");
-  return { default: m.ScreenAtlasScreen };
-});
 
 const RISK_TIERS = ["Foundation", "Core", "Risk On"];
 /** Locked collector investment types (CASH stays CASH — DIV-2 rename is parked). */
@@ -754,6 +750,7 @@ type Screen =
   | "interest-rate"
   | "contract-positions"
   | "field-intent"
+  | "roadmap"
   | "components"
   | "screen-atlas";
 
@@ -779,6 +776,7 @@ const SCREENS: readonly Screen[] = [
   "interest-rate",
   "contract-positions",
   "field-intent",
+  "roadmap",
   "components",
   "screen-atlas",
 ];
@@ -1082,7 +1080,7 @@ export default function App() {
   const [captureProcess, setCaptureProcess] = useState<CaptureProcess | null>(null);
   const [holdingsFilter, setHoldingsFilter] = useState("");
   const [lotId, setLotId] = useState("");
-  const [assignActivityId, setAssignActivityId] = useState("");
+  const [assignSellId, setAssignSellId] = useState("");
   const [assignQty, setAssignQty] = useState("1");
   const [updateStatus, setUpdateStatus] = useState("not checked");
   const [drillAccounts, setDrillAccounts] = useState<string[]>(() => [
@@ -6969,6 +6967,12 @@ export default function App() {
 
   const writesBlocked = handoff !== null && !handoff.writesAllowed;
   const selectedLot = holdings?.lots.find((lot) => lot.lotId === lotId);
+  const lotUnassignedSells = (holdings?.unassignedSells ?? []).filter(
+    (sell) =>
+      selectedLot != null &&
+      sell.symbol.toUpperCase() === selectedLot.symbol.toUpperCase(),
+  );
+  const selectedSell = lotUnassignedSells.find((sell) => sell.activityId === assignSellId);
 
   useEffect(() => {
     const onLeave = (event: BeforeUnloadEvent) => {
@@ -8647,8 +8651,8 @@ export default function App() {
               {navButton("interest-rate", "Interest rate calculator")}
               {navButton("contract-positions", "Contract positions")}
               {navButton("field-intent", "Field intent")}
-              {navButton("components", "Components")}
-              {navButton("screen-atlas", "Screen Atlas")}
+              {navButton("roadmap", "Roadmap")}
+              {navButton("components", "Component Registry")}
               {navButton("settings", "Settings")}
             </>,
           )}
@@ -9249,7 +9253,9 @@ export default function App() {
       !(screen === "trends" && actionMessage.startsWith("Opened Import for ")) &&
       // Screen Atlas completion is only meaningful on that tool — do not sticky it on Tickets etc.
       !(
-        actionMessage.startsWith("Screen Atlas") && screen !== "screen-atlas"
+        actionMessage.startsWith("Screen Atlas") &&
+        screen !== "screen-atlas" &&
+        screen !== "components"
       ) &&
       !restarting ? (
         <p>{actionMessage}</p>
@@ -9609,7 +9615,9 @@ export default function App() {
             <h2 aria-label="External accounts">External accounts</h2>
           ) : cmDesk === "manager" ? (
             <h2 aria-label="Debt planner">Debt planner</h2>
-          ) : cmDesk === "coverage" ? null : (
+          ) : cmDesk === "coverage" ? (
+            <h2 aria-label="Income vs Expense planner">Income vs Expense planner</h2>
+          ) : (
             <h2 aria-label="Week ahead planner">Week ahead planner</h2>
           )}
           {cmDesk === "weekly" ? (
@@ -10405,77 +10413,27 @@ export default function App() {
       ) : null}
 
       {screen === "holdings" ? (
-        <section aria-label="Holdings">
-          <h2>Holdings</h2>
-          <p>Open lots. Owner assigns sales; no FIFO.</p>
-          <label>
-            Filter holdings
-            <input
-              value={holdingsFilter}
-              onChange={(e) => setHoldingsFilter(e.target.value)}
-              aria-label="Filter holdings"
-            />
-          </label>
-          <HoldingsPanel
-            lots={holdings?.lots ?? null}
-            filter={holdingsFilter}
-            onOpenSymbol={(symbol) => openPositionHub(symbol, "lots")}
-          />
-          <p>Open lots. Owner assigns sales; no FIFO. Type a sell activity id to assign.</p>
-          <LotCostTable
-            lots={(holdings?.lots ?? []).map((l) => ({
-              lotId: l.lotId,
-              symbol: l.symbol,
-              accountName: l.accountName,
-              remainingQuantityMinor: l.remainingQuantityMinor,
-              quantityScale: l.quantityScale,
-              openedOn: l.openedOn,
-              remainingPerformanceMinor: l.remainingPerformanceMinor,
-              remainingTaxMinor: l.remainingTaxMinor,
-              scale: l.scale,
-            }))}
-            value={lotId}
-            onChange={setLotId}
-            lastBySymbol={Object.fromEntries(
-              (calculator?.rows ?? []).map((r) => [r.symbol, r.lastPriceMinor]),
-            )}
-            sortMode={holdingsLotSort}
-            onSortModeChange={setHoldingsLotSort}
-            disabled={busy || writesBlocked}
-            ariaLabel="Lot id"
-          />
-          <label>
-            Sell activity id
-            <input
-              value={assignActivityId}
-              onChange={(e) => setAssignActivityId(e.target.value)}
-              disabled={busy || writesBlocked}
-            />
-          </label>
-          <label>
-            Quantity minor
-            <input
-              value={assignQty}
-              onChange={(e) => setAssignQty(e.target.value)}
-              disabled={busy || writesBlocked}
-            />
-          </label>
-          <button
-            type="button"
-            aria-label="Assign lot"
-            disabled={busy || writesBlocked}
-            onClick={() =>
-              void runCommand("LotAssign", {
-                lotId,
-                activityId: assignActivityId,
-                quantityMinor: Number(assignQty),
-                quantityScale: selectedLot?.quantityScale ?? 0,
-              })
-            }
-          >
-            Assign lot
-          </button>
-        </section>
+        <HoldingsScreen
+          busy={busy}
+          writesBlocked={writesBlocked}
+          holdings={holdings}
+          holdingsFilter={holdingsFilter}
+          setHoldingsFilter={setHoldingsFilter}
+          openPositionHub={openPositionHub}
+          lotId={lotId}
+          setLotId={setLotId}
+          setAssignSellId={setAssignSellId}
+          setAssignQty={setAssignQty}
+          assignSellId={assignSellId}
+          assignQty={assignQty}
+          calculator={calculator}
+          holdingsLotSort={holdingsLotSort}
+          setHoldingsLotSort={setHoldingsLotSort}
+          selectedLot={selectedLot}
+          selectedSell={selectedSell}
+          lotUnassignedSells={lotUnassignedSells}
+          runCommand={runCommand}
+        />
       ) : null}
 
       {screen === "new-investment" ? (
@@ -11588,188 +11546,41 @@ export default function App() {
       ) : null}
 
       {screen === "add-lot" ? (
-        <section aria-label="Add Lot">
-          <h2>Add Lot</h2>
-          <p>
-            Process B: open an explicit lot on a researched symbol (Add Investment first).
-            Account, opened-on, quantity, original cost, tax cost if different, and origin only.
-            No frequency, URL, ROC, or tier here. Opening is explicit — no FIFO. Zero lots after
-            research is valid until you save.
-          </p>
-          {addLotDirty ? (
-            <p className="blocked" role="status">
-              Unsaved edits. Save or Cancel — other screens stay blocked.
-            </p>
-          ) : null}
-          <div className="buttons dossier-actions">
-            <button
-              type="button"
-              aria-label="Open lot"
-              className={addLotDirty ? "is-unsaved" : undefined}
-              disabled={
-                busy ||
-                writesBlocked ||
-                !addLotSecurityId ||
-                !addLotAccountId ||
-                !addLotOpenedOn.trim() ||
-                !addLotQty.trim() ||
-                !addLotCost.trim() ||
-                (addLotTaxDifferent && !addLotTaxCost.trim())
-              }
-              onClick={() => void openAddLot()}
-            >
-              Open lot
-            </button>
-            <button
-              type="button"
-              aria-label="Cancel add lot edits"
-              disabled={busy || !addLotDirty}
-              onClick={() => cancelAddLotEdits()}
-            >
-              Cancel
-            </button>
-          </div>
-          <div className="form-grid">
-            <ResearchedSymbolCombobox
-              options={filteredAddLotSecurities}
-              query={addLotQuery}
-              onQueryChange={(q) => {
-                setAddLotQuery(q);
-                setAddLotSecurityId("");
-              }}
-              open={addLotSymbolOpen}
-              onOpenChange={setAddLotSymbolOpen}
-              selectedId={addLotSecurityId}
-              onSelect={selectAddLotSecurity}
-              disabled={busy || writesBlocked}
-              inputAriaLabel="Add lot symbol"
-              listId="add-lot-symbol-list"
-              listAriaLabel="Add lot symbol matches"
-            />
-            <AccountSelect
-              accounts={accounts}
-              value={addLotAccountId}
-              onChange={setAddLotAccountId}
-              ariaLabel="Add lot account"
-              disabled={busy || writesBlocked}
-            />
-            <label>
-              Opened on
-              <input
-                aria-label="Add lot opened on"
-                type="date"
-                value={addLotOpenedOn}
-                onChange={(e) => setAddLotOpenedOn(e.target.value)}
-                disabled={busy || writesBlocked}
-              />
-            </label>
-            <label>
-              Quantity
-              <input
-                aria-label="Add lot quantity"
-                value={addLotQty}
-                onChange={(e) => setAddLotQty(e.target.value)}
-                disabled={busy || writesBlocked}
-              />
-            </label>
-            <label>
-              Unit original $
-              <input
-                aria-label="Add lot unit original cost"
-                value={addLotCost}
-                onChange={(e) => setAddLotCost(e.target.value)}
-                disabled={busy || writesBlocked}
-                placeholder="29.46"
-              />
-            </label>
-            <label>
-              <span>
-                <input
-                  type="checkbox"
-                  aria-label="Tax cost different"
-                  checked={addLotTaxDifferent}
-                  onChange={(e) => setAddLotTaxDifferent(e.target.checked)}
-                  disabled={busy || writesBlocked}
-                />{" "}
-                Unit tax $ different
-              </span>
-              <input
-                aria-label="Add lot unit tax cost"
-                value={addLotTaxDifferent ? addLotTaxCost : addLotCost}
-                onChange={(e) => setAddLotTaxCost(e.target.value)}
-                disabled={busy || writesBlocked || !addLotTaxDifferent}
-              />
-            </label>
-            {(() => {
-              const qty = Number(addLotQty);
-              const unit = Number(addLotCost);
-              if (
-                !Number.isFinite(qty) ||
-                qty <= 0 ||
-                !Number.isFinite(unit) ||
-                unit < 0 ||
-                !addLotQty.trim() ||
-                !addLotCost.trim()
-              ) {
-                return (
-                  <p role="status" aria-label="Add lot total confirmation">
-                    Enter qty and unit original $ — lot total = qty × unit.
-                  </p>
-                );
-              }
-              const totalCents = lotTotalFromUnitCents(qty, 0, dollarsToMinor(addLotCost));
-              const totalLabel = (totalCents / 100).toLocaleString("en-US", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              });
-              const unitLabel = formatMoneyInput(addLotCost);
-              return (
-                <p role="status" aria-label="Add lot total confirmation">
-                  Confirm: {formatScaled(qty, 0)} × ${unitLabel} = ${totalLabel} lot
-                  original (saved as performance basis total).
-                  {addLotTaxDifferent && addLotTaxCost.trim()
-                    ? (() => {
-                        const taxUnit = Number(addLotTaxCost);
-                        if (!Number.isFinite(taxUnit) || taxUnit < 0) return "";
-                        const taxTotal = lotTotalFromUnitCents(
-                          qty,
-                          0,
-                          dollarsToMinor(addLotTaxCost),
-                        );
-                        return ` Tax: ${formatScaled(qty, 0)} × $${formatMoneyInput(addLotTaxCost)} = $${(taxTotal / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`;
-                      })()
-                    : ""}
-                </p>
-              );
-            })()}
-            <label>
-              Origin
-              <select
-                aria-label="Add lot origin"
-                value={addLotOrigin}
-                onChange={(e) => setAddLotOrigin(e.target.value)}
-                disabled={busy || writesBlocked}
-              >
-                {LOT_ORIGINS.map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          {securities.length === 0 ? (
-            <p role="status">
-              No securities yet. Use Add Investment (symbol + distribution URL), then return
-              here to open a lot. Researched names with zero lots are included.
-            </p>
-          ) : addLotQuery.trim() && !addLotSecurityId && filteredAddLotSecurities.length === 0 ? (
-            <p role="status">
-              No matching researched symbol. Cannot create a new ticker here — research it
-              on Add Investment first.
-            </p>
-          ) : null}
-        </section>
+        <AddLotScreen
+          busy={busy}
+          writesBlocked={writesBlocked}
+          addLotDirty={addLotDirty}
+          addLotSecurityId={addLotSecurityId}
+          addLotAccountId={addLotAccountId}
+          addLotOpenedOn={addLotOpenedOn}
+          addLotQty={addLotQty}
+          addLotCost={addLotCost}
+          addLotTaxCost={addLotTaxCost}
+          addLotTaxDifferent={addLotTaxDifferent}
+          addLotOrigin={addLotOrigin}
+          addLotQuery={addLotQuery}
+          addLotSymbolOpen={addLotSymbolOpen}
+          accounts={accounts}
+          securitiesLength={securities.length}
+          filteredAddLotSecurities={filteredAddLotSecurities}
+          formatScaled={formatScaled}
+          dollarsToMinor={dollarsToMinor}
+          lotTotalFromUnitCents={lotTotalFromUnitCents}
+          formatMoneyInput={formatMoneyInput}
+          openAddLot={openAddLot}
+          cancelAddLotEdits={cancelAddLotEdits}
+          setAddLotQuery={setAddLotQuery}
+          setAddLotSecurityId={setAddLotSecurityId}
+          setAddLotSymbolOpen={setAddLotSymbolOpen}
+          selectAddLotSecurity={selectAddLotSecurity}
+          setAddLotAccountId={setAddLotAccountId}
+          setAddLotOpenedOn={setAddLotOpenedOn}
+          setAddLotQty={setAddLotQty}
+          setAddLotCost={setAddLotCost}
+          setAddLotTaxDifferent={setAddLotTaxDifferent}
+          setAddLotTaxCost={setAddLotTaxCost}
+          setAddLotOrigin={setAddLotOrigin}
+        />
       ) : null}
 
       {screen === "import" ? (
@@ -12123,35 +11934,30 @@ export default function App() {
 
       {screen === "field-intent" ? <FieldIntentScreen /> : null}
 
-      {screen === "components" ? (
-        <ComponentRegistry modules={coreFunctions?.modules} />
-      ) : null}
+      {screen === "roadmap" ? <RoadmapScreen /> : null}
 
-      {screen === "screen-atlas" ? (
-        <Suspense fallback={<p role="status">Loading Screen Atlas…</p>}>
-          <ScreenAtlasScreen
-            asOfDate={atlasPinnedAsOf() ?? asOfDate}
-            isBusy={busy || !!menuWorking || lastPriceBusy || declarationBusy}
-            autoStart={atlasAutoStart}
-            onDone={(message) => {
-              setAtlasAutoStart(false);
-              // Only show on Screen Atlas; avoid sticky banners on Tickets / Home.
-              setActionMessage(message);
-            }}
-            modules={coreFunctions?.modules}
-            onNavigate={(next, desk) => {
-              if (desk) {
-                setCmDesk(desk as CmDesk);
-              }
-              if (next !== "screen-atlas") {
-                setActionMessage((prev) =>
-                  prev?.startsWith("Screen Atlas") ? null : prev,
-                );
-              }
-              setScreen(next as Screen);
-            }}
-          />
-        </Suspense>
+      {screen === "components" || screen === "screen-atlas" ? (
+        <ComponentRegistry
+          modules={coreFunctions?.modules}
+          asOfDate={atlasPinnedAsOf() ?? asOfDate}
+          isBusy={busy || !!menuWorking || lastPriceBusy || declarationBusy}
+          autoStart={atlasAutoStart}
+          onDone={(message) => {
+            setAtlasAutoStart(false);
+            setActionMessage(message);
+          }}
+          onNavigate={(next, desk) => {
+            if (desk) {
+              setCmDesk(desk as CmDesk);
+            }
+            if (next !== "screen-atlas" && next !== "components") {
+              setActionMessage((prev) =>
+                prev?.startsWith("Screen Atlas") ? null : prev,
+              );
+            }
+            setScreen(next as Screen);
+          }}
+        />
       ) : null}
 
       {screen === "settings" ? (

@@ -22,6 +22,7 @@ export const SCREEN_ORDER = [
   "interest-rate",
   "contract-positions",
   "field-intent",
+  "roadmap",
   "components",
   "screen-atlas",
 ] as const;
@@ -48,9 +49,30 @@ export const SCREEN_LABEL: Record<(typeof SCREEN_ORDER)[number], string> = {
   "interest-rate": "Interest rate calculator",
   "contract-positions": "Contract positions",
   "field-intent": "Field intent",
-  components: "Components",
+  roadmap: "Roadmap",
+  components: "Component Registry",
   "screen-atlas": "Screen Atlas",
 };
+
+const REGISTRY_SCREENS = new Set(["components", "screen-atlas"]);
+
+/** One owner page for Component Registry. Screen Atlas stays a screen id, not a second heading. */
+export function ownerPageGroups<T extends ScreenKeyed>(
+  items: readonly T[],
+): { groups: ScreenGroup<T>[]; also: T[] } {
+  const grouped = groupByScreen(items);
+  const merged = grouped.groups
+    .filter((group) => REGISTRY_SCREENS.has(group.screen))
+    .flatMap((group) => group.direct);
+  const groups = grouped.groups.flatMap((group) => {
+    if (group.screen === "screen-atlas") return [];
+    if (group.screen === "components") {
+      return [{ ...group, label: SCREEN_LABEL.components, direct: merged }];
+    }
+    return [group];
+  });
+  return { groups, also: grouped.also };
+}
 
 export const DESK_ORDER = [
   "elements",

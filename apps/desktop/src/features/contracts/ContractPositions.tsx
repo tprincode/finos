@@ -2,7 +2,8 @@ import { formatUsd } from "@finos/ui-components";
 import type { OptionContractListGet, OptionContractRecord } from "@finos/app-contracts";
 import { useCallback, useEffect, useState } from "react";
 import { todayIso } from "../interest-rate/math";
-import { assignmentFlags } from "./assignment";
+import { assignmentFlags, nearStrike } from "./assignment";
+import { ContractCreateForm } from "./ContractCreateForm";
 import { parseOcc } from "./parseOcc";
 import { rollYield } from "./rollYield";
 
@@ -26,8 +27,9 @@ function dollarsToMinor(raw: string): number | null {
 }
 
 function sideLabel(side: string, putCall: string): string {
+  if (side === "short") return "Short Cover";
   const right = putCall === "P" ? "put" : "call";
-  return `${side} ${right}`;
+  return `Long ${right}`;
 }
 
 export function ContractPositions({ client }: { client?: Client | null }) {
@@ -35,14 +37,6 @@ export function ContractPositions({ client }: { client?: Client | null }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
-
-  const [occSymbol, setOccSymbol] = useState("");
-  const [side, setSide] = useState<"short" | "long">("short");
-  const [qty, setQty] = useState("1");
-  const [premium, setPremium] = useState("");
-  const [openOn, setOpenOn] = useState(todayIso());
-  const [underlyingLast, setUnderlyingLast] = useState("");
-  const [optionMid, setOptionMid] = useState("");
 
   const [rollForId, setRollForId] = useState<string | null>(null);
   const [rollOcc, setRollOcc] = useState("");
@@ -54,10 +48,6 @@ export function ContractPositions({ client }: { client?: Client | null }) {
   const [closePremium, setClosePremium] = useState("");
   const [closeOn, setCloseOn] = useState(todayIso());
   const [closeHow, setCloseHow] = useState<"closed" | "assigned">("closed");
-
-  const [quoteForId, setQuoteForId] = useState<string | null>(null);
-  const [quoteUnderlying, setQuoteUnderlying] = useState("");
-  const [quoteMid, setQuoteMid] = useState("");
 
   const asOf = todayIso();
 
@@ -98,41 +88,11 @@ export function ContractPositions({ client }: { client?: Client | null }) {
       await reload();
       setRollForId(null);
       setCloseForId(null);
-      setQuoteForId(null);
-      if (name === "ContractCreate") {
-        setOccSymbol("");
-        setPremium("");
-        setUnderlyingLast("");
-        setOptionMid("");
-      }
     } catch (err: unknown) {
       setStatus(err instanceof Error ? err.message : String(err));
     } finally {
       setPending(null);
     }
-  };
-
-  const onCreate = async () => {
-    const parsed = parseOcc(occSymbol);
-    if (!parsed) {
-      setStatus("Not an OCC symbol.");
-      return;
-    }
-    const quantity = Number(qty);
-    const openPremiumMinor = dollarsToMinor(premium);
-    if (!Number.isInteger(quantity) || quantity <= 0 || openPremiumMinor == null) {
-      setStatus("Quantity and open premium are required.");
-      return;
-    }
-    await runCommand("create", "ContractCreate", {
-      occSymbol,
-      side,
-      quantity,
-      openPremiumMinor,
-      openOn,
-      underlyingLastMinor: dollarsToMinor(underlyingLast),
-      optionMidMinor: dollarsToMinor(optionMid),
-    });
   };
 
   const openRows = items.filter((r) => r.status === "open");
@@ -159,99 +119,13 @@ export function ContractPositions({ client }: { client?: Client | null }) {
       {loadError ? <p role="alert">{loadError}</p> : null}
       {status ? <p role="status">{status}</p> : null}
 
-      <h3>Create</h3>
-      <div className="table-wrap">
-        <table aria-label="Create contract">
-          <thead>
-            <tr>
-              <th scope="col">OCC symbol</th>
-              <th scope="col">Side</th>
-              <th scope="col">Qty</th>
-              <th scope="col">Open premium $</th>
-              <th scope="col">Open</th>
-              <th scope="col">Underlying $</th>
-              <th scope="col">Option mid $</th>
-              <th scope="col"> </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>
-                <input
-                  aria-label="OCC symbol"
-                  spellCheck={false}
-                  value={occSymbol}
-                  onChange={(e) => setOccSymbol(e.target.value.toUpperCase())}
-                  placeholder=".TSLL1270115C20.7"
-                />
-              </td>
-              <td>
-                <select
-                  aria-label="Contract side"
-                  value={side}
-                  onChange={(e) => setSide(e.target.value as "short" | "long")}
-                >
-                  <option value="short">short</option>
-                  <option value="long">long</option>
-                </select>
-              </td>
-              <td>
-                <input
-                  aria-label="Contract quantity"
-                  inputMode="numeric"
-                  value={qty}
-                  onChange={(e) => setQty(e.target.value)}
-                />
-              </td>
-              <td>
-                <input
-                  aria-label="Open premium dollars"
-                  inputMode="decimal"
-                  value={premium}
-                  onChange={(e) => setPremium(e.target.value)}
-                />
-              </td>
-              <td>
-                <input
-                  type="date"
-                  aria-label="Open date"
-                  value={openOn}
-                  onChange={(e) => setOpenOn(e.target.value)}
-                />
-              </td>
-              <td>
-                <input
-                  aria-label="Underlying last dollars"
-                  inputMode="decimal"
-                  value={underlyingLast}
-                  onChange={(e) => setUnderlyingLast(e.target.value)}
-                />
-              </td>
-              <td>
-                <input
-                  aria-label="Option mid dollars"
-                  inputMode="decimal"
-                  value={optionMid}
-                  onChange={(e) => setOptionMid(e.target.value)}
-                />
-              </td>
-              <td>
-                <button
-                  type="button"
-                  aria-label="Create contract"
-                  className={pending === "create" ? "is-unsaved" : undefined}
-                  disabled={pending != null}
-                  onClick={() => void onCreate()}
-                >
-                  Create
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <ContractCreateForm
+        client={client}
+        pending={pending}
+        onCreate={(body) => void runCommand("create", "ContractCreate", body)}
+      />
 
-      <h3>Open · {openRows.length}</h3>
+      <h3>Open contracts · {openRows.length}</h3>
       <div className="table-wrap">
         <table aria-label="Open contracts">
           <thead>
@@ -274,13 +148,15 @@ export function ContractPositions({ client }: { client?: Client | null }) {
           <tbody>
             {openRows.map((row) => {
               const right = row.putCall === "P" ? "put" : "call";
+              const live = row.liveUnderlyingMinor ?? null;
               const flags = assignmentFlags({
                 right,
                 strikeMinor: row.strikeMinor,
                 asOfIso: asOf,
                 expiryIso: row.expiryOn,
-                underlyingLastMinor: row.underlyingLastMinor ?? null,
+                underlyingLastMinor: live,
               });
+              const yellow = nearStrike(live, row.strikeMinor);
               const collateralMinor = row.strikeMinor * 100 * row.quantity;
               const yieldProj = rollYield({
                 premium: row.openPremiumMinor,
@@ -289,14 +165,14 @@ export function ContractPositions({ client }: { client?: Client | null }) {
                 endIso: row.expiryOn,
               });
               return (
-                <tr key={row.contractId}>
+                <tr key={row.contractId} className={yellow ? "contract-near" : undefined}>
                   <td>{row.occSymbol}</td>
-                  <td>{row.underlying}</td>
+                  <td>{live != null ? formatUsd(live, 2) : "unknown"}</td>
                   <td>{row.expiryOn}</td>
                   <td>{sideLabel(row.side, row.putCall)}</td>
                   <td>{row.quantity}</td>
                   <td>{formatUsd(row.strikeMinor, row.scale)}</td>
-                  <td>{formatUsd(row.openPremiumMinor, 2)}</td>
+                  <td>{row.openPremiumBlank ? "" : formatUsd(row.openPremiumMinor, 2)}</td>
                   <td>{flags.dte != null ? String(flags.dte) : "—"}</td>
                   <td>{flags.itm ? "Yes" : "No"}</td>
                   <td>{flags.assignmentRisk ? "Yes" : "No"}</td>
@@ -311,27 +187,6 @@ export function ContractPositions({ client }: { client?: Client | null }) {
                       : "—"}
                   </td>
                   <td>
-                    <button
-                      type="button"
-                      aria-label={`Quote ${row.occSymbol}`}
-                      className={pending === `quote-${row.contractId}` ? "is-unsaved" : undefined}
-                      disabled={pending != null}
-                      onClick={() => {
-                        setQuoteForId(row.contractId);
-                        setQuoteUnderlying(
-                          row.underlyingLastMinor != null
-                            ? (row.underlyingLastMinor / 100).toFixed(2)
-                            : "",
-                        );
-                        setQuoteMid(
-                          row.optionMidMinor != null
-                            ? (row.optionMidMinor / 100).toFixed(2)
-                            : "",
-                        );
-                      }}
-                    >
-                      Quote
-                    </button>{" "}
                     <button
                       type="button"
                       aria-label={`Roll ${row.occSymbol}`}
@@ -368,42 +223,6 @@ export function ContractPositions({ client }: { client?: Client | null }) {
           </tbody>
         </table>
       </div>
-
-      {quoteForId ? (
-        <div className="buttons" aria-label="Set quote">
-          <input
-            aria-label="Quote underlying dollars"
-            value={quoteUnderlying}
-            onChange={(e) => setQuoteUnderlying(e.target.value)}
-            placeholder="Underlying $"
-          />
-          <input
-            aria-label="Quote option mid dollars"
-            value={quoteMid}
-            onChange={(e) => setQuoteMid(e.target.value)}
-            placeholder="Option mid $"
-          />
-          <button
-            type="button"
-            aria-label="Save quote"
-            className={pending === `quote-${quoteForId}` ? "is-unsaved" : undefined}
-            disabled={pending != null}
-            onClick={() =>
-              void runCommand(`quote-${quoteForId}`, "ContractQuoteSet", {
-                contractId: quoteForId,
-                underlyingLastMinor: dollarsToMinor(quoteUnderlying),
-                optionMidMinor: dollarsToMinor(quoteMid),
-                quoteAsOf: todayIso(),
-              })
-            }
-          >
-            Save quote
-          </button>
-          <button type="button" onClick={() => setQuoteForId(null)}>
-            Cancel
-          </button>
-        </div>
-      ) : null}
 
       {rollForId ? (
         <div className="buttons" aria-label="Roll contract">
@@ -508,7 +327,7 @@ export function ContractPositions({ client }: { client?: Client | null }) {
         </div>
       ) : null}
 
-      <h3>Closed / rolled / assigned · {closedRows.length}</h3>
+      <h3>Closed contracts · {closedRows.length}</h3>
       <div className="table-wrap">
         <table aria-label="Closed contracts">
           <thead>
@@ -533,7 +352,7 @@ export function ContractPositions({ client }: { client?: Client | null }) {
                 <td>{row.expiryOn}</td>
                 <td>{sideLabel(row.side, row.putCall)}</td>
                 <td>{row.quantity}</td>
-                <td>{formatUsd(row.openPremiumMinor, 2)}</td>
+                <td>{row.openPremiumBlank ? "" : formatUsd(row.openPremiumMinor, 2)}</td>
                 <td>
                   {row.closePremiumMinor != null
                     ? formatUsd(row.closePremiumMinor, 2)

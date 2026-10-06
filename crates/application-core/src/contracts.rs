@@ -8,7 +8,7 @@ use uuid::Uuid;
 pub const FINANCE_CLIENT_CONTRACT_VERSION: &str = "1.0.0-draft";
 
 /// Must equal the latest SQLite migration number (currently 0065_window_comparison).
-pub const SCHEMA_VERSION: &str = "65";
+pub const SCHEMA_VERSION: &str = "66";
 /// Marketplace MAGI 2026.1 after owner-approved oracles.
 pub const CALCULATION_VERSION: &str = "magi-2026.1";
 pub const APP_VERSION: &str = "0.1.0";
@@ -1518,6 +1518,9 @@ pub struct RoiBody {
     pub performance_gain_minor: i64,
     pub tax_gain_minor: i64,
     pub dividend_actual_minor: i64,
+    /// Sum of option premium posts. Not part of dividend_actual_minor.
+    #[serde(default)]
+    pub option_premium_minor: i64,
     pub open_performance_minor: i64,
     pub open_tax_minor: i64,
     pub scale: u8,
@@ -2200,6 +2203,9 @@ pub struct HoldingsLotBody {
     pub opened_on: String,
     pub remaining_quantity_minor: i64,
     pub quantity_scale: u8,
+    /// Shares promised to an open contract, in the same units as remaining_quantity_minor.
+    #[serde(default)]
+    pub promised_quantity_minor: i64,
     pub remaining_performance_minor: i64,
     pub remaining_tax_minor: i64,
     pub scale: u8,
@@ -3796,6 +3802,13 @@ pub struct CoreFunctionItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct UiModuleMenu {
+    pub kind: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct UiModuleItem {
     pub id: String,
     pub title: String,
@@ -3808,10 +3821,55 @@ pub struct UiModuleItem {
     /// Cash Management desk when `screen` is `cash-management`.
     #[serde(default)]
     pub cm_desk: String,
+    /// Menu target. Absent on charts and parts that share another row's button.
+    #[serde(default)]
+    pub menu: Option<UiModuleMenu>,
     #[serde(default)]
     pub core_function_ids: Vec<String>,
     #[serde(default)]
     pub host: String,
+    /// One sentence from the screen. Empty is a hole, not a finished blank.
+    #[serde(default)]
+    pub description: String,
+    /// Chart, table, or function already named by this module. The module row stays.
+    #[serde(default)]
+    pub parts: Vec<UiModulePart>,
+    /// SQL citations. A name is shown only when the golden still finds `needle` in `path`.
+    #[serde(default)]
+    pub sqlite_tables: Vec<UiModuleTableCitation>,
+    /// Export arm that fills this module's sheet. Filled when the catalog is served.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub export_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiModulePart {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub core_function_ids: Vec<String>,
+    /// Export arm that fills this part's sheet. Filled when the catalog is served.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub export_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiModuleTableCitation {
+    pub name: String,
+    pub path: String,
+    pub needle: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentExportBody {
+    pub default_file_name: String,
+    pub bytes_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3895,9 +3953,19 @@ pub struct OptionContractRecord {
     pub side: String,
     pub quantity: i64,
     pub open_premium_minor: i64,
+    /// True when the owner left open premium empty. Blank is not $0.
+    #[serde(default)]
+    pub open_premium_blank: bool,
     pub open_on: String,
+    /// History typed at first entry. It has no week.
+    #[serde(default)]
+    pub prior_balance_minor: i64,
+    /// Optional price typed when the contract opened. The open list uses live_underlying_minor.
     #[serde(default)]
     pub underlying_last_minor: Option<i64>,
+    /// Last accepted price of the underlying. Not stored on the contract row.
+    #[serde(default)]
+    pub live_underlying_minor: Option<i64>,
     #[serde(default)]
     pub option_mid_minor: Option<i64>,
     #[serde(default)]
@@ -3919,6 +3987,62 @@ pub struct OptionContractRecord {
 #[serde(rename_all = "camelCase")]
 pub struct OptionContractListBody {
     pub items: Vec<OptionContractRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionPremiumPostRecord {
+    pub post_id: Uuid,
+    pub contract_id: Uuid,
+    pub week_start: String,
+    pub category: String,
+    pub amount_minor: i64,
+    pub scale: u8,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionPremiumPostListBody {
+    pub items: Vec<OptionPremiumPostRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionCoverCandidate {
+    pub lot_id: Uuid,
+    pub opened_on: String,
+    pub shares: i64,
+    pub cost_minor: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionCoverTake {
+    pub lot_id: Uuid,
+    pub shares: i64,
+    pub cost_minor: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionCoverReservation {
+    pub lot_id: Uuid,
+    pub shares: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionCoverPreviewPiece {
+    pub lot_id: String,
+    pub shares: i64,
+    pub cost_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionCoverPreviewBody {
+    pub pieces: Vec<OptionCoverPreviewPiece>,
+    pub average_minor: Option<i64>,
+    pub scale: u8,
+    pub refused: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

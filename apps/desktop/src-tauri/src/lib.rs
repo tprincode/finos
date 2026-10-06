@@ -1770,9 +1770,83 @@ fn screen_atlas_save(day: String, file_name: String, bytes: Vec<u8>) -> Result<S
     Ok(path.to_string_lossy().into_owned())
 }
 
+fn component_metadata_path() -> Result<PathBuf, String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
+    Ok(local.join("com.finos.desktop").join("component-metadata.json"))
+}
+
+#[tauri::command]
+fn component_metadata_get() -> Result<String, String> {
+    let path = component_metadata_path()?;
+    if !path.exists() {
+        return Ok("{}".into());
+    }
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn component_metadata_put(
+    module_id: String,
+    part_id: String,
+    purpose: String,
+    inputs: String,
+    output: String,
+    money_rule: String,
+) -> Result<(), String> {
+    let module_id = module_id.trim();
+    let part_id = part_id.trim();
+    if module_id.is_empty()
+        || module_id.contains('/')
+        || module_id.contains('\\')
+        || module_id.contains("..")
+    {
+        return Err("invalid module id".into());
+    }
+    if part_id.contains('/') || part_id.contains('\\') || part_id.contains("..") {
+        return Err("invalid part id".into());
+    }
+    let path = component_metadata_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let raw = if path.exists() {
+        std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into())
+    } else {
+        "{}".into()
+    };
+    let mut doc: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    let key = format!("{module_id}/{part_id}");
+    doc[key] = serde_json::json!({
+        "purpose": purpose,
+        "inputs": inputs,
+        "output": output,
+        "moneyRule": money_rule,
+    });
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn screen_atlas_save_text(day: String, file_name: String, text: String) -> Result<String, String> {
     screen_atlas_save(day, file_name, text.into_bytes())
+}
+
+#[tauri::command]
+fn screen_atlas_read_text(day: String, file_name: String) -> Result<String, String> {
+    let name = file_name.trim();
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("invalid atlas file name".into());
+    }
+    let path = screen_atlas_day_dir(&day)?.join(name);
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
 }
 
 /// Newest dated folder under evidence/screen-atlas, if any.
@@ -2211,6 +2285,7 @@ pub fn run() {
                     | "interest-rate"
                     | "contract-positions"
                     | "field-intent"
+                    | "roadmap"
                     | "components"
                     | "screen-atlas"
                     | "settings"
@@ -2224,8 +2299,11 @@ pub fn run() {
             open_exception_log,
             open_external_url,
             save_local_bytes,
+            component_metadata_get,
+            component_metadata_put,
             screen_atlas_save,
             screen_atlas_save_text,
+            screen_atlas_read_text,
             screen_atlas_latest_day,
             screen_atlas_folder_path,
             screen_atlas_list_pngs,

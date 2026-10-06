@@ -1325,6 +1325,51 @@ pub trait Canonical: Send + Sync {
         let _ = record;
         ni()
     }
+    async fn option_cover_candidates(
+        &self,
+        account_id: Uuid,
+        security_id: Uuid,
+    ) -> Result<Vec<crate::contracts::OptionCoverCandidate>, PlatformError> {
+        let _ = (account_id, security_id);
+        Ok(Vec::new())
+    }
+    async fn option_cover_save(
+        &self,
+        contract_id: Uuid,
+        takes: &[crate::contracts::OptionCoverTake],
+    ) -> Result<(), PlatformError> {
+        let _ = (contract_id, takes);
+        ni()
+    }
+    async fn option_cover_move(&self, from_id: Uuid, to_id: Uuid) -> Result<(), PlatformError> {
+        let _ = (from_id, to_id);
+        ni()
+    }
+    async fn option_cover_release(&self, contract_id: Uuid) -> Result<(), PlatformError> {
+        let _ = contract_id;
+        ni()
+    }
+    async fn option_cover_assign(&self, contract_id: Uuid) -> Result<(), PlatformError> {
+        let _ = contract_id;
+        ni()
+    }
+    async fn option_premium_insert(
+        &self,
+        record: &crate::contracts::OptionPremiumPostRecord,
+    ) -> Result<(), PlatformError> {
+        let _ = record;
+        ni()
+    }
+    async fn option_premium_list(
+        &self,
+    ) -> Result<Vec<crate::contracts::OptionPremiumPostRecord>, PlatformError> {
+        Ok(Vec::new())
+    }
+    async fn option_cover_reservations(
+        &self,
+    ) -> Result<Vec<crate::contracts::OptionCoverReservation>, PlatformError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Test double: every method returns not_implemented.

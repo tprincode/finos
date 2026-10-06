@@ -4178,59 +4178,17 @@ function cellCents(cell: { amountPerShareMinor: number | null; amountScale: numb
   return Math.round(cell.amountPerShareMinor / 10 ** (scale - 2));
 }
 
-export function newestDeclaration(
-  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
-): { amountPerShareMinor: number; amountScale: number } | null {
-  for (let i = cells.length - 1; i >= 0; i -= 1) {
-    const cell = cells[i];
-    if (cell?.amountPerShareMinor != null) {
-      return { amountPerShareMinor: cell.amountPerShareMinor, amountScale: cell.amountScale };
-    }
-  }
-  return null;
-}
-
-/** Non-blank payments, newest first. This is the walk Avg 6 averages. */
-export function lastPaidDeclarations(
-  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
-  count = 6,
-): Array<{ index: number; amountPerShareMinor: number; amountScale: number }> {
-  const paid: Array<{ index: number; amountPerShareMinor: number; amountScale: number }> = [];
-  for (let i = cells.length - 1; i >= 0 && paid.length < count; i -= 1) {
-    const cell = cells[i];
-    if (cell?.amountPerShareMinor == null) continue;
-    paid.push({
-      index: i,
-      amountPerShareMinor: cell.amountPerShareMinor,
-      amountScale: cell.amountScale,
-    });
-  }
-  return paid;
-}
-
-/** Avg 6 is six non-blank payments, newest first. Fewer than six stays unknown. */
-export function avg6Declaration(
-  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
-): number | null {
-  return meanPaidCents(cells, 6);
-}
-
-/** Avg 3 is three non-blank payments, newest first. Fewer than three stays unknown. */
-export function avg3Declaration(
-  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
-): number | null {
-  return meanPaidCents(cells, 3);
-}
-
 /** Lowest non-blank pay in the loaded history, in cents. Blank is not $0. */
 export function minPaidDeclaration(
   cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
 ): number | null {
-  const paid = lastPaidDeclarations(cells, Math.max(cells.length, 1))
-    .map((cell) => cellCents(cell))
-    .filter((cents): cents is number => cents != null);
-  if (paid.length === 0) return null;
-  return Math.min(...paid);
+  let low: number | null = null;
+  for (const cell of cells) {
+    const cents = cellCents(cell);
+    if (cents == null) continue;
+    if (low == null || cents < low) low = cents;
+  }
+  return low;
 }
 
 type PayCell = { amountPerShareMinor: number | null; amountScale: number };
@@ -4270,17 +4228,6 @@ export function avg6Label(pays: PayCell[] | undefined): string {
   const avg = meanNewestPays(pays, 6, true);
   if (avg == null) return "unknown";
   return `${formatUsd(avg, 2)} (${Math.min(found, 6)} of 6)`;
-}
-
-function meanPaidCents(
-  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
-  count: number,
-): number | null {
-  const paid = lastPaidDeclarations(cells, count)
-    .map((cell) => cellCents(cell))
-    .filter((cents): cents is number => cents != null);
-  if (paid.length < count) return null;
-  return Math.round(paid.reduce((sum, cents) => sum + cents, 0) / paid.length);
 }
 
 /**
@@ -4452,18 +4399,6 @@ function periodsPerYear(freq: string): number {
   return 0;
 }
 
-function lastPaidCents(
-  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
-  count: number,
-): number[] {
-  const paid: number[] = [];
-  for (let i = cells.length - 1; i >= 0 && paid.length < count; i -= 1) {
-    const cents = cellCents(cells[i]);
-    if (cents != null) paid.push(cents);
-  }
-  return paid;
-}
-
 type DividendScore = {
   annualShare: number | null;
   recentShare: number | null;
@@ -4480,7 +4415,7 @@ type DividendScore = {
 
 export function dividendScore(
   master: PositionMasterRowView | undefined,
-  cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
+  _cells: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
   newestPay?: { amountPerShareMinor: number | null; amountScale: number } | null,
   newestPays?: Array<{ amountPerShareMinor: number | null; amountScale: number }>,
 ): DividendScore {
@@ -4508,9 +4443,9 @@ export function dividendScore(
       })
     : null;
   const recent =
-    newestPay !== undefined
-      ? cellCents(newestPay ?? { amountPerShareMinor: null, amountScale: 0 })
-      : (lastPaidCents(cells, 1)[0] ?? null);
+    newestPay != null
+      ? cellCents(newestPay)
+      : null;
   const annualShare = planCents != null && periods > 0 ? planCents * periods : null;
   const recentShare = recent != null && periods > 0 ? recent * periods : null;
   const recentTotal = recentShare != null ? Math.round(recentShare * qty) : null;

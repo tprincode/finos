@@ -35,3 +35,10 @@ export function assignmentFlags(input: {
   const assignmentRisk = itm && dte != null && dte >= 0 && dte <= 7;
   return { dte, itm, assignmentRisk };
 }
+
+/** Yellow when last and strike both exist and the gap is at most 10% of last. */
+export function nearStrike(lastMinor: number | null, strikeMinor: number): boolean {
+  if (lastMinor == null || lastMinor === 0) return false;
+  if (!Number.isFinite(lastMinor) || !Number.isFinite(strikeMinor)) return false;
+  return Math.abs(lastMinor - strikeMinor) / Math.abs(lastMinor) <= 0.1;
+}

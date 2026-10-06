@@ -196,8 +196,6 @@ import {
   formatScaled,
   formatUsd,
   formatScale6,
-  formatWeekColumnHeader,
-  lastPaidDeclarations,
   meanNewestPays,
   minPaidDeclaration,
   newestStoredPay,
@@ -555,9 +553,6 @@ export function PositionDetailsScreen({
                 const cells = historyRow?.cells ?? [];
                 const pays = historyRow?.recentPays ?? [];
                 const inForce = historyRow?.inForcePays ?? [];
-                const weekStarts = declHistory?.weekStarts;
-                const weekEnds = declHistory?.weekEnds ?? [];
-                const paid = lastPaidDeclarations(cells, 6);
                 const payCount = pays.filter((pay) => pay.amountPerShareMinor != null).length;
                 const avg = meanNewestPays(pays, 6, true);
                 const avg3 = meanNewestPays(pays, 3);
@@ -760,15 +755,13 @@ export function PositionDetailsScreen({
                       <div className="fact-wide">
                         <span className="fact-label">Last 6 declarations</span>
                         <span className="fact-value">
-                          {paid.length === 0
+                          {pays.length === 0
                             ? "unknown"
-                            : paid
-                                .map((cell) => {
-                                  const period = weekStarts?.[cell.index] ?? weekEnds[cell.index];
-                                  const when = period ? formatWeekColumnHeader(period) : "";
-                                  const amount = `$${formatScaled(cell.amountPerShareMinor, cell.amountScale)}`;
-                                  return when ? `${when} ${amount}` : amount;
-                                })
+                            : pays
+                                .map(
+                                  (pay) =>
+                                    `$${formatScaled(pay.amountPerShareMinor, pay.amountScale)}`,
+                                )
                                 .join(", ")}
                         </span>
                       </div>

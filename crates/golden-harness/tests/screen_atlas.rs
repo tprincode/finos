@@ -15,12 +15,28 @@ fn atlas_targets_cover_app_screens_and_cm_desks() {
         "App Screen union must include screen-atlas"
     );
     assert!(
-        app.contains("navButton(\"screen-atlas\", \"Screen Atlas\")"),
-        "Tools menu must list Screen Atlas"
+        app.contains("navButton(\"components\", \"Component Registry\")"),
+        "Tools menu must list Component Registry"
     );
     assert!(
-        app.contains("<ScreenAtlasScreen"),
-        "App must mount ScreenAtlasScreen"
+        !app.contains("navButton(\"screen-atlas\""),
+        "Screen Atlas is not a second Tools destination"
+    );
+    assert!(
+        app.contains("screen === \"components\" || screen === \"screen-atlas\""),
+        "the screen-atlas route opens Component Registry"
+    );
+    let registry = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/components/ComponentRegistry.tsx"),
+    )
+    .expect("ComponentRegistry");
+    assert!(
+        registry.contains("<ScreenAtlasScreen") && registry.contains("Capture Page"),
+        "Component Registry mounts capture"
+    );
+    assert!(
+        registry.contains("row.id !== \"screen-atlas\""),
+        "Screen Atlas is capture on the registry, not a component row"
     );
     let screens = union_literals(&app, "Screen");
     let desks = union_literals(&app, "CmDesk");
@@ -68,7 +84,9 @@ fn atlas_targets_cover_app_screens_and_cm_desks() {
     )
     .expect("ScreenAtlasScreen");
     assert!(
-        ui.contains("Open folder in Explorer") && ui.contains("screen-atlas-file-list"),
+        ui.contains("Capture All")
+            && ui.contains("Open folder in Explorer")
+            && ui.contains("screen-atlas-file-list"),
         "Screen Atlas must offer Explorer link and file list viewer"
     );
 }

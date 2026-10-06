@@ -158,9 +158,31 @@ export type CoreFunctionsGet = {
     menuAreas: string[];
     screen?: string;
     cmDesk?: string;
+    menu?: { kind: string; label: string };
     coreFunctionIds?: string[];
     host?: string;
+    description?: string;
+    exportKind?: string;
+    parts?: Array<{
+      id: string;
+      kind: string;
+      title: string;
+      description?: string;
+      coreFunctionIds?: string[];
+      exportKind?: string;
+    }>;
+    sqliteTables?: Array<{ name: string; path: string; needle: string }>;
   }>;
+};
+
+export type ComponentExportGet = {
+  defaultFileName: string;
+  bytesBase64: string;
+};
+
+export type ComponentPageExportGet = {
+  defaultFileName: string;
+  bytesBase64: string;
 };
 
 export type DeviceConfig = {
@@ -601,6 +623,7 @@ export type HoldingsGet = {
     openedOn: string;
     remainingQuantityMinor: number;
     quantityScale: number;
+    promisedQuantityMinor?: number;
     remainingPerformanceMinor: number;
     remainingTaxMinor: number;
     scale: number;
@@ -741,8 +764,11 @@ export type OptionContractRecord = {
   side: string;
   quantity: number;
   openPremiumMinor: number;
+  openPremiumBlank?: boolean;
   openOn: string;
+  priorBalanceMinor?: number;
   underlyingLastMinor?: number | null;
+  liveUnderlyingMinor?: number | null;
   optionMidMinor?: number | null;
   quoteAsOf: string;
   status: string;
@@ -1191,6 +1217,7 @@ export type RoiGet = {
   performanceGainMinor: number;
   taxGainMinor: number;
   dividendActualMinor: number;
+  optionPremiumMinor?: number;
   openPerformanceMinor: number;
   openTaxMinor: number;
   scale: number;

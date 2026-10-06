@@ -540,3 +540,145 @@ fn desktop_startup_does_not_migrate_postgres() {
         "server boot must not migrate Postgres"
     );
 }
+
+struct AtlasRow {
+    id: String,
+    screen: String,
+    cm_desk: String,
+    menu_path: String,
+    label: String,
+}
+
+fn field_after(block: &str, key: &str) -> Option<String> {
+    let needle = format!("{key}: \"");
+    let at = block.find(&needle)?;
+    let rest = &block[at + needle.len()..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn atlas_rows(src: &str) -> Vec<AtlasRow> {
+    let start = src.find("export const ATLAS_TARGETS").expect("atlas list");
+    let end = src.find("export const ATLAS_SCREEN_IDS").expect("atlas ids");
+    let body = &src[start..end];
+    let mut rows = Vec::new();
+    for (i, part) in body.split("id: \"").enumerate() {
+        if i == 0 {
+            continue;
+        }
+        rows.push(AtlasRow {
+            id: part.split('"').next().unwrap_or("").to_string(),
+            screen: field_after(part, "screen").unwrap_or_default(),
+            cm_desk: field_after(part, "cmDesk").unwrap_or_default(),
+            menu_path: field_after(part, "menuPath").unwrap_or_default(),
+            label: field_after(part, "label").unwrap_or_default(),
+        });
+    }
+    rows
+}
+
+fn same_menu(kind: &str, screen: &str, desk: &str, label: &str, row: &AtlasRow) -> bool {
+    match kind {
+        "desk" => row.screen == screen && row.cm_desk == desk && row.menu_path.ends_with(label),
+        "embedded" => row.screen == screen,
+        _ => {
+            row.screen == screen
+                && (row.menu_path == label || row.menu_path.ends_with(&format!("→ {label}")))
+        }
+    }
+}
+
+/// Catalog `menu` is the list. App must show that button and render it.
+/// The atlas must walk the same target. `cash-management-default` is the Plan shortcut capture.
+#[test]
+fn catalog_menu_matches_app_and_atlas() {
+    let root = repo_root();
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    let registry = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/components/ComponentRegistry.tsx"),
+    )
+    .unwrap();
+    let atlas = atlas_rows(
+        &std::fs::read_to_string(
+            root.join("apps/desktop/src/features/screen-atlas/atlasTargets.ts"),
+        )
+        .unwrap(),
+    );
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("docs/architecture/ui-modules.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        registry.contains("<dt>Menu</dt>"),
+        "Component Registry shows the menu path"
+    );
+    let mut menus = Vec::new();
+    for module in catalog["modules"].as_array().unwrap() {
+        let Some(menu) = module.get("menu") else {
+            continue;
+        };
+        let kind = menu["kind"].as_str().unwrap();
+        let label = menu["label"].as_str().unwrap();
+        let screen = module["screen"].as_str().unwrap_or("");
+        let desk = module["cmDesk"].as_str().unwrap_or("");
+        let id = module["id"].as_str().unwrap();
+        assert!(
+            matches!(kind, "desk" | "nav" | "trigger" | "embedded"),
+            "{id} menu kind {kind}"
+        );
+        match kind {
+            "desk" => assert!(
+                app.contains(&format!("cmDeskButton(\"{desk}\", \"{label}\")"))
+                    && app.contains(&format!("cmDesk === \"{desk}\"")),
+                "{id} desk {label} is missing from App"
+            ),
+            "nav" => assert!(
+                app.contains(&format!("navButton(\"{screen}\", \"{label}\")"))
+                    && app.contains(&format!("screen === \"{screen}\"")),
+                "{id} nav {label} is missing from App"
+            ),
+            "trigger" => assert!(
+                app.contains(&format!("aria-label=\"{label}\""))
+                    && app.contains(&format!("screen === \"{screen}\"")),
+                "{id} trigger {label} is missing from App"
+            ),
+            "embedded" => {
+                assert!(
+                    app.contains(&format!("screen === \"{screen}\"")),
+                    "{id} has no render branch"
+                );
+                assert!(
+                    registry.contains("ScreenAtlasScreen"),
+                    "Screen Atlas stays inside Component Registry"
+                );
+                assert!(
+                    !app.contains("navButton(\"screen-atlas\""),
+                    "Screen Atlas is not its own menu child"
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            atlas.iter().any(|row| same_menu(kind, screen, desk, label, row)),
+            "{id} menu {label} is missing from the atlas"
+        );
+        menus.push((kind.to_string(), screen.to_string(), desk.to_string(), label.to_string()));
+    }
+    assert!(
+        menus.iter().any(|(_, _, desk, label)| desk == "manager" && label == "Debt planner"),
+        "Debt planner stays a Cash Management desk"
+    );
+    for row in &atlas {
+        assert!(!row.label.is_empty(), "atlas {} needs a label", row.id);
+        if row.id == "cash-management-default" {
+            continue;
+        }
+        assert!(
+            menus.iter().any(|(kind, screen, desk, label)| {
+                same_menu(kind, screen, desk, label, row)
+            }),
+            "atlas {} has no catalog menu",
+            row.id
+        );
+    }
+}

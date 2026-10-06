@@ -1809,7 +1809,7 @@ fn week_report_xlsx(report: &DisbursementWeekReportBody) -> Result<Vec<u8>, Stri
     wb.save_to_buffer().map_err(|e| e.to_string())
 }
 
-fn b64_encode(bytes: &[u8]) -> String {
+pub(crate) fn b64_encode(bytes: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     let mut i = 0;

@@ -13,6 +13,7 @@ fn tools_menu_opens_contract_positions() {
     let root = repo_root();
     let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
     let screen = std::fs::read_to_string(contracts_dir().join("ContractPositions.tsx")).unwrap();
+    let create = std::fs::read_to_string(contracts_dir().join("ContractCreateForm.tsx")).unwrap();
     assert!(
         app.contains("navButton(\"contract-positions\", \"Contract positions\")"),
         "Tools must list Contract positions next to Interest rate"
@@ -27,10 +28,13 @@ fn tools_menu_opens_contract_positions() {
         "owner must see the screen heading"
     );
     assert!(
-        screen.contains("aria-label=\"OCC symbol\"")
-            && screen.contains("aria-label=\"Create contract\"")
-            && screen.contains("ContractList"),
-        "create + ContractList must stay on screen"
+        screen.contains("ContractList") && screen.contains("<ContractCreateForm"),
+        "ContractList and the create form must stay on the screen"
+    );
+    assert!(
+        create.contains("aria-label=\"OCC symbol\"")
+            && create.contains("aria-label=\"Create contract\""),
+        "create controls must stay on the create form"
     );
 }
 

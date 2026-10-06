@@ -1,5 +1,5 @@
-//! Position Details lives in features/; Add Lot / Holdings folders are extract targets
-//! (markup may still mount from App until those binders cut over).
+//! Position Details, Add Lot, and Holdings mount from features/.
+//! An extracted catalog folder or a screen file with no importer fails.
 
 #[test]
 fn position_details_lives_in_feature_module() {
@@ -48,4 +48,128 @@ fn position_details_lives_in_feature_module() {
         pd_mod.contains("\"status\": \"extracted\""),
         "catalog marks position-details as extracted"
     );
+}
+
+fn slash(path: &std::path::Path) -> String {
+    let mut parts = Vec::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            other => parts.push(other.as_os_str().to_string_lossy().into_owned()),
+        }
+    }
+    parts.join("/")
+}
+
+fn relative_imports(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for quote in ['"', '\''] {
+        let needle = format!("from {quote}");
+        let mut rest = src;
+        while let Some(at) = rest.find(&needle) {
+            rest = &rest[at + needle.len()..];
+            let Some(end) = rest.find(quote) else { break };
+            let spec = &rest[..end];
+            if spec.starts_with('.') {
+                out.push(spec.to_string());
+            }
+            rest = &rest[end..];
+        }
+    }
+    out
+}
+
+fn resolve_import(from: &std::path::Path, spec: &str) -> Option<std::path::PathBuf> {
+    let raw = from.parent()?.join(spec);
+    [
+        raw.with_extension("tsx"),
+        raw.with_extension("ts"),
+        raw.join("index.tsx"),
+        raw.join("index.ts"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+fn reachable_from(start: &std::path::Path) -> std::collections::HashSet<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut queue = vec![start.to_path_buf()];
+    while let Some(file) = queue.pop() {
+        let key = slash(&file);
+        if !seen.insert(key) {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for spec in relative_imports(&src) {
+            if let Some(next) = resolve_import(&file, &spec) {
+                queue.push(next);
+            }
+        }
+    }
+    seen
+}
+
+fn screens_under(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            screens_under(&path, out);
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with("Screen.tsx"))
+        {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn extracted_modules_and_screen_files_are_imported() {
+    let root = golden_harness::repo_root();
+    let app_path = root.join("apps/desktop/src/App.tsx");
+    let app = std::fs::read_to_string(&app_path).unwrap();
+    assert!(
+        app.contains("<HoldingsScreen") && app.contains("<AddLotScreen"),
+        "Holdings and Add Lot open the extracted screens"
+    );
+    assert!(
+        !app.contains("<h2>Holdings</h2>") && !app.contains("<h2>Add Lot</h2>"),
+        "Holdings and Add Lot markup stays in the feature files"
+    );
+    let reached = reachable_from(&app_path);
+    let mut screens = Vec::new();
+    screens_under(&root.join("apps/desktop/src/features"), &mut screens);
+    for screen in &screens {
+        assert!(
+            reached.contains(&slash(screen)),
+            "screen file has no importer: {}",
+            slash(screen)
+        );
+    }
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("docs/architecture/ui-modules.json")).unwrap(),
+    )
+    .unwrap();
+    for module in catalog["modules"].as_array().unwrap() {
+        if module["status"] != "extracted" {
+            continue;
+        }
+        let folder = module["folder"].as_str().unwrap().trim_end_matches('/');
+        if !folder.starts_with("apps/desktop/src/features/") {
+            continue;
+        }
+        let prefix = folder.trim_end_matches(".tsx").trim_end_matches(".ts");
+        assert!(
+            reached.iter().any(|path| path.contains(prefix) || path.contains(folder)),
+            "extracted {} is not imported from App",
+            module["id"].as_str().unwrap_or(folder)
+        );
+    }
 }

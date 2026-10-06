@@ -5317,6 +5317,140 @@ html.screen-atlas-freeze .table-wrap td {
   margin-top: 0.5rem;
 }
 
+.contract-near {
+  background: #fff3b0;
+}
+
+.contract-create .contract-money {
+  width: 9ch;
+  min-width: 9ch;
+  max-width: 9ch;
+  box-sizing: content-box;
+  padding-left: 0.15rem;
+  padding-right: 0.15rem;
+}
+
+.contract-create .contract-date {
+  width: 11ch;
+  min-width: 11ch;
+  max-width: 11ch;
+}
+
+.contract-create input[aria-label="OCC symbol"] {
+  width: 18ch;
+}
+
+.component-registry {
+  font-size: 60%;
+  line-height: 1.25;
+}
+
+.component-registry h2 {
+  font-size: 1.7em;
+  margin: 0 0 0.25em;
+}
+
+.component-registry .registry-note,
+.component-registry p {
+  margin: 0.15em 0;
+}
+
+.component-registry .registry-page {
+  margin: 0.45em 0 0.1em;
+  padding-top: 0.2em;
+  border-top: 1px solid rgba(26, 43, 60, 0.2);
+}
+
+.component-registry .registry-page-head,
+.component-registry .registry-component-head,
+.component-registry .registry-nested li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45em 0.7em;
+}
+
+.component-registry .registry-page-head h3 {
+  margin: 0;
+  font-size: 1.2em;
+  min-width: 10em;
+}
+
+.component-registry .registry-component {
+  margin: 0.12em 0 0.12em 1.5em;
+}
+
+.component-registry .registry-component-head strong {
+  min-width: 11em;
+}
+
+.component-registry .registry-details {
+  flex: 1 1 16em;
+}
+
+.component-registry .registry-nested {
+  list-style: none;
+  margin: 0.05em 0 0.15em 1.5em;
+  padding: 0;
+}
+
+.component-registry button {
+  font-size: 1em;
+  padding: 0.05em 0.4em;
+  line-height: 1.3;
+}
+
+.component-registry .registry-meta-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.component-registry .registry-fields {
+  display: grid;
+  grid-template-columns: 8em 1fr;
+  gap: 0 0.6em;
+  margin: 0.1em 0 0.35em 1.2em;
+}
+
+.component-registry .registry-fields div {
+  display: contents;
+}
+
+.component-registry .registry-fields dt,
+.component-registry .registry-fields dd {
+  margin: 0;
+}
+
+.component-registry .registry-meta-form {
+  display: grid;
+  gap: 0.2em;
+  margin: 0.2em 0 0.4em 1.2em;
+  max-width: 36em;
+}
+
+.component-registry .registry-meta-form label {
+  display: grid;
+  gap: 0.05em;
+}
+
+.component-registry .registry-meta-form textarea,
+.component-registry .registry-meta-form input,
+.component-registry .registry-meta-form select {
+  font: inherit;
+}
+
+.component-registry .screen-atlas-actions {
+  margin: 0.15em 0;
+}
+
+.component-registry .registry-capture-extra {
+  margin: 0.15em 0 0.3em;
+}
+
 .magi-cliff-ticket {
   margin: 0.15rem 0 0.35rem;
 }

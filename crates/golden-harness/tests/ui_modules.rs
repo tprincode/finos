@@ -82,6 +82,7 @@ fn desktop_sources() -> String {
         "apps/desktop/src/features/interest-rate/InterestRateCalculator.tsx",
         "apps/desktop/src/features/field-intent/FieldIntentScreen.tsx",
         "apps/desktop/src/features/contracts/ContractPositions.tsx",
+        "apps/desktop/src/features/roadmap/RoadmapScreen.tsx",
         "apps/desktop/src/features/task-manager/TaskManager.tsx",
         "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
         "apps/desktop/src/features/add-lot/AddLotScreen.tsx",
@@ -89,6 +90,7 @@ fn desktop_sources() -> String {
         "apps/desktop/src/features/income-plan/IncomePlanScreen.tsx",
         "apps/desktop/src/features/market-impact/MarketImpactPlanner.tsx",
         "apps/desktop/src/features/screen-atlas/ScreenAtlasScreen.tsx",
+        "apps/desktop/src/features/components/ComponentRegistry.tsx",
         "packages/ui-components/src/index.tsx",
     ] {
         buf.push_str(&std::fs::read_to_string(root.join(rel)).unwrap_or_default());
@@ -925,6 +927,45 @@ fn live_screens_atlas_catalog_and_snapshot_are_one_set() {
         "Components groups by screen and keeps modules that have no screen id"
     );
     assert!(
+        registry.contains("Add description")
+            && registry.contains("Edit description")
+            && registry.contains("Capture Page")
+            && registry.contains("Export to Excel")
+            && registry.contains("not proven")
+            && registry.contains("Money rule"),
+        "registry shows Add description, page Excel, capture, and the forensic record"
+    );
+    assert!(
+        !registry.contains("description missing")
+            && !registry.contains("Export to Excel ${line.name}"),
+        "component lines do not print a missing description or their own Excel button"
+    );
+    for module in &catalog.modules {
+        assert!(
+            application_core::component_export::export_covers(&module.id, ""),
+            "add an export arm for module {}",
+            module.id
+        );
+        for part in &module.parts {
+            assert!(
+                application_core::component_export::export_covers(&module.id, &part.id),
+                "add an export arm for part {} on {}",
+                part.id,
+                module.id
+            );
+        }
+        for cite in &module.sqlite_tables {
+            let source = std::fs::read_to_string(root.join(&cite.path))
+                .unwrap_or_else(|_| panic!("citation path {}", cite.path));
+            assert!(
+                source.contains(&cite.needle),
+                "table {} is not proven in {}",
+                cite.name,
+                cite.path
+            );
+        }
+    }
+    assert!(
         atlas_ui.contains("groupByScreen") && atlas_ui.contains("Also registered"),
         "Screen Atlas uses the same groups, including Also registered"
     );
@@ -968,6 +1009,134 @@ fn quoted_field(src: &str, key: &str) -> Vec<String> {
         }
     }
     out
+}
+
+#[test]
+fn home_component_lines_are_the_mounted_screen() {
+    let catalog = core_functions_catalog().expect("catalog");
+    let titles_on = |screen: &str| -> Vec<String> {
+        catalog
+            .modules
+            .iter()
+            .filter(|module| module.screen == screen)
+            .flat_map(|module| module.parts.iter().map(|part| part.title.clone()))
+            .collect()
+    };
+    let home = titles_on("home");
+    for title in [
+        "Portfolio summary",
+        "Refresh declarations",
+        "Work Tickets",
+        "Refresh last prices",
+        "Income through",
+        "Income through transactions",
+        "Dividend Plan",
+        "Account cash flow projection",
+        "Account values",
+        "Graphing period",
+        "Fidelity",
+        "Schwab Total",
+        "Income",
+        "FI Roth",
+        "Car",
+        "Health",
+        "Speculation",
+        "Account 9",
+    ] {
+        assert!(
+            home.iter().any(|line| line == title),
+            "Home is missing the mounted component `{title}`"
+        );
+    }
+    assert!(
+        !home.iter().any(|line| line == "Live by risk"),
+        "Live by risk is mounted on Trends"
+    );
+    let trends = titles_on("trends");
+    for title in [
+        "Live by risk",
+        "Live by risk level",
+        "Live by risk allocation",
+        "Declared vs Plan",
+        "Planned weekly income",
+        "Reported weekly income",
+        "Dividends paid by month",
+        "All Cash",
+        "Monthly Dividends",
+        "Total Fidelity & Schwab",
+    ] {
+        assert!(
+            trends.iter().any(|line| line == title),
+            "Trends is missing `{title}`"
+        );
+    }
+    let page_titles = [
+        "Home",
+        "Income Plan",
+        "Calculator",
+        "Market impact planner",
+        "Dashboard",
+        "Trends",
+        "Cash Management",
+        "Shopping Cart",
+        "Holdings",
+        "Import",
+        "Settings",
+        "Add Investment",
+        "Add Lot",
+        "Position Details",
+        "Collectors",
+        "Tickets",
+        "Reevaluate collector",
+        "Task Manager",
+        "Interest rate calculator",
+        "Contract positions",
+        "Field intent",
+        "Roadmap",
+        "Component Registry",
+        "Element Management",
+        "Cashflow Manager",
+        "Week ahead planner",
+        "Tax Planning",
+        "Income vs Expense planner",
+        "External accounts",
+        "Debt planner",
+    ];
+    let part_titles: Vec<String> = catalog
+        .modules
+        .iter()
+        .flat_map(|module| module.parts.iter().map(|part| part.title.clone()))
+        .collect();
+    let root = repo_root();
+    let mut headings = Vec::new();
+    for rel in [
+        "apps/desktop/src/App.tsx",
+        "apps/desktop/src/features/graphing/HomeAccountCharts.tsx",
+        "apps/desktop/src/features/home/HomeDividendPlan.tsx",
+        "apps/desktop/src/features/cash/AccountCashFlow.tsx",
+        "apps/desktop/src/features/income-plan/IncomePlanScreen.tsx",
+        "apps/desktop/src/ImportWizard.tsx",
+        "apps/desktop/src/features/components/ComponentRegistry.tsx",
+    ] {
+        let src = std::fs::read_to_string(root.join(rel)).expect(rel);
+        for line in src.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("<h2>") {
+                if let Some(text) = rest.strip_suffix("</h2>") {
+                    headings.push(text.to_string());
+                }
+            }
+        }
+    }
+    for heading in headings {
+        if page_titles.contains(&heading.as_str()) {
+            continue;
+        }
+        assert!(
+            part_titles.iter().any(|title| title == &heading),
+            "heading `{heading}` has no component line"
+        );
+    }
 }
 
 fn quoted_words(src: &str) -> Vec<String> {

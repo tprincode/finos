@@ -85,7 +85,8 @@ fn accessibility_primary_actions_have_accessible_names() {
     assert!(
         position_details.contains("aria-label=\"Plan Management\"")
             && position_details.contains("meanNewestPays(")
-            && position_details.contains("lastPaidDeclarations("),
+            && position_details.contains("recentPays")
+            && !position_details.contains("lastPaidDeclarations("),
         "Plan Management shows Avg 6 from the calculator helper, not a second average"
     );
     let add_lot = std::fs::read_to_string(
@@ -278,7 +279,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Income transaction end\"",
         "aria-label=\"Income transaction account\"",
         "aria-label=\"Core functions\"",
-        "aria-label=\"Component registry\"",
+        "aria-label=\"Component Registry\"",
         "declaration-refresh-progress",
         "last-price-refresh-progress",
         "${formatCount(declarationProgress.current)} of ${formatCount(declarationProgress.total)}",

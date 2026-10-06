@@ -2269,7 +2269,7 @@ fn empty_performance_summary(scale: u8) -> DividendPerformanceSummaryBody {
     }
 }
 
-async fn dividend_performance_view(
+pub(crate) async fn dividend_performance_view(
     canonical: &dyn Canonical,
     as_of_date: String,
     range: String,
@@ -2642,12 +2642,13 @@ pub(crate) async fn account_trends_weeks(
     Ok(weeks)
 }
 
-async fn holdings_view(canonical: &dyn Canonical) -> Result<HoldingsGetBody, PlatformError> {
+pub(crate) async fn holdings_view(canonical: &dyn Canonical) -> Result<HoldingsGetBody, PlatformError> {
     use std::collections::{HashMap, HashSet};
 
     let basis = canonical.basis_get().await?;
     let accounts = canonical.account_list().await?;
     let securities = canonical.security_list().await?;
+    let reservations = canonical.option_cover_reservations().await?;
     let lots = basis
         .lots
         .into_iter()
@@ -2663,6 +2664,11 @@ async fn holdings_view(canonical: &dyn Canonical) -> Result<HoldingsGetBody, Pla
                 .find(|s| s.security_id == lot.security_id)
                 .map(|s| s.symbol.clone())
                 .unwrap_or_else(|| "â€”".into());
+            let reserved_shares = reservations
+                .iter()
+                .find(|row| row.lot_id == lot.lot_id)
+                .map(|row| row.shares)
+                .unwrap_or(0);
             HoldingsLotBody {
                 lot_id: lot.lot_id,
                 account_name,
@@ -2670,6 +2676,8 @@ async fn holdings_view(canonical: &dyn Canonical) -> Result<HoldingsGetBody, Pla
                 opened_on: lot.opened_on,
                 remaining_quantity_minor: lot.remaining_quantity_minor,
                 quantity_scale: lot.quantity_scale,
+                promised_quantity_minor: reserved_shares
+                    .saturating_mul(10i64.pow(u32::from(lot.quantity_scale))),
                 remaining_performance_minor: lot.remaining_performance_minor,
                 remaining_tax_minor: lot.remaining_tax_minor,
                 scale: lot.scale,
@@ -5803,7 +5811,7 @@ pub(crate) async fn data_summary_view_with_avgs(
     })
 }
 
-async fn calculator_view(canonical: &dyn Canonical) -> Result<CalculatorGetBody, PlatformError> {
+pub(crate) async fn calculator_view(canonical: &dyn Canonical) -> Result<CalculatorGetBody, PlatformError> {
     let securities = canonical.security_list().await?;
     let plans = canonical.plan_history_list().await?;
     let characteristics = canonical.position_characteristic_list().await?;
@@ -5918,7 +5926,7 @@ async fn calculator_view(canonical: &dyn Canonical) -> Result<CalculatorGetBody,
     })
 }
 
-async fn market_impact_view(
+pub(crate) async fn market_impact_view(
     canonical: &dyn Canonical,
 ) -> Result<MarketImpactGetBody, PlatformError> {
     let securities = canonical.security_list().await?;
@@ -6154,8 +6162,7 @@ async fn declaration_history_view(
         }
         let decls = canonical
             .issuer_declaration_list(security.security_id)
-            .await
-            .unwrap_or_default();
+            .await?;
         let in_force_pays = in_force_pays_newest_first(&decls);
         let recent_pays = recent_pays_newest_first(&decls);
         let mut by_week: std::collections::HashMap<String, (String, i64, u8)> =
@@ -7438,7 +7445,7 @@ fn fwd_yield_bps(
     Some(annual_cents.saturating_mul(10_000) / price_cents)
 }
 
-async fn position_master_view(
+pub(crate) async fn position_master_view(
     canonical: &dyn Canonical,
 ) -> Result<PositionMasterGetBody, PlatformError> {
     let securities = canonical.security_list().await?;
@@ -9131,6 +9138,11 @@ async fn roi_view(canonical: &dyn Canonical, request: &QueryRequest) -> QueryRes
     match (canonical.roi_get().await, canonical.dividend_get().await) {
         (Ok(mut roi), Ok(div)) => {
             roi.dividend_actual_minor = div.actual_total_minor;
+            roi.option_premium_minor = canonical
+                .option_premium_list()
+                .await
+                .map(|items| items.iter().map(|row| row.amount_minor).sum())
+                .unwrap_or(0);
             map_q(request, Ok::<RoiBody, PlatformError>(roi))
         }
         (Err(err), _) | (_, Err(err)) => query_err(request, &err.code),
@@ -10256,6 +10268,49 @@ pub async fn execute_query_on(
                 message: e,
             }),
         ),
+        "ComponentExportGet" => {
+            let module_id = jstr(&json, "moduleId").unwrap_or_default();
+            let part_id = jstr(&json, "partId").unwrap_or_default();
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            map_q(
+                &request,
+                crate::component_export::export_component(
+                    canonical,
+                    &module_id,
+                    &part_id,
+                    &as_of,
+                )
+                .await,
+            )
+        }
+        "ComponentPageExportGet" => {
+            let page_label = jstr(&json, "pageLabel").unwrap_or_default();
+            let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
+            let lines = json
+                .get("lines")
+                .and_then(|v| v.as_array())
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|line| {
+                            let module_id = line.get("moduleId")?.as_str()?.to_string();
+                            if module_id.is_empty() {
+                                return None;
+                            }
+                            let part_id = line
+                                .get("partId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            Some((module_id, part_id))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            map_q(
+                &request,
+                crate::component_export::export_page(canonical, &page_label, &lines, &as_of).await,
+            )
+        }
         "ConfigGet" => map_q(&request, platform.config_get().await),
         "SnapshotHeadGet" => map_q(&request, platform.snapshot_head_get().await),
         "HandoffStatusGet" => map_q(&request, platform.handoff_status_get().await),
@@ -10333,6 +10388,16 @@ pub async fn execute_query_on(
                 crate::option_contract::contract_list(canonical, status).await,
             )
         }
+        "ContractCoverPreview" => map_q(
+            &request,
+            crate::option_contract::contract_cover_preview(canonical, &json).await,
+        ),
+        "ContractPostList" => map_q(
+            &request,
+            canonical.option_premium_list().await.map(|items| {
+                crate::contracts::OptionPremiumPostListBody { items }
+            }),
+        ),
         "DisbursementWeekReportExportGet" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_iso);
             let scope = jstr(&json, "scope").unwrap_or_else(|| "posted".into());

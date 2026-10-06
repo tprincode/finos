@@ -22,6 +22,7 @@ export type AtlasScreen =
   | "interest-rate"
   | "contract-positions"
   | "field-intent"
+  | "roadmap"
   | "components"
   | "screen-atlas";
 
@@ -238,10 +239,16 @@ export const ATLAS_TARGETS: readonly AtlasTarget[] = [
     label: "Field intent",
   },
   {
+    id: "roadmap",
+    screen: "roadmap",
+    menuPath: "Tools → Roadmap",
+    label: "Roadmap",
+  },
+  {
     id: "components",
     screen: "components",
-    menuPath: "Tools → Components",
-    label: "Components",
+    menuPath: "Tools → Component Registry",
+    label: "Component Registry",
   },
   {
     id: "settings",
@@ -252,7 +259,7 @@ export const ATLAS_TARGETS: readonly AtlasTarget[] = [
   {
     id: "screen-atlas",
     screen: "screen-atlas",
-    menuPath: "Tools → Screen Atlas",
+    menuPath: "Tools → Component Registry",
     label: "Screen Atlas",
   },
 ];
@@ -279,6 +286,7 @@ export const ATLAS_SCREEN_IDS: readonly AtlasScreen[] = [
   "interest-rate",
   "contract-positions",
   "field-intent",
+  "roadmap",
   "components",
   "screen-atlas",
 ];

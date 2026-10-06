@@ -21,6 +21,13 @@ export type ScreenAtlasScreenProps = {
   /** When true, start capture once after mount (token / owner auto-run). */
   autoStart?: boolean;
   modules?: CatalogModule[];
+  onBind?: (api: {
+    runAll: () => void;
+    runPage: (targets: AtlasTarget[]) => void;
+    running: boolean;
+  }) => void;
+  /** Capture lives on the registry. It is not its own component. */
+  embedded?: boolean;
 };
 
 type Progress = {
@@ -32,6 +39,28 @@ type Progress = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => window.setTimeout(r, ms));
+}
+
+function mergeIndex(prior: string, fresh: string, ids: string[]): string {
+  if (!prior.trim()) return fresh;
+  const freshLines = fresh.split("\n");
+  let lines = prior.split("\n");
+  for (const id of ids) {
+    const atFresh = freshLines.findIndex((line) => line.startsWith(`| ${id} |`));
+    if (atFresh < 0) continue;
+    const idLine = freshLines[atFresh];
+    const moduleLine = freshLines[atFresh + 1] ?? "";
+    const at = lines.findIndex((line) => line.startsWith(`| ${id} |`));
+    if (at >= 0) {
+      lines[at] = idLine;
+      if (moduleLine.startsWith("| |") && (lines[at + 1] ?? "").startsWith("| |")) {
+        lines[at + 1] = moduleLine;
+      }
+    } else {
+      lines = [...lines, idLine, moduleLine];
+    }
+  }
+  return lines.join("\n");
 }
 
 function bytesToPngDataUrl(bytes: number[] | Uint8Array): string {
@@ -72,7 +101,7 @@ function buildIndexMd(args: {
     "",
     "Documentation / human eyeball captures. **Not** a CI pixel golden gate.",
     "Automated UI regression stays on `cargo test -p golden-harness` (source/query goldens).",
-    "The same screen set as Tools → Components and Template_UiModules.xlsx.",
+    "The same screen set as Component Registry and Template_UiModules.xlsx.",
     "",
     `- Captured at: ${args.stamp}`,
     `- Pinned asOf: ${args.asOf}`,
@@ -125,6 +154,8 @@ export function ScreenAtlasScreen({
   onDone,
   autoStart = false,
   modules = [],
+  onBind,
+  embedded = false,
 }: ScreenAtlasScreenProps) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -220,7 +251,7 @@ export function ScreenAtlasScreen({
     };
   }, [refreshList]);
 
-  const runAtlas = useCallback(async () => {
+  const runAtlas = useCallback(async (targets: AtlasTarget[], mode: "all" | "page") => {
     if (running) return;
     setRunning(true);
     setLog([]);
@@ -236,9 +267,9 @@ export function ScreenAtlasScreen({
     let outDir = "";
 
     try {
-      const total = ATLAS_TARGETS.length;
-      for (let i = 0; i < ATLAS_TARGETS.length; i += 1) {
-        const target = ATLAS_TARGETS[i];
+      const total = targets.length;
+      for (let i = 0; i < targets.length; i += 1) {
+        const target = targets[i];
         setProgress({
           current: i + 1,
           total,
@@ -259,6 +290,9 @@ export function ScreenAtlasScreen({
         try {
           append(`Capture full page ${target.id}…`);
           const bytes = await captureMainPngBytes();
+          if (bytes.length === 0) {
+            throw new Error("empty capture");
+          }
           const saved = await invoke<string>("screen_atlas_save", {
             day,
             fileName: file,
@@ -277,16 +311,24 @@ export function ScreenAtlasScreen({
         }
       }
 
-      onNavigate("screen-atlas");
+      onNavigate("components");
       await sleep(200);
 
-      const indexBody = buildIndexMd({
+      const freshIndex = buildIndexMd({
         stamp,
         asOf: asOfDate,
         outDir: outDir || `(evidence/screen-atlas/${day})`,
         rows,
         modules,
       });
+      let indexBody = freshIndex;
+      if (mode === "page") {
+        const prior = await invoke<string>("screen_atlas_read_text", {
+          day,
+          fileName: "index.md",
+        }).catch(() => "");
+        indexBody = mergeIndex(prior, freshIndex, rows.map((row) => row.target.id));
+      }
       const indexPath = await invoke<string>("screen_atlas_save_text", {
         day,
         fileName: "index.md",
@@ -303,7 +345,7 @@ export function ScreenAtlasScreen({
       const msg = `Screen Atlas aborted: ${String(err)}`;
       append(msg);
       onDone?.(msg);
-      onNavigate("screen-atlas");
+      onNavigate("components");
     } finally {
       endAtlasFreeze();
       setRunning(false);
@@ -311,42 +353,41 @@ export function ScreenAtlasScreen({
     }
   }, [asOfDate, append, modules, onDone, onNavigate, refreshList, running]);
 
+  const runAll = useCallback(() => {
+    void runAtlas(ATLAS_TARGETS, "all");
+  }, [runAtlas]);
+
+  const runPage = useCallback(
+    (targets: AtlasTarget[]) => {
+      void runAtlas(targets, "page");
+    },
+    [runAtlas],
+  );
+
+  useEffect(() => {
+    onBind?.({ runAll, runPage, running });
+  }, [onBind, runAll, runPage, running]);
+
   useEffect(() => {
     if (!autoStart || startedAuto.current || running) return;
     startedAuto.current = true;
-    void runAtlas();
+    void runAtlas(ATLAS_TARGETS, "all");
   }, [autoStart, runAtlas, running]);
 
   return (
-    <section className="actions screen-atlas-page" aria-label="Screen Atlas">
-      <h2>Screen Atlas</h2>
-      <p>
-        Walk every menu surface, expand scroll panes, and save full-height PNGs
-        plus an index. This is <strong>documentation / human review</strong> —
-        not a CI pixel golden. Regression stays on{" "}
-        <code>cargo test -p golden-harness</code>.
-      </p>
-      <p>
-        During a run: asOf is pinned, LastPrice and declaration fleet refreshes
-        are skipped, chart animation is off, overflow is expanded, light color
-        scheme is forced for contrast. Each page waits until the{" "}
-        <strong>Page activity</strong> chip is idle and all Loading… copy stays
-        clear, then captures the <strong>full scroll height</strong> (not just
-        the visible window). Output lands under{" "}
-        <code>%LOCALAPPDATA%\com.finos.desktop\evidence\screen-atlas\YYYY-MM-DD\</code>.
-      </p>
-      <p>
-        Targets: <strong>{ATLAS_TARGETS.length}</strong>. Same screen set as
-        Tools → Components and the data-snapshot workbook Template_UiModules.
-      </p>
+    <section
+      className="actions screen-atlas-page"
+      aria-label={embedded ? "Registry capture" : "Screen Atlas"}
+    >
+      {embedded ? null : <h3>Capture</h3>}
       <div className="row screen-atlas-actions">
         <button
           type="button"
           disabled={running}
-          aria-label="Run screen atlas"
-          onClick={() => void runAtlas()}
+          aria-label="Capture All"
+          onClick={runAll}
         >
-          {running ? "Capturing…" : "Run screen atlas"}
+          {running ? "Capturing…" : "Capture All"}
         </button>
         <button
           type="button"
@@ -405,17 +446,25 @@ export function ScreenAtlasScreen({
         </pre>
       ) : null}
 
-      <h3>Viewer{viewDay ? ` — ${viewDay}` : ""}</h3>
-      <p>
-        Click a name to preview one image (loads on demand). Or use{" "}
-        <strong>Open folder in Explorer</strong> for the OS photo viewer.
-      </p>
+      <details className="registry-capture-extra" open={!embedded}>
+        <summary>Captures</summary>
+        <p>
+          Walk every menu surface, expand scroll panes, and save full-height PNGs
+          plus an index. This is <strong>documentation / human review</strong> —
+          not a CI pixel golden. Regression stays on{" "}
+          <code>cargo test -p golden-harness</code>.
+        </p>
+        <h3>Viewer{viewDay ? ` — ${viewDay}` : ""}</h3>
+        <p>
+          Click a name to preview one image (loads on demand). Or use{" "}
+          <strong>Open folder in Explorer</strong> for the OS photo viewer.
+        </p>
       {listBusy ? (
         <p role="status" aria-busy="true">
           Listing PNGs…
         </p>
       ) : pngNames.length === 0 ? (
-        <p>No captures yet. Run screen atlas, then open the folder or reload.</p>
+        <p>No captures yet. Capture All, then open the folder or reload.</p>
       ) : (
         <PngGroups
           names={pngNames}
@@ -459,10 +508,11 @@ export function ScreenAtlasScreen({
             </tr>
           </thead>
           <tbody>
-            <AtlasTargetRows modules={modules} />
+            <AtlasTargetRows modules={modules.filter((row) => row.id !== "screen-atlas")} />
           </tbody>
         </table>
       </div>
+      </details>
     </section>
   );
 }

@@ -691,6 +691,51 @@ pub async fn price_retrieval_set(pool: &SqlitePool) -> Result<PriceRetrievalSetB
             collector_enabled: collector_enabled != 0,
         });
     }
+    let extra = sqlx::query(
+        "SELECT DISTINCT s.security_id, s.symbol,
+                COALESCE(rt.price_source, '') AS price_source,
+                COALESCE(rt.source_symbol, '') AS source_symbol,
+                COALESCE(rt.declaration_source, '') AS declaration_source,
+                COALESCE(rt.source_url, '') AS source_url,
+                COALESCE(rt.calendar_policy, '') AS calendar_policy,
+                COALESCE(rt.last_content_hash, '') AS last_content_hash,
+                COALESCE(pc.div_type, '') AS div_type,
+                COALESCE(rt.collector_enabled, 0) AS collector_enabled
+         FROM option_contract oc
+         JOIN security s ON s.symbol = oc.underlying
+         LEFT JOIN retrieval_template rt ON rt.security_id = s.security_id
+         LEFT JOIN position_characteristic pc ON pc.security_id = s.security_id
+         WHERE oc.status = 'open'
+         ORDER BY s.symbol",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    for row in extra {
+        let security_id = parse_uuid(&row, "security_id")?;
+        if security_ids.contains(&security_id) {
+            continue;
+        }
+        let symbol: String = row.try_get("symbol").map_err(|e| map_err(e.into()))?;
+        let div_type: String = row.try_get("div_type").unwrap_or_else(|_| String::new());
+        if uses_cash_par(&div_type, &symbol) {
+            continue;
+        }
+        let collector_enabled: i64 = row.try_get("collector_enabled").unwrap_or(0);
+        security_ids.push(security_id);
+        items.push(PriceRetrievalItem {
+            security_id,
+            symbol,
+            price_source: row.try_get("price_source").unwrap_or_default(),
+            source_symbol: row.try_get("source_symbol").unwrap_or_default(),
+            declaration_source: row.try_get("declaration_source").unwrap_or_default(),
+            source_url: row.try_get("source_url").unwrap_or_default(),
+            calendar_policy: row.try_get("calendar_policy").unwrap_or_default(),
+            last_content_hash: row.try_get("last_content_hash").unwrap_or_default(),
+            div_type,
+            collector_enabled: collector_enabled != 0,
+        });
+    }
     Ok(PriceRetrievalSetBody {
         security_ids,
         items,

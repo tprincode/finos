@@ -1,5 +1,4 @@
-import type { AccountRecord } from "@finos/app-contracts";
-import { AccountSelect } from "../shared/pickers/AccountSelect";
+import { AccountSelect, type AccountOption } from "../shared/pickers/AccountSelect";
 import { ResearchedSymbolCombobox } from "../shared/pickers/ResearchedSymbolCombobox";
 
 const LOT_ORIGINS = ["purchase", "drip", "transfer"] as const;
@@ -18,7 +17,7 @@ export type AddLotScreenProps = {
   addLotOrigin: string;
   addLotQuery: string;
   addLotSymbolOpen: boolean;
-  accounts: AccountRecord[];
+  accounts: AccountOption[];
   securitiesLength: number;
   filteredAddLotSecurities: Array<{
     securityId: string;

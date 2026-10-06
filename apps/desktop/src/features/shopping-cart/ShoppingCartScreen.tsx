@@ -87,6 +87,13 @@ function parseScenario(json?: string): CartScenario | null {
   }
 }
 
+function sellableMinor(lot: {
+  remainingQuantityMinor: number;
+  promisedQuantityMinor?: number;
+}): number {
+  return Math.max(0, lot.remainingQuantityMinor - (lot.promisedQuantityMinor ?? 0));
+}
+
 function masterRow(master: PositionMasterGet | null, symbol: string) {
   return master?.rows.find((row) => row.symbol.toUpperCase() === symbol.toUpperCase());
 }
@@ -562,7 +569,7 @@ export function ShoppingCartScreen({
   const heldSymbols = [
     ...new Set(
       accountLots
-        .filter((lot) => !isCashSymbol(lot.symbol) && lot.remainingQuantityMinor > 0)
+        .filter((lot) => !isCashSymbol(lot.symbol) && sellableMinor(lot) > 0)
         .map((lot) => lot.symbol),
     ),
   ].sort();
@@ -906,10 +913,10 @@ export function ShoppingCartScreen({
     }
     const seeded: Record<string, string> = {};
     for (const lot of accountLots) {
-      if (lot.symbol.toUpperCase() !== sellSymbol.toUpperCase() || lot.remainingQuantityMinor <= 0) {
+      if (lot.symbol.toUpperCase() !== sellSymbol.toUpperCase() || sellableMinor(lot) <= 0) {
         continue;
       }
-      seeded[lot.lotId] = String(lot.remainingQuantityMinor / 10 ** lot.quantityScale);
+      seeded[lot.lotId] = String(sellableMinor(lot) / 10 ** lot.quantityScale);
     }
     setLotSellQty(seeded);
     const symbol = sellSymbol;
@@ -1062,10 +1069,10 @@ export function ShoppingCartScreen({
       return;
     }
     const matching = accountLots.filter(
-      (lot) => lot.symbol.toUpperCase() === sellSymbol.toUpperCase() && lot.remainingQuantityMinor > 0,
+      (lot) => lot.symbol.toUpperCase() === sellSymbol.toUpperCase() && sellableMinor(lot) > 0,
     );
     if (matching.length === 0) {
-      const message = `${sellSymbol} has no open lot.`;
+      const message = `${sellSymbol} has no shares free of a contract.`;
       setSellNote(message);
       onMessage(message);
       return;
@@ -1075,8 +1082,8 @@ export function ShoppingCartScreen({
       const qty = Number(lotSellQty[lot.lotId] ?? "");
       if (!Number.isFinite(qty) || qty <= 0) continue;
       const qtyMinor = Math.round(qty * 10 ** lot.quantityScale);
-      if (qtyMinor > lot.remainingQuantityMinor) {
-        const message = `${sellSymbol} qty is above the ${lot.openedOn} lot.`;
+      if (qtyMinor > sellableMinor(lot)) {
+        const message = `${sellSymbol} qty is above the shares free of a contract on ${lot.openedOn}.`;
         setSellNote(message);
         onMessage(message);
         return;
@@ -1885,7 +1892,7 @@ export function ShoppingCartScreen({
     if (!sellSymbol) return [];
     const matching = accountLots.filter(
       (lot) =>
-        lot.symbol.toUpperCase() === sellSymbol.toUpperCase() && lot.remainingQuantityMinor > 0,
+        lot.symbol.toUpperCase() === sellSymbol.toUpperCase() && sellableMinor(lot) > 0,
     );
     const order = rankLowestCost(matching);
     return order
@@ -2019,7 +2026,7 @@ export function ShoppingCartScreen({
             editor={
               <>
                 {sellLots.map((lot) => {
-                  const held = lot.remainingQuantityMinor / 10 ** lot.quantityScale;
+                  const held = sellableMinor(lot) / 10 ** lot.quantityScale;
                   const typed = Number(lotSellQty[lot.lotId] ?? "");
                   const sellShares = Number.isFinite(typed) && typed > 0 ? typed : 0;
                   const takeMinor =

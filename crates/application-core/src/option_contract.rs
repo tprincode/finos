@@ -141,6 +141,72 @@ fn now_stamp() -> String {
     Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
+pub async fn contract_cover_preview(
+    canonical: &dyn Canonical,
+    json: &Value,
+) -> Result<crate::contracts::OptionCoverPreviewBody, PlatformError> {
+    let account_raw = json.get("accountId").and_then(|v| v.as_str()).unwrap_or("");
+    let account_id = Uuid::parse_str(account_raw.trim())
+        .map_err(|_| PlatformError::new("account_required", "accountId is required"))?;
+    let symbol = json
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let quantity = json.get("quantity").and_then(|v| v.as_i64()).unwrap_or(1);
+    let securities = canonical.security_list().await?;
+    let Some(security) = securities
+        .into_iter()
+        .find(|row| row.symbol.eq_ignore_ascii_case(&symbol))
+    else {
+        return Ok(crate::contracts::OptionCoverPreviewBody {
+            pieces: Vec::new(),
+            average_minor: None,
+            scale: 2,
+            refused: "uncovered_refused".into(),
+        });
+    };
+    let candidates = canonical
+        .option_cover_candidates(account_id, security.security_id)
+        .await?;
+    let pieces: Vec<_> = candidates
+        .into_iter()
+        .map(|row| crate::option_cover::SharePiece {
+            lot_id: row.lot_id.to_string(),
+            opened_on: row.opened_on,
+            shares: row.shares,
+            cost_minor: row.cost_minor,
+        })
+        .collect();
+    match crate::option_cover::take_cover(pieces, 100 * quantity.max(1)) {
+        Ok((taken, _)) => {
+            let shares: i64 = taken.iter().map(|row| row.shares).sum();
+            let cost: i64 = taken.iter().map(|row| row.cost_minor).sum();
+            let average = if shares > 0 { Some(cost / shares) } else { None };
+            Ok(crate::contracts::OptionCoverPreviewBody {
+                pieces: taken
+                    .into_iter()
+                    .map(|row| crate::contracts::OptionCoverPreviewPiece {
+                        lot_id: row.lot_id,
+                        shares: row.shares,
+                        cost_minor: row.cost_minor,
+                    })
+                    .collect(),
+                average_minor: average,
+                scale: 2,
+                refused: String::new(),
+            })
+        }
+        Err(code) => Ok(crate::contracts::OptionCoverPreviewBody {
+            pieces: Vec::new(),
+            average_minor: None,
+            scale: 2,
+            refused: code.into(),
+        }),
+    }
+}
+
 pub async fn contract_list(
     canonical: &dyn Canonical,
     status: Option<String>,
@@ -178,10 +244,7 @@ pub async fn contract_create(
     if quantity <= 0 {
         return Err(PlatformError::new("bad_qty", "quantity must be positive"));
     }
-    let open_premium_minor = json
-        .get("openPremiumMinor")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| PlatformError::new("missing_premium", "openPremiumMinor is required"))?;
+    let open_premium_minor = json.get("openPremiumMinor").and_then(|v| v.as_i64());
     let open_on = json
         .get("openOn")
         .and_then(|v| v.as_str())
@@ -191,43 +254,130 @@ pub async fn contract_create(
     if open_on.is_empty() {
         return Err(PlatformError::new("missing_open_on", "openOn is required"));
     }
-    let account_id = json
+    let account_raw = json
         .get("accountId")
         .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let account_id = Uuid::parse_str(&account_raw)
+        .map_err(|_| PlatformError::new("account_required", "accountId is required"))?;
+    let account = canonical.account_get(account_id).await?;
+    if !crate::option_cover::account_allowed(&account.name) {
+        return Err(PlatformError::new(
+            "account_refused",
+            "contracts are limited to Income, Speculation, and Account 9",
+        ));
+    }
+    let cover = json
+        .get("cover")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if let Some(code) = crate::option_cover::refuse_contract(&side, &parsed.put_call, cover) {
+        return Err(PlatformError::new(code, code));
+    }
+    let prior_balance_minor = json
+        .get("priorBalanceMinor")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     let underlying_last_minor = json.get("underlyingLastMinor").and_then(|v| v.as_i64());
-    let option_mid_minor = json.get("optionMidMinor").and_then(|v| v.as_i64());
+    let mut takes = Vec::new();
+    if side == "short" {
+        let securities = canonical.security_list().await?;
+        let security = securities
+            .into_iter()
+            .find(|row| row.symbol.eq_ignore_ascii_case(&parsed.underlying));
+        let Some(security) = security else {
+            return Err(PlatformError::new(
+                "uncovered_refused",
+                "uncovered_refused",
+            ));
+        };
+        let candidates = canonical
+            .option_cover_candidates(account_id, security.security_id)
+            .await?;
+        let pieces = candidates
+            .into_iter()
+            .map(|row| crate::option_cover::SharePiece {
+                lot_id: row.lot_id.to_string(),
+                opened_on: row.opened_on,
+                shares: row.shares,
+                cost_minor: row.cost_minor,
+            })
+            .collect();
+        let (taken, _) = crate::option_cover::take_cover(pieces, 100 * quantity)
+            .map_err(|code| PlatformError::new(code, code))?;
+        takes = taken
+            .into_iter()
+            .map(|take| {
+                Uuid::parse_str(&take.lot_id).map(|lot_id| crate::contracts::OptionCoverTake {
+                    lot_id,
+                    shares: take.shares,
+                    cost_minor: take.cost_minor,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| PlatformError::new("parse_error", e.to_string()))?;
+    }
+    let posts = crate::option_cover::posts_for_open(
+        &side,
+        &parsed.put_call,
+        &open_on,
+        open_premium_minor,
+        prior_balance_minor,
+    )
+    .map_err(|code| PlatformError::new(code, code))?;
     let stamp = now_stamp();
+    let contract_id = Uuid::new_v4();
     let record = OptionContractRecord {
-        contract_id: Uuid::new_v4(),
+        contract_id,
         occ_symbol: parsed.raw.clone(),
         underlying: parsed.underlying,
         expiry_on: parsed.expiry_on,
-        put_call: parsed.put_call,
+        put_call: parsed.put_call.clone(),
         strike_minor: parsed.strike_minor,
         scale: 2,
-        account_id,
-        side,
+        account_id: Some(account_id.to_string()),
+        side: side.clone(),
         quantity,
-        open_premium_minor,
-        open_on,
+        open_premium_minor: open_premium_minor.unwrap_or(0),
+        open_premium_blank: open_premium_minor.is_none(),
+        open_on: open_on.clone(),
+        prior_balance_minor,
         underlying_last_minor,
-        option_mid_minor,
-        quote_as_of: if underlying_last_minor.is_some() || option_mid_minor.is_some() {
-            today_iso()
-        } else {
-            String::new()
-        },
+        live_underlying_minor: None,
+        option_mid_minor: None,
+        quote_as_of: String::new(),
         status: "open".into(),
         roll_to_contract_id: String::new(),
         close_premium_minor: None,
         closed_on: String::new(),
-        payload_json: "{}".into(),
+        payload_json: if open_premium_minor.is_none() {
+            "{\"openPremiumBlank\":true}".into()
+        } else {
+            "{}".into()
+        },
         created_on: stamp.clone(),
         updated_on: stamp,
     };
-    canonical.option_contract_insert(record).await
+    let saved = canonical.option_contract_insert(record).await?;
+    if !takes.is_empty() {
+        canonical.option_cover_save(contract_id, &takes).await?;
+    }
+    for post in posts {
+        canonical
+            .option_premium_insert(&crate::contracts::OptionPremiumPostRecord {
+                post_id: Uuid::new_v4(),
+                contract_id,
+                week_start: post.week_start,
+                category: post.category,
+                amount_minor: post.amount_minor,
+                scale: 2,
+                reason: post.reason,
+            })
+            .await?;
+    }
+    Ok(saved)
 }
 
 pub async fn contract_quote_set(
@@ -290,6 +440,15 @@ pub async fn contract_roll(
         return Err(PlatformError::new("missing_open_on", "newOpenOn is required"));
     }
     let mut old = canonical.option_contract_get(id).await?;
+    if let Some(code) = crate::option_cover::refuse_contract(&old.side, &parsed.put_call, "") {
+        return Err(PlatformError::new(code, code));
+    }
+    if old.side == "short" && !old.underlying.eq_ignore_ascii_case(&parsed.underlying) {
+        return Err(PlatformError::new(
+            "uncovered_refused",
+            "a roll onto a different underlying must reserve a new cover",
+        ));
+    }
     if old.status != "open" {
         return Err(PlatformError::new("not_open", "only open contracts can roll"));
     }
@@ -307,15 +466,18 @@ pub async fn contract_roll(
         occ_symbol: parsed.raw.clone(),
         underlying: parsed.underlying,
         expiry_on: parsed.expiry_on,
-        put_call: parsed.put_call,
+        put_call: parsed.put_call.clone(),
         strike_minor: parsed.strike_minor,
         scale: 2,
         account_id: old.account_id.clone(),
         side: old.side.clone(),
         quantity,
         open_premium_minor: new_open_premium_minor,
+        open_premium_blank: false,
         open_on: new_open_on.clone(),
+        prior_balance_minor: old.prior_balance_minor,
         underlying_last_minor: old.underlying_last_minor,
+        live_underlying_minor: None,
         option_mid_minor: None,
         quote_as_of: String::new(),
         status: "open".into(),
@@ -328,11 +490,57 @@ pub async fn contract_roll(
     };
     old.status = "rolled".into();
     old.close_premium_minor = Some(close_premium_minor);
-    old.closed_on = new_open_on;
+    old.closed_on = new_open_on.clone();
     old.roll_to_contract_id = new_id.to_string();
     old.updated_on = stamp;
+    let side = old.side.clone();
+    let old_right = old.put_call.clone();
+    let old_open = old.open_premium_minor;
     canonical.option_contract_update(old).await?;
     canonical.option_contract_insert(new_row).await?;
+    if side == "short" {
+        canonical.option_cover_move(id, new_id).await?;
+    }
+    let close_post = crate::option_cover::post_for_close(
+        &side,
+        &old_right,
+        &new_open_on,
+        old_open,
+        close_premium_minor,
+    )
+    .map_err(|code| PlatformError::new(code, code))?;
+    canonical
+        .option_premium_insert(&crate::contracts::OptionPremiumPostRecord {
+            post_id: Uuid::new_v4(),
+            contract_id: id,
+            week_start: close_post.week_start,
+            category: close_post.category,
+            amount_minor: close_post.amount_minor,
+            scale: 2,
+            reason: close_post.reason,
+        })
+        .await?;
+    for post in crate::option_cover::posts_for_open(
+        &side,
+        &parsed.put_call,
+        &new_open_on,
+        Some(new_open_premium_minor),
+        0,
+    )
+    .map_err(|code| PlatformError::new(code, code))?
+    {
+        canonical
+            .option_premium_insert(&crate::contracts::OptionPremiumPostRecord {
+                post_id: Uuid::new_v4(),
+                contract_id: new_id,
+                week_start: post.week_start,
+                category: post.category,
+                amount_minor: post.amount_minor,
+                scale: 2,
+                reason: post.reason,
+            })
+            .await?;
+    }
     contract_list(canonical, None).await
 }
 
@@ -369,11 +577,41 @@ pub async fn contract_close(
     if row.status != "open" {
         return Err(PlatformError::new("not_open", "only open contracts can close"));
     }
+    let side = row.side.clone();
+    let right = row.put_call.clone();
+    let open_premium = row.open_premium_minor;
     row.status = status.into();
     row.close_premium_minor = close_premium_minor;
-    row.closed_on = closed_on;
+    row.closed_on = closed_on.clone();
     row.updated_on = now_stamp();
-    canonical.option_contract_update(row).await
+    let saved = canonical.option_contract_update(row).await?;
+    if how == "assigned" {
+        canonical.option_cover_assign(id).await?;
+    } else {
+        canonical.option_cover_release(id).await?;
+    }
+    if let Some(close_premium) = close_premium_minor {
+        let post = crate::option_cover::post_for_close(
+            &side,
+            &right,
+            &closed_on,
+            open_premium,
+            close_premium,
+        )
+        .map_err(|code| PlatformError::new(code, code))?;
+        canonical
+            .option_premium_insert(&crate::contracts::OptionPremiumPostRecord {
+                post_id: Uuid::new_v4(),
+                contract_id: id,
+                week_start: post.week_start,
+                category: post.category,
+                amount_minor: post.amount_minor,
+                scale: 2,
+                reason: post.reason,
+            })
+            .await?;
+    }
+    Ok(saved)
 }
 
 #[cfg(test)]

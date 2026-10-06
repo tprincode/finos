@@ -19,6 +19,16 @@ pub fn core_functions_catalog() -> Result<CoreFunctionsGetBody, String> {
             .unwrap_or(serde_json::Value::Array(vec![])),
     )
     .map_err(|e| e.to_string())?;
+    for module in &mut body.modules {
+        module.export_kind = crate::component_export::export_arm(&module.id, "")
+            .unwrap_or("")
+            .to_string();
+        for part in &mut module.parts {
+            part.export_kind = crate::component_export::export_arm(&module.id, &part.id)
+                .unwrap_or("")
+                .to_string();
+        }
+    }
     Ok(body)
 }
 

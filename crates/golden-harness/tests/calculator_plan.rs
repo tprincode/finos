@@ -1387,6 +1387,19 @@ async fn short_period_keeps_the_last_six_stored_pays() {
         "Avg 6 shows the mean of up to six pays and the count"
     );
     assert!(sheet.contains("planCheck(\n                inForce,"));
+    assert!(sheet.contains("paidInViewCents(row.cells)"));
+    assert!(ui.contains("if (c === \"weekly\" || c === \"52\") return 52;"));
+    let score = ui
+        .split("export function dividendScore(")
+        .nth(1)
+        .expect("dividendScore")
+        .split("export function CalculatorReturnSheet")
+        .next()
+        .expect("dividendScore body");
+    assert!(
+        !score.contains("lastPaidCents") && !score.contains("cells.length - 1"),
+        "TVAL and the other scores do not walk the older end of the week grid"
+    );
     let check = ui
         .split("export function planCheck(")
         .nth(1)
@@ -1451,6 +1464,15 @@ fn eight_pm_eastern_is_still_today() {
         "a bad as-of must not invent 2026-09-02"
     );
     assert!(history.contains("bad_as_of"));
+    assert!(
+        history.contains("issuer_declaration_list(security.security_id)")
+            && history.contains(".await?;"),
+        "a failed declaration list stays an error"
+    );
+    assert!(
+        !history.contains("unwrap_or_default()"),
+        "a failed declaration list must not become an empty pay row"
+    );
 }
 
 /// A stored zero is a declaration. The short Period grid does not choose Most current.
@@ -1553,6 +1575,15 @@ fn field_intent_stores_the_calculator_column_contract() {
     assert_eq!(names, matched);
     assert!(names >= 40);
     assert!(!columns.contains("status: \"still wrong\""));
+    let contract_fields = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/field-intent/contractFields.ts"),
+    )
+    .unwrap();
+    assert!(contract_fields.contains("pageId"));
+    assert!(contract_fields.contains("componentId"));
+    assert!(contract_fields.contains("contract-positions"));
+    assert!(contract_fields.contains("\"open premium\""));
+    assert!(!contract_fields.contains("Option mid"));
     let ui = std::fs::read_to_string(root.join("packages/ui-components/src/index.tsx")).unwrap();
     assert!(!ui.contains("Default window is the last 60 days"));
     assert!(!ui.contains("Plan check counts weeks on this row"));

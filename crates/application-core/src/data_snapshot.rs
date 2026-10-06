@@ -988,6 +988,7 @@ const UI_SCREEN_ORDER: &[&str] = &[
     "interest-rate",
     "contract-positions",
     "field-intent",
+    "roadmap",
     "components",
     "screen-atlas",
 ];

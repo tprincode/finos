@@ -13,7 +13,87 @@
         "home-weekly-actuals",
         "home-graphing-period"
       ],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "description": "",
+      "parts": [
+        {
+          "id": "account-values",
+          "kind": "chart",
+          "title": "Account values",
+          "description": "Live — qty × last price, including today",
+          "coreFunctionIds": ["home-weekly-actuals"]
+        },
+        {
+          "id": "graphing-period",
+          "kind": "function",
+          "title": "Graphing period",
+          "description": "",
+          "coreFunctionIds": ["home-graphing-period"]
+        },
+        {
+          "id": "fidelity",
+          "kind": "chart",
+          "title": "Fidelity",
+          "description": "Live — qty × last price, including today",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "schwab-total",
+          "kind": "chart",
+          "title": "Schwab Total",
+          "description": "Live — qty × last price, including today",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "chart-income",
+          "kind": "chart",
+          "title": "Income",
+          "description": "Live — qty × last price, including today",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "chart-fi-roth",
+          "kind": "chart",
+          "title": "FI Roth",
+          "description": "Live — qty × last price, including today",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "chart-car",
+          "kind": "chart",
+          "title": "Car",
+          "description": "Live — qty × last price, including today",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "chart-health",
+          "kind": "chart",
+          "title": "Health",
+          "description": "Live — qty × last price, including today",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "chart-speculation",
+          "kind": "chart",
+          "title": "Speculation",
+          "description": "Live — qty × last price, including today",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "chart-account-9",
+          "kind": "chart",
+          "title": "Account 9",
+          "description": "Live — qty × last price, including today",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "account_market_value_daily",
+          "path": "crates/storage-sqlite/src/account_value.rs",
+          "needle": "FROM account_market_value_daily"
+        }
+      ]
     },
     {
       "id": "new-investment-readiness",
@@ -32,8 +112,21 @@
       "status": "extracted",
       "menuAreas": ["Shopping Cart"],
       "screen": "shopping-cart",
+      "menu": { "kind": "nav", "label": "Shopping Cart" },
       "coreFunctionIds": ["shopping-cart-swap"],
-      "host": "cart.rs"
+      "host": "cart.rs",
+      "sqliteTables": [
+        {
+          "name": "account",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "SELECT account_id, name, kind FROM account ORDER BY name"
+        },
+        {
+          "name": "lot",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "FROM lot ORDER BY opened_on, lot_id"
+        }
+      ]
     },
     {
       "id": "cash-management",
@@ -42,6 +135,7 @@
       "status": "in-app",
       "menuAreas": ["Cash Management"],
       "screen": "cash-management",
+      "menu": { "kind": "nav", "label": "Cash Management" },
       "coreFunctionIds": [
         "cash-management-post",
         "cash-management-ssa",
@@ -76,9 +170,45 @@
       "status": "extracted",
       "menuAreas": ["Cash Management"],
       "screen": "cash-management",
+      "menu": { "kind": "desk", "label": "Week ahead planner" },
       "cmDesk": "weekly",
       "coreFunctionIds": ["cash-management-week-ahead"],
-      "host": "week_ahead.rs"
+      "host": "week_ahead.rs",
+      "parts": [
+        {
+          "id": "week-ahead-tasks",
+          "kind": "function",
+          "title": "Tasks",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "week-ahead-elements",
+          "kind": "table",
+          "title": "Elements",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "week-ahead-loans",
+          "kind": "table",
+          "title": "Loan payments",
+          "description": "",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "cash_element",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "FROM cash_element"
+        },
+        {
+          "name": "planned_occurrence",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "FROM planned_occurrence"
+        }
+      ]
     },
     {
       "id": "household-income",
@@ -111,7 +241,14 @@
       "screen": "cash-management",
       "cmDesk": "elements",
       "coreFunctionIds": ["cash-management-elements"],
-      "host": "cash_register.rs"
+      "host": "cash_register.rs",
+      "sqliteTables": [
+        {
+          "name": "cash_element",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "FROM cash_element"
+        }
+      ]
     },
     {
       "id": "cash-management-ytd",
@@ -131,6 +268,7 @@
       "status": "extracted",
       "menuAreas": ["Cash Management"],
       "screen": "cash-management",
+      "menu": { "kind": "desk", "label": "Element Management" },
       "cmDesk": "elements",
       "coreFunctionIds": ["cash-management-elements"],
       "host": "cash_register.rs"
@@ -142,6 +280,7 @@
       "status": "extracted",
       "menuAreas": ["Cash Management"],
       "screen": "cash-management",
+      "menu": { "kind": "desk", "label": "Cashflow Manager" },
       "cmDesk": "cashflow",
       "coreFunctionIds": ["cash-management-register"],
       "host": "cash_register.rs"
@@ -164,6 +303,7 @@
       "status": "in-app",
       "menuAreas": ["Cash Management"],
       "screen": "cash-management",
+      "menu": { "kind": "desk", "label": "Tax Planning" },
       "cmDesk": "car",
       "coreFunctionIds": ["cash-management-car-roc-plan", "cash-management-ytd"],
       "host": "queries.rs"
@@ -175,9 +315,40 @@
       "status": "extracted",
       "menuAreas": ["Cash Management"],
       "screen": "cash-management",
+      "menu": { "kind": "desk", "label": "Income vs Expense planner" },
       "cmDesk": "coverage",
       "coreFunctionIds": ["cash-management-coverage"],
-      "host": "cash_coverage.rs"
+      "host": "cash_coverage.rs",
+      "parts": [
+        {
+          "id": "coverage-income",
+          "kind": "table",
+          "title": "Coverage income math",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "coverage-expense",
+          "kind": "table",
+          "title": "Coverage expense math",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "coverage-plan",
+          "kind": "table",
+          "title": "Coverage plan",
+          "description": "",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "account_balance_snapshot",
+          "path": "crates/storage-sqlite/src/trends.rs",
+          "needle": "FROM account_balance_snapshot"
+        }
+      ]
     },
     {
       "id": "cm-external",
@@ -186,9 +357,27 @@
       "status": "extracted",
       "menuAreas": ["Cash Management"],
       "screen": "cash-management",
+      "menu": { "kind": "desk", "label": "External accounts" },
       "cmDesk": "external",
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "description": "",
+      "parts": [
+        {
+          "id": "cct-register",
+          "kind": "table",
+          "title": "Checking and Credit Transactions",
+          "description": "",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "external_register_line",
+          "path": "crates/storage-sqlite/src/external_account.rs",
+          "needle": "FROM external_register_line"
+        }
+      ]
     },
     {
       "id": "cm-debt-planner",
@@ -197,9 +386,27 @@
       "status": "extracted",
       "menuAreas": ["Cash Management"],
       "screen": "cash-management",
+      "menu": { "kind": "desk", "label": "Debt planner" },
       "cmDesk": "manager",
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "description": "Choose the process in Loan setup.",
+      "parts": [
+        {
+          "id": "debt-accounts",
+          "kind": "table",
+          "title": "Debt planner",
+          "description": "Choose the process in Loan setup.",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "external_managed_account",
+          "path": "crates/storage-sqlite/src/external_account.rs",
+          "needle": "FROM external_managed_account"
+        }
+      ]
     },
     {
       "id": "home",
@@ -208,13 +415,100 @@
       "status": "in-app",
       "menuAreas": ["Home"],
       "screen": "home",
+      "menu": { "kind": "trigger", "label": "Home" },
       "coreFunctionIds": [
         "home-declarations-coverage",
         "home-open-tickets",
         "home-refresh-declarations",
         "home-dividend-plan-panel"
       ],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "description": "",
+      "parts": [
+        {
+          "id": "portfolio-summary",
+          "kind": "table",
+          "title": "Portfolio summary",
+          "description": "Lifetime paid dividends (cash)",
+          "coreFunctionIds": ["home-open-tickets"]
+        },
+        {
+          "id": "refresh-declarations",
+          "kind": "function",
+          "title": "Refresh declarations",
+          "description": "",
+          "coreFunctionIds": ["home-refresh-declarations"]
+        },
+        {
+          "id": "work-tickets",
+          "kind": "function",
+          "title": "Work Tickets",
+          "description": "Stay until filed — not today's miss count",
+          "coreFunctionIds": ["home-open-tickets"]
+        },
+        {
+          "id": "refresh-last-prices",
+          "kind": "function",
+          "title": "Refresh last prices",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "income-through",
+          "kind": "function",
+          "title": "Income through",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "income-through-transactions",
+          "kind": "table",
+          "title": "Income through transactions",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "dividend-plan",
+          "kind": "table",
+          "title": "Dividend Plan",
+          "description": "Plan annual dividend ÷ account market value",
+          "coreFunctionIds": ["home-dividend-plan-panel"]
+        },
+        {
+          "id": "account-cash-flow",
+          "kind": "chart",
+          "title": "Account cash flow projection",
+          "description": "",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "account",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "SELECT account_id, name, kind FROM account ORDER BY name"
+        },
+        {
+          "name": "lot",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "FROM lot ORDER BY opened_on, lot_id"
+        },
+        {
+          "name": "security",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "SELECT security_id, symbol, name, crf FROM security ORDER BY symbol"
+        },
+        {
+          "name": "dividend_actual",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "FROM dividend_actual ORDER BY occurred_on, actual_id"
+        },
+        {
+          "name": "account_balance_snapshot",
+          "path": "crates/storage-sqlite/src/trends.rs",
+          "needle": "FROM account_balance_snapshot"
+        }
+      ]
     },
     {
       "id": "income-plan",
@@ -223,12 +517,35 @@
       "status": "extracted",
       "menuAreas": ["Income Plan"],
       "screen": "income-plan",
+      "menu": { "kind": "trigger", "label": "Income Plan" },
       "coreFunctionIds": [
         "income-week-decl-per-share",
         "income-decl-per-share-color",
         "income-grid-decl-per-share"
       ],
-      "host": "income_plan_display.rs"
+      "host": "income_plan_display.rs",
+      "description": "",
+      "parts": [
+        {
+          "id": "plan-vs-decl",
+          "kind": "table",
+          "title": "Plan vs Decl",
+          "description": "",
+          "coreFunctionIds": ["income-week-decl-per-share"]
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "plan_history",
+          "path": "crates/storage-sqlite/src/plan.rs",
+          "needle": "FROM plan_history WHERE effective_to IS NULL ORDER BY security_id"
+        },
+        {
+          "name": "dividend_actual",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "FROM dividend_actual ORDER BY occurred_on, actual_id"
+        }
+      ]
     },
     {
       "id": "calculator",
@@ -237,8 +554,26 @@
       "status": "in-app",
       "menuAreas": ["Plan"],
       "screen": "calculator",
+      "menu": { "kind": "nav", "label": "Calculator" },
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "description": "",
+      "parts": [
+        {
+          "id": "calculator-sheet",
+          "kind": "table",
+          "title": "Calculator",
+          "description": "",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "plan_history",
+          "path": "crates/storage-sqlite/src/plan.rs",
+          "needle": "FROM plan_history WHERE effective_to IS NULL ORDER BY security_id"
+        }
+      ]
     },
     {
       "id": "market-impact",
@@ -247,6 +582,7 @@
       "status": "extracted",
       "menuAreas": ["Plan"],
       "screen": "market-impact",
+      "menu": { "kind": "nav", "label": "Market impact planner" },
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
@@ -257,6 +593,7 @@
       "status": "in-app",
       "menuAreas": ["Plan"],
       "screen": "dashboard",
+      "menu": { "kind": "nav", "label": "Dashboard" },
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
@@ -267,11 +604,92 @@
       "status": "in-app",
       "menuAreas": ["Trends"],
       "screen": "trends",
+      "menu": { "kind": "trigger", "label": "Trends" },
       "coreFunctionIds": [
         "home-live-by-risk",
         "home-graphing-period"
       ],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "description": "",
+      "parts": [
+        {
+          "id": "live-by-risk",
+          "kind": "chart",
+          "title": "Live by risk",
+          "description": "",
+          "coreFunctionIds": ["home-live-by-risk"]
+        },
+        {
+          "id": "live-by-risk-level",
+          "kind": "chart",
+          "title": "Live by risk level",
+          "description": "",
+          "coreFunctionIds": ["home-live-by-risk"]
+        },
+        {
+          "id": "live-by-risk-allocation",
+          "kind": "chart",
+          "title": "Live by risk allocation",
+          "description": "",
+          "coreFunctionIds": ["home-live-by-risk"]
+        },
+        {
+          "id": "declared-vs-plan",
+          "kind": "chart",
+          "title": "Declared vs Plan",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "planned-weekly-income",
+          "kind": "chart",
+          "title": "Planned weekly income",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "reported-weekly-income",
+          "kind": "chart",
+          "title": "Reported weekly income",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "dividends-paid-by-month",
+          "kind": "chart",
+          "title": "Dividends paid by month",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "all-cash",
+          "kind": "chart",
+          "title": "All Cash",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "monthly-dividends",
+          "kind": "chart",
+          "title": "Monthly Dividends",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "fidelity-schwab",
+          "kind": "chart",
+          "title": "Total Fidelity & Schwab",
+          "description": "",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "account_market_value_daily",
+          "path": "crates/storage-sqlite/src/account_value.rs",
+          "needle": "FROM account_market_value_daily"
+        }
+      ]
     },
     {
       "id": "position-details",
@@ -280,6 +698,7 @@
       "status": "extracted",
       "menuAreas": ["Positions"],
       "screen": "position-details",
+      "menu": { "kind": "nav", "label": "Position Details" },
       "coreFunctionIds": [
         "position-hub-declarations",
         "position-hub-last-price",
@@ -294,8 +713,22 @@
       "status": "extracted",
       "menuAreas": ["Positions"],
       "screen": "holdings",
+      "menu": { "kind": "nav", "label": "Holdings" },
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "description": "",
+      "sqliteTables": [
+        {
+          "name": "lot",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "FROM lot ORDER BY opened_on, lot_id"
+        },
+        {
+          "name": "security",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "SELECT security_id, symbol, name, crf FROM security ORDER BY symbol"
+        }
+      ]
     },
     {
       "id": "add-position",
@@ -304,6 +737,7 @@
       "status": "in-app",
       "menuAreas": ["Positions"],
       "screen": "new-investment",
+      "menu": { "kind": "nav", "label": "Add Investment" },
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
@@ -314,6 +748,7 @@
       "status": "extracted",
       "menuAreas": ["Positions"],
       "screen": "add-lot",
+      "menu": { "kind": "nav", "label": "Add Lot" },
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
@@ -324,8 +759,10 @@
       "status": "extracted",
       "menuAreas": ["Tools"],
       "screen": "interest-rate",
+      "menu": { "kind": "nav", "label": "Interest rate calculator" },
       "coreFunctionIds": [],
-      "host": ""
+      "host": "",
+      "description": "Compound equivalents on a 365-day year."
     },
     {
       "id": "contract-positions",
@@ -334,8 +771,71 @@
       "status": "extracted",
       "menuAreas": ["Tools"],
       "screen": "contract-positions",
+      "menu": { "kind": "nav", "label": "Contract positions" },
       "coreFunctionIds": [],
-      "host": ""
+      "host": "",
+      "description": "",
+      "parts": [
+        {
+          "id": "contract-create",
+          "kind": "function",
+          "title": "Create contract",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "contract-open",
+          "kind": "table",
+          "title": "Open contracts",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "contract-closed",
+          "kind": "table",
+          "title": "Closed contracts",
+          "description": "",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "option_contract",
+          "path": "crates/storage-sqlite/src/option_contract.rs",
+          "needle": "FROM option_contract"
+        },
+        {
+          "name": "option_cover_lot",
+          "path": "crates/storage-sqlite/src/option_contract.rs",
+          "needle": "FROM option_cover_lot"
+        },
+        {
+          "name": "option_premium_post",
+          "path": "crates/storage-sqlite/src/option_contract.rs",
+          "needle": "FROM option_premium_post"
+        }
+      ]
+    },
+    {
+      "id": "roadmap",
+      "title": "Roadmap",
+      "folder": "apps/desktop/src/features/roadmap/",
+      "status": "extracted",
+      "menuAreas": ["Tools"],
+      "screen": "roadmap",
+      "menu": { "kind": "nav", "label": "Roadmap" },
+      "coreFunctionIds": [],
+      "host": "",
+      "description": "",
+      "parts": [
+        {
+          "id": "cash-covered-puts",
+          "kind": "function",
+          "title": "cash-covered short puts",
+          "description": "A later hold reserves strike times 100 times quantity against cash. Cash does not move until assignment.",
+          "coreFunctionIds": []
+        }
+      ]
     },
     {
       "id": "field-intent",
@@ -344,8 +844,19 @@
       "status": "extracted",
       "menuAreas": ["Tools"],
       "screen": "field-intent",
+      "menu": { "kind": "nav", "label": "Field intent" },
       "coreFunctionIds": [],
-      "host": ""
+      "host": "",
+      "description": "",
+      "parts": [
+        {
+          "id": "calculator-columns",
+          "kind": "table",
+          "title": "Calculator columns",
+          "description": "",
+          "coreFunctionIds": []
+        }
+      ]
     },
     {
       "id": "task-manager",
@@ -354,8 +865,16 @@
       "status": "extracted",
       "menuAreas": ["Tools"],
       "screen": "task-manager",
+      "menu": { "kind": "nav", "label": "Task Manager" },
       "coreFunctionIds": ["cash-management-magi"],
-      "host": "task.rs"
+      "host": "task.rs",
+      "sqliteTables": [
+        {
+          "name": "task",
+          "path": "crates/storage-sqlite/src/task.rs",
+          "needle": "FROM task WHERE task_id = ?"
+        }
+      ]
     },
     {
       "id": "reevaluate-collector",
@@ -364,6 +883,7 @@
       "status": "in-app",
       "menuAreas": ["Tools"],
       "screen": "collector-establish",
+      "menu": { "kind": "nav", "label": "Reevaluate collector" },
       "coreFunctionIds": [],
       "host": "queries.rs"
     },
@@ -374,6 +894,7 @@
       "status": "in-app",
       "menuAreas": ["Data"],
       "screen": "tickets",
+      "menu": { "kind": "nav", "label": "Tickets" },
       "coreFunctionIds": ["tickets-queue"],
       "host": "queries.rs"
     },
@@ -384,6 +905,7 @@
       "status": "extracted",
       "menuAreas": ["Data"],
       "screen": "collectors",
+      "menu": { "kind": "nav", "label": "Collectors" },
       "coreFunctionIds": [
         "collectors-fleet",
         "collectors-run-enabled",
@@ -399,8 +921,39 @@
       "status": "in-app",
       "menuAreas": ["Data"],
       "screen": "import",
+      "menu": { "kind": "nav", "label": "Import" },
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "import-step",
+          "kind": "function",
+          "title": "1. Import",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "validate-step",
+          "kind": "function",
+          "title": "2. Validate",
+          "description": "",
+          "coreFunctionIds": []
+        },
+        {
+          "id": "loaded-step",
+          "kind": "function",
+          "title": "Loaded",
+          "description": "",
+          "coreFunctionIds": []
+        }
+      ],
+      "sqliteTables": [
+        {
+          "name": "import_batch",
+          "path": "crates/storage-sqlite/src/canonical.rs",
+          "needle": "FROM import_batch b"
+        }
+      ]
     },
     {
       "id": "lots",
@@ -418,6 +971,7 @@
       "status": "in-app",
       "menuAreas": ["Tools"],
       "screen": "settings",
+      "menu": { "kind": "nav", "label": "Settings" },
       "coreFunctionIds": [
         "settings-core-functions",
         "settings-retrieval-templates"
@@ -426,13 +980,15 @@
     },
     {
       "id": "components",
-      "title": "Components",
+      "title": "Component Registry",
       "folder": "apps/desktop/src/features/components/",
       "status": "extracted",
       "menuAreas": ["Tools"],
       "screen": "components",
+      "menu": { "kind": "nav", "label": "Component Registry" },
       "coreFunctionIds": [],
-      "host": ""
+      "host": "",
+      "description": "UI extraction catalog: whether a screen has left App.tsx."
     },
     {
       "id": "screen-atlas",
@@ -441,8 +997,10 @@
       "status": "extracted",
       "menuAreas": ["Tools"],
       "screen": "screen-atlas",
+      "menu": { "kind": "embedded", "label": "Screen Atlas" },
       "coreFunctionIds": [],
-      "host": "lib.rs"
+      "host": "lib.rs",
+      "description": "Walk every menu surface, expand scroll panes, and save full-height PNGs plus an index."
     },
     {
       "id": "shell",

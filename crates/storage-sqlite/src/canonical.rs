@@ -1944,6 +1944,24 @@ impl Canonical for LocalPlatform {
         if lot.quantity_scale != quantity_scale {
             return Err(domain_err(DomainError::ScaleMismatch));
         }
+        let reserved = self
+            .option_cover_reservations()
+            .await?
+            .into_iter()
+            .find(|row| row.lot_id == lot_id)
+            .map(|row| row.shares)
+            .unwrap_or(0);
+        let free = application_core::option_cover::free_units(
+            lot.remaining_quantity_minor,
+            lot.quantity_scale,
+            reserved,
+        );
+        if quantity_minor > free {
+            return Err(PlatformError::new(
+                "shares_promised",
+                "shares are promised to an open contract",
+            ));
+        }
         let activity = self.activity_get(activity_id).await?;
         let used = consume_lot(
             lot.remaining_quantity_minor,
@@ -2421,6 +2439,7 @@ impl Canonical for LocalPlatform {
             performance_gain_minor: proceeds_minor - performance_cost_minor,
             tax_gain_minor: proceeds_minor - tax_cost_minor,
             dividend_actual_minor: 0,
+            option_premium_minor: 0,
             open_performance_minor: basis.open_performance_minor,
             open_tax_minor: basis.open_tax_minor,
             scale: 2,
@@ -3814,6 +3833,61 @@ impl Canonical for LocalPlatform {
     ) -> Result<application_core::contracts::OptionContractRecord, PlatformError> {
         let pool = self.pool.read().await;
         crate::option_contract::option_contract_update(&pool, record).await
+    }
+
+    async fn option_cover_candidates(
+        &self,
+        account_id: Uuid,
+        security_id: Uuid,
+    ) -> Result<Vec<application_core::contracts::OptionCoverCandidate>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_cover_candidates(&pool, account_id, security_id).await
+    }
+
+    async fn option_cover_save(
+        &self,
+        contract_id: Uuid,
+        takes: &[application_core::contracts::OptionCoverTake],
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_cover_save(&pool, contract_id, takes).await
+    }
+
+    async fn option_cover_move(&self, from_id: Uuid, to_id: Uuid) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_cover_move(&pool, from_id, to_id).await
+    }
+
+    async fn option_cover_release(&self, contract_id: Uuid) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_cover_release(&pool, contract_id).await
+    }
+
+    async fn option_cover_assign(&self, contract_id: Uuid) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_cover_assign(&pool, contract_id).await
+    }
+
+    async fn option_premium_insert(
+        &self,
+        record: &application_core::contracts::OptionPremiumPostRecord,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_premium_insert(&pool, record).await
+    }
+
+    async fn option_premium_list(
+        &self,
+    ) -> Result<Vec<application_core::contracts::OptionPremiumPostRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_premium_list(&pool).await
+    }
+
+    async fn option_cover_reservations(
+        &self,
+    ) -> Result<Vec<application_core::contracts::OptionCoverReservation>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::option_contract::option_cover_reservations(&pool).await
     }
 
     async fn external_loan_apply_element(
