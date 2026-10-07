@@ -918,6 +918,20 @@ mod tests {
     }
 
     #[test]
+    fn register_books_exclude_speculation_capture_only() {
+        assert!(
+            !REGISTER_BOOKS.iter().any(|b| b.eq_ignore_ascii_case("Speculation")),
+            "Speculation is capture-only; Register switcher must omit it: {REGISTER_BOOKS:?}"
+        );
+        for book in ["Income", "FI Roth", "Health", "Car", "Account 9", "SSA_2026"] {
+            assert!(
+                REGISTER_BOOKS.iter().any(|b| *b == book),
+                "Register still lists {book}"
+            );
+        }
+    }
+
+    #[test]
     fn cash_type_must_match_the_account_the_owner_sees() {
         assert!(cash_activity_allowed_for_account("IRA_Distribution", "Income", "ira").is_ok());
         assert!(cash_activity_allowed_for_account("IRA_Distribution", "Speculation", "ira").is_ok());

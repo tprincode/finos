@@ -661,8 +661,9 @@ fn r7_week_ahead_and_capture_grid_still_locked() {
     .unwrap();
     assert!(
         capture.contains("aria-label=\"Week capture grid\"")
-            && capture.contains("label: \"Speculation\""),
-        "G1–G7 / W6 capture grid stays one six-row table"
+            && capture.contains("label: \"Speculation (capture only)\"")
+            && capture.contains("accountName: \"Speculation\""),
+        "G1–G7 / W6 capture grid stays one six-row table; Speculation is capture-only"
     );
     let ahead = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/cash/WeekAhead.tsx"),

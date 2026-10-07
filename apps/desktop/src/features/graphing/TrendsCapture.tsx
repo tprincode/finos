@@ -102,7 +102,7 @@ const ACCOUNT_ROWS: Array<{
     cashLabel: "FI Roth Cash Balance",
   },
   {
-    label: "Speculation",
+    label: "Speculation (capture only)",
     totalKey: "speculationBalanceMinor",
     cashKey: "speculationCashMinor",
     accountName: "Speculation",

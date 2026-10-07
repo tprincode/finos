@@ -732,6 +732,12 @@ fn market_impact_planner_holds_the_bull_and_bear_windows() {
             && css_has_rule(&css, ".market-impact-return", "white-space: nowrap"),
         "Market impact planner and Owner period share one window row"
     );
+    assert!(
+        app.contains("Optional advisory thesis — does not post facts or apply tier")
+            && app.contains("AiAnalyze")
+            && row.contains("name: `${kind} ${row.symbol}`"),
+        "advisory is AiAnalyze only; windows stay per-symbol, not a fleet NVDY/NVDW share"
+    );
 }
 
 #[tokio::test]
@@ -1400,6 +1406,22 @@ async fn short_period_keeps_the_last_six_stored_pays() {
         !score.contains("lastPaidCents") && !score.contains("cells.length - 1"),
         "TVAL and the other scores do not walk the older end of the week grid"
     );
+    assert!(
+        sheet.contains("sortHead(sort, \"Calculator blend\", \"tval\", true)"),
+        "the plan-yield blend is not labeled TVAL"
+    );
+    assert!(
+        !sheet.contains("sortHead(sort, \"TVAL\", \"tval\", true)"),
+        "the old TVAL header is gone"
+    );
+    assert!(
+        score.contains("Math.round((pnl * 2 + master.planFwdYieldBps) / 2)"),
+        "Calculator blend stays Gain% × 2 plus plan FWD, divided by 2"
+    );
+    assert!(
+        financial_domain::collector::calculator_view_includes("CASH", "SPAXX", "Monthly"),
+        "a cash row stays on the calculator as a balance and a yield"
+    );
     let check = ui
         .split("export function planCheck(")
         .nth(1)
@@ -1572,9 +1594,21 @@ fn field_intent_stores_the_calculator_column_contract() {
     }
     let names = columns.matches("name: \"").count();
     let matched = columns.matches("status: \"matches\"").count();
-    assert_eq!(names, matched);
+    let still_wrong = columns.matches("status: \"still wrong\"").count();
+    assert_eq!(names, matched + still_wrong);
     assert!(names >= 40);
-    assert!(!columns.contains("status: \"still wrong\""));
+    for name in ["Type", "Calculator blend", "MC TVAL", "TVAL Δ"] {
+        let marker = format!("name: \"{name}\"");
+        let at = columns
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        let slice = &columns[at..columns.len().min(at + 280)];
+        assert!(
+            slice.contains("status: \"still wrong\""),
+            "{name} stays still wrong (parked TVAL / unproven CASH-vs-DIV-1): {slice}"
+        );
+    }
+    assert_eq!(still_wrong, 4, "only Type and the TVAL family are still wrong");
     let contract_fields = std::fs::read_to_string(
         root.join("apps/desktop/src/features/field-intent/contractFields.ts"),
     )

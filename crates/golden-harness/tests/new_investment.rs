@@ -3435,6 +3435,10 @@ fn no_income_fleet_symbol_is_hard_coded_in_the_desktop_ui() {
 fn process_a_ui_renders_establish_checklist() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    let screen = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/new-investment/NewInvestmentScreen.tsx"),
+    )
+    .expect("Add Investment screen");
     let panel = std::fs::read_to_string(
         root.join("apps/desktop/src/features/new-investment/ReadinessChecklist.tsx"),
     )
@@ -3445,27 +3449,32 @@ fn process_a_ui_renders_establish_checklist() {
     assert!(panel.contains("Investment details complete"));
     assert!(panel.contains("Information still needed"));
 
+    assert!(
+        app.contains("<NewInvestmentScreen"),
+        "App.tsx mounts Add Investment"
+    );
+    assert!(
+        !app.contains("<ReadinessChecklist") && !app.contains("aria-label=\"Establish checklist\""),
+        "the checklist body belongs in features/new-investment, not the App.tsx shell"
+    );
     // Exactly one checklist: the owner asked not to be prompted twice for the same item.
     assert_eq!(
-        app.matches("<ReadinessChecklist").count(),
+        screen.matches("<ReadinessChecklist").count(),
         1,
         "mount the readiness checklist once, not once per pane"
     );
-    assert!(
-        !app.contains("aria-label=\"Establish checklist\""),
-        "the checklist body belongs in features/new-investment, not the App.tsx shell"
-    );
 
-    // Bottom of the screen: after every other Add investment pane, before the next screen.
-    let mount = app.find("<ReadinessChecklist").expect("mount");
-    let roc_strip = app.find("aria-label=\"ROC research strip\"").expect("roc strip");
-    let next_screen = app.find("{screen === \"add-lot\"").expect("next screen");
+    // Bottom of the screen: after every other Add investment pane.
+    let mount = screen.find("<ReadinessChecklist").expect("mount");
+    let roc_strip = screen
+        .find("aria-label=\"ROC research strip\"")
+        .expect("roc strip");
     assert!(
-        roc_strip < mount && mount < next_screen,
+        roc_strip < mount,
         "the checklist must render below the Add investment panes"
     );
     assert!(
-        !app[mount..next_screen].contains("aria-label=\""),
+        !screen[mount..].contains("aria-label=\""),
         "nothing may render below the readiness checklist on this screen"
     );
 

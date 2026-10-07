@@ -1,6 +1,7 @@
 ﻿use application_core::contracts::{
-    CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
+    AssumedPayDateRecord, CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
 };
+use application_core::ports::canonical::Canonical;
 use application_core::queries::{execute_command_on, execute_query_on};
 use storage_sqlite::LocalPlatform;
 use uuid::Uuid;
@@ -194,7 +195,7 @@ async fn week_dividend_actuals_match_dividend_get_by_account() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|l| l["accountName"] == "9")
+        .find(|l| l["accountName"] == "Account 9")
         .unwrap();
     assert_eq!(nine["actualMinor"].as_i64().unwrap(), 0);
     let vti = week["positions"]
@@ -2326,6 +2327,200 @@ fn weekly_report_plan_per_share_ignores_actual_only_account() {
     assert!(
         !ui.contains("const planKnown = slices.every((account) => account.planKnown)"),
         "every selected account, including broker cash with no lot, must not blank Plan $/sh"
+    );
+}
+
+/// Owner Confirm stores `assumed_next_year`. The Pay date cell says assumed.
+/// A vendor date stays unmarked. Collectors do not write those rows.
+#[tokio::test]
+async fn assumed_next_year_pay_date_is_marked_and_a_vendor_date_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "PAY1", "name": "PAY1"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id, "PAY1").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "provider": "Issuer",
+            "divType": "DIV-1",
+            "riskTier": "Core"
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        security_id,
+        "PAY1",
+        "Monthly",
+        false,
+    )
+    .await
+    .expect("complete collector");
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1100,
+            "amountScale": 4,
+            "paymentPeriod": "2026-08-31",
+            "source": "issuer",
+            "enteredAt": "2026-08-28"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1200,
+            "amountScale": 4,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-08-01",
+            "decisionReason": "owner",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-01-02",
+            "origin": "purchase",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 10_000,
+            "taxBasisMinor": 10_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-08-29",
+            "dates": [{"payOn": "2026-08-31", "source": "issuer"}]
+        }),
+    )
+    .await;
+    let vendor_week = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-08-30" }),
+    )
+    .await;
+    let vendor = vendor_week["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "PAY1")
+        .unwrap_or_else(|| panic!("PAY1 vendor week missing: {vendor_week}"));
+    assert_eq!(vendor["payOn"], "2026-08-31");
+    assert!(
+        vendor.get("payDateAssumed").is_none(),
+        "a vendor pay date stays unmarked: {vendor}"
+    );
+
+    platform
+        .assumed_pay_date_insert(AssumedPayDateRecord {
+            assumed_pay_date_id: Uuid::new_v4(),
+            security_id: Uuid::parse_str(security_id).unwrap(),
+            pay_on: "2027-01-30".into(),
+            cadence: "Monthly".into(),
+            provenance: "assumed_next_year".into(),
+            assumed_on: "2026-06-02".into(),
+        })
+        .await
+        .expect("store assumed pay date");
+    let assumed_week = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2027-02-01" }),
+    )
+    .await;
+    let assumed = assumed_week["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "PAY1")
+        .unwrap_or_else(|| panic!("PAY1 assumed week missing: {assumed_week}"));
+    assert_eq!(assumed["payOn"], "2027-01-30", "{assumed}");
+    assert_eq!(assumed["payDateAssumed"], true, "{assumed}");
+    assert_eq!(assumed["plannedMinor"], 120, "{assumed}");
+}
+
+#[test]
+fn assumed_mark_is_on_the_pay_date_and_collectors_do_not_write_it() {
+    let root = golden_harness::repo_root();
+    let ui = std::fs::read_to_string(root.join("packages/ui-components/src/index.tsx"))
+        .expect("ui-components");
+    assert!(
+        ui.contains("row.payDateAssumed ? <span> assumed</span> : null"),
+        "Pay date shows the word assumed only when the week flag is set"
+    );
+    assert!(
+        !ui.contains("<th>Reported") && !ui.contains("<th>Actual $</th>"),
+        "the position table does not gain a Reported or Actual $ column"
+    );
+    let mut callers = Vec::new();
+    let mut stack = vec![
+        root.join("crates/application-core/src"),
+        root.join("crates/financial-domain/src"),
+        root.join("crates/storage-sqlite/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if text.contains(".assumed_pay_date_insert(") {
+                let slashed = path.to_string_lossy().replace('\\', "/");
+                let rel = slashed
+                    .rsplit_once("/crates/")
+                    .map(|(_, rest)| format!("crates/{rest}"))
+                    .unwrap_or(slashed);
+                callers.push(rel);
+            }
+        }
+    }
+    callers.sort();
+    assert_eq!(
+        callers,
+        vec!["crates/application-core/src/plan_horizon.rs".to_string()],
+        "only the June confirm writes an assumed pay date"
     );
 }
 

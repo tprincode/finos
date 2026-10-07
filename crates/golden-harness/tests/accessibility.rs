@@ -42,6 +42,9 @@ fn accessibility_primary_actions_have_accessible_names() {
     let home_dividend_plan =
         std::fs::read_to_string(repo_root().join("apps/desktop/src/features/home/HomeDividendPlan.tsx"))
             .expect("HomeDividendPlan.tsx");
+    let home_screen =
+        std::fs::read_to_string(repo_root().join("apps/desktop/src/features/home/HomeScreen.tsx"))
+            .expect("HomeScreen.tsx");
     let plan_horizon =
         std::fs::read_to_string(
             repo_root().join("apps/desktop/src/features/income-plan/PlanHorizonPrompt.tsx"),
@@ -86,6 +89,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         position_details.contains("aria-label=\"Plan Management\"")
             && position_details.contains("meanNewestPays(")
             && position_details.contains("recentPays")
+            && position_details.contains("minPaidDeclaration(inForce)")
             && !position_details.contains("lastPaidDeclarations("),
         "Plan Management shows Avg 6 from the calculator helper, not a second average"
     );
@@ -93,6 +97,10 @@ fn accessibility_primary_actions_have_accessible_names() {
         repo_root().join("apps/desktop/src/features/add-lot/AddLotScreen.tsx"),
     )
     .expect("AddLotScreen.tsx");
+    let add_investment = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/new-investment/NewInvestmentScreen.tsx"),
+    )
+    .expect("NewInvestmentScreen.tsx");
     let holdings = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/holdings/HoldingsScreen.tsx"),
     )
@@ -102,7 +110,7 @@ fn accessibility_primary_actions_have_accessible_names() {
     )
     .expect("ComponentRegistry.tsx");
     let sources = format!(
-        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{cash_week_desk}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}\n{household_income}\n{cash_coverage}\n{home_dividend_plan}\n{home_trend_focus}\n{plan_horizon}\n{income_plan_screen}\n{collectors_screen}\n{collector_establish}\n{cart_screen}\n{cart_execute}\n{cart_rail}\n{position_details}\n{symbol_window}\n{add_lot}\n{holdings}\n{component_registry}"
+        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{cash_week_desk}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}\n{household_income}\n{cash_coverage}\n{home_dividend_plan}\n{home_screen}\n{home_trend_focus}\n{plan_horizon}\n{income_plan_screen}\n{collectors_screen}\n{collector_establish}\n{cart_screen}\n{cart_execute}\n{cart_rail}\n{position_details}\n{symbol_window}\n{add_lot}\n{add_investment}\n{holdings}\n{component_registry}"
     );
     for name in [
         "aria-label=\"Import wizard\"",
@@ -741,11 +749,11 @@ fn g1_g6_slice1b_capture_grid_one_table() {
         capture.contains("aria-label=\"Week capture grid\"")
             && capture.contains("label: \"Income\"")
             && capture.contains("label: \"FI Roth\"")
-            && capture.contains("label: \"Speculation\"")
+            && capture.contains("label: \"Speculation (capture only)\"")
             && capture.contains("label: \"Health\"")
             && capture.contains("label: \"Car\"")
             && capture.contains("label: \"Account 9\""),
-        "G1: one table lists Income, FI Roth, Speculation, Health, Car, Account 9"
+        "G1: one table lists Income, FI Roth, Speculation (capture only), Health, Car, Account 9"
     );
     assert!(
         !capture.contains("const STEPS")
@@ -782,8 +790,9 @@ fn g1_g6_slice1b_capture_grid_one_table() {
     );
     // G6
     assert!(
-        capture.contains("accountName: \"Speculation\""),
-        "G6: Speculation is a row"
+        capture.contains("accountName: \"Speculation\"")
+            && capture.contains("label: \"Speculation (capture only)\""),
+        "G6: Speculation is a capture-only row; storage key stays Speculation"
     );
     assert!(
         capture.contains("placeholder=\"skip\"")
@@ -819,9 +828,13 @@ fn g1_g6_slice1b_capture_grid_one_table() {
         app.contains("declarationRefreshedOn === summary.declarationAsOf"),
         "DeclarationRefresh on open runs once per local date"
     );
+    let home = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/home/HomeScreen.tsx"),
+    )
+    .unwrap();
     assert!(
         app.contains("inSchedule === true")
-            && app.contains("refreshDeclarations(true)")
+            && home.contains("refreshDeclarations(true)")
             && app.contains("force ? { force: true }"),
         "auto collectors share weekday 9-4; Refresh declarations is force"
     );
@@ -941,7 +954,14 @@ fn plan_management_shows_typed_change_and_shares_are_not_a_missing_lot() {
     );
     assert!(screen.contains("It does not store the Plan."));
     assert!(screen.contains("aria-label=\"Collector gaps\""));
-    assert!(app.contains("aria-label=\"Collector gaps\""));
+    assert!(
+        !app.contains("aria-label=\"Collector gaps\""),
+        "Collector gaps live on Position Details / New Investment, not App.tsx shell"
+    );
+    assert!(
+        screen.contains("aria-label=\"Collector gaps\""),
+        "Position Details keeps Collector gaps"
+    );
     let fwd = ui
         .split("export function planFwdAtAmountBps")
         .nth(1)

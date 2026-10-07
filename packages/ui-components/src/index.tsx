@@ -2210,7 +2210,7 @@ export const INCOME_PLAN_DEFAULT_ACCOUNTS = [
   "Car",
   "Health",
   "FI Roth",
-  "9",
+  "Account 9",
 ];
 export const INCOME_PLAN_OPTIONAL_ACCOUNTS = [
   "Speculation",
@@ -2596,6 +2596,7 @@ export type IncomePlanWeekView = {
     declarationPerShareScale?: number;
     declarationEnteredOn?: string | null;
     declarationCurrent?: boolean;
+    payDateAssumed?: boolean;
     scale: number;
     accounts?: Array<{
       accountName: string;
@@ -3098,7 +3099,10 @@ export function IncomePlanWeekPanel({
                             row.symbol
                           )}
                         </td>
-                        <td>{formatMonthDay(row.payOn)}</td>
+                        <td>
+                          {formatMonthDay(row.payOn)}
+                          {row.payDateAssumed ? <span> assumed</span> : null}
+                        </td>
                         <td
                           className={`numeric ip-plan-sh${planShort ? " ip-plan-short" : ""}`}
                           title={
@@ -3341,6 +3345,8 @@ export type HoldingsLotView = {
   remainingPerformanceMinor: number;
   remainingTaxMinor: number;
   scale: number;
+  unrealizedPnlBps?: number | null;
+  planYocBps?: number | null;
 };
 
 function unitCostMinor(lot: HoldingsLotView): number | null {
@@ -3404,6 +3410,10 @@ export function HoldingsPanel({
         return lot.remainingPerformanceMinor;
       case "tax":
         return lot.remainingTaxMinor;
+      case "pnl":
+        return lot.unrealizedPnlBps ?? null;
+      case "annual":
+        return lot.planYocBps ?? null;
       default:
         return lot.symbol;
     }
@@ -3413,8 +3423,8 @@ export function HoldingsPanel({
       <p>
         Showing {formatCount(shown.length)} of {formatCount(lots.length)} open lots. Click a
         column heading to sort. Footer totals are the shown rows. Dual cost stays separate.
-        Last price and market value are on Calculator and Position Details, including a
-        stale last price. Unknown stays unknown.
+        P&L% and Annual% are on original (performance) cost; unknown when last price, plan,
+        or cost is missing. Dollar market value stays on Calculator and Position Details.
       </p>
       <div className="table-wrap">
         <table aria-label="Holdings lots">
@@ -3428,6 +3438,8 @@ export function HoldingsPanel({
               {sortHead(sort, "Unit tax", "unitTax", true)}
               {sortHead(sort, "Perf basis", "perf", true)}
               {sortHead(sort, "Tax basis", "tax", true)}
+              {sortHead(sort, "P&L%", "pnl", true)}
+              {sortHead(sort, "Annual%", "annual", true)}
             </tr>
           </thead>
           <tbody>
@@ -3464,6 +3476,8 @@ export function HoldingsPanel({
                     {formatUsd(lot.remainingPerformanceMinor, lot.scale)}
                   </td>
                   <td className="numeric">{formatUsd(lot.remainingTaxMinor, lot.scale)}</td>
+                  <td className="numeric">{formatBps(lot.unrealizedPnlBps)}</td>
+                  <td className="numeric">{formatBps(lot.planYocBps)}</td>
                 </tr>
               );
             })}
@@ -3492,6 +3506,8 @@ export function HoldingsPanel({
                   })),
                 )}
               </td>
+              <td className="numeric">—</td>
+              <td className="numeric">—</td>
             </tr>
           </tfoot>
         </table>
@@ -4801,7 +4817,7 @@ export function CalculatorReturnSheet({
               {sortHead(sort, "Recent / share", "recentShare", true)}
               {sortHead(sort, "Recent total", "recentTotal", true)}
               {sortHead(sort, "Realized %", "costRec", true)}
-              {sortHead(sort, "TVAL", "tval", true)}
+              {sortHead(sort, "Calculator blend", "tval", true)}
               {sortHead(sort, "MC TVAL", "mcTval", true)}
               {sortHead(sort, "TVAL Δ", "tvalDelta", true)}
               {sortHead(sort, "3-pay yield", "threeYield", true)}

@@ -360,7 +360,7 @@ async fn g_ip_01_table1_has_no_last_update() {
     let grid = query_json(
         &platform,
         "IncomePlanGridGet",
-        grid_body(&["Income", "Car", "Health", "FI Roth", "9"], "2026-09-04"),
+        grid_body(&["Income", "Car", "Health", "FI Roth", "Account 9"], "2026-09-04"),
     )
     .await;
     let cols = grid["table1Columns"].as_array().unwrap();
@@ -379,7 +379,7 @@ async fn g_ip_02_table2_last_update_replaces_qty_total_annual() {
     let grid = query_json(
         &platform,
         "IncomePlanGridGet",
-        grid_body(&["Income", "Car", "Health", "FI Roth", "9"], "2026-09-04"),
+        grid_body(&["Income", "Car", "Health", "FI Roth", "Account 9"], "2026-09-04"),
     )
     .await;
     assert!(!grid.to_string().contains("ytd_total"));
@@ -415,7 +415,7 @@ async fn g_ip_04_monthly_only_pay_week() {
     let grid = query_json(
         &platform,
         "IncomePlanGridGet",
-        grid_body(&["Income", "Car", "Health", "FI Roth", "9"], "2026-08-28"),
+        grid_body(&["Income", "Car", "Health", "FI Roth", "Account 9"], "2026-08-28"),
     )
     .await;
     let row = table2_row(&grid, "MON1").expect("MON1");
@@ -440,7 +440,7 @@ async fn g_ip_05_future_actual_blank() {
     let grid = query_json(
         &platform,
         "IncomePlanGridGet",
-        grid_body(&["Income", "Car", "Health", "FI Roth", "9"], "2026-09-11"),
+        grid_body(&["Income", "Car", "Health", "FI Roth", "Account 9"], "2026-09-11"),
     )
     .await;
     for id in ["total_actual", "total_difference"] {
@@ -471,7 +471,7 @@ async fn g_ip_06_account_filter_car_only() {
     assert!(!labels.iter().any(|l| l.contains("Income")));
     assert!(!labels.iter().any(|l| l.contains("Health")));
     assert!(!labels.iter().any(|l| l.contains("Roth") || l.contains("FI Roth")));
-    assert!(!labels.iter().any(|l| l == "Plan 9" || l == "Actual 9"));
+    assert!(!labels.iter().any(|l| l == "Plan 9" || l == "Actual 9" || l.contains("Account 9")));
     assert!(table2_row(&grid, "WEEK1").is_some());
     assert!(table2_row(&grid, "MON1").is_none());
 }
@@ -491,14 +491,20 @@ async fn g_ip_07_week_nav_a_to_b_to_a() {
     let grid = query_json(
         &platform,
         "IncomePlanGridGet",
-        grid_body(&["Income", "Car", "Health", "FI Roth", "9"], "2026-09-04"),
+        grid_body(&["Income", "Car", "Health", "FI Roth", "Account 9"], "2026-09-04"),
     )
     .await;
     assert_eq!(grid["selectedWeekEnd"], "2026-09-04");
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
-    assert!(app.contains("setIncomePattern(\"B\")"));
-    assert!(app.contains("setIncomePattern(\"A\")"));
-    assert!(app.contains("incomeWeek?.end"));
+    assert!(app.contains("<IncomePlanScreen"));
+    assert!(app.contains("setIncomePattern={setIncomePattern}"));
+    let screen = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/income-plan/IncomePlanScreen.tsx"),
+    )
+    .unwrap();
+    assert!(screen.contains("setIncomePattern(\"B\")"));
+    assert!(screen.contains("setIncomePattern(\"A\")"));
+    assert!(screen.contains("incomeWeek?.end"));
 }
 
 #[tokio::test]
@@ -586,7 +592,7 @@ async fn g_ip_p01_pdf_pattern_a_contains_both_tables_not_b() {
             "asOfDate": AS_OF,
             "historicalWeeks": 6,
             "futureWeeks": 6,
-            "accounts": ["Income", "Car", "Health", "FI Roth", "9"],
+            "accounts": ["Income", "Car", "Health", "FI Roth", "Account 9"],
             "printedAt": "2026-09-08T12:00Z"
         }),
     )
@@ -671,7 +677,7 @@ async fn g_ip_p04_excel_future_actual_blank() {
             "pattern": "A",
             "format": "xlsx",
             "asOfDate": AS_OF,
-            "accounts": ["Income", "Car", "Health", "FI Roth", "9"],
+            "accounts": ["Income", "Car", "Health", "FI Roth", "Account 9"],
             "historicalWeeks": 6,
             "futureWeeks": 6,
             "printedAt": "2026-09-08T12:00Z"
@@ -683,7 +689,7 @@ async fn g_ip_p04_excel_future_actual_blank() {
     let grid = query_json(
         &platform,
         "IncomePlanGridGet",
-        grid_body(&["Income", "Car", "Health", "FI Roth", "9"], "2026-09-11"),
+        grid_body(&["Income", "Car", "Health", "FI Roth", "Account 9"], "2026-09-11"),
     )
     .await;
     let actual = grid["table1"]

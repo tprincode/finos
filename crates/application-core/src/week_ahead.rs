@@ -352,10 +352,7 @@ pub async fn week_ahead_get(
         .filter(|o| week_ahead_in_window(&o.account, &o.occurred_on, &start, &end))
         .filter_map(|o| {
             let element = elements.iter().find(|e| e.element_id == o.element_id)?;
-            if element.note.eq_ignore_ascii_case("dividend")
-                || element.account.eq_ignore_ascii_case("CLM")
-                || element.account.eq_ignore_ascii_case("CRF")
-            {
+            if element.note.eq_ignore_ascii_case("dividend") {
                 return None;
             }
             Some(WeekAheadRow {

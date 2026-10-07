@@ -556,7 +556,7 @@ export function PositionDetailsScreen({
                 const payCount = pays.filter((pay) => pay.amountPerShareMinor != null).length;
                 const avg = meanNewestPays(pays, 6, true);
                 const avg3 = meanNewestPays(pays, 3);
-                const low = minPaidDeclaration(cells);
+                const low = minPaidDeclaration(inForce);
                 const current = newestStoredPay(pays);
                 const score = dividendScore(master, cells, current, inForce);
                 const holdingQty = (positionDetails?.positions ?? [])

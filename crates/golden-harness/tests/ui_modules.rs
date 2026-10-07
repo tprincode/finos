@@ -77,6 +77,7 @@ fn desktop_sources() -> String {
         "apps/desktop/src/features/graphing/TrendsCharts.tsx",
         "apps/desktop/src/features/graphing/DividendWeeks.tsx",
         "apps/desktop/src/features/home/HomeDividendPlan.tsx",
+        "apps/desktop/src/features/home/HomeScreen.tsx",
         "apps/desktop/src/features/collectors/CollectorsScreen.tsx",
         "apps/desktop/src/features/collectors/CollectorEstablishScreen.tsx",
         "apps/desktop/src/features/interest-rate/InterestRateCalculator.tsx",
@@ -86,6 +87,7 @@ fn desktop_sources() -> String {
         "apps/desktop/src/features/task-manager/TaskManager.tsx",
         "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
         "apps/desktop/src/features/add-lot/AddLotScreen.tsx",
+        "apps/desktop/src/features/new-investment/NewInvestmentScreen.tsx",
         "apps/desktop/src/features/holdings/HoldingsScreen.tsx",
         "apps/desktop/src/features/income-plan/IncomePlanScreen.tsx",
         "apps/desktop/src/features/market-impact/MarketImpactPlanner.tsx",
@@ -522,8 +524,12 @@ fn home_page_loaded_is_logged_after_the_home_screen_commits() {
         "the paint mark asks the host to log Home"
     );
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let home = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/home/HomeScreen.tsx"),
+    )
+    .unwrap();
     assert!(
-        app.contains("<HomePaintMark"),
+        app.contains("<HomeScreen") && home.contains("<HomePaintMark"),
         "Home mounts the paint mark"
     );
     let boot = std::fs::read_to_string(repo_root().join("apps/desktop/src/main.tsx")).unwrap();
@@ -1113,6 +1119,7 @@ fn home_component_lines_are_the_mounted_screen() {
         "apps/desktop/src/App.tsx",
         "apps/desktop/src/features/graphing/HomeAccountCharts.tsx",
         "apps/desktop/src/features/home/HomeDividendPlan.tsx",
+        "apps/desktop/src/features/home/HomeScreen.tsx",
         "apps/desktop/src/features/cash/AccountCashFlow.tsx",
         "apps/desktop/src/features/income-plan/IncomePlanScreen.tsx",
         "apps/desktop/src/ImportWizard.tsx",

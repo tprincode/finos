@@ -1,6 +1,7 @@
 use application_core::contracts::{
-    CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
+    CashElementRecord, CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
 };
+use application_core::ports::canonical::Canonical;
 use application_core::queries::{execute_command_on, execute_query_on};
 use golden_harness::repo_root;
 use storage_sqlite::LocalPlatform;
@@ -129,7 +130,93 @@ async fn w1_unconfirmed_income_triple_and_car_no_dividends() {
                 && r["account"] != "CLM"
                 && r["account"] != "CRF"
                 && r["transaction"] != "Cash_Adjust"),
-        "Week Ahead never lists dividends, Cash_Adjust, or CLM/CRF: {ahead}"
+        "seed week lists no dividend note, no CLM or CRF account, and no Cash_Adjust: {ahead}"
+    );
+}
+
+#[tokio::test]
+async fn clm_account_is_listed_and_a_dividend_note_is_not() {
+    let (_dir, platform) = seeded_platform().await;
+    let _ = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-12"}),
+    )
+    .await;
+    platform
+        .cash_element_upsert(CashElementRecord {
+            element_id: Uuid::new_v4(),
+            account: "CLM".into(),
+            kind: "Deposit".into(),
+            cadence: "weekly".into(),
+            amount_minor: 4_200,
+            note: "cash".into(),
+            weekday_or_month_day: "Sat".into(),
+            start_on: String::new(),
+            stop_on: String::new(),
+        })
+        .await
+        .unwrap();
+    platform
+        .cash_element_upsert(CashElementRecord {
+            element_id: Uuid::new_v4(),
+            account: "CLM".into(),
+            kind: "Deposit".into(),
+            cadence: "weekly".into(),
+            amount_minor: 1_100,
+            note: "dividend".into(),
+            weekday_or_month_day: "Sat".into(),
+            start_on: String::new(),
+            stop_on: String::new(),
+        })
+        .await
+        .unwrap();
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-12"}),
+    )
+    .await;
+    let listed = rows_for(&ahead, "CLM");
+    assert!(
+        listed.iter().any(|r| r["note"] == "cash" && r["amountMinor"] == 4_200),
+        "an account named CLM stays on the list: {ahead}"
+    );
+    assert!(
+        ahead["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["note"] != "dividend"),
+        "a dividend note stays off the list: {ahead}"
+    );
+}
+
+#[test]
+fn elements_grid_is_date_account_transaction_amount() {
+    let ahead = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/WeekAhead.tsx"),
+    )
+    .unwrap();
+    assert!(
+        ahead.contains("<th>Date</th>")
+            && ahead.contains("<th>Account</th>")
+            && ahead.contains("<th>Transaction</th>")
+            && ahead.contains("<th>Amount</th>")
+            && ahead.contains("<th>Snooze</th>")
+            && ahead.contains("Snooze till tomorrow")
+            && !ahead.contains("Check tomorrow"),
+        "Elements columns are Date, Account, Transaction, Amount, and Snooze stands in for Check tomorrow"
+    );
+    let query = std::fs::read_to_string(
+        repo_root().join("crates/application-core/src/week_ahead.rs"),
+    )
+    .unwrap();
+    assert!(
+        query.contains("note.eq_ignore_ascii_case(\"dividend\")")
+            && !query.contains("eq_ignore_ascii_case(\"CLM\")")
+            && !query.contains("eq_ignore_ascii_case(\"CRF\")"),
+        "dividends drop by note; account names CLM and CRF do not"
     );
 }
 
@@ -419,11 +506,11 @@ fn w6_capture_grid_still_one_six_row_table() {
         capture.contains("aria-label=\"Week capture grid\"")
             && capture.contains("label: \"Income\"")
             && capture.contains("label: \"FI Roth\"")
-            && capture.contains("label: \"Speculation\"")
+            && capture.contains("label: \"Speculation (capture only)\"")
             && capture.contains("label: \"Health\"")
             && capture.contains("label: \"Car\"")
             && capture.contains("label: \"Account 9\""),
-        "W6: capture still one six-row table"
+        "W6: capture still one six-row table; Speculation is capture-only"
     );
     assert!(
         !capture.contains("const STEPS") && !capture.contains("Next Trends step"),

@@ -140,6 +140,16 @@ fn trends_dividend_year_compare_is_grouped_month_bars() {
     );
     assert!(trends.contains("<DividendYearCompareChart points={points} />"));
     let risk_at = trends.rfind("<LiveByRiskCharts").expect("risk charts");
+    let home = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/graphing/HomeAccountCharts.tsx"),
+    )
+    .unwrap();
+    assert!(
+        home.contains("subtext: \"Current allocation\"")
+            && home.contains("aria-label=\"Live by risk level\"")
+            && home.contains("aria-label=\"Live by risk allocation\""),
+        "Live by risk donut is level plus mix (Current allocation), not a second plan"
+    );
     let compare_at = trends
         .rfind("<DividendYearCompareChart")
         .expect("year compare");

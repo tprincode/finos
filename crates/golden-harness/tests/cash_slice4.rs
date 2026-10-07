@@ -96,12 +96,13 @@ fn n2_element_dirty_joins_leave_and_restart() {
     assert!(
         app.contains("elementDirty")
             && app.contains("leaveWithoutSaving")
-            && app.contains("pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty"),
+            && app.contains("if (elementDirty && !(ontoCm && dest === \"elements\"))")
+            && app.contains("cashDirty ||\n        elementDirty ||\n        externalDirty ||\n        managerDirty ||\n        marketImpactDirty"),
         "N2: elementDirty joins leaveWithoutSaving"
     );
     assert!(
-        app.contains("pdDirty || wizDirty || addLotDirty || cashDirty || elementDirty || externalDirty || weekWizardActive"),
-        "N2: elementDirty joins Restart guard"
+        app.contains("pdDirty ||\n      wizDirty ||\n      addLotDirty ||\n      cashDirty ||\n      elementDirty ||\n      externalDirty ||\n      managerDirty ||\n      marketImpactDirty"),
+        "N2: elementDirty joins unsaved bar / Restart guard"
     );
     let editor = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/cash/CashElementEditor.tsx"),
@@ -152,6 +153,110 @@ async fn n3_element_list_all_seeded_books() {
     assert_eq!(health.len(), 2, "Health two elements: {list}");
     let ssa: Vec<_> = items.iter().filter(|i| i["account"] == "SSA_2026").collect();
     assert_eq!(ssa.len(), 2, "SSA two elements: {list}");
+}
+
+#[tokio::test]
+async fn income_editor_save_keeps_three_catalog_elements() {
+    let (_dir, platform) = seeded_platform().await;
+    let _ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-12"}),
+    )
+    .await;
+    let list = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Income", "asOfDate": "2026-09-12"}),
+    )
+    .await;
+    let items = list["items"].as_array().expect("items");
+    let net = items
+        .iter()
+        .find(|i| i["note"] == "net")
+        .expect("Income net element");
+    let before: Vec<&str> = items
+        .iter()
+        .filter(|i| i["account"] == "Income")
+        .map(|i| i["note"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(before.len(), 3, "seed Income is three elements: {list}");
+    assert!(
+        before.contains(&"net") && before.contains(&"fed") && before.contains(&"state"),
+        "seed notes: {before:?}"
+    );
+    must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "Income",
+            "elementId": net["elementId"],
+            "name": "net",
+            "kind": "Withdrawal",
+            "cadence": "weekly",
+            "weekdayOrMonthDay": "Sat",
+            "amountMinor": net["amountMinor"].as_i64().unwrap_or(0) + 100,
+            "asOfDate": "2026-09-12",
+            "startOn": "",
+            "stopOn": "",
+            "occurrences": []
+        }),
+    )
+    .await;
+    let after = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Income", "asOfDate": "2026-09-12"}),
+    )
+    .await;
+    let income: Vec<_> = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["account"] == "Income")
+        .collect();
+    assert_eq!(
+        income.len(),
+        3,
+        "editor save of one Income element must not collapse to one gross: {after}"
+    );
+    let notes: Vec<&str> = income
+        .iter()
+        .map(|i| i["note"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        notes.contains(&"net") && notes.contains(&"fed") && notes.contains(&"state"),
+        "siblings stay net/fed/state after save: {notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|n| n.eq_ignore_ascii_case("gross")),
+        "no gross-only Income element after save: {notes:?}"
+    );
+}
+
+#[test]
+fn income_editor_is_one_amount_per_element_not_three_line_form() {
+    let editor = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/CashElementEditor.tsx"),
+    )
+    .unwrap();
+    assert!(
+        editor.contains("aria-label=\"Element amount\"")
+            && !editor.contains("federalWithholding")
+            && !editor.contains("stateWithholding")
+            && !editor.contains("grossMinor"),
+        "N: editor is one Amount per catalog element; disbursement three-line stays on post path"
+    );
+    let register = std::fs::read_to_string(
+        repo_root().join("crates/application-core/src/cash_register.rs"),
+    )
+    .unwrap();
+    assert!(
+        register.contains("posted(\"income\", gross - fed - state)")
+            && register.contains("posted(\"fed\", fed)")
+            && register.contains("posted(\"state\", state)"),
+        "disbursement week report still materializes income/fed/state lines from withholding"
+    );
 }
 
 #[test]

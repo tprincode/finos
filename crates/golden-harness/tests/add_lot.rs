@@ -570,3 +570,35 @@ fn add_lot_ui_shows_position_not_established_sentence() {
         "LotOpen refuses before write and does not invent the investment"
     );
 }
+
+#[test]
+fn rejected_nine_step_wizard_is_gone() {
+    let app = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.tsx"))
+        .unwrap();
+    assert!(
+        !app.contains("setWizStep") && !app.contains("wizStep"),
+        "the rejected 9-step wizard must not leave a step machine in App.tsx"
+    );
+}
+
+#[test]
+fn car_buy_requires_tax_equals_or_unit_tax() {
+    let screen = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/add-lot/AddLotScreen.tsx"),
+    )
+    .unwrap();
+    let app = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.tsx"))
+        .unwrap();
+    assert!(
+        screen.contains("aria-label=\"Tax equals performance\"")
+            && screen.contains("carTaxReady")
+            && screen.contains("name === \"Car\""),
+        "Car shows Tax equals performance and blocks Confirm until ready"
+    );
+    assert!(
+        app.contains("Car needs unit tax $, or check Tax equals performance.")
+            && app.contains("addLotTaxEquals")
+            && app.contains("accountName === \"Car\""),
+        "Car Confirm copies tax from performance only when the owner says they are equal"
+    );
+}

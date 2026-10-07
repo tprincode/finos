@@ -1112,10 +1112,10 @@ fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
     );
     assert!(
         cm.contains("This week confirmed transactions")
-            && !cm.contains("Add cash activity")
+            && cm.contains("Add cash activity")
             && !cm.contains("Cash management month")
             && !cm.contains("weekGrossMinor"),
-        "Week desk lists confirmed transactions only; no Add cash activity or month rollup"
+        "Week desk lists confirmed transactions; Add cash activity stays on weekly"
     );
     assert!(
         cm.contains("if (desk === \"car\")"),

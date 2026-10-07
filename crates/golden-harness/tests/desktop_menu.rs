@@ -141,6 +141,11 @@ async fn menu_queries_succeed_on_data_sqlite() {
 #[test]
 fn last_prices_summary_replaces_refresh_banner() {
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let home = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/home/HomeScreen.tsx"),
+    )
+    .unwrap();
+    let board = format!("{app}\n{home}");
     assert!(
         !app.contains("Last prices updated:"),
         "refresh must not print recorded/skipped under the summary grid"
@@ -150,7 +155,7 @@ fn last_prices_summary_replaces_refresh_banner() {
         "issuer-source apply is not a last-price grid fact"
     );
     assert!(
-        app.contains("<dt>Last Price all symbols</dt>"),
+        board.contains("<dt>Last Price all symbols</dt>"),
         "Last prices cell title includes all symbols"
     );
     assert!(
@@ -158,7 +163,7 @@ fn last_prices_summary_replaces_refresh_banner() {
         "Home grid must not show a separate Symbols tile"
     );
     assert!(
-        app.contains("<dt>Dividend Managed positions</dt>"),
+        board.contains("<dt>Dividend Managed positions</dt>"),
         "Declarations tile is Dividend Managed positions"
     );
     assert!(
@@ -170,11 +175,11 @@ fn last_prices_summary_replaces_refresh_banner() {
         "Home grid must not show Calculator plans"
     );
     assert!(
-        app.contains("summary.declarationCollectorCount"),
+        board.contains("summary.declarationCollectorCount"),
         "Dividend Managed positions keeps N of M"
     );
     assert!(
-        app.contains("summary.declarationRefreshedOn"),
+        board.contains("summary.declarationRefreshedOn"),
         "Last update is last last_run day, not today's as-of"
     );
     assert!(
@@ -182,7 +187,7 @@ fn last_prices_summary_replaces_refresh_banner() {
         "Dividend Managed positions drops lecture copy under the count"
     );
     assert!(
-        app.contains("Last refresh"),
+        board.contains("Last refresh"),
         "Last prices cell must show last refresh date"
     );
     assert!(
@@ -192,8 +197,8 @@ fn last_prices_summary_replaces_refresh_banner() {
     // Owner treats "Income through" and "Income reported through" as the same tile, so either
     // wording passes. The Home board order is locked elsewhere; this only checks the tile exists.
     assert!(
-        app.contains("<dt>Income through</dt>")
-            || app.contains("<dt>Income reported through</dt>"),
+        board.contains("<dt>Income through</dt>")
+            || board.contains("<dt>Income reported through</dt>"),
         "Home grid must show income current through date"
     );
     assert!(
@@ -205,30 +210,30 @@ fn last_prices_summary_replaces_refresh_banner() {
         "Income through replaces Last yield"
     );
     assert!(
-        app.contains("aria-label=\"Income through transactions\""),
+        board.contains("aria-label=\"Income through transactions\""),
         "Income through date must open the paid-dividend list"
     );
     assert!(
-        app.contains("<th>Date</th>")
-            && app.contains("<th>Acct</th>")
-            && app.contains("<th>Symbol</th>"),
+        board.contains("<th>Date</th>")
+            && board.contains("<th>Acct</th>")
+            && board.contains("<th>Symbol</th>"),
         "Income through dialog lists date, acct, symbol"
     );
     assert!(
-        app.contains("income-tx-scroll"),
+        board.contains("income-tx-scroll"),
         "Income through list must scroll"
     );
     assert!(
-        app.contains("aria-label=\"Income transaction period\""),
+        board.contains("aria-label=\"Income transaction period\""),
         "Income through list must offer a period dropdown"
     );
-    assert!(app.contains("aria-label=\"Income transaction start\""));
-    assert!(app.contains("aria-label=\"Income transaction end\""));
+    assert!(board.contains("aria-label=\"Income transaction start\""));
+    assert!(board.contains("aria-label=\"Income transaction end\""));
     assert!(
-        app.contains("aria-label=\"Income transaction account\""),
+        board.contains("aria-label=\"Income transaction account\""),
         "Income through list must filter by account"
     );
-    assert!(app.contains("All accounts"));
+    assert!(board.contains("All accounts"));
     let period = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/incomeTxPeriod.ts"),
     )
@@ -480,8 +485,12 @@ fn cash_ytd_home_passes_account_and_tax() {
         app.contains("weekAheadTaskHandlers"),
         "Week Ahead resolve, ignore, and loan confirm must be wired"
     );
+    let add_investment = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/new-investment/NewInvestmentScreen.tsx"),
+    )
+    .unwrap();
     assert!(
-        app.contains("aria-label=\"Apply suggested tier\""),
+        add_investment.contains("aria-label=\"Apply suggested tier\""),
         "Add Investment must be able to apply the suggested tier"
     );
     let cash = std::fs::read_to_string(

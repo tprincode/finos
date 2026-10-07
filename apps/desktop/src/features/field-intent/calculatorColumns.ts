@@ -110,7 +110,7 @@ export const CALCULATOR_COLUMN_INTENT: readonly CalculatorColumnIntent[] = [
     name: "Type",
     intent: "Stored dividend type. DIV-1 and CASH are not the same. Empty is a ticket, not a guess.",
     formula: "position.divType, else —",
-    status: "matches",
+    status: "still wrong",
   },
   {
     name: "Sched",
@@ -203,23 +203,23 @@ export const CALCULATOR_COLUMN_INTENT: readonly CalculatorColumnIntent[] = [
     status: "matches",
   },
   {
-    name: "TVAL",
+    name: "Calculator blend",
     intent:
       "Legacy Calculator TVAL V3. Blend of unrealized gain and Plan yield on price. Not Holdings TVAL. TVAL 2.1 is not this column.",
     formula: "(Gain% × 2 + FWD) / 2",
-    status: "matches",
+    status: "still wrong",
   },
   {
     name: "MC TVAL",
     intent: "Same blend, using the newest-declaration yield.",
     formula: "(Gain% × 2 + MC FWD) / 2",
-    status: "matches",
+    status: "still wrong",
   },
   {
     name: "TVAL Δ",
     intent: "How far the declaration score has moved from the Plan score.",
     formula: "MC TVAL − TVAL",
-    status: "matches",
+    status: "still wrong",
   },
   {
     name: "3-pay yield",

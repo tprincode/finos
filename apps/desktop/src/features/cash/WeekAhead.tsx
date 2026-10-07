@@ -2,7 +2,7 @@ import { useState } from "react";
 import { formatUsd } from "@finos/ui-components";
 import type { AccountListItem, LoanWeekRow, WeekAheadGet } from "@finos/app-contracts";
 import { MagiCliffPanel } from "../task-manager/MagiCliffPanel";
-import { monthDay, ReminderTable, taskReminderRows } from "../task-manager/ReminderTable";
+import { ReminderTable, taskReminderRows } from "../task-manager/ReminderTable";
 import { BusySurface } from "../shared/BusySurface";
 
 export function WeekAheadPanel({
@@ -99,56 +99,75 @@ export function WeekAheadPanel({
           Add element
         </button>
       </div>
-      <ReminderTable
-        label="Elements"
-        rows={week.rows.map((row) => {
-          const pending = pendingId === row.occurrenceId;
-          const name = row.note || row.transaction;
-          return {
-            id: row.occurrenceId,
-            title: `${row.transaction} ${formatUsd(row.amountMinor, row.scale ?? scale)}`,
-            domain: row.account,
-            due: monthDay(row.occurredOn),
-            status: "Open",
-            actions: (
-              <>
-                <button
-                  type="button"
-                  aria-label={`Confirm ${row.account} ${name}`}
-                  disabled={busy || pending}
-                  className={pending ? "is-unsaved" : undefined}
-                  onClick={() => onConfirm(row.occurrenceId)}
-                >
-                  Confirm
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Edit ${row.account} ${name}`}
-                  disabled={busy}
-                  onClick={() =>
-                    onOpenEditor({
-                      occurrenceId: row.occurrenceId,
-                      elementId: row.elementId,
-                      account: row.account,
-                      note: row.note,
-                    })
-                  }
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Snooze till tomorrow ${row.account} ${name}`}
-                  disabled={busy}
-                  onClick={() => onDefer(row.occurrenceId)}
-                >
-                  Snooze
-                </button>
-              </>
-            ),
-          };
-        })}
-      />
+      <div className="table-wrap">
+        <table aria-label="Week ahead elements">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Account</th>
+              <th>Transaction</th>
+              <th>Amount</th>
+              <th>Confirm</th>
+              <th>Edit</th>
+              <th>Snooze</th>
+            </tr>
+          </thead>
+          <tbody>
+            {week.rows.map((row) => {
+              const pending = pendingId === row.occurrenceId;
+              const name = row.note || row.transaction;
+              return (
+                <tr key={row.occurrenceId}>
+                  <td>{row.occurredOn}</td>
+                  <td>{row.account}</td>
+                  <td>{row.transaction}</td>
+                  <td className="numeric">
+                    {formatUsd(row.amountMinor, row.scale ?? scale)}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      aria-label={`Confirm ${row.account} ${name}`}
+                      disabled={busy || pending}
+                      className={pending ? "is-unsaved" : undefined}
+                      onClick={() => onConfirm(row.occurrenceId)}
+                    >
+                      Confirm
+                    </button>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      aria-label={`Edit ${row.account} ${name}`}
+                      disabled={busy}
+                      onClick={() =>
+                        onOpenEditor({
+                          occurrenceId: row.occurrenceId,
+                          elementId: row.elementId,
+                          account: row.account,
+                          note: row.note,
+                        })
+                      }
+                    >
+                      Edit
+                    </button>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      aria-label={`Snooze till tomorrow ${row.account} ${name}`}
+                      disabled={busy}
+                      onClick={() => onDefer(row.occurrenceId)}
+                    >
+                      Snooze
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
       {(week.loans ?? []).length > 0 ? (
         <div className="table-wrap">
           <h3>Loan payments</h3>

@@ -474,6 +474,20 @@ fn income_plan_remaining_bounds(week_start: &str, week_end: &str) -> (String, St
     }
 }
 
+fn pay_date_is_assumed_next_year(
+    pay_on: &str,
+    rows: &[crate::contracts::AssumedPayDateRecord],
+) -> bool {
+    let day = pay_on.get(..10).unwrap_or(pay_on).trim();
+    if day.is_empty() {
+        return false;
+    }
+    rows.iter().any(|row| {
+        row.provenance == "assumed_next_year"
+            && row.pay_on.get(..10).unwrap_or(row.pay_on.as_str()) == day
+    })
+}
+
 async fn remaining_pay_dates_for(
     canonical: &dyn Canonical,
     security_id: Uuid,
@@ -2016,6 +2030,11 @@ async fn income_plan_week_with(
             decl_row,
             &position_account_actuals,
         );
+        let assumed_rows = canonical
+            .assumed_pay_date_list(*security_id)
+            .await
+            .unwrap_or_default();
+        let pay_date_assumed = pay_date_is_assumed_next_year(&pay_on, &assumed_rows);
         positions.push(IncomePlanPositionBody {
             symbol: sec.symbol.clone(),
             cadence: cadence.map(|c| c.label().to_string()).unwrap_or_default(),
@@ -2039,6 +2058,7 @@ async fn income_plan_week_with(
             declaration_per_share_scale,
             declaration_entered_on,
             declaration_current,
+            pay_date_assumed,
             scale: 2,
             accounts: account_slices,
             last_update: last_update_by_sec.get(security_id).cloned().flatten(),
@@ -2106,6 +2126,7 @@ async fn income_plan_week_with(
             declaration_per_share_scale: 0,
             declaration_entered_on: None,
             declaration_current: false,
+            pay_date_assumed: false,
             scale: 2,
             accounts: account_slices,
             last_update: None,
@@ -2461,15 +2482,16 @@ async fn dashboard_burndown_view(
     let lines = financial_domain::income_plan::BURNDOWN_ACCOUNTS
         .iter()
         .map(|name| {
+            let display = financial_domain::income_plan::display_account_label(name);
             let inflow = week
                 .lines
                 .iter()
-                .find(|line| line.account_name == *name)
+                .find(|line| line.account_name == display)
                 .map(|line| line.actual_minor)
                 .unwrap_or(0);
             let ending = latest_balance.get(name).copied();
             DashboardBurndownLineBody {
-                account_name: (*name).to_string(),
+                account_name: display,
                 inflow_minor: inflow,
                 outflow_minor: *outflows.get(name).unwrap_or(&0),
                 floor_known: false,
@@ -2649,41 +2671,109 @@ pub(crate) async fn holdings_view(canonical: &dyn Canonical) -> Result<HoldingsG
     let accounts = canonical.account_list().await?;
     let securities = canonical.security_list().await?;
     let reservations = canonical.option_cover_reservations().await?;
-    let lots = basis
+    let characteristics = canonical.position_characteristic_list().await?;
+    let plans = canonical.plan_history_list().await?;
+    let today = today_iso();
+    let char_by: HashMap<_, _> = characteristics
+        .iter()
+        .map(|c| (c.security_id, c))
+        .collect();
+    let plan_by: HashMap<_, _> = plans.iter().map(|p| (p.security_id, p)).collect();
+    let open_lots: Vec<_> = basis
         .lots
         .into_iter()
         .filter(|lot| lot.remaining_quantity_minor > 0)
-        .map(|lot| {
-            let account_name = accounts
-                .iter()
-                .find(|a| a.account_id == lot.account_id)
-                .map(|a| a.name.clone())
-                .unwrap_or_else(|| "â€”".into());
-            let symbol = securities
-                .iter()
-                .find(|s| s.security_id == lot.security_id)
-                .map(|s| s.symbol.clone())
-                .unwrap_or_else(|| "â€”".into());
-            let reserved_shares = reservations
-                .iter()
-                .find(|row| row.lot_id == lot.lot_id)
-                .map(|row| row.shares)
-                .unwrap_or(0);
-            HoldingsLotBody {
-                lot_id: lot.lot_id,
-                account_name,
-                symbol,
-                opened_on: lot.opened_on,
-                remaining_quantity_minor: lot.remaining_quantity_minor,
-                quantity_scale: lot.quantity_scale,
-                promised_quantity_minor: reserved_shares
-                    .saturating_mul(10i64.pow(u32::from(lot.quantity_scale))),
-                remaining_performance_minor: lot.remaining_performance_minor,
-                remaining_tax_minor: lot.remaining_tax_minor,
-                scale: lot.scale,
-            }
-        })
         .collect();
+    let mut price_by: HashMap<Uuid, CurrentPriceBody> = HashMap::new();
+    for lot in &open_lots {
+        if price_by.contains_key(&lot.security_id) {
+            continue;
+        }
+        price_by.insert(
+            lot.security_id,
+            canonical
+                .current_price_get(lot.security_id, today.clone())
+                .await?,
+        );
+    }
+    let mut lots = Vec::with_capacity(open_lots.len());
+    for lot in open_lots {
+        let account_name = accounts
+            .iter()
+            .find(|a| a.account_id == lot.account_id)
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "—".into());
+        let symbol = securities
+            .iter()
+            .find(|s| s.security_id == lot.security_id)
+            .map(|s| s.symbol.clone())
+            .unwrap_or_else(|| "—".into());
+        let reserved_shares = reservations
+            .iter()
+            .find(|row| row.lot_id == lot.lot_id)
+            .map(|row| row.shares)
+            .unwrap_or(0);
+        let cost_cents = financial_domain::money::to_usd_cents(
+            lot.remaining_performance_minor,
+            lot.scale,
+        );
+        let price = price_by.get(&lot.security_id);
+        let market_value_minor = match (
+            price.and_then(|p| p.price_minor),
+            price.map(|p| p.price_derived_valid).unwrap_or(false),
+            lot.remaining_quantity_minor > 0,
+        ) {
+            (Some(px), true, true) => {
+                let scale = price.map(|p| p.scale).unwrap_or(2);
+                Some(financial_domain::calculator::plan_payment_cents(
+                    lot.remaining_quantity_minor,
+                    lot.quantity_scale,
+                    px,
+                    scale,
+                ))
+            }
+            _ => None,
+        };
+        let unrealized_pnl_bps = market_value_minor.and_then(|mv| {
+            if cost_cents > 0 {
+                Some(((mv - cost_cents).saturating_mul(10_000)) / cost_cents)
+            } else {
+                None
+            }
+        });
+        let periods = char_by
+            .get(&lot.security_id)
+            .and_then(|c| cadence_periods(&c.payment_frequency))
+            .unwrap_or(0);
+        let plan_yoc_bps = plan_by.get(&lot.security_id).and_then(|plan| {
+            if lot.remaining_quantity_minor <= 0 || periods == 0 || cost_cents <= 0 {
+                return None;
+            }
+            let period = financial_domain::calculator::plan_payment_cents(
+                lot.remaining_quantity_minor,
+                lot.quantity_scale,
+                plan.amount_per_share_minor,
+                plan.amount_scale,
+            );
+            let annual = period.saturating_mul(periods as i64);
+            Some((annual.saturating_mul(10_000)) / cost_cents)
+        });
+        lots.push(HoldingsLotBody {
+            lot_id: lot.lot_id,
+            account_name,
+            symbol,
+            opened_on: lot.opened_on,
+            remaining_quantity_minor: lot.remaining_quantity_minor,
+            quantity_scale: lot.quantity_scale,
+            promised_quantity_minor: reserved_shares
+                .saturating_mul(10i64.pow(u32::from(lot.quantity_scale))),
+            remaining_performance_minor: lot.remaining_performance_minor,
+            remaining_tax_minor: lot.remaining_tax_minor,
+            scale: lot.scale,
+            unrealized_pnl_bps,
+            plan_yoc_bps,
+        });
+    }
 
     // Cart Confirm sell posts ActivityPost then LotAssign in one command.
     // Only leftover posted sells (import / manual / failed assign) appear here.

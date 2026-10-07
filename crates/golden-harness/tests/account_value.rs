@@ -496,13 +496,18 @@ fn home_charts_legend_replaces_sentence() {
     assert!(trends.contains("<LiveByRiskCharts"));
     assert!(trends.contains("period={period}"));
     assert!(!ui.contains("Live by risk graphing period"));
-    assert!(app.contains("home-top-row"));
-    assert!(app.contains("<HomeDividendPlan"));
-    assert!(app.contains("<AccountCashFlow"));
+    let home = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/home/HomeScreen.tsx"),
+    )
+    .unwrap();
+    assert!(home.contains("home-top-row"));
+    assert!(home.contains("<HomeDividendPlan"));
+    assert!(home.contains("<AccountCashFlow"));
     assert!(
-        app.contains("weeks={accountValues?.weeks ?? trends?.weeks}"),
+        home.contains("weeks={accountValues?.weeks ?? trends?.weeks}"),
         "Home cash trend uses HomeOpenGet weeks, not a deferred TrendsGet"
     );
+    assert!(app.contains("<HomeScreen"));
     assert!(app.contains("DividendPlanHomeGet"));
     let css = std::fs::read_to_string(
         golden_harness::repo_root().join("apps/desktop/src/App.css"),
@@ -530,6 +535,12 @@ fn home_charts_legend_replaces_sentence() {
     assert!(plan_ui.contains("Monthly Medical"));
     assert!(!plan_ui.contains("Monthly Reinvest"));
     assert!(plan_ui.contains("Effective annual return"));
+    assert!(plan_ui.contains(">Plan<") || plan_ui.contains(">\n          Plan\n"));
+    assert!(plan_ui.contains("Annual plan ÷ 52"));
+    assert!(
+        !plan_ui.contains("role=\"columnheader\">\n          Weekly"),
+        "the weekly figure is the plan rollup, not a declaration or broker cash column"
+    );
 }
 
 #[test]
@@ -722,12 +733,16 @@ fn home_and_register_cash_chart_ends_in_amount() {
         "2m last Friday is $850; Projected cash is hover-only"
     );
     assert!(
-        app.contains("import { AccountCashFlow } from \"./features/cash/AccountCashFlow\"")
-            && app.contains("<AccountCashFlow")
+        app.contains("<HomeScreen")
             && register.contains("import { AccountCashFlow } from \"./AccountCashFlow\"")
             && register.contains("<AccountCashFlow weeks={weeks} asOf={asOfDate} />")
             && home_entry.contains("from \"../cash/AccountCashFlow\"")
-            && home_entry.contains("AccountCashFlow as HomeAccountTrendFocus"),
+            && home_entry.contains("AccountCashFlow as HomeAccountTrendFocus")
+            && std::fs::read_to_string(
+                root.join("apps/desktop/src/features/home/HomeScreen.tsx"),
+            )
+            .unwrap()
+            .contains("<AccountCashFlow"),
         "Home and Cash Management Register Trend are the same AccountCashFlow"
     );
     for book in [
@@ -1196,7 +1211,7 @@ async fn dividend_plan_home_rolls_annual_and_buckets_monthly() {
             "FI Roth",
             "Energy",
             "Car",
-            "9"
+            "Account 9"
         ]
     );
     let income_row = rows.iter().find(|r| r["accountName"] == "Income").unwrap();

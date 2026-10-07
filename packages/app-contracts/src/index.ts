@@ -328,6 +328,7 @@ export type IncomePlanWeekGet = {
     declarationPerShareScale?: number;
     declarationEnteredOn?: string | null;
     declarationCurrent?: boolean;
+    payDateAssumed?: boolean;
     scale: number;
     accounts?: Array<{
       accountName: string;
@@ -627,6 +628,8 @@ export type HoldingsGet = {
     remainingPerformanceMinor: number;
     remainingTaxMinor: number;
     scale: number;
+    unrealizedPnlBps?: number | null;
+    planYocBps?: number | null;
   }>;
   unassignedSells?: HoldingsUnassignedSell[];
   scale: number;

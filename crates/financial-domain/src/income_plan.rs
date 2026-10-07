@@ -11,11 +11,11 @@ pub const CONTROL_ACCOUNTS: [&str; 5] = ["Income", "Health", "Roth", "Account 9"
 pub const BURNDOWN_ACCOUNTS: [&str; 4] = ["Income", "Car", "Health", "Roth"];
 
 /// Pattern A chips that start on. Session-only; never persisted as owner identity.
-pub const DEFAULT_ACCOUNTS_ON: [&str; 5] = ["Income", "Car", "Health", "FI Roth", "9"];
+pub const DEFAULT_ACCOUNTS_ON: [&str; 5] = ["Income", "Car", "Health", "FI Roth", "Account 9"];
 /// Pattern A chips that start off.
 pub const DEFAULT_ACCOUNTS_OFF: [&str; 3] = ["Speculation", "Energy", "Robinhood"];
 /// Table 1 account-detail order (plan block then actual block).
-pub const TABLE1_ACCOUNT_ORDER: [&str; 5] = ["Income", "Health", "FI Roth", "9", "Car"];
+pub const TABLE1_ACCOUNT_ORDER: [&str; 5] = ["Income", "Health", "FI Roth", "Account 9", "Car"];
 pub const WEEK_COUNT_DEFAULT: u32 = 6;
 pub const WEEK_COUNT_MAX: u32 = 26;
 /// Scale-2 cents: past actual within this of plan is green, not amber.
@@ -105,7 +105,7 @@ pub fn map_income_plan_account(name: &str) -> Option<&'static str> {
 pub fn display_account_label(control: &str) -> String {
     match control {
         "Roth" => "FI Roth".into(),
-        "Account 9" => "9".into(),
+        "Account 9" => "Account 9".into(),
         other => other.to_string(),
     }
 }
@@ -458,7 +458,7 @@ mod tests {
         assert_eq!(map_income_plan_account("Energy"), Some("Energy"));
         assert_eq!(map_income_plan_account("Robinhood"), Some("Robinhood"));
         assert_eq!(display_account_label("Roth"), "FI Roth");
-        assert_eq!(display_account_label("Account 9"), "9");
+        assert_eq!(display_account_label("Account 9"), "Account 9");
         assert_eq!(account_key_from_display("9"), Some("Account 9"));
         assert_eq!(account_key_from_display("FI Roth"), Some("Roth"));
         assert!(!is_burndown_account("Account 9"));

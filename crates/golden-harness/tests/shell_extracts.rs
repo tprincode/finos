@@ -11,6 +11,10 @@ fn position_details_lives_in_feature_module() {
         "apps/desktop/src/features/holdings/index.ts",
         "apps/desktop/src/features/position-details/PositionDetailsScreen.tsx",
         "apps/desktop/src/features/position-details/index.ts",
+        "apps/desktop/src/features/new-investment/NewInvestmentScreen.tsx",
+        "apps/desktop/src/features/new-investment/index.ts",
+        "apps/desktop/src/features/home/HomeScreen.tsx",
+        "apps/desktop/src/features/home/index.ts",
     ] {
         assert!(root.join(rel).is_file(), "missing {rel}");
     }
@@ -33,11 +37,55 @@ fn position_details_lives_in_feature_module() {
         pd.contains("aria-label=\"Position Details\"") && pd.contains("<h2>Position Details</h2>"),
         "Position Details screen owns the hub heading"
     );
+    let wizard = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/new-investment/NewInvestmentScreen.tsx"),
+    )
+    .unwrap();
+    assert!(
+        app.contains("from \"./features/new-investment\"") && app.contains("<NewInvestmentScreen"),
+        "App.tsx mounts Add Investment"
+    );
+    assert!(
+        !app.contains("<h2>Add Investment</h2>") && !app.contains("<ReadinessChecklist"),
+        "Add Investment markup must live in features/new-investment/, not App.tsx"
+    );
+    assert!(
+        wizard.contains("<h2>Add Investment</h2>")
+            && wizard.contains("aria-label=\"Add Investment\"")
+            && wizard.contains("<ReadinessChecklist"),
+        "Add Investment screen owns the wizard heading and the readiness checklist"
+    );
     let catalog = std::fs::read_to_string(root.join("docs/architecture/ui-modules.json")).unwrap();
+    assert!(
+        app.contains("from \"./features/home\"") && app.contains("<HomeScreen"),
+        "App.tsx mounts Home feature module"
+    );
+    assert!(
+        !app.contains("aria-label=\"Portfolio summary\""),
+        "Home markup must live in features/home/, not App.tsx"
+    );
+    let home = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/home/HomeScreen.tsx"),
+    )
+    .unwrap();
+    assert!(
+        home.contains("aria-label=\"Portfolio summary\"") && home.contains("<HomePaintMark"),
+        "HomeScreen owns the portfolio board"
+    );
     assert!(
         catalog.contains("apps/desktop/src/features/position-details/")
             && catalog.contains("\"id\": \"position-details\""),
         "catalog lists Position Details folder"
+    );
+    let home_mod = catalog
+        .split("\"id\": \"home\"")
+        .nth(1)
+        .and_then(|s| s.split("\"id\":").next())
+        .unwrap_or("");
+    assert!(
+        home_mod.contains("\"status\": \"extracted\"")
+            && home_mod.contains("apps/desktop/src/features/home/"),
+        "catalog marks home as extracted"
     );
     let pd_mod = catalog
         .split("\"id\": \"position-details\"")

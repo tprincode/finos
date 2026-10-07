@@ -2555,16 +2555,20 @@ fn work_ticket_recreate_adapter_opens_add_position() {
             && app.contains("does not re-import"),
         "Recreate must recertify stored facts and must not re-import successful data"
     );
+    let add_investment = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/new-investment/NewInvestmentScreen.tsx"),
+    )
+    .unwrap();
     assert!(
         ui.contains("export function formatPerShare")
             && app.contains("formatPerShare")
-            && app.contains("This will change the stored Plan from"),
+            && add_investment.contains("This will change the stored Plan from"),
         "Recreate / Add Investment must show five-decimal per-share and warn when stored Plan would change"
     );
     assert!(
-        app.contains("Confirm Plan writes Plan / share only")
-            && app.contains("Update Plan / share")
-            && app.contains("Proposed writes: Plan / share only"),
+        add_investment.contains("Confirm Plan writes Plan / share only")
+            && add_investment.contains("Update Plan / share")
+            && add_investment.contains("Proposed writes: Plan / share only"),
         "Confirm Plan must report that it writes Plan / share only, not the whole sheet"
     );
     assert!(

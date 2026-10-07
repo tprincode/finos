@@ -26,7 +26,7 @@ const PLAN_ROWS: [(&str, &str); 8] = [
     ("Roth", "FI Roth"),
     ("Energy", "Energy"),
     ("Car", "Car"),
-    ("Account 9", "9"),
+    ("Account 9", "Account 9"),
 ];
 
 pub fn plan_row_key(name: &str) -> Option<&'static str> {

@@ -83,8 +83,12 @@ export function HomeDividendPlan({
         <div className="dp-head numeric" role="columnheader">
           Monthly Medical
         </div>
-        <div className="dp-head numeric" role="columnheader">
-          Weekly
+        <div
+          className="dp-head numeric"
+          role="columnheader"
+          title="Annual plan ÷ 52"
+        >
+          Plan
         </div>
         <div
           className="dp-head numeric"

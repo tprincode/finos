@@ -655,3 +655,148 @@ async fn holdings_unassigned_recovers_qty_from_cart_sell_line() {
     assert_eq!(sells[0]["quantityScale"].as_u64().unwrap(), 0);
     assert_eq!(sells[0]["source"], "cart");
 }
+
+#[tokio::test]
+async fn holdings_pnl_and_annual_on_original_cost_unknown_when_inputs_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let taxable = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Taxable Brokerage", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = taxable["accountId"].as_str().unwrap();
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "HPNL", "name": "Holdings PnL"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id, "HPNL").await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": security_id,
+            "openedOn": "2026-01-05",
+            "origin": "purchase",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 100_000,
+            "taxBasisMinor": 100_000,
+            "scale": 2
+        }),
+    )
+    .await;
+
+    let before = query_json(&platform, "HoldingsGet", None).await;
+    let row = before["lots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["symbol"] == "HPNL")
+        .expect("HPNL lot");
+    assert!(
+        row["unrealizedPnlBps"].is_null(),
+        "no last price → P&L% unknown: {row}"
+    );
+    assert!(
+        row["planYocBps"].is_null(),
+        "no plan → Annual% unknown: {row}"
+    );
+
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Weekly",
+            "replaceCadence": true,
+            "riskTier": "Core"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 55,
+            "amountScale": 2,
+            "paymentPeriod": "2026-08-01",
+            "source": "fixture",
+            "enteredAt": "2026-08-21"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 55,
+            "amountScale": 2,
+            "planningPeriodsPerYear": 52,
+            "effectiveFrom": "2026-01-01",
+            "decisionReason": "owner",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+
+    let after_plan = query_json(&platform, "HoldingsGet", None).await;
+    let with_plan = after_plan["lots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["symbol"] == "HPNL")
+        .expect("HPNL after plan");
+    // period $ = 10 × $0.55 = $5.50; annual = $5.50 × 52 = $286; / $1000 = 28.60% = 2860 bps
+    assert_eq!(with_plan["planYocBps"].as_i64(), Some(2_860));
+    assert!(
+        with_plan["unrealizedPnlBps"].is_null(),
+        "still no last price → P&L% unknown: {with_plan}"
+    );
+
+    must_ok(
+        &platform,
+        "LastPriceRefresh",
+        serde_json::json!({
+            "quotes": [{
+                "securityId": security_id,
+                "priceMinor": 12_500,
+                "scale": 2,
+                "asOfAt": "2026-08-21",
+                "source": "fixture"
+            }]
+        }),
+    )
+    .await;
+    let after_price = query_json(&platform, "HoldingsGet", None).await;
+    let both = after_price["lots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["symbol"] == "HPNL")
+        .expect("HPNL after price");
+    // MV = 10 × $125 = $1,250; P&L% = ($1250 − $1000) / $1000 = 25% = 2500 bps
+    assert_eq!(both["unrealizedPnlBps"].as_i64(), Some(2_500));
+    assert_eq!(both["planYocBps"].as_i64(), Some(2_860));
+
+    let ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/ui-components/src/index.tsx"),
+    )
+    .unwrap();
+    assert!(
+        ui.contains("sortHead(sort, \"P&L%\", \"pnl\", true)")
+            && ui.contains("sortHead(sort, \"Annual%\", \"annual\", true)")
+            && ui.contains("formatBps(lot.unrealizedPnlBps)")
+            && ui.contains("formatBps(lot.planYocBps)"),
+        "HoldingsPanel shows P&L% and Annual% via formatBps (unknown when null)"
+    );
+}

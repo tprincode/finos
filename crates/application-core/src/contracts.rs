@@ -1972,12 +1972,20 @@ pub struct IncomePlanPositionBody {
     pub declaration_entered_on: Option<String>,
     #[serde(default)]
     pub declaration_current: bool,
+    /// True only when this pay date is an owner-confirmed `assumed_next_year` row.
+    /// Absent when the date is vendor, derived, or unknown.
+    #[serde(default, skip_serializing_if = "omit_false")]
+    pub pay_date_assumed: bool,
     pub scale: u8,
     #[serde(default)]
     pub accounts: Vec<IncomePlanPositionAccountBody>,
     /// Last successful declaration-collector run date. Failed or never-run is null.
     #[serde(default)]
     pub last_update: Option<String>,
+}
+
+fn omit_false(flag: &bool) -> bool {
+    !*flag
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2209,6 +2217,12 @@ pub struct HoldingsLotBody {
     pub remaining_performance_minor: i64,
     pub remaining_tax_minor: i64,
     pub scale: u8,
+    /// (MV − original cost) / original cost in bps. Null when last price or cost is missing.
+    #[serde(default)]
+    pub unrealized_pnl_bps: Option<i64>,
+    /// Plan annual $ / original cost in bps (Plan YOC). Null when plan/cadence or cost is missing.
+    #[serde(default)]
+    pub plan_yoc_bps: Option<i64>,
 }
 
 /// Posted sell / option_close with no lot_assignment. Cart Confirm sell assigns

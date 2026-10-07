@@ -671,7 +671,13 @@ fn contract_fields_and_roadmap_are_registered() {
     )
     .unwrap();
     assert!(roadmap.contains("cash-covered short puts"));
+    assert!(roadmap.contains("Checking account"));
+    assert!(roadmap.contains("Inter-account transfers"));
     assert!(!roadmap.contains("SWVXX"));
+    assert!(
+        app.contains("cmDesk === \"external\"") || app.contains("\"external\""),
+        "External desk stays live; checking stays Roadmap-only"
+    );
     for rel in [
         "crates/financial-domain/src/magi.rs",
         "crates/financial-domain/src/roc.rs",

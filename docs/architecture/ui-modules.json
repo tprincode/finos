@@ -411,8 +411,8 @@
     {
       "id": "home",
       "title": "Home",
-      "folder": "apps/desktop/src/App.tsx",
-      "status": "in-app",
+      "folder": "apps/desktop/src/features/home/",
+      "status": "extracted",
       "menuAreas": ["Home"],
       "screen": "home",
       "menu": { "kind": "trigger", "label": "Home" },
@@ -733,8 +733,8 @@
     {
       "id": "add-position",
       "title": "Add Investment",
-      "folder": "apps/desktop/src/App.tsx",
-      "status": "in-app",
+      "folder": "apps/desktop/src/features/new-investment/",
+      "status": "extracted",
       "menuAreas": ["Positions"],
       "screen": "new-investment",
       "menu": { "kind": "nav", "label": "Add Investment" },

@@ -14,6 +14,7 @@ export type AddLotScreenProps = {
   addLotCost: string;
   addLotTaxCost: string;
   addLotTaxDifferent: boolean;
+  addLotTaxEquals: boolean;
   addLotOrigin: string;
   addLotQuery: string;
   addLotSymbolOpen: boolean;
@@ -39,6 +40,7 @@ export type AddLotScreenProps = {
   setAddLotQty: (v: string) => void;
   setAddLotCost: (v: string) => void;
   setAddLotTaxDifferent: (v: boolean) => void;
+  setAddLotTaxEquals: (v: boolean) => void;
   setAddLotTaxCost: (v: string) => void;
   setAddLotOrigin: (v: string) => void;
 };
@@ -55,6 +57,7 @@ export function AddLotScreen(props: AddLotScreenProps) {
     addLotCost,
     addLotTaxCost,
     addLotTaxDifferent,
+    addLotTaxEquals,
     addLotOrigin,
     addLotQuery,
     addLotSymbolOpen,
@@ -76,9 +79,14 @@ export function AddLotScreen(props: AddLotScreenProps) {
     setAddLotQty,
     setAddLotCost,
     setAddLotTaxDifferent,
+    setAddLotTaxEquals,
     setAddLotTaxCost,
     setAddLotOrigin,
   } = props;
+
+  const carBuy =
+    accounts.find((a) => a.accountId === addLotAccountId)?.name === "Car";
+  const carTaxReady = !carBuy || addLotTaxEquals || !!addLotTaxCost.trim();
 
   return (
     <section aria-label="Add Lot">
@@ -105,7 +113,8 @@ export function AddLotScreen(props: AddLotScreenProps) {
             !addLotOpenedOn.trim() ||
             !addLotQty.trim() ||
             !addLotCost.trim() ||
-            (addLotTaxDifferent && !addLotTaxCost.trim())
+            (addLotTaxDifferent && !addLotTaxCost.trim()) ||
+            !carTaxReady
           }
           onClick={() => void openAddLot()}
         >
@@ -174,21 +183,53 @@ export function AddLotScreen(props: AddLotScreenProps) {
           />
         </label>
         <label>
-          <span>
-            <input
-              type="checkbox"
-              aria-label="Tax cost different"
-              checked={addLotTaxDifferent}
-              onChange={(e) => setAddLotTaxDifferent(e.target.checked)}
-              disabled={busy || writesBlocked}
-            />{" "}
-            Unit tax $ different
-          </span>
+          {carBuy ? (
+            <span>
+              <input
+                type="checkbox"
+                aria-label="Tax equals performance"
+                checked={addLotTaxEquals}
+                onChange={(e) => {
+                  setAddLotTaxEquals(e.target.checked);
+                  if (e.target.checked) {
+                    setAddLotTaxDifferent(false);
+                    setAddLotTaxCost("");
+                  }
+                }}
+                disabled={busy || writesBlocked}
+              />{" "}
+              Tax equals performance
+            </span>
+          ) : (
+            <span>
+              <input
+                type="checkbox"
+                aria-label="Tax cost different"
+                checked={addLotTaxDifferent}
+                onChange={(e) => setAddLotTaxDifferent(e.target.checked)}
+                disabled={busy || writesBlocked}
+              />{" "}
+              Unit tax $ different
+            </span>
+          )}
           <input
             aria-label="Add lot unit tax cost"
-            value={addLotTaxDifferent ? addLotTaxCost : addLotCost}
+            value={
+              carBuy
+                ? addLotTaxEquals
+                  ? addLotCost
+                  : addLotTaxCost
+                : addLotTaxDifferent
+                  ? addLotTaxCost
+                  : addLotCost
+            }
             onChange={(e) => setAddLotTaxCost(e.target.value)}
-            disabled={busy || writesBlocked || !addLotTaxDifferent}
+            disabled={
+              busy ||
+              writesBlocked ||
+              (carBuy ? addLotTaxEquals : !addLotTaxDifferent)
+            }
+            placeholder={carBuy && !addLotTaxEquals ? "required" : undefined}
           />
         </label>
         {(() => {
@@ -218,18 +259,33 @@ export function AddLotScreen(props: AddLotScreenProps) {
             <p role="status" aria-label="Add lot total confirmation">
               Confirm: {formatScaled(qty, 0)} × ${unitLabel} = ${totalLabel} lot original
               (saved as performance basis total).
-              {addLotTaxDifferent && addLotTaxCost.trim()
-                ? (() => {
-                    const taxUnit = Number(addLotTaxCost);
-                    if (!Number.isFinite(taxUnit) || taxUnit < 0) return "";
-                    const taxTotal = lotTotalFromUnitCents(
-                      qty,
-                      0,
-                      dollarsToMinor(addLotTaxCost),
-                    );
-                    return ` Tax: ${formatScaled(qty, 0)} × $${formatMoneyInput(addLotTaxCost)} = $${(taxTotal / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`;
-                  })()
-                : ""}
+              {carBuy
+                ? addLotTaxEquals
+                  ? " Tax equals performance."
+                  : addLotTaxCost.trim()
+                    ? (() => {
+                        const taxUnit = Number(addLotTaxCost);
+                        if (!Number.isFinite(taxUnit) || taxUnit < 0) return "";
+                        const taxTotal = lotTotalFromUnitCents(
+                          qty,
+                          0,
+                          dollarsToMinor(addLotTaxCost),
+                        );
+                        return ` Tax: ${formatScaled(qty, 0)} × $${formatMoneyInput(addLotTaxCost)} = $${(taxTotal / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`;
+                      })()
+                    : " Enter unit tax $, or check Tax equals performance."
+                : addLotTaxDifferent && addLotTaxCost.trim()
+                  ? (() => {
+                      const taxUnit = Number(addLotTaxCost);
+                      if (!Number.isFinite(taxUnit) || taxUnit < 0) return "";
+                      const taxTotal = lotTotalFromUnitCents(
+                        qty,
+                        0,
+                        dollarsToMinor(addLotTaxCost),
+                      );
+                      return ` Tax: ${formatScaled(qty, 0)} × $${formatMoneyInput(addLotTaxCost)} = $${(taxTotal / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`;
+                    })()
+                  : ""}
             </p>
           );
         })()}
