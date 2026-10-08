@@ -1,0 +1,21 @@
+---
+description: Mac coding restart — use finos.sh and Application Support, not finos.bat
+alwaysApply: true
+---
+
+# Restart the app on macOS
+
+**Windows agents:** ignore this file; follow `restart-the-app.mdc` (`finos.bat` / `app-up.ps1`).
+**macOS / MacBook agents:** follow this file instead of the Windows bat rule.
+
+If rust, SQL, migrations, the native menu, or a command the running exe has not loaded changed, restart in the same turn.
+
+1. Write `$HOME/Library/Application Support/com.finos.desktop/restart.token` with an ISO stamp and a reason (or `$FINOS_APP_DATA/restart.token` if set). Delete `page-loaded.log` in the same directory so an old Home line cannot pass.
+2. Stop every `finos-desktop` process (`pkill -f finos-desktop` or equivalent). Do not start Windows `.bat` files.
+3. From the repo root run `./finos.sh` (or `npm run desktop` if the shell launcher is missing). Do not `npm run desktop:build` for routine restarts.
+4. Run `./scripts/app-up.sh`. It exits 0 when a `finos-desktop` process is up, `http://localhost:1420` returns 200, and the console log has no `panicked` / `Failed to setup` / `npm error`. Prefer a `page loaded Home` line newer than the process when present.
+5. Read `$HOME/Library/Application Support/com.finos.desktop/dev-console.log` (or `$FINOS_APP_DATA/dev-console.log`). Hard failures above mean a failed turn.
+
+Downloads default to `~/Documents/Financial` (`FINOS_DOWNLOAD_DIR`).
+
+Do not leave File → Restart as owner homework.

@@ -1628,7 +1628,7 @@ fn open_exception_log(
         .path()
         .app_local_data_dir()
         .map_err(|e| e.to_string())?;
-    let dir = resolve_app_data_dir(preferred).join("logs");
+    let dir = application_core::paths::resolve_app_data_dir(preferred).join("logs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let today = chrono::Utc::now().date_naive().to_string();
     let path = dir.join(format!("capture-{today}.log"));
@@ -1685,7 +1685,11 @@ fn open_exception_log(
 
 /// Owner downloads: Excel exports and snapshot folders. Not the database.
 fn download_dir() -> PathBuf {
-    PathBuf::from(r"C:\Users\EVTom\Documents\Financial")
+    application_core::paths::download_dir()
+}
+
+fn app_data_dir_fs() -> PathBuf {
+    application_core::paths::profile_a_app_dir()
 }
 
 #[tauri::command]
@@ -1732,11 +1736,7 @@ fn save_local_bytes(default_file_name: String, bytes: Vec<u8>) -> Result<String,
 }
 
 fn screen_atlas_root_dir() -> Result<PathBuf, String> {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
-    let dir = local
-        .join("com.finos.desktop")
+    let dir = app_data_dir_fs()
         .join("evidence")
         .join("screen-atlas");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1753,7 +1753,7 @@ fn screen_atlas_day_dir(day: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Docs Screen Atlas PNG under `%LOCALAPPDATA%\com.finos.desktop\evidence\screen-atlas\<day>\`.
+/// Docs Screen Atlas PNG under app-data `evidence/screen-atlas/<day>/`.
 #[tauri::command]
 fn screen_atlas_save(day: String, file_name: String, bytes: Vec<u8>) -> Result<String, String> {
     let name = file_name.trim();
@@ -1771,10 +1771,7 @@ fn screen_atlas_save(day: String, file_name: String, bytes: Vec<u8>) -> Result<S
 }
 
 fn component_metadata_path() -> Result<PathBuf, String> {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
-    Ok(local.join("com.finos.desktop").join("component-metadata.json"))
+    Ok(app_data_dir_fs().join("component-metadata.json"))
 }
 
 #[tauri::command]
@@ -1957,22 +1954,13 @@ fn screen_atlas_open_folder(day: String) -> Result<String, String> {
 /// True when `screen-atlas.run` exists (does not delete).
 #[tauri::command]
 fn screen_atlas_has_run_token() -> Result<bool, String> {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
-    Ok(local
-        .join("com.finos.desktop")
-        .join("screen-atlas.run")
-        .is_file())
+    Ok(app_data_dir_fs().join("screen-atlas.run").is_file())
 }
 
 /// Delete `screen-atlas.run` after the UI has claimed the auto-start.
 #[tauri::command]
 fn screen_atlas_clear_run_token() -> Result<(), String> {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
-    let path = local.join("com.finos.desktop").join("screen-atlas.run");
+    let path = app_data_dir_fs().join("screen-atlas.run");
     if path.is_file() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
@@ -2003,10 +1991,7 @@ fn page_loaded(screen: String, detail: Option<String>) -> Result<(), String> {
     {
         return Err("page name".into());
     }
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
-    let dir = local.join("com.finos.desktop");
+    let dir = app_data_dir_fs();
     std::fs::create_dir_all(&dir).map_err(|e| format!("page loaded dir: {e}"))?;
     let stamp = chrono::Utc::now().to_rfc3339();
     let detail = detail
@@ -2035,14 +2020,11 @@ fn page_loaded(screen: String, detail: Option<String>) -> Result<(), String> {
 }
 
 /// Coding launch serves the UI from Vite on localhost:1420. The host writes
-/// `%LOCALAPPDATA%\com.finos.desktop\restart.token` and exits. Repo-root `finos.bat`
-/// (already running, or started here) Start-Process-es the titled finos (dev) stack.
+/// app-data `restart.token` and exits. Repo-root `finos.bat` / `finos.sh`
+/// (already running, or started here) relaunches the titled finos (dev) stack.
 /// Household release bundles the UI and uses `app.restart()`.
 fn write_restart_token() -> Result<(), String> {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
-    let dir = local.join("com.finos.desktop");
+    let dir = app_data_dir_fs();
     std::fs::create_dir_all(&dir).map_err(|e| format!("restart.token dir: {e}"))?;
     let path = dir.join("restart.token");
     let stamp = chrono::Utc::now().to_rfc3339();
@@ -2073,10 +2055,7 @@ async fn app_restart(
 }
 
 fn supervisor_lock_dir() -> PathBuf {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    local.join("com.finos.desktop").join("supervisor.lock")
+    app_data_dir_fs().join("supervisor.lock")
 }
 
 fn supervisor_pid_file() -> PathBuf {
@@ -2126,7 +2105,7 @@ fn coding_supervisor_running() -> bool {
 }
 
 /// Coding File → Restart must not depend on a leftover supervisor window.
-/// `cmd /c start` must finish before `app.exit` so the new console is not in the dying Tauri job.
+/// On Windows, `cmd /c start` must finish before `app.exit`. On macOS, spawn `finos.sh`.
 /// A stale supervisor.lock / window-title check is not "already running."
 fn ensure_coding_supervisor() -> Result<(), String> {
     if coding_supervisor_running() {
@@ -2136,49 +2115,49 @@ fn ensure_coding_supervisor() -> Result<(), String> {
     if lock.is_dir() {
         let _ = std::fs::remove_dir_all(&lock);
     }
-    let bat = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("..")
-        .join("finos.bat");
-    if !bat.is_file() {
-        return Err(format!("finos.bat missing: {}", bat.display()));
-    }
-    let repo = bat
-        .parent()
-        .ok_or_else(|| "finos.bat has no parent".to_string())?;
-    let bat_s = bat.to_string_lossy().replace(r"\\?\", "");
-    let dir_s = repo.to_string_lossy().replace(r"\\?\", "");
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.args(["/C", "start", "", "/D", &dir_s, &bat_s]);
+        .join("..");
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        cmd.creation_flags(CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
-    }
-    let status = cmd
-        .status()
-        .map_err(|e| format!("start supervisor: {e}"))?;
-    if !status.success() {
-        return Err(format!("start supervisor: {status}"));
-    }
-    Ok(())
-}
-
-fn looks_like_sync_folder(path: &std::path::Path) -> bool {
-    let s = path.to_string_lossy().to_lowercase();
-    s.contains("onedrive") || s.contains("dropbox") || s.contains("icloud")
-}
-
-fn resolve_app_data_dir(preferred: PathBuf) -> PathBuf {
-    if looks_like_sync_folder(&preferred) {
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local).join("finos");
+        let bat = repo.join("finos.bat");
+        if !bat.is_file() {
+            return Err(format!("finos.bat missing: {}", bat.display()));
         }
+        let bat_s = bat.to_string_lossy().replace(r"\\?\", "");
+        let dir_s = repo.to_string_lossy().replace(r"\\?\", "");
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", "/D", &dir_s, &bat_s]);
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+            cmd.creation_flags(
+                CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+            );
+        }
+        let status = cmd
+            .status()
+            .map_err(|e| format!("start supervisor: {e}"))?;
+        if !status.success() {
+            return Err(format!("start supervisor: {status}"));
+        }
+        return Ok(());
     }
-    preferred
+    #[cfg(not(windows))]
+    {
+        let sh = repo.join("finos.sh");
+        if !sh.is_file() {
+            return Err(format!("finos.sh missing: {}", sh.display()));
+        }
+        std::process::Command::new("/bin/bash")
+            .arg(&sh)
+            .current_dir(&repo)
+            .spawn()
+            .map_err(|e| format!("start finos.sh: {e}"))?;
+        Ok(())
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2186,12 +2165,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            std::env::set_var(
-                "FINOS_DOWNLOAD_DIR",
-                r"C:\Users\EVTom\Documents\Financial",
-            );
+            if std::env::var_os("FINOS_DOWNLOAD_DIR").is_none() {
+                std::env::set_var(
+                    "FINOS_DOWNLOAD_DIR",
+                    application_core::paths::download_dir(),
+                );
+            }
             let preferred = app.path().app_local_data_dir()?;
-            let dir = resolve_app_data_dir(preferred);
+            let dir = application_core::paths::resolve_app_data_dir(preferred);
+            // Keep seed / tools / restart token on the same root the host opened.
+            std::env::set_var("FINOS_APP_DATA", &dir);
             std::fs::create_dir_all(&dir)?;
             let _ = dotenvy::from_filename(dir.join(".env"));
             let _ = dotenvy::dotenv();
@@ -2222,11 +2205,7 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(2500));
-                let local = match std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
-                    Some(p) => p,
-                    None => return,
-                };
-                let token = local.join("com.finos.desktop").join("screen-atlas.run");
+                let token = application_core::paths::profile_a_app_dir().join("screen-atlas.run");
                 if !token.is_file() {
                     return;
                 }

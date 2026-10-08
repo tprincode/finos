@@ -698,3 +698,27 @@ fn catalog_menu_matches_app_and_atlas() {
         );
     }
 }
+
+/// Mac cutover: host must not hardcode the Windows owner download path.
+#[test]
+fn desktop_host_uses_portable_download_dir_not_owner_path() {
+    let root = repo_root();
+    let lib = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
+    assert!(
+        !lib.contains(r"C:\Users\EVTom\Documents\Financial"),
+        "download_dir must not hardcode the Windows owner Financial path"
+    );
+    assert!(
+        lib.contains("application_core::paths::download_dir")
+            || lib.contains("paths::download_dir"),
+        "desktop host must call shared paths::download_dir"
+    );
+    assert!(
+        root.join("finos.sh").is_file(),
+        "finos.sh Mac launcher must exist at repo root"
+    );
+    assert!(
+        root.join("docs/architecture/mac-dev-bootstrap.md").is_file(),
+        "mac-dev-bootstrap.md must exist"
+    );
+}

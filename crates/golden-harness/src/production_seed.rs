@@ -51,18 +51,10 @@ fn scale_two() -> u8 {
     2
 }
 
-/// Same directory the desktop Tauri host opens (`app_local_data_dir`, OneDrive skipped).
+/// Same directory the desktop Tauri host opens (`app_local_data_dir`, sync folders skipped).
+/// Override with `FINOS_APP_DATA`. See [`application_core::paths::profile_a_app_dir`].
 pub fn profile_a_app_dir() -> PathBuf {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let identifier = local.join("com.finos.desktop");
-    let s = identifier.to_string_lossy().to_lowercase();
-    if s.contains("onedrive") || s.contains("dropbox") || s.contains("icloud") {
-        local.join("finos")
-    } else {
-        identifier
-    }
+    application_core::paths::profile_a_app_dir()
 }
 
 pub fn load_production_expected(path: &Path) -> Result<ProductionExpected, String> {

@@ -30,6 +30,7 @@ pub mod query_cache;
 pub mod queries;
 pub mod option_contract;
 pub mod option_cover;
+pub mod paths;
 pub mod task;
 pub mod trends_app;
 pub mod week_ahead;

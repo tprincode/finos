@@ -132,9 +132,11 @@ cargo test
 
 **Desktop app** (see `apps/desktop/README.md`):
 
-Coding days: repo-root `finos.bat` (Restart parent + `finos (dev)` child). Do not start `apps/desktop/start-finos-dev.bat` alone. The consoles are expected.
+Coding days on **Windows**: repo-root `finos.bat` (Restart parent + `finos (dev)` child). Do not start `apps/desktop/start-finos-dev.bat` alone. The consoles are expected.
 
-Household no-console sessions: Desktop `finos-installed.bat` after a one-off `npm run desktop:build` + NSIS install. Do not use that as the daily rebuild start.
+Coding days on **macOS** (Apple Silicon): repo-root `./finos.sh`, then `./scripts/app-up.sh`. Paths and Cursor cutover: [docs/architecture/mac-dev-bootstrap.md](docs/architecture/mac-dev-bootstrap.md). Do not put SQLite in iCloud.
+
+Household no-console sessions (Windows): Desktop `finos-installed.bat` after a one-off `npm run desktop:build` + NSIS install. Do not use that as the daily rebuild start.
 
 ```
 npm install
