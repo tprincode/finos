@@ -878,6 +878,18 @@ pub async fn export_data_snapshot(
         &mut files,
     )?;
 
+    let component_rows = ui_component_sheet_rows().map_err(|e| {
+        PlatformError::new("snapshot_write_failed", format!("ui components: {e}"))
+    })?;
+    counts.push(("ui_components".into(), component_rows.len() as u64));
+    write_named(
+        &folder,
+        "Template_UiComponents.xlsx",
+        UI_COMPONENT_HEADERS,
+        &component_rows,
+        &mut files,
+    )?;
+
     let yaml = write_plan_yaml(&securities, &plans);
     let yaml_name = "calculator-plan-seed.yaml";
     std::fs::write(folder.join(yaml_name), yaml)
@@ -964,6 +976,18 @@ const UI_MODULE_HEADERS: &[&str] = &[
     "status",
     "folder",
     "menu areas",
+    "sections",
+];
+
+const UI_COMPONENT_HEADERS: &[&str] = &[
+    "screen",
+    "cmDesk",
+    "module",
+    "section",
+    "id",
+    "title",
+    "kind",
+    "export",
 ];
 
 const UI_SCREEN_ORDER: &[&str] = &[
@@ -986,6 +1010,7 @@ const UI_SCREEN_ORDER: &[&str] = &[
     "collector-establish",
     "task-manager",
     "interest-rate",
+    "account-management",
     "contract-positions",
     "field-intent",
     "roadmap",
@@ -1021,8 +1046,8 @@ fn desk_rank(desk: &str) -> usize {
         .unwrap_or(UI_DESK_ORDER.len() + 1)
 }
 
-/// Archive rows for Template_UiModules.xlsx. Not a seed sheet.
-pub fn ui_module_sheet_rows() -> Result<Vec<Vec<String>>, String> {
+/// Catalog modules in screen then desk order. Both UI sheets read this.
+fn ui_modules_in_screen_order() -> Result<Vec<crate::contracts::UiModuleItem>, String> {
     let catalog = crate::core_functions::core_functions_catalog()?;
     let mut indexed: Vec<(usize, crate::contracts::UiModuleItem)> =
         catalog.modules.into_iter().enumerate().collect();
@@ -1033,9 +1058,20 @@ pub fn ui_module_sheet_rows() -> Result<Vec<Vec<String>>, String> {
             *index,
         )
     });
-    Ok(indexed
+    Ok(indexed.into_iter().map(|(_, module)| module).collect())
+}
+
+/// Archive rows for Template_UiModules.xlsx. Not a seed sheet.
+pub fn ui_module_sheet_rows() -> Result<Vec<Vec<String>>, String> {
+    Ok(ui_modules_in_screen_order()?
         .into_iter()
-        .map(|(_, module)| {
+        .map(|module| {
+            let sections = module
+                .sections
+                .iter()
+                .map(|section| section.title.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
             vec![
                 module.screen,
                 module.cm_desk,
@@ -1044,9 +1080,42 @@ pub fn ui_module_sheet_rows() -> Result<Vec<Vec<String>>, String> {
                 module.status,
                 module.folder,
                 module.menu_areas.join(", "),
+                sections,
             ]
         })
         .collect())
+}
+
+/// Archive rows for Template_UiComponents.xlsx: one row per registered
+/// component, carrying the section that holds it. A blank section is a
+/// component the catalog has not placed yet, not a component without a home.
+pub fn ui_component_sheet_rows() -> Result<Vec<Vec<String>>, String> {
+    let mut rows = Vec::new();
+    for module in ui_modules_in_screen_order()? {
+        for part in &module.parts {
+            let section = module
+                .sections
+                .iter()
+                .find(|section| section.id == part.section)
+                .map(|section| section.title.clone())
+                .unwrap_or_default();
+            rows.push(vec![
+                module.screen.clone(),
+                module.cm_desk.clone(),
+                module.id.clone(),
+                section,
+                part.id.clone(),
+                part.title.clone(),
+                part.kind.clone(),
+                if part.export == "none" {
+                    "none".to_string()
+                } else {
+                    part.export_kind.clone()
+                },
+            ]);
+        }
+    }
+    Ok(rows)
 }
 
 fn write_named(

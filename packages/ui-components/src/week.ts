@@ -154,8 +154,9 @@ export function formatWeekCaption(iso: string): string {
   return `${formatWeekNumber(id)} · Saturday ${id.start} – Friday ${id.end}`;
 }
 
-/** Menu bar week: `W36 2026-09-05 – 2026-09-11` — dates only, no weekday names. */
+/** Menu bar week: `W40 - 10/03-10/09`. Month and day only. */
 export function formatMenuWeek(iso: string): string {
   const id = weekIdContaining(iso);
-  return `${formatWeekNumber(id)} ${id.start} – ${id.end}`;
+  const md = (day: string) => `${day.slice(5, 7)}/${day.slice(8, 10)}`;
+  return `${formatWeekNumber(id)} - ${md(id.start)}-${md(id.end)}`;
 }

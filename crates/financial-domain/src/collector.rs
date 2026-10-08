@@ -727,12 +727,13 @@ pub fn is_div1_or_cash(div_type: &str, symbol: &str) -> bool {
     uses_cash_par(div_type, symbol) || is_div1(div_type)
 }
 
-/// Calculator / Home plan count list DIV-1 and CASH only. `None` cadence stays stored, not shown.
-pub fn calculator_view_includes(div_type: &str, symbol: &str, payment_frequency: &str) -> bool {
+/// Calculator / Home plan count list DIV-1 only. Cash stays on Home and Cash Management.
+/// `None` cadence stays stored, not shown.
+pub fn calculator_view_includes(div_type: &str, _symbol: &str, payment_frequency: &str) -> bool {
     if crate::calculator::is_non_paying(payment_frequency) {
         return false;
     }
-    is_div1_or_cash(div_type, symbol)
+    is_div1(div_type)
 }
 
 /// A held position or a stored Plan stays on the Calculator sheet unless the cadence is None.
@@ -1540,7 +1541,10 @@ mod tests {
         assert!(is_div1_or_cash("CASH", "CASH1"));
         assert!(!is_div1_or_cash("", "NEW1"));
         assert!(calculator_view_includes("DIV-1", "PAY1", "Weekly"));
-        assert!(calculator_view_includes("CASH", "SPAXX", "Monthly"));
+        assert!(
+            !calculator_view_includes("CASH", "SPAXX", "Monthly"),
+            "cash stays off the Calculator"
+        );
         assert!(!calculator_view_includes("", "BTC-USD", ""));
         assert!(!calculator_view_includes("", "SOXL", "None"));
         assert!(!calculator_view_includes("DIV-1", "MSTU", "None"));

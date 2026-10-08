@@ -514,7 +514,13 @@ export function LiveByRiskCharts({
     return () => window.removeEventListener("keydown", onKey);
   }, [symbolOpen]);
   return (
-    <article className="home-av-card home-av-risk" aria-label="Risk Profile">
+    <article
+      className="home-av-card home-av-risk"
+      id="trends-risk"
+      data-section="trends-risk"
+      data-part="live-by-risk"
+      aria-label="Risk Profile"
+    >
       <header className="home-av-card-head">
         <h3>Risk Profile</h3>
       </header>
@@ -525,7 +531,7 @@ export function LiveByRiskCharts({
         <p className="home-av-empty">No live points yet.</p>
       ) : (
         <div className="live-risk-pair">
-          <section aria-label="Live by risk level">
+          <section aria-label="Live by risk level" data-part="live-by-risk-level">
             {!hasChart ? (
               <p className="home-av-empty">No live points yet.</p>
             ) : (
@@ -538,7 +544,7 @@ export function LiveByRiskCharts({
               />
             )}
           </section>
-          <section aria-label="Live by risk allocation">
+          <section aria-label="Live by risk allocation" data-part="live-by-risk-allocation">
             {!hasDonut ? (
               <p className="home-av-empty">Current allocation unknown.</p>
             ) : (
@@ -754,11 +760,17 @@ export function HomeAccountCharts({
 
   return (
     <BusySurface busy={chartBusy}>
-    <section className="home-account-values" aria-label="Account values">
+    <section
+      className="home-account-values"
+      id="home-account-values"
+      data-section="home-account-values"
+      data-part="account-values"
+      aria-label="Account values"
+    >
       <header className="home-av-heading">
         <h2>Account values</h2>
         <div className="home-av-toolbar">
-          <div className="trends-period-bar">
+          <div className="trends-period-bar" data-part="graphing-period">
             <label className="trends-period-label">
               Graphing period
               <span className="chart-default-choice">
@@ -797,20 +809,28 @@ export function HomeAccountCharts({
         </div>
       </header>
       <div className="home-av-totals">
-        <AccountValueCard
-          series={filtered.fidelity}
-          color={colorFor(values.fidelity.accountName, 0, values.fidelity.custodian)}
-          featured="fidelity"
-          compact
-        />
-        <AccountValueCard
-          series={schwab}
-          color={colorFor(schwab.accountName, 1, schwab.custodian)}
-          featured="schwab"
-          compact
-        />
+        <div data-part="fidelity">
+          <AccountValueCard
+            series={filtered.fidelity}
+            color={colorFor(values.fidelity.accountName, 0, values.fidelity.custodian)}
+            featured="fidelity"
+            compact
+          />
+        </div>
+        <div data-part="schwab-total">
+          <AccountValueCard
+            series={schwab}
+            color={colorFor(schwab.accountName, 1, schwab.custodian)}
+            featured="schwab"
+            compact
+          />
+        </div>
       </div>
-      <div className="home-av-grid">
+      <div
+        className="home-av-grid"
+        id="home-account-charts"
+        data-section="home-account-charts"
+      >
         {filtered.accounts
           .filter((acct) => !isTrendsPlacedAccount(acct.accountName, acct.custodian))
           .map((acct, i) => (

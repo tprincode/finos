@@ -25,6 +25,8 @@ const MONTHS: [&str; 12] = [
 #[derive(Debug, Clone)]
 pub struct RegisterMatch {
     pub category: String,
+    pub bucket: String,
+    pub loan_name: String,
     pub vendor: String,
     pub amount_minor: i64,
 }
@@ -95,23 +97,31 @@ pub fn line_matches(line: &RegisterMatch, account: &AccountMatch) -> bool {
         return false;
     }
     let category = line.category.trim().to_lowercase();
+    let bucket = line.bucket.trim().to_lowercase();
+    let loan_name = line.loan_name.trim().to_lowercase();
     let vendor = line.vendor.trim().to_lowercase();
     if account.kind == "credit" {
-        if category == key {
-            return true;
-        }
-        // Medical-mom is a Mom charge. It debits the Mom credit by the line amount.
-        return key == "mom" && category == "medical-mom";
+        // Escrow (Mom): funding Bucket or legacy category names the escrow key.
+        return bucket == key || category == key;
     }
-    if category == key || vendor == key {
+    // Debts: Loan Name selects the loan. Bucket is funding only.
+    if !loan_name.is_empty() && loan_name == key {
         return true;
     }
-    if let Some(legacy) = account.legacy_vendor.as_deref() {
-        if same_vendor(&vendor, legacy) {
-            return match account.legacy_amount_minor {
-                Some(amount) => line.amount_minor == amount,
-                None => true,
-            };
+    // Legacy while Loan Name is still blank.
+    if loan_name.is_empty() {
+        if category == key || vendor == key {
+            return true;
+        }
+        if let Some(legacy) = account.legacy_vendor.as_deref() {
+            if same_vendor(&vendor, legacy) {
+                return match account.legacy_amount_minor {
+                    Some(amount) => {
+                        line.amount_minor == amount || line.amount_minor == -amount
+                    }
+                    None => true,
+                };
+            }
         }
     }
     false
@@ -189,6 +199,10 @@ pub fn projected_split(
     }
     let periods = periods_per_year(frequency?)?;
     let interest = period_interest(balance_minor, apr_ppm?, periods);
+    // Interest is a slice of the contractual payment — it can never exceed it.
+    if interest >= payment_minor {
+        return None;
+    }
     let principal = payment_minor - interest;
     if principal <= 0 {
         return None;
@@ -322,6 +336,8 @@ mod tests {
     fn paytient_open_charge_matches_and_is_not_applied() {
         let line = RegisterMatch {
             category: "Medical".to_string(),
+            bucket: String::new(),
+            loan_name: String::new(),
             vendor: "Paytient".to_string(),
             amount_minor: 18098,
         };
@@ -335,16 +351,22 @@ mod tests {
         let ck = debt("Alphaeon CK", Some("Alpheon"), Some(25000));
         let two_thirty_six = RegisterMatch {
             category: "Medical".to_string(),
+            bucket: String::new(),
+            loan_name: String::new(),
             vendor: "Alpheon".to_string(),
             amount_minor: 23600,
         };
         let two_fifty = RegisterMatch {
             category: "Medical".to_string(),
+            bucket: String::new(),
+            loan_name: String::new(),
             vendor: "Alpheon".to_string(),
             amount_minor: 25000,
         };
         let other = RegisterMatch {
             category: "Medical".to_string(),
+            bucket: String::new(),
+            loan_name: String::new(),
             vendor: "Alpheon".to_string(),
             amount_minor: 10000,
         };
@@ -356,6 +378,8 @@ mod tests {
         assert!(!line_matches(&other, &ck));
         let named = RegisterMatch {
             category: "Medical".to_string(),
+            bucket: String::new(),
+            loan_name: String::new(),
             vendor: "Alphaeon Cat".to_string(),
             amount_minor: 23600,
         };
@@ -364,7 +388,9 @@ mod tests {
     }
 
     #[test]
-    fn mom_matches_category_only() {
+    fn loan_name_links_debt_bucket_funds_escrow() {
+        let cat = debt("Alphaeon Cat", Some("Alpheon"), Some(23600));
+        let ck = debt("Alphaeon CK", Some("Alpheon"), Some(25000));
         let mom = AccountMatch {
             kind: "credit".to_string(),
             register_key: "Mom".to_string(),
@@ -373,27 +399,94 @@ mod tests {
         };
         assert!(line_matches(
             &RegisterMatch {
-                category: "Mom".to_string(),
-                vendor: "Walmart".to_string(),
-                amount_minor: 100,
+                category: "Medical".to_string(),
+                bucket: "Medical".to_string(),
+                loan_name: "Alphaeon Cat".to_string(),
+                vendor: "Alpheon".to_string(),
+                amount_minor: 23600,
             },
-            &mom,
-        ));
-        assert!(line_matches(
-            &RegisterMatch {
-                category: "Medical-mom".to_string(),
-                vendor: "CVS".to_string(),
-                amount_minor: 2500,
-            },
-            &mom,
+            &cat,
         ));
         assert!(!line_matches(
             &RegisterMatch {
                 category: "Medical".to_string(),
+                bucket: "Medical".to_string(),
+                loan_name: "Alphaeon Cat".to_string(),
+                vendor: "Alpheon".to_string(),
+                amount_minor: 23600,
+            },
+            &ck,
+        ));
+        // Bucket alone must not select a loan.
+        assert!(!line_matches(
+            &RegisterMatch {
+                category: "Medical".to_string(),
+                bucket: "Alphaeon Cat".to_string(),
+                loan_name: String::new(),
+                vendor: "Walmart".to_string(),
+                amount_minor: 23600,
+            },
+            &cat,
+        ));
+        assert!(line_matches(
+            &RegisterMatch {
+                category: "Medical".to_string(),
+                bucket: "Mom".to_string(),
+                loan_name: String::new(),
+                vendor: "Walmart".to_string(),
+                amount_minor: 1000,
+            },
+            &mom,
+        ));
+    }
+
+    #[test]
+    fn medical_credit_matches_category_or_bucket() {
+        let medical = AccountMatch {
+            kind: "credit".to_string(),
+            register_key: "Medical".to_string(),
+            legacy_vendor: None,
+            legacy_amount_minor: None,
+        };
+        assert!(line_matches(
+            &RegisterMatch {
+                category: "Medical".to_string(),
+                bucket: String::new(),
+                loan_name: String::new(),
                 vendor: "Paytient".to_string(),
                 amount_minor: 100,
             },
-            &mom,
+            &medical,
+        ));
+        assert!(line_matches(
+            &RegisterMatch {
+                category: "Food".to_string(),
+                bucket: "Medical".to_string(),
+                loan_name: String::new(),
+                vendor: "CVS".to_string(),
+                amount_minor: 2500,
+            },
+            &medical,
+        ));
+        assert!(!line_matches(
+            &RegisterMatch {
+                category: "Food".to_string(),
+                bucket: String::new(),
+                loan_name: String::new(),
+                vendor: "Walmart".to_string(),
+                amount_minor: 100,
+            },
+            &medical,
+        ));
+        assert!(!line_matches(
+            &RegisterMatch {
+                category: "Medical-mom".to_string(),
+                bucket: String::new(),
+                loan_name: String::new(),
+                vendor: "CVS".to_string(),
+                amount_minor: 2500,
+            },
+            &medical,
         ));
         assert!(line_applied("credit", false, true, false, false, false, false));
         assert!(!line_applied("credit", false, false, false, false, false, false));
@@ -423,6 +516,19 @@ mod tests {
         assert_eq!(
             projected_split(1_000_000, 50_000, true, Some(60_000), Some("monthly")),
             Some((45_000, 5_000))
+        );
+        // Newrez-scale: $298,182.14 @ 5.99% monthly vs $1,796.72 payment.
+        let newrez = projected_split(29_818_214, 179_672, true, Some(59_900), Some("monthly"))
+            .expect("Newrez payment covers interest");
+        assert!(
+            newrez.1 < 179_672,
+            "interest {} must stay under payment 179672",
+            newrez.1
+        );
+        assert_eq!(newrez.0 + newrez.1, 179_672);
+        assert!(
+            projected_split(29_818_214, 100_000, true, Some(59_900), Some("monthly")).is_none(),
+            "when interest would exceed payment, split is refused"
         );
         assert_eq!(next_due("2026-01-31", "monthly").as_deref(), Some("2026-02-28"));
         assert_eq!(next_due("2026-05-15", "monthly").as_deref(), Some("2026-06-15"));

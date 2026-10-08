@@ -32,6 +32,16 @@ fn qry(name: &str, body: serde_json::Value) -> QueryRequest {
     }
 }
 
+async fn must_cmd(
+    platform: &LocalPlatform,
+    name: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let result = execute_command_on(platform, platform, cmd(name, body)).await;
+    assert!(result.ok, "{name} {:?}", result.error_code);
+    serde_json::from_str(result.body_json.as_deref().unwrap_or("{}")).unwrap()
+}
+
 fn is_known_reason(reason: &str) -> bool {
     YTD_ROC_REASONS.contains(&reason)
         || reason.starts_with("mixed: some names estimated, some unclassified")
@@ -367,6 +377,146 @@ async fn tax_planning_lists_ira_roth_roc_ordinary_and_gains() {
         .map(|r| r["label"].as_str().unwrap_or(""))
         .collect();
     assert_eq!(labels, vec!["Fed tax", "State tax"], "{body}");
+    // No lot sale is a decided $0, and $0 of gain leaves MAGI untouched.
+    assert_eq!(body["netCapitalGainMinor"].as_i64(), Some(0), "{body}");
+    assert_eq!(body["capitalGainMagiMinor"].as_i64(), Some(0), "{body}");
+    assert_eq!(
+        body["capitalLossCarryforwardMinor"].as_i64(),
+        Some(0),
+        "{body}"
+    );
+}
+
+/// 1040 lets a net capital loss cut income by $3,000 a year. The rows keep the
+/// whole loss; only MAGI stops at the limit and the rest carries forward.
+#[tokio::test]
+async fn tax_planning_caps_a_net_capital_loss_at_three_thousand() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let car = must_cmd(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Car", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_cmd(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "TSLW", "name": "TSLW"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap().to_string();
+    must_cmd(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "sourceSymbol": "TSLW",
+            "declarationSource": "amplify",
+            "sourceUrl": "https://amplifyetfs.com/tslw/#distributions",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot(&platform, &security_id, "TSLW")
+        .await
+        .expect("complete collector");
+    // $12,000.00 of tax basis sold for $2,000.00 — a $10,000.00 long-term loss.
+    let lot = must_cmd(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": car["accountId"],
+            "securityId": security_id,
+            "openedOn": "2024-02-01",
+            "quantityMinor": 100,
+            "quantityScale": 0,
+            "performanceBasisMinor": 1_200_000,
+            "taxBasisMinor": 1_200_000,
+            "scale": 2
+        }),
+    )
+    .await;
+    let sell = must_cmd(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": car["accountId"],
+            "securityId": security_id,
+            "activityType": "sell",
+            "amountMinor": 200_000,
+            "scale": 2,
+            "occurredOn": "2026-03-02"
+        }),
+    )
+    .await;
+    must_cmd(
+        &platform,
+        "LotAssign",
+        serde_json::json!({
+            "lotId": lot["lotId"],
+            "activityId": sell["activityId"],
+            "quantityMinor": 100,
+            "quantityScale": 0
+        }),
+    )
+    .await;
+
+    let plan = execute_query_on(
+        &platform,
+        &platform,
+        qry("TaxPlanningGet", serde_json::json!({"asOfDate": "2026-09-19"})),
+    )
+    .await;
+    assert!(plan.ok, "TaxPlanningGet {}", plan.error_code.unwrap_or_default());
+    let body: serde_json::Value =
+        serde_json::from_str(plan.body_json.as_deref().unwrap_or("{}")).unwrap();
+    let row = |key: &str| {
+        body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == key)
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        row("ltcg")["totalMinor"].as_i64(),
+        Some(-1_000_000),
+        "the row keeps the whole $10,000.00 loss: {body}"
+    );
+    assert_eq!(row("stcg")["totalMinor"].as_i64(), Some(0), "{body}");
+    assert_eq!(body["netCapitalGainMinor"].as_i64(), Some(-1_000_000), "{body}");
+    assert_eq!(
+        body["capitalGainMagiMinor"].as_i64(),
+        Some(-300_000),
+        "MAGI stops at the $3,000.00 limit: {body}"
+    );
+    assert_eq!(
+        body["capitalLossCarryforwardMinor"].as_i64(),
+        Some(-700_000),
+        "$7,000.00 carries forward: {body}"
+    );
+    assert_eq!(body["scale"].as_u64(), Some(2), "{body}");
+    // Car took no payments this year, so Ordinary income is unknown and every
+    // group total stays unknown with it. The cap is proven on the body fields
+    // above and in tax_planning::tests::magi_group_takes_the_capped_slice.
+    assert!(
+        body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["key"] == "ordinary" && r["totalMinor"].is_null()),
+        "{body}"
+    );
+    assert!(
+        body["magiIncluded"]["totalMinor"].is_null(),
+        "one unknown row keeps the group unknown: {body}"
+    );
 }
 
 #[tokio::test]

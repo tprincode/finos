@@ -535,6 +535,7 @@ pub async fn cash_element_list_get(
                 weekday_or_month_day: e.weekday_or_month_day,
                 start_on: e.start_on,
                 stop_on: e.stop_on,
+                association_kind: e.association_kind,
                 next_occurred_on: next_on,
                 next_amount_minor: next_amt,
                 exception_count: exceptions.len() as u32,
@@ -890,6 +891,12 @@ pub async fn cash_element_save(
             ));
         }
     }
+    let association_kind = match book {
+        "Loan" => "loan",
+        "Income" | "SSA_2026" | "FI Roth" => "distribution",
+        "Car" | "Health" | "Account 9" => "withdrawal",
+        _ => "",
+    };
     let record = CashElementRecord {
         element_id: id,
         account: book.into(),
@@ -900,6 +907,7 @@ pub async fn cash_element_save(
         weekday_or_month_day: weekday_or_month_day.to_string(),
         start_on: start_on.trim().to_string(),
         stop_on: stop_on.trim().to_string(),
+        association_kind: association_kind.into(),
     };
     canonical.cash_element_upsert(record.clone()).await?;
 

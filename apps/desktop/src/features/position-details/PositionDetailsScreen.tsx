@@ -193,10 +193,11 @@ import {
   dividendScore,
   formatCount,
   formatPercentScaled,
+  avg3Display,
+  avg6Display,
   formatScaled,
   formatUsd,
   formatScale6,
-  meanNewestPays,
   minPaidDeclaration,
   newestStoredPay,
   parseTypedPlan,
@@ -539,6 +540,7 @@ export function PositionDetailsScreen({
             <section
               className="hub-panel"
               id="hub-plan"
+              data-section="plan-management"
               aria-label="Plan Management"
               data-focus={positionFocusPanel === "plan" ? "1" : undefined}
             >
@@ -553,9 +555,8 @@ export function PositionDetailsScreen({
                 const cells = historyRow?.cells ?? [];
                 const pays = historyRow?.recentPays ?? [];
                 const inForce = historyRow?.inForcePays ?? [];
-                const payCount = pays.filter((pay) => pay.amountPerShareMinor != null).length;
-                const avg = meanNewestPays(pays, 6, true);
-                const avg3 = meanNewestPays(pays, 3);
+                const avg6Minor = historyRow?.avg6Minor ?? null;
+                const avg6Scale = historyRow?.avg6Scale ?? 5;
                 const low = minPaidDeclaration(inForce);
                 const current = newestStoredPay(pays);
                 const score = dividendScore(master, cells, current, inForce);
@@ -602,7 +603,7 @@ export function PositionDetailsScreen({
                       <p>No Calculator row yet (needs Plan + first lot).</p>
                     )}
                     <p className="field-caption">Save stored facts stores this amount.</p>
-                    <div className="fact-grid" aria-label="Plan Management figures">
+                    <div className="fact-grid" data-part="plan-figures" aria-label="Plan Management figures">
                       <div>
                         <span className="fact-label">Plan amount</span>
                         <input
@@ -632,10 +633,13 @@ export function PositionDetailsScreen({
                               });
                               return;
                             }
-                            if (planReason === "Match Avg 6 (owner typed)" && avg != null) {
+                            if (
+                              planReason === "Match Avg 6 (owner typed)" &&
+                              avg6Minor != null
+                            ) {
                               patchDraft({
                                 planReason,
-                                plan: scaledDollars(avg, 2),
+                                plan: scaledDollars(avg6Minor, avg6Scale),
                               });
                               return;
                             }
@@ -699,17 +703,13 @@ export function PositionDetailsScreen({
                       <div>
                         <span className="fact-label">Avg 3</span>
                         <span className="fact-value">
-                          {avg3 == null
-                            ? `${Math.min(payCount, 3)} of 3, unknown`
-                            : formatUsd(avg3, 2)}
+                          {historyRow ? avg3Display(historyRow) : "0 of 3, unknown"}
                         </span>
                       </div>
                       <div>
                         <span className="fact-label">Avg 6</span>
                         <span className="fact-value">
-                          {avg == null
-                            ? "unknown"
-                            : `${formatUsd(avg, 2)} (${Math.min(payCount, 6)} of 6)`}
+                          {historyRow ? avg6Display(historyRow) : "unknown"}
                         </span>
                       </div>
                       <div>
@@ -866,9 +866,11 @@ export function PositionDetailsScreen({
               return (
               <section
                 className="hub-panel research-notes-panel"
+                id="hub-research"
+                data-section="research-notes"
                 aria-label="Research notes"
               >
-                <div className="fact-strip" aria-label="Assigned tier">
+                <div className="fact-strip" data-part="assigned-tier" aria-label="Assigned tier">
                   <div>
                     <span className="fact-label">Assigned tier</span>
                     <select
@@ -900,7 +902,7 @@ export function PositionDetailsScreen({
                     ? investment.suggestion?.reason ?? "No complete suggestion."
                     : `${investment.suggestion.suggestedTier} (${investment.suggestion.ruleset}): ${investment.suggestion.reason}`}
                 </p>
-                <div className="fact-strip roc-facts" aria-label="ROC">
+                <div className="fact-strip roc-facts" data-part="roc-facts" aria-label="ROC">
                   <div>
                     <span className="fact-label">ROC %</span>
                     <span className="fact-value">{rocPct}</span>
@@ -923,7 +925,7 @@ export function PositionDetailsScreen({
                     </span>
                   </div>
                 </div>
-                <div className="fact-strip roc-facts" aria-label="ROC years">
+                <div className="fact-strip roc-facts" data-part="roc-years" aria-label="ROC years">
                   <div>
                     <span className="fact-label">ROC previous year</span>
                     <span className="fact-value">{previousFace}</span>
@@ -1009,7 +1011,7 @@ export function PositionDetailsScreen({
                 );
               })()}
             </dl>
-            <div id="hub-tickets" data-focus={positionFocusPanel === "tickets" ? "1" : undefined}>
+            <div id="hub-tickets" data-section="work-tickets" data-part="work-ticket-queue" data-focus={positionFocusPanel === "tickets" ? "1" : undefined}>
             <WorkTicketQueue
               tickets={workTickets}
               filterSymbol={investment.symbol}
@@ -1048,27 +1050,18 @@ export function PositionDetailsScreen({
               onFile={(t) => void fileWorkTicket(t as WorkTicketRecord)}
             />
             </div>
-            <nav className="hub-toc" aria-label="Position hub sections">
-              <a href="#hub-plan">Plan Management</a>
-              <a href="#hub-identity">Position information</a>
-              <a href="#hub-calculator">Calculator</a>
-              <a href="#hub-plan-yields">Plan</a>
-              <a href="#hub-income">Payment summary</a>
-              <a href="#hub-pay-dates">Pay dates</a>
-              <a href="#hub-received">Received</a>
-              <a href="#hub-declarations">Declarations</a>
-              <a href="#hub-accounts">By account</a>
-              <a href="#hub-lots">Lots</a>
-              <a href="#hub-ledger">Ledger</a>
-            </nav>
-            <section className="hub-panel" id="hub-identity" aria-label="Position information">
+            <section className="hub-panel" id="hub-identity" data-section="position-information" aria-label="Position information">
               <h3>Position information</h3>
               <p>
                 Owner facts edit in this table. Risk is mandatory: Foundation, Core,
                 or Risk On. Frequency is required. Save or Cancel.
               </p>
               <div className="table-wrap">
-                <table className="two-col-facts" aria-label="Position information">
+                <table
+                  className="two-col-facts"
+                  aria-label="Position information"
+                  data-part="position-information-facts"
+                >
                   <thead>
                     <tr>
                       <th scope="col">Fact</th>
@@ -1145,7 +1138,7 @@ export function PositionDetailsScreen({
                 </table>
               </div>
             </section>
-            <section className="hub-panel" id="hub-calculator" aria-label="Calculator snapshot">
+            <section className="hub-panel" id="hub-calculator" data-section="calculator-snapshot" aria-label="Calculator snapshot">
               <h3>Calculator snapshot</h3>
               {(() => {
                 const calc = (calculator?.rows ?? []).find(
@@ -1190,7 +1183,7 @@ export function PositionDetailsScreen({
                 }
                 return (
                   <div className="table-wrap">
-                    <table aria-label="Calculator snapshot">
+                    <table data-part="calculator-snapshot-table" aria-label="Calculator snapshot">
                       <thead>
                         <tr>
                           <th scope="col">Metric</th>
@@ -1312,10 +1305,14 @@ export function PositionDetailsScreen({
                 );
               })()}
             </section>
-            <section className="hub-panel" id="hub-plan-yields" aria-label="Plan and yields">
+            <section className="hub-panel" id="hub-plan-yields" data-section="plan-and-yields" aria-label="Plan and yields">
               <h3>Plan and yields</h3>
               <div className="table-wrap">
-                <table className="two-col-facts" aria-label="Plan and yields">
+                <table
+                  className="two-col-facts"
+                  aria-label="Plan and yields"
+                  data-part="plan-and-yields-table"
+                >
                   <thead>
                     <tr>
                       <th scope="col">Metric</th>
@@ -1510,7 +1507,7 @@ export function PositionDetailsScreen({
                 </table>
               </div>
             </section>
-            <section className="hub-panel" id="hub-accounts" aria-label="Holdings by account">
+            <section className="hub-panel" id="hub-accounts" data-section="holdings-by-account" aria-label="Holdings by account">
               <h3>Holdings by account</h3>
               <p>
                 Open quantity and cost for this symbol by control account. Market value is
@@ -1533,7 +1530,7 @@ export function PositionDetailsScreen({
                     : null;
                 return (
                   <div className="table-wrap">
-                    <table aria-label="Holdings by account">
+                    <table data-part="holdings-by-account-table" aria-label="Holdings by account">
                       <thead>
                         <tr>
                           <th scope="col">Account</th>
@@ -1588,11 +1585,11 @@ export function PositionDetailsScreen({
                 );
               })()}
             </section>
-            <details className="hub-panel" aria-label="Identity and holdings facts">
+            <details className="hub-panel" id="hub-facts" data-section="identity-and-economics" aria-label="Identity and holdings facts">
             <summary>Identity and edit facts (name, provider, template)</summary>
             <h3>Identity and economics</h3>
             <div className="table-wrap">
-              <table className="two-col-facts" aria-label="Position dossier">
+              <table className="two-col-facts" aria-label="Position dossier" data-part="position-dossier">
                 <thead>
                   <tr>
                     <th scope="col">Fact</th>
@@ -2166,7 +2163,7 @@ export function PositionDetailsScreen({
               </table>
             </div>
             </details>
-            <section className="hub-panel" id="hub-declarations" aria-label="Declarations" data-focus={positionFocusPanel === "declarations" ? "1" : undefined}>
+            <section className="hub-panel" id="hub-declarations" data-section="declarations" aria-label="Declarations" data-focus={positionFocusPanel === "declarations" ? "1" : undefined}>
             <h3>Declarations</h3>
             {(() => {
               const decls = investment.declarations ?? [];
@@ -2218,7 +2215,7 @@ export function PositionDetailsScreen({
                     <p>No issuer declarations stored.</p>
                   ) : (
                     <div className="table-wrap">
-                      <table aria-label="Stored declarations">
+                      <table data-part="stored-declarations" aria-label="Stored declarations">
                         <thead>
                           <tr>
                             <th scope="col">Pay date</th>
@@ -2248,7 +2245,7 @@ export function PositionDetailsScreen({
               );
             })()}
             </section>
-            <section className="hub-panel" id="hub-income" aria-label="Plan payment summary" data-focus={positionFocusPanel === "income" ? "1" : undefined}>
+            <section className="hub-panel" id="hub-income" data-section="plan-payment-summary" aria-label="Plan payment summary" data-focus={positionFocusPanel === "income" ? "1" : undefined}>
             <h3>Plan payment summary</h3>
             <p>
               Remaining-year Plan cash (Plan × quantity). Blank stays unknown, not $0.
@@ -2267,7 +2264,7 @@ export function PositionDetailsScreen({
                     : ""}
                 </p>
                 <div className="table-wrap">
-                  <table aria-label="Plan payment summary">
+                  <table data-part="plan-payment-summary-table" aria-label="Plan payment summary">
                     <thead>
                       <tr>
                         <th scope="col">Period</th>
@@ -2299,7 +2296,7 @@ export function PositionDetailsScreen({
               </>
             )}
             </section>
-            <section className="hub-panel" id="hub-pay-dates" aria-label="Future plan payment dates">
+            <section className="hub-panel" id="hub-pay-dates" data-section="pay-dates" aria-label="Future plan payment dates">
             <h3>Future plan payment dates</h3>
             <p>
               Each remaining pay date × Plan × open quantity for this symbol.
@@ -2312,7 +2309,7 @@ export function PositionDetailsScreen({
               <p>No remaining-year pay dates yet.</p>
             ) : (
               <div className="table-wrap">
-                <table aria-label="Future plan payment dates">
+                <table data-part="future-plan-payment-dates" aria-label="Future plan payment dates">
                   <thead>
                     <tr>
                       <th scope="col">Pay on</th>
@@ -2344,6 +2341,7 @@ export function PositionDetailsScreen({
             <section
               className="hub-panel"
               id="hub-received"
+              data-section="received-payments"
               aria-label="Received payments"
             >
               <h3>Received payments</h3>
@@ -2364,7 +2362,7 @@ export function PositionDetailsScreen({
                 return (
                   <>
                     <div className="table-wrap">
-                      <table aria-label="Received payment totals">
+                      <table data-part="received-payment-totals" aria-label="Received payment totals">
                         <thead>
                           <tr>
                             <th scope="col">Scope</th>
@@ -2402,7 +2400,7 @@ export function PositionDetailsScreen({
                       <p>No ledger dividends stored for this symbol yet.</p>
                     ) : (
                       <div className="table-wrap">
-                        <table aria-label="Received payments by year">
+                        <table data-part="received-payments-by-year" aria-label="Received payments by year">
                           <thead>
                             <tr>
                               <th scope="col">Year</th>
@@ -2431,6 +2429,7 @@ export function PositionDetailsScreen({
             <section
               className="hub-panel"
               id="hub-ledger"
+              data-section="ledger-income"
               aria-label="Ledger income"
               data-focus={positionFocusPanel === "ledger" ? "1" : undefined}
             >
@@ -2443,7 +2442,7 @@ export function PositionDetailsScreen({
                 <p>No ledger dividends stored for this symbol yet.</p>
               ) : (
                 <div className="table-wrap">
-                  <table aria-label="Ledger dividends">
+                  <table data-part="ledger-dividends" aria-label="Ledger dividends">
                     <thead>
                       <tr>
                         <th scope="col">Occurred</th>
@@ -2483,6 +2482,7 @@ export function PositionDetailsScreen({
             <section
               className="hub-panel"
               id="hub-lots"
+              data-section="lots-by-account"
               aria-label="Lots by account"
               data-focus={positionFocusPanel === "lots" ? "1" : undefined}
             >
@@ -2491,25 +2491,31 @@ export function PositionDetailsScreen({
               {investment.lots.length === 0 ? (
                 <p>No open lots. Calculator omits this symbol until the first lot.</p>
               ) : (
-                <SymbolLotsTable lots={investment.lots} />
+                <div data-part="symbol-lots">
+                  <SymbolLotsTable lots={investment.lots} />
+                </div>
               )}
             </section>
-            <section className="hub-panel" aria-label="Backtests">
+            <section className="hub-panel" id="hub-periods" data-section="owner-period" aria-label="Backtests">
             <h3>Owner period</h3>
             <p>
               Bull and Bear dates for this symbol. The same row as Market impact.
               A higher bear return lost less. A higher bull return made more.
             </p>
-            <SymbolWindowTable
-              client={windowClient}
-              symbol={investment.symbol}
-              discardEpoch={windowDiscardEpoch}
-              onDirtyChange={onWindowsDirty}
-              onSaved={onWindowsSaved}
-              showCashCushion={false}
-            />
+            <div data-part="owner-period-windows">
+              <SymbolWindowTable
+                client={windowClient}
+                symbol={investment.symbol}
+                discardEpoch={windowDiscardEpoch}
+                onDirtyChange={onWindowsDirty}
+                onSaved={onWindowsSaved}
+                showCashCushion={false}
+              />
+            </div>
             <h3>Evidence</h3>
-            <EvidenceWindows investment={investment} />
+            <div data-part="evidence-windows">
+              <EvidenceWindows investment={investment} />
+            </div>
             </section>
           </>
 

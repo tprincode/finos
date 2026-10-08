@@ -2,6 +2,49 @@
 
 use chrono::{Duration, Months, NaiveDate};
 
+use crate::money::rescale;
+
+/// Display / storage scale for Avg 3 and Avg 6 (five places after the point).
+pub const PAY_AVG_SCALE: u8 = 5;
+
+/// Mean of newest complete pays at [`PAY_AVG_SCALE`]. Blank pays are omitted by the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayAverage {
+    pub minor: Option<i64>,
+    pub scale: u8,
+    pub count: u8,
+    pub complete: bool,
+}
+
+/// Mean of up to `target` newest complete pays (minor, scale), newest first.
+/// When `require_full`, fewer than `target` stays unknown (`minor = None`) but `count` is still set.
+pub fn mean_newest_complete_pays(
+    pays: &[(i64, u8)],
+    target: u8,
+    require_full: bool,
+) -> PayAverage {
+    let take = usize::from(target);
+    let mut sum: i128 = 0;
+    let mut count: u8 = 0;
+    for &(minor, scale) in pays.iter().take(take) {
+        sum += i128::from(rescale(minor, scale, PAY_AVG_SCALE));
+        count = count.saturating_add(1);
+    }
+    let complete = count == target;
+    let minor = if count == 0 || (require_full && !complete) {
+        None
+    } else {
+        let n = i128::from(count);
+        Some(((sum + n / 2) / n) as i64)
+    };
+    PayAverage {
+        minor,
+        scale: PAY_AVG_SCALE,
+        count,
+        complete,
+    }
+}
+
 /// One locked cadence: label and period count are the same fact (TR-C-5).
 /// There is no default. Empty is unidentified. `None` means the position does not pay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +312,27 @@ pub fn expected_in_week(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mean_newest_complete_pays_keeps_scale_five() {
+        // 0.8500, 0.8600, 0.8700 → mean 0.86000 at scale 5
+        let pays = [(8500, 4), (8600, 4), (8700, 4)];
+        let avg3 = mean_newest_complete_pays(&pays, 3, true);
+        assert_eq!(avg3.minor, Some(86_000));
+        assert_eq!(avg3.scale, 5);
+        assert_eq!(avg3.count, 3);
+        assert!(avg3.complete);
+
+        let short = mean_newest_complete_pays(&pays[..2], 3, true);
+        assert_eq!(short.minor, None);
+        assert_eq!(short.count, 2);
+        assert!(!short.complete);
+
+        let avg6 = mean_newest_complete_pays(&pays[..2], 6, false);
+        assert_eq!(avg6.minor, Some(85_500));
+        assert_eq!(avg6.count, 2);
+        assert!(!avg6.complete);
+    }
 
     #[test]
     fn cadence_is_one_value_label_or_periods() {

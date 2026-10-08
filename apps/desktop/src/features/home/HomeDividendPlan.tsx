@@ -64,7 +64,11 @@ export function HomeDividendPlan({
   const scale = plan?.scale ?? 2;
   return (
     <BusySurface busy={plan == null || reading}>
-    <section className="home-dividend-plan" aria-label="Dividend Plan">
+    <section
+      className="home-dividend-plan"
+      data-part="dividend-plan"
+      aria-label="Dividend Plan"
+    >
       <h2>Dividend Plan</h2>
       {plan ? (
       <div className="dp-grid" role="table">

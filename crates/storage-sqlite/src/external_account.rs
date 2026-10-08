@@ -8,6 +8,7 @@ use application_core::external_account::{
     line_applied, line_matches, next_due, paid_through_month, projected_split, AccountMatch,
     RegisterMatch,
 };
+use application_core::external_register::project_category_bucket;
 use application_core::ports::platform::PlatformError;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
@@ -19,6 +20,7 @@ fn map_sql(err: sqlx::Error) -> PlatformError {
 struct StoredAccount {
     account_id: String,
     name: String,
+    account_name: String,
     kind: String,
     charges_interest: bool,
     starting_minor: Option<i64>,
@@ -33,6 +35,7 @@ struct StoredAccount {
     register_key: String,
     pay_process: Option<String>,
     linked_element_id: Option<String>,
+    inactive: bool,
     legacy_vendor: Option<String>,
     legacy_amount_minor: Option<i64>,
 }
@@ -48,9 +51,19 @@ struct StoredLine {
 }
 
 fn map_account(row: &sqlx::sqlite::SqliteRow) -> Result<StoredAccount, PlatformError> {
+    let name: String = row.try_get("name").map_err(map_sql)?;
+    let account_name: String = row
+        .try_get::<String, _>("account_name")
+        .unwrap_or_default();
+    let account_name = if account_name.trim().is_empty() {
+        name.clone()
+    } else {
+        account_name
+    };
     Ok(StoredAccount {
         account_id: row.try_get("account_id").map_err(map_sql)?,
-        name: row.try_get("name").map_err(map_sql)?,
+        name,
+        account_name,
         kind: row.try_get("kind").map_err(map_sql)?,
         charges_interest: row.try_get::<i64, _>("charges_interest").map_err(map_sql)? != 0,
         starting_minor: row.try_get("starting_minor").map_err(map_sql)?,
@@ -65,6 +78,7 @@ fn map_account(row: &sqlx::sqlite::SqliteRow) -> Result<StoredAccount, PlatformE
         register_key: row.try_get("register_key").map_err(map_sql)?,
         pay_process: row.try_get("pay_process").map_err(map_sql)?,
         linked_element_id: row.try_get("linked_element_id").map_err(map_sql)?,
+        inactive: row.try_get::<i64, _>("inactive").unwrap_or(0) != 0,
         legacy_vendor: row.try_get("legacy_vendor").map_err(map_sql)?,
         legacy_amount_minor: row.try_get("legacy_amount_minor").map_err(map_sql)?,
     })
@@ -81,6 +95,10 @@ fn map_line(row: &sqlx::sqlite::SqliteRow) -> Result<StoredLine, PlatformError> 
     let step_billpay_deposit = row.try_get::<i64, _>("step_billpay_deposit").map_err(map_sql)? != 0;
     let step_pay = row.try_get::<i64, _>("step_pay").map_err(map_sql)? != 0;
     let step_withdrawal = row.try_get::<i64, _>("step_withdrawal").map_err(map_sql)? != 0;
+    let stored_category: String = row.try_get("category").map_err(map_sql)?;
+    let stored_bucket: String = row.try_get("bucket").map_err(map_sql)?;
+    let loan_name: String = row.try_get("loan_name").unwrap_or_default();
+    let (category, bucket) = project_category_bucket(&stored_category, &stored_bucket);
     Ok(StoredLine {
         line: ExternalRegisterLine {
             line_id,
@@ -89,7 +107,9 @@ fn map_line(row: &sqlx::sqlite::SqliteRow) -> Result<StoredLine, PlatformError> 
             occurred_on: row.try_get("occurred_on").map_err(map_sql)?,
             amount_minor: row.try_get("amount_minor").map_err(map_sql)?,
             scale: scale as u8,
-            category: row.try_get("category").map_err(map_sql)?,
+            category,
+            bucket,
+            loan_name,
             vendor: row.try_get("vendor").map_err(map_sql)?,
             description: row.try_get("description").map_err(map_sql)?,
             true_up_on: row.try_get("true_up_on").map_err(map_sql)?,
@@ -118,9 +138,9 @@ async fn load_accounts(
     conn: &mut sqlx::SqliteConnection,
 ) -> Result<Vec<StoredAccount>, PlatformError> {
     let rows = sqlx::query(
-        "SELECT account_id, name, kind, charges_interest, starting_minor, current_minor,
+        "SELECT account_id, name, account_name, kind, charges_interest, starting_minor, current_minor,
                 payment_minor, reduction_minor, finance_minor, paid_through, due_on, apr_ppm,
-                frequency, register_key, pay_process, linked_element_id,
+                frequency, register_key, pay_process, linked_element_id, inactive,
                 legacy_vendor, legacy_amount_minor
          FROM external_managed_account
          ORDER BY sort_order, name",
@@ -134,7 +154,7 @@ async fn load_accounts(
 async fn load_lines(conn: &mut sqlx::SqliteConnection) -> Result<Vec<StoredLine>, PlatformError> {
     let rows = sqlx::query(
         "SELECT line_id, source_row, pay_type, occurred_on, amount_minor, scale,
-                category, vendor, description, true_up_on, completed,
+                category, bucket, loan_name, vendor, description, true_up_on, completed,
                 step_transfer, step_billpay, step_billpay_deposit, step_pay, step_withdrawal,
                 step_transfer_on, step_billpay_on, step_billpay_deposit_on, step_pay_on,
                 step_withdrawal_on
@@ -174,6 +194,8 @@ fn account_match(account: &StoredAccount) -> AccountMatch {
 fn register_match(line: &StoredLine) -> RegisterMatch {
     RegisterMatch {
         category: line.line.category.clone(),
+        bucket: line.line.bucket.clone(),
+        loan_name: line.line.loan_name.clone(),
         vendor: line.line.vendor.clone(),
         amount_minor: line.line.amount_minor,
     }
@@ -191,7 +213,19 @@ async fn reconcile(conn: &mut sqlx::SqliteConnection) -> Result<(), PlatformErro
     let accounts = load_accounts(conn).await?;
     let lines = load_lines(conn).await?;
     for account in accounts {
-        if account.pay_process.as_deref() != Some("register") {
+        // Inactive loans keep history but must not keep moving Current from CCT.
+        if account.inactive {
+            continue;
+        }
+        // Escrow (Mom): Bucket Transaction Managed. Debts: CCT settle via loan_name
+        // (register legacy + scheduled element).
+        let process = account.pay_process.as_deref();
+        let settle_via_cct = if account.kind == "credit" {
+            process == Some("register")
+        } else {
+            matches!(process, Some("register") | Some("element") | None)
+        };
+        if !settle_via_cct {
             continue;
         }
         let matcher = account_match(&account);
@@ -209,6 +243,7 @@ async fn reconcile(conn: &mut sqlx::SqliteConnection) -> Result<(), PlatformErro
         let applied = applied_ids(conn, &account.account_id).await?;
         let mut current = account.current_minor;
         let mut reduction = account.reduction_minor;
+        let mut paid_through = account.paid_through.clone();
         let mut changed = false;
         for line in matched {
             let ready = line_applied(
@@ -231,10 +266,22 @@ async fn reconcile(conn: &mut sqlx::SqliteConnection) -> Result<(), PlatformErro
                 continue;
             }
             if let Some(balance) = current.as_mut() {
+                // Positive amount lowers Current; negative raises (loan charge or escrow deposit).
                 *balance -= line.line.amount_minor;
             }
             if account.kind != "credit" {
                 reduction = Some(line.line.amount_minor);
+                if let Some(on) = line
+                    .line
+                    .occurred_on
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| line.line.true_up_on.as_deref().filter(|s| !s.is_empty()))
+                {
+                    if let Some(month) = paid_through_month(on) {
+                        paid_through = Some(month.to_string());
+                    }
+                }
             }
             sqlx::query(
                 "INSERT OR IGNORE INTO external_managed_applied (account_id, line_id) VALUES (?1, ?2)",
@@ -249,11 +296,12 @@ async fn reconcile(conn: &mut sqlx::SqliteConnection) -> Result<(), PlatformErro
         if changed {
             sqlx::query(
                 "UPDATE external_managed_account
-                 SET current_minor = ?1, reduction_minor = ?2
-                 WHERE account_id = ?3",
+                 SET current_minor = ?1, reduction_minor = ?2, paid_through = ?3
+                 WHERE account_id = ?4",
             )
             .bind(current)
             .bind(reduction)
+            .bind(&paid_through)
             .bind(&account.account_id)
             .execute(&mut *conn)
             .await
@@ -395,6 +443,7 @@ async fn read_body(conn: &mut sqlx::SqliteConnection) -> Result<ExternalManagedG
         out.push(ExternalManagedAccount {
             account_id,
             name: account.name,
+            account_name: account.account_name,
             kind: account.kind,
             charges_interest: account.charges_interest,
             starting_minor: account.starting_minor,
@@ -410,6 +459,7 @@ async fn read_body(conn: &mut sqlx::SqliteConnection) -> Result<ExternalManagedG
             register_key: account.register_key,
             pay_process: account.pay_process,
             linked_element_id,
+            inactive: account.inactive,
             lines: matched.into_iter().map(|line| line.line.clone()).collect(),
             vendor,
         });
@@ -430,8 +480,15 @@ pub async fn save(
             insert_account(&mut tx, &incoming).await?;
             continue;
         };
+        let account_name = if incoming.account_name.trim().is_empty() {
+            incoming.name.clone()
+        } else {
+            incoming.account_name.trim().to_string()
+        };
         let register_key = if existing.kind == "credit" {
             existing.register_key.clone()
+        } else if !incoming.register_key.trim().is_empty() {
+            incoming.register_key.trim().to_string()
         } else {
             incoming.name.clone()
         };
@@ -461,24 +518,32 @@ pub async fn save(
                 require_element(&mut tx, &element_id.to_string()).await?;
             }
         }
+        let inactive = if existing.kind == "credit" {
+            false
+        } else {
+            incoming.inactive
+        };
         sqlx::query(
             "UPDATE external_managed_account
              SET name = ?1,
-                 starting_minor = ?2,
-                 current_minor = ?3,
-                 payment_minor = ?4,
-                 reduction_minor = ?5,
-                 finance_minor = ?6,
-                 due_on = ?7,
-                 apr_ppm = ?8,
-                 frequency = ?9,
-                 charges_interest = ?10,
-                 register_key = ?11,
-                 pay_process = ?12,
-                 linked_element_id = ?13
-             WHERE account_id = ?14",
+                 account_name = ?2,
+                 starting_minor = ?3,
+                 current_minor = ?4,
+                 payment_minor = ?5,
+                 reduction_minor = ?6,
+                 finance_minor = ?7,
+                 due_on = ?8,
+                 apr_ppm = ?9,
+                 frequency = ?10,
+                 charges_interest = ?11,
+                 register_key = ?12,
+                 pay_process = ?13,
+                 linked_element_id = ?14,
+                 inactive = ?15
+             WHERE account_id = ?16",
         )
         .bind(&incoming.name)
+        .bind(&account_name)
         .bind(incoming.starting_minor)
         .bind(current_minor)
         .bind(incoming.payment_minor)
@@ -491,6 +556,7 @@ pub async fn save(
         .bind(&register_key)
         .bind(&pay_process)
         .bind(linked_element_id.map(|id| id.to_string()))
+        .bind(i64::from(inactive))
         .bind(&account_id)
         .execute(&mut *tx)
         .await
@@ -544,6 +610,7 @@ pub async fn loans_due(
          FROM external_managed_account
          WHERE kind = 'debt'
            AND pay_process = 'week_ahead'
+           AND COALESCE(inactive, 0) = 0
            AND due_on IS NOT NULL
            AND due_on >= ?1
            AND due_on <= ?2
@@ -709,6 +776,16 @@ async fn insert_account(
         None
     };
     let charges_interest = incoming.apr_ppm.unwrap_or(0) > 0;
+    let account_name = if incoming.account_name.trim().is_empty() {
+        incoming.name.clone()
+    } else {
+        incoming.account_name.trim().to_string()
+    };
+    let register_key = if !incoming.register_key.trim().is_empty() {
+        incoming.register_key.trim().to_string()
+    } else {
+        incoming.name.clone()
+    };
     let sort_order: i64 =
         sqlx::query("SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_sort FROM external_managed_account")
             .fetch_one(&mut *conn)
@@ -718,14 +795,15 @@ async fn insert_account(
             .map_err(map_sql)?;
     sqlx::query(
         "INSERT INTO external_managed_account (
-            account_id, name, kind, charges_interest,
+            account_id, name, account_name, kind, charges_interest,
             starting_minor, current_minor, payment_minor, reduction_minor, finance_minor,
             paid_through, due_on, apr_ppm, frequency, register_key,
-            pay_process, linked_element_id, sort_order
-         ) VALUES (?1, ?2, 'debt', ?3, ?4, ?5, ?6, NULL, ?7, NULL, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            pay_process, linked_element_id, inactive, sort_order
+         ) VALUES (?1, ?2, ?3, 'debt', ?4, ?5, ?6, ?7, NULL, ?8, NULL, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
     )
     .bind(incoming.account_id.to_string())
     .bind(&incoming.name)
+    .bind(&account_name)
     .bind(i64::from(charges_interest))
     .bind(incoming.starting_minor)
     .bind(incoming.current_minor)
@@ -734,9 +812,10 @@ async fn insert_account(
     .bind(&incoming.due_on)
     .bind(incoming.apr_ppm)
     .bind(&incoming.frequency)
-    .bind(&incoming.name)
+    .bind(&register_key)
     .bind(&incoming.pay_process)
     .bind(linked)
+    .bind(i64::from(incoming.inactive))
     .bind(sort_order)
     .execute(&mut *conn)
     .await
@@ -744,6 +823,8 @@ async fn insert_account(
     Ok(())
 }
 
+/// Week Ahead confirm for a Loan Element: draft an Open CCT row with Loan Name.
+/// Loan Current moves when that CCT row settles (reconcile), not here.
 pub async fn apply_element_payment(
     pool: &SqlitePool,
     element_id: Uuid,
@@ -751,11 +832,45 @@ pub async fn apply_element_payment(
     occurred_on: String,
     amount_minor: i64,
 ) -> Result<(), PlatformError> {
+    draft_cct_from_loan_element(pool, element_id, occurrence_id, occurred_on, amount_minor).await
+}
+
+fn suggested_category_for_loan(loan_name: &str) -> &'static str {
+    let key = loan_name.trim().to_lowercase();
+    if key.contains("alphaeon") || key.contains("paytient") || key.contains("uva") {
+        "Medical"
+    } else if key.contains("newrez") {
+        "Bills"
+    } else {
+        "Cash"
+    }
+}
+
+pub async fn draft_cct_from_loan_element(
+    pool: &SqlitePool,
+    element_id: Uuid,
+    occurrence_id: Uuid,
+    occurred_on: String,
+    amount_minor: i64,
+) -> Result<(), PlatformError> {
     let mut tx = pool.begin().await.map_err(map_sql)?;
+    let already = sqlx::query(
+        "SELECT line_id FROM external_element_cct_draft WHERE occurrence_id = ?1",
+    )
+    .bind(occurrence_id.to_string())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_sql)?;
+    if already.is_some() {
+        tx.commit().await.map_err(map_sql)?;
+        return Ok(());
+    }
     let rows = sqlx::query(
-        "SELECT account_id, current_minor, payment_minor, charges_interest, apr_ppm, frequency, due_on
+        "SELECT account_id, name, register_key, payment_minor, legacy_vendor
          FROM external_managed_account
-         WHERE pay_process = 'element' AND linked_element_id = ?1",
+         WHERE kind = 'debt'
+           AND pay_process = 'element'
+           AND linked_element_id = ?1",
     )
     .bind(element_id.to_string())
     .fetch_all(&mut *tx)
@@ -763,61 +878,44 @@ pub async fn apply_element_payment(
     .map_err(map_sql)?;
     for row in rows {
         let account_id: String = row.try_get("account_id").map_err(map_sql)?;
-        let current: Option<i64> = row.try_get("current_minor").map_err(map_sql)?;
-        let Some(balance) = current.filter(|amount| *amount > 0) else {
-            continue;
+        let name: String = row.try_get("name").map_err(map_sql)?;
+        let register_key: String = row.try_get("register_key").map_err(map_sql)?;
+        let loan_name = if !register_key.trim().is_empty() {
+            register_key
+        } else {
+            name.clone()
         };
         let payment: Option<i64> = row.try_get("payment_minor").map_err(map_sql)?;
-        let charges_interest = row.try_get::<i64, _>("charges_interest").map_err(map_sql)? != 0;
-        let apr_ppm: Option<i64> = row.try_get("apr_ppm").map_err(map_sql)?;
-        let frequency: Option<String> = row.try_get("frequency").map_err(map_sql)?;
-        let due_on: Option<String> = row.try_get("due_on").map_err(map_sql)?;
+        let vendor: Option<String> = row.try_get("legacy_vendor").map_err(map_sql)?;
         let payment_minor = payment.filter(|amount| *amount > 0).unwrap_or(amount_minor);
         if payment_minor <= 0 {
             continue;
         }
-        let principal = if charges_interest {
-            projected_split(balance, payment_minor, true, apr_ppm, frequency.as_deref())
-                .map(|(principal, _)| principal)
-                .ok_or_else(|| {
-                    PlatformError::new(
-                        "bad_split",
-                        "the linked loan payment does not cover its interest",
-                    )
-                })?
-        } else {
-            payment_minor.min(balance)
-        };
-        let inserted = sqlx::query(
-            "INSERT OR IGNORE INTO external_element_loan_applied (
-                account_id, occurrence_id, amount_minor
-             ) VALUES (?1, ?2, ?3)",
+        let line_id = Uuid::new_v4();
+        let category = suggested_category_for_loan(&loan_name);
+        let vendor = vendor.unwrap_or_default();
+        sqlx::query(
+            "INSERT INTO external_register_line (
+                line_id, source_row, pay_type, occurred_on, amount_minor, scale,
+                category, bucket, loan_name, vendor, description, true_up_on, completed
+             ) VALUES (?1, NULL, 'Checking', ?2, ?3, 2, ?4, '', ?5, ?6, ?7, NULL, 0)",
         )
-        .bind(&account_id)
-        .bind(occurrence_id.to_string())
-        .bind(principal)
+        .bind(line_id.to_string())
+        .bind(&occurred_on)
+        .bind(payment_minor)
+        .bind(category)
+        .bind(&loan_name)
+        .bind(&vendor)
+        .bind(format!("Week Ahead loan · {loan_name}"))
         .execute(&mut *tx)
         .await
         .map_err(map_sql)?;
-        if inserted.rows_affected() == 0 {
-            continue;
-        }
-        let next_due_on = due_on.as_deref().zip(frequency.as_deref()).and_then(|(due, frequency)| {
-            next_due(due, frequency)
-        });
-        let paid_through = paid_through_month(&occurred_on).map(str::to_string);
         sqlx::query(
-            "UPDATE external_managed_account
-             SET current_minor = ?1,
-                 reduction_minor = ?2,
-                 paid_through = COALESCE(?3, paid_through),
-                 due_on = COALESCE(?4, due_on)
-             WHERE account_id = ?5",
+            "INSERT INTO external_element_cct_draft (occurrence_id, line_id, account_id)
+             VALUES (?1, ?2, ?3)",
         )
-        .bind((balance - principal).max(0))
-        .bind(principal)
-        .bind(paid_through)
-        .bind(next_due_on)
+        .bind(occurrence_id.to_string())
+        .bind(line_id.to_string())
         .bind(&account_id)
         .execute(&mut *tx)
         .await

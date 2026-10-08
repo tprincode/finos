@@ -19,6 +19,35 @@ export function planParts(
   return { ytd, remaining, eoy };
 }
 
+/** 1040 caps the net capital loss deducted against income at $3,000 a year. */
+export const NET_CAPITAL_LOSS_LIMIT_MINOR = 300_000;
+
+export type CapitalGainMagi = {
+  /** Every capital gain part added up, gains and losses, uncapped. */
+  netMinor: number;
+  /** The slice MAGI takes. A net loss stops at the 1040 limit. */
+  magiMinor: number;
+  /** Loss left over after the limit, negative. Zero when the net is a gain. */
+  carryforwardMinor: number;
+  /** A lot sale the server could not place in a long or short term. */
+  unplaceableSale: boolean;
+};
+
+/** Car long and short term plus Barbara net first, then the limit applies once. */
+export function capitalGainForMagi(plan: TaxPlanningGet): CapitalGainMagi {
+  const carLt = planParts(plan, "ltcg");
+  const carSt = planParts(plan, "stcg");
+  const netMinor =
+    (plan.netCapitalGainMinor ?? carLt.eoy + carSt.eoy) + BARBARA_LTCG_MINOR;
+  const magiMinor = Math.max(netMinor, -NET_CAPITAL_LOSS_LIMIT_MINOR);
+  return {
+    netMinor,
+    magiMinor,
+    carryforwardMinor: netMinor - magiMinor,
+    unplaceableSale: plan.netCapitalGainMinor === null,
+  };
+}
+
 export type MagiForecast = {
   after: number;
   cliff: number;
@@ -33,6 +62,7 @@ export type MagiForecast = {
   isEstimate: boolean;
   suggestionLines: string[];
   creditAtRiskMinor: number;
+  gains: CapitalGainMagi;
 };
 
 export function forecastMagi(
@@ -45,16 +75,8 @@ export function forecastMagi(
   const job = planParts(plan, "job1099");
   const ordinary = planParts(plan, "ordinary");
   const ssa = planParts(plan, "ssa");
-  const carLt = planParts(plan, "ltcg");
-  const carSt = planParts(plan, "stcg");
-  const magiEoy =
-    ira.eoy +
-    job.eoy +
-    ordinary.eoy +
-    ssa.eoy +
-    BARBARA_LTCG_MINOR +
-    carLt.eoy +
-    carSt.eoy;
+  const gains = capitalGainForMagi(plan);
+  const magiEoy = ira.eoy + job.eoy + ordinary.eoy + ssa.eoy + gains.magiMinor;
   const iraContributionMinor = plan.iraContributionMinor ?? 0;
   const deductions =
     HSA_CONTRIBUTION_MINOR +
@@ -76,7 +98,8 @@ export function forecastMagi(
     isIndeterminate ||
     magi == null ||
     magi.dataCompleteness !== "complete" ||
-    estimatesFeedForecast;
+    estimatesFeedForecast ||
+    gains.unplaceableSale;
   const iraCut = Math.min(ira.remaining, hole);
   const splitCut =
     hole > 0 && ira.remaining > 0
@@ -88,6 +111,11 @@ export function forecastMagi(
   const suggestionLines: string[] = [];
   if (isIndeterminate) {
     suggestionLines.push("Book the missing fact: Barbara LTCG, Schedule C, APTC.");
+  }
+  if (gains.unplaceableSale) {
+    suggestionLines.push(
+      "A lot sale is dated before its lot, so capital gains are missing from this forecast.",
+    );
   }
   if (hole > 0 && iraCut > 0) {
     suggestionLines.push(
@@ -123,6 +151,7 @@ export function forecastMagi(
     isEstimate,
     suggestionLines,
     creditAtRiskMinor: over ? yearAptcMinor : 0,
+    gains,
   };
 }
 

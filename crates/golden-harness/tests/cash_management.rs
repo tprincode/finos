@@ -1,6 +1,7 @@
 use application_core::contracts::{
-    CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
+    CommandRequest, PlannedOccurrenceRecord, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
 };
+use application_core::ports::canonical::Canonical;
 use application_core::queries::{execute_command_on, execute_query_on};
 use storage_sqlite::LocalPlatform;
 use uuid::Uuid;
@@ -956,6 +957,47 @@ async fn prior_year_1099_is_not_current_year_ytd_and_car_splits_holding_term() {
         }),
     )
     .await;
+    // Bought and sold on 2026-04-10. IRS calls that short-term; the gain must
+    // not vanish into a confident $0.
+    let same_day_lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": car["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-04-10",
+            "quantityMinor": 5,
+            "quantityScale": 0,
+            "performanceBasisMinor": 50000,
+            "taxBasisMinor": 50000,
+            "scale": 2
+        }),
+    )
+    .await;
+    let same_day_sell = must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": car["accountId"],
+            "securityId": security_id,
+            "activityType": "sell",
+            "amountMinor": 42000,
+            "scale": 2,
+            "occurredOn": "2026-04-10"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotAssign",
+        serde_json::json!({
+            "lotId": same_day_lot["lotId"],
+            "activityId": same_day_sell["activityId"],
+            "quantityMinor": 5,
+            "quantityScale": 0
+        }),
+    )
+    .await;
 
     let trends = query_json(
         &platform,
@@ -992,7 +1034,46 @@ async fn prior_year_1099_is_not_current_year_ytd_and_car_splits_holding_term() {
         Some(-20_000),
         "sold after one-year anniversary is long-term tax lot: {car_plan}"
     );
-    assert_eq!(car_plan["ytdShortTermGainMinor"].as_i64(), Some(0), "{car_plan}");
+    assert_eq!(
+        car_plan["ytdShortTermGainMinor"].as_i64(),
+        Some(-8_000),
+        "same-day round trip is a short-term sale, not a dropped $0: {car_plan}"
+    );
+    assert_eq!(car_plan["lotSaleCount"].as_u64(), Some(2), "{car_plan}");
+    assert_eq!(
+        car_plan["lotSalePlMinor"].as_i64(),
+        Some(-28_000),
+        "{car_plan}"
+    );
+
+    let plan = query_json(
+        &platform,
+        "TaxPlanningGet",
+        serde_json::json!({ "asOfDate": "2026-09-13" }),
+    )
+    .await;
+    let row = |key: &str| {
+        plan["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == key)
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(row("ltcg")["totalMinor"].as_i64(), Some(-20_000), "{plan}");
+    assert_eq!(row("stcg")["totalMinor"].as_i64(), Some(-8_000), "{plan}");
+    assert_eq!(plan["netCapitalGainMinor"].as_i64(), Some(-28_000), "{plan}");
+    assert_eq!(
+        plan["capitalGainMagiMinor"].as_i64(),
+        Some(-28_000),
+        "a $280.00 loss is under the $3,000.00 limit: {plan}"
+    );
+    assert_eq!(
+        plan["capitalLossCarryforwardMinor"].as_i64(),
+        Some(0),
+        "{plan}"
+    );
 }
 
 #[test]
@@ -1069,7 +1150,8 @@ fn trends_distribution_tax_blocks_are_read_only_cm_summaries() {
     );
     assert!(!report.contains("divorce") && !report.contains("Divorce"));
     assert!(report.contains("1095-A"));
-    let income_at = report.find("<h4>Income</h4>").expect("Income heading");
+    // The heading carries the nav anchor now, so match its text, not the bare tag.
+    let income_at = report.find(">Income</h4>").expect("Income heading");
     let aptc_at = report
         .find("Marketplace application and 1095-A")
         .expect("1095-A heading");
@@ -1332,6 +1414,14 @@ fn cct_completed_export_offers_print_pdf_excel() {
             && core.contains("cct-completed-"),
         "host must format completed CCT rows for html/pdf/xlsx"
     );
+    assert!(
+        core.contains("write_number_with_format")
+            && core.contains("$#,##0")
+            && core.contains("SUM(C2:C")
+            && core.contains("Formula::new")
+            && !core.contains("write_string(row, 2, &fmt_money"),
+        "CCT Excel Total spent must be currency numbers with a SUM total row"
+    );
 }
 
 #[test]
@@ -1377,22 +1467,40 @@ fn tax_planning_forecast_stays_visible_when_indeterminate() {
         !report.contains("MagiFactRecord") && !report.contains("magi_fact"),
         "this patch does not write APTC into magi_fact"
     );
+    assert!(
+        forecast.contains("plan.netCapitalGainMinor")
+            && forecast.contains("Math.max(netMinor, -NET_CAPITAL_LOSS_LIMIT_MINOR)")
+            && forecast.contains("gains.magiMinor")
+            && !forecast.contains("BARBARA_LTCG_MINOR +\n    carLt.eoy"),
+        "MAGI takes the capped capital gain, never the raw ltcg + stcg rows"
+    );
+    assert!(
+        report.contains("Capital loss over the 1040 limit")
+            && report.contains("carries forward")
+            && report.contains("gains.carryforwardMinor")
+            && report.contains("NET_CAPITAL_LOSS_LIMIT_MINOR"),
+        "the report names the limited amount and the carryforward"
+    );
+    assert!(
+        report.contains("...carLt") && report.contains("...carSt"),
+        "the gain rows keep the uncapped net"
+    );
 }
 
-/// Medical-mom stays its own category and debits Mom shopping by the line amount once transfer is marked.
+/// Mom shopping register_key is Mom. Medical spend does not debit it. Food defaults bucket Food.
 #[tokio::test]
-async fn medical_mom_debits_the_mom_credit() {
+async fn register_bucket_medical_and_mom_credit() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data"))
         .await
         .unwrap();
-    let mom_id = "a1000001-0000-4000-8000-000000000008";
+    let mom_credit_id = "a1000001-0000-4000-8000-000000000008";
     must_ok(
         &platform,
         "ExternalAccountManagerSave",
         serde_json::json!({
             "accounts": [{
-                "accountId": mom_id,
+                "accountId": mom_credit_id,
                 "name": "Mom shopping",
                 "startingMinor": 100000,
                 "currentMinor": 100000,
@@ -1406,9 +1514,11 @@ async fn medical_mom_debits_the_mom_credit() {
         }),
     )
     .await;
+
     let medical_mom = Uuid::new_v4();
     let medical = Uuid::new_v4();
     let mom = Uuid::new_v4();
+    let food = Uuid::new_v4();
     must_ok(
         &platform,
         "ExternalRegisterSave",
@@ -1421,6 +1531,7 @@ async fn medical_mom_debits_the_mom_credit() {
                     "amountMinor": 2500,
                     "scale": 2,
                     "category": "medical-mom",
+                    "bucket": "",
                     "vendor": "CVS",
                     "description": "visit"
                 },
@@ -1431,8 +1542,9 @@ async fn medical_mom_debits_the_mom_credit() {
                     "amountMinor": 1000,
                     "scale": 2,
                     "category": "Medical",
+                    "bucket": "",
                     "vendor": "Paytient",
-                    "description": "not mom"
+                    "description": "plain medical"
                 },
                 {
                     "lineId": mom,
@@ -1441,18 +1553,54 @@ async fn medical_mom_debits_the_mom_credit() {
                     "amountMinor": 400,
                     "scale": 2,
                     "category": "Mom",
+                    "bucket": "",
                     "vendor": "Walmart",
                     "description": "shopping"
+                },
+                {
+                    "lineId": food,
+                    "payType": "Checking",
+                    "occurredOn": "2026-10-04",
+                    "amountMinor": 500,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "",
+                    "vendor": "Weg",
+                    "description": "default bucket"
                 }
             ]
         }),
     )
     .await;
+    let register = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let projected = register["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|line| line["lineId"] == medical_mom.to_string())
+        .expect("medical+medical line");
+    assert_eq!(projected["category"], "Medical");
+    assert_eq!(projected["bucket"], "Medical");
+    let food_line = register["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|line| line["lineId"] == food.to_string())
+        .expect("food line");
+    assert_eq!(food_line["bucket"], "Food", "blank Food category defaults bucket Food");
+    let medical_line = register["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|line| line["lineId"] == medical.to_string())
+        .expect("medical line");
+    assert_eq!(medical_line["bucket"], "Medical");
+
     must_ok(
         &platform,
         "ExternalRegisterMarkStep",
         serde_json::json!({
-            "lineIds": [medical_mom, medical, mom],
+            "lineIds": [medical_mom, medical, mom, food],
             "step": "transfer",
             "tickedOn": "2026-10-05"
         }),
@@ -1463,22 +1611,1155 @@ async fn medical_mom_debits_the_mom_credit() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["accountId"] == mom_id)
+        .find(|row| row["accountId"] == mom_credit_id)
         .expect("Mom shopping");
+    assert_eq!(account["registerKey"], "Mom");
     assert_eq!(
-        account["currentMinor"], 97100,
-        "Medical-mom $25.00 and Mom $4.00 debit Mom; Medical $10.00 does not: {account}"
+        account["currentMinor"], 99600,
+        "only category Mom $4 debits Mom shopping; Medical/Food do not: {account}"
     );
-    let categories: Vec<_> = account["lines"]
+}
+
+#[tokio::test]
+async fn mom_shopping_repair_keeps_register_key_mom() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let body = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let account = body["accounts"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|line| line["category"].as_str().unwrap().to_string())
-        .collect();
-    assert!(categories.contains(&"Medical-mom".to_string()), "{categories:?}");
-    assert!(categories.contains(&"Mom".to_string()), "{categories:?}");
-    assert!(
-        !categories.iter().any(|category| category == "Medical"),
-        "{categories:?}"
+        .find(|row| row["accountId"] == "a1000001-0000-4000-8000-000000000008")
+        .expect("Mom shopping");
+    assert_eq!(account["registerKey"], "Mom");
+}
+
+/// Truist BANK is the car *loan* (Loan book, day 7). Car brokerage withdrawal
+/// stays on account Car and must never be treated as that loan or as CCT settle.
+#[tokio::test]
+async fn truist_car_loan_day_7_isolated_from_car_brokerage_withdrawal() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let managed = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let truist = managed["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Truist BANK")
+        .expect("Truist BANK loan");
+    assert_eq!(truist["kind"], "debt");
+    assert_eq!(
+        truist["payProcess"], "week_ahead",
+        "interest car loan uses Week Ahead verify, not element→CCT: {truist}"
     );
+    assert_eq!(truist["chargesInterest"], true);
+    let due = truist["dueOn"].as_str().unwrap_or("");
+    assert!(
+        due.ends_with("-07"),
+        "Truist loan due must be on the 7th, got {due}"
+    );
+
+    // WeekAheadGet seeds Car brokerage withdrawal if missing; Loan Truist comes from migrations.
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({ "asOfDate": "2026-10-07" }),
+    )
+    .await;
+    let elements = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({ "account": "all", "asOfDate": "2026-10-07" }),
+    )
+    .await;
+    let items = elements["items"].as_array().expect("elements");
+    let truist_el = items
+        .iter()
+        .find(|row| row["elementId"] == "e1000001-0000-4000-8000-000000000002")
+        .expect("Truist Loan Element");
+    assert_eq!(truist_el["account"], "Loan", "Truist loan element stays on Loan book");
+    assert_eq!(truist_el["note"], "Truist BANK");
+    assert_eq!(
+        truist_el["weekdayOrMonthDay"], "7",
+        "0074 seeded day 1; 0082 must keep Truist on the 7th: {truist_el}"
+    );
+    assert_eq!(truist_el["associationKind"], "loan");
+
+    let car_el = items
+        .iter()
+        .find(|row| row["account"] == "Car")
+        .expect("Car brokerage withdrawal element must exist separately from Truist loan");
+    assert_ne!(
+        car_el["elementId"], truist_el["elementId"],
+        "Car brokerage withdrawal must not share Truist's element id"
+    );
+    assert_ne!(car_el["account"], "Loan");
+    assert_ne!(
+        car_el["associationKind"], "loan",
+        "Car brokerage withdrawal is not a loan association: {car_el}"
+    );
+
+    let rows = ahead["rows"].as_array().expect("week ahead rows");
+    assert!(
+        rows.iter().all(|row| row["note"] != "Truist BANK"),
+        "Truist must not use the element Confirm row — it belongs in Loan payments: {ahead}"
+    );
+    assert!(
+        rows.iter().all(|row| !(row["account"] == "Car" && row["note"] == "Truist BANK")),
+        "Truist must never be listed as a Car brokerage row: {ahead}"
+    );
+    let loan_rows = ahead["loans"].as_array().expect("week ahead loans");
+    let truist_loan = loan_rows
+        .iter()
+        .find(|row| row["name"] == "Truist BANK")
+        .expect("Truist in Week Ahead Loan payments");
+    assert_eq!(truist_loan["dueOn"], "2026-10-07");
+    assert!(
+        truist_loan["interestMinor"].as_i64().unwrap_or(0) > 0,
+        "Truist must project interest for verify: {truist_loan}"
+    );
+    assert_eq!(
+        truist_loan["principalMinor"].as_i64().unwrap()
+            + truist_loan["interestMinor"].as_i64().unwrap(),
+        truist_loan["paymentMinor"].as_i64().unwrap(),
+        "principal + interest = payment: {truist_loan}"
+    );
+
+    let mig = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("crates/storage-sqlite/migrations/0082_truist_loan_day_7_not_car_brokerage.sql"),
+    )
+    .unwrap();
+    assert!(
+        mig.contains("weekday_or_month_day = '7'")
+            && mig.contains("Truist BANK")
+            && mig.contains("account = 'Loan'")
+            && mig.contains("do not touch"),
+        "0082 must repair Truist Loan day only and leave Car brokerage alone"
+    );
+    let mig83 = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("crates/storage-sqlite/migrations/0083_restore_interest_loan_week_ahead.sql"),
+    )
+    .unwrap();
+    assert!(
+        mig83.contains("pay_process = 'week_ahead'")
+            && mig83.contains("charges_interest = 1")
+            && mig83.contains("external_element_cct_draft"),
+        "0083 restores interest Week Ahead path and undoes Truist element confirm"
+    );
+    let week_ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/WeekAhead.tsx"),
+    )
+    .unwrap();
+    assert!(
+        week_ui.contains("Week ahead loan payments")
+            && week_ui.contains("projectedInterest")
+            && week_ui.contains("principalMinor")
+            && week_ui.contains("interestMinor"),
+        "Week Ahead Loan payments UI must keep interest verify"
+    );
+}
+
+#[tokio::test]
+async fn newrez_week_ahead_interest_stays_under_total_payment() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let managed = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let newrez_acct = managed["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Newrez")
+        .expect("Newrez account");
+    assert_eq!(newrez_acct["payProcess"], "week_ahead");
+    assert_eq!(newrez_acct["frequency"], "monthly");
+    assert_eq!(
+        newrez_acct["aprPpm"], 59_900,
+        "Newrez needs 5.99% APR to project interest: {newrez_acct}"
+    );
+    assert_eq!(newrez_acct["paymentMinor"], 179_672);
+    // Due 2026-10-10 is Saturday — that week's window is 10/10–10/16.
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({ "asOfDate": "2026-10-10" }),
+    )
+    .await;
+    assert_eq!(ahead["periodStart"], "2026-10-10");
+    assert_eq!(ahead["periodEnd"], "2026-10-16");
+    let newrez = ahead["loans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Newrez")
+        .unwrap_or_else(|| panic!("Newrez on Week Ahead Loan payments: {ahead}"));
+    let payment = newrez["paymentMinor"].as_i64().unwrap();
+    let interest = newrez["interestMinor"].as_i64().unwrap();
+    let principal = newrez["principalMinor"].as_i64().unwrap();
+    assert_eq!(payment, 179_672, "Newrez contractual payment: {newrez}");
+    assert!(
+        interest > 0 && interest < payment,
+        "interest must be positive and under total payment: {newrez}"
+    );
+    assert_eq!(principal + interest, payment, "P+I must equal total payment: {newrez}");
+    // ~$1,488 on ~$298k @ 5.99%/12 — statement history is ~$1,489–$1,497.
+    assert!(
+        (148_000..=150_000).contains(&interest),
+        "Newrez projected interest out of band: {newrez}"
+    );
+    let week_ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/WeekAhead.tsx"),
+    )
+    .unwrap();
+    assert!(
+        week_ui.contains("total payment")
+            && week_ui.contains("Interest cannot exceed total payment")
+            && week_ui.contains("interestTooHigh"),
+        "Week Ahead must prompt for total payment and block interest > payment"
+    );
+}
+
+#[tokio::test]
+async fn truist_week_ahead_confirm_reduces_current_by_principal_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let before = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let truist = before["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Truist BANK")
+        .unwrap()
+        .clone();
+    let start = truist["currentMinor"].as_i64().unwrap();
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({ "asOfDate": "2026-10-07" }),
+    )
+    .await;
+    let loan = ahead["loans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Truist BANK")
+        .expect("Truist loan row");
+    let principal = loan["principalMinor"].as_i64().unwrap();
+    let interest = loan["interestMinor"].as_i64().unwrap();
+    assert!(interest > 0 && principal > 0 && principal + interest == loan["paymentMinor"]);
+    must_ok(
+        &platform,
+        "LoanPaymentConfirm",
+        serde_json::json!({
+            "accountId": truist["accountId"],
+            "dueOn": "2026-10-07",
+            "principalMinor": principal,
+            "interestMinor": interest,
+        }),
+    )
+    .await;
+    let after = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let truist_after = after["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Truist BANK")
+        .unwrap();
+    assert_eq!(
+        truist_after["currentMinor"].as_i64().unwrap(),
+        start - principal,
+        "Current falls by principal only, not full payment: before={start} principal={principal} after={truist_after}"
+    );
+    assert!(
+        truist_after["dueOn"]
+            .as_str()
+            .unwrap_or("")
+            .ends_with("-07"),
+        "next due stays on the 7th: {truist_after}"
+    );
+}
+
+/// Household Debt planner must never come back empty after migrate.
+/// Well-known blank modes this locks:
+/// - migration not embedded / SELECT on missing `inactive` → Get fails
+/// - seed wiped or all debts marked inactive → zero active loans
+/// - UI silent empty state (no Loading / error / No loans copy)
+#[tokio::test]
+async fn debt_planner_household_active_loans_never_blank() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let body = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let accounts = body["accounts"].as_array().expect("accounts array");
+    assert!(
+        accounts.len() >= 7,
+        "seeded household must keep loans+escrow after migrate, got {}: {accounts:?}",
+        accounts.len()
+    );
+    let active_debts: Vec<&serde_json::Value> = accounts
+        .iter()
+        .filter(|row| row["kind"] == "debt" && row["inactive"] != true)
+        .collect();
+    assert!(
+        active_debts.len() >= 6,
+        "Debt planner active debts blanked (want >= 6): {active_debts:?}"
+    );
+    for name in [
+        "Newrez",
+        "Truist BANK",
+        "myClearbalance",
+        "UVA Health 3/22-3/25",
+        "Alphaeon Cat",
+        "Alphaeon CK",
+    ] {
+        assert!(
+            active_debts.iter().any(|row| row["name"] == name),
+            "missing active loan {name} in {active_debts:?}"
+        );
+    }
+    let paytient = accounts
+        .iter()
+        .find(|row| row["name"] == "Paytient")
+        .expect("Paytient must remain (inactive), not deleted");
+    assert_eq!(paytient["inactive"], true, "Paytient stays inactive: {paytient}");
+    assert_eq!(
+        paytient["currentMinor"],
+        0,
+        "inactive Paytient current held at 0 (reconcile must not move it): {paytient}"
+    );
+    let mom = accounts
+        .iter()
+        .find(|row| row["name"] == "Mom shopping")
+        .expect("Mom shopping escrow");
+    assert_eq!(mom["kind"], "credit", "Mom shopping stays escrow/credit");
+
+    let storage = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/storage-sqlite/src/external_account.rs"),
+    )
+    .unwrap();
+    assert!(
+        storage.contains("linked_element_id, inactive,")
+            && storage.contains("if account.inactive")
+            && storage.contains("continue;"),
+        "Get SELECT must include inactive; reconcile must skip inactive loans"
+    );
+    let mig_inactive = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("crates/storage-sqlite/migrations/0079_loan_inactive.sql"),
+    )
+    .unwrap();
+    let mig_hold = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("crates/storage-sqlite/migrations/0081_paytient_inactive_balance_hold.sql"),
+    )
+    .unwrap();
+    assert!(
+        mig_inactive.contains("ADD COLUMN inactive")
+            && mig_hold.contains("current_minor = 0")
+            && mig_hold.contains("external_managed_applied"),
+        "inactive column + Paytient balance hold migrations required"
+    );
+    let planner = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/cash/ExternalAccountManager.tsx"),
+    )
+    .unwrap();
+    assert!(
+        planner.contains("Loading loans…")
+            && planner.contains("Loans unavailable — see status above")
+            && planner.contains("No loans loaded.")
+            && planner.contains("Debt planner load failed:")
+            && planner.contains("Check migrations / restart")
+            && planner.contains("account.inactive !== true")
+            && planner.contains("Load independently so one failing query cannot blank"),
+        "Debt planner must surface loading/error/empty — not a silent blank table"
+    );
+    let store = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/storage-sqlite/src/store.rs"),
+    )
+    .unwrap();
+    assert!(
+        store.contains("sqlx::migrate!(") && store.contains("re-embeds"),
+        "store.rs must remind agents to re-embed migrations (blank planner failure mode)"
+    );
+}
+
+#[tokio::test]
+async fn paytient_inactive_stays_in_db_hidden_from_active_loan_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let body = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let accounts = body["accounts"].as_array().expect("accounts");
+    let paytient = accounts
+        .iter()
+        .find(|row| row["accountId"] == "a1000001-0000-4000-8000-000000000004")
+        .expect("Paytient account must be restored");
+    assert_eq!(paytient["inactive"], true, "Paytient is inactive: {paytient}");
+    assert_eq!(paytient["currentMinor"], 0, "paid-off current is zero: {paytient}");
+    let planner = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/cash/ExternalAccountManager.tsx"),
+    )
+    .unwrap();
+    assert!(
+        planner.contains("aria-label=\"Inactive loan\"")
+            && planner.contains("account.inactive !== true")
+            && planner.contains("inactive: credit ? false : draft.inactive"),
+        "Debt planner must hide inactive loans and offer Inactive checkbox"
+    );
+    let ams = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/accounts/AccountManagement.tsx"),
+    )
+    .unwrap();
+    assert!(
+        ams.contains("aria-label=\"Account Management\"")
+            && ams.contains("Active loan ${loan.name}")
+            && ams.contains("aria-label=\"Brokerage accounts\"")
+            && ams.contains("cashSymbol")
+            && ams.contains("brokerAccountNumber")
+            && ams.contains("minBalanceTargetMinor"),
+        "Account Management lists brokerage fields and loan Active toggle"
+    );
+}
+
+#[test]
+fn account_table_lands_locked_broker_fields() {
+    let migration = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("crates/storage-sqlite/migrations/0080_account_broker_fields.sql"),
+    )
+    .unwrap();
+    let contracts = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/contracts.rs"),
+    )
+    .unwrap();
+    assert!(
+        migration.contains("cash_symbol")
+            && migration.contains("broker_account_number")
+            && migration.contains("min_balance_target_minor"),
+        "0080 must add the three locked account columns"
+    );
+    assert!(
+        contracts.contains("pub cash_symbol:")
+            && contracts.contains("pub broker_account_number:")
+            && contracts.contains("pub min_balance_target_minor:"),
+        "AccountRecord must expose cash_symbol, broker_account_number, min_balance_target_minor"
+    );
+}
+
+#[tokio::test]
+async fn completed_alphaeon_edit_keeps_completed_and_refuses_alpheon_category() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let line_id = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": line_id,
+                "payType": "Checking",
+                "occurredOn": "2026-09-01",
+                "amountMinor": 25000,
+                "scale": 2,
+                "category": "Mom",
+                "bucket": "",
+                "vendor": "Alphaeon",
+                "description": "ck",
+                "completed": true,
+                "trueUpOn": "2026-09-02"
+            }]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": line_id,
+                "payType": "Checking",
+                "occurredOn": "2026-09-01",
+                "amountMinor": 25000,
+                "scale": 2,
+                "category": "Medical",
+                "bucket": "Medical",
+                "vendor": "Alpheon",
+                "description": "ck",
+                "completed": true,
+                "trueUpOn": "2026-09-02"
+            }]
+        }),
+    )
+    .await;
+    let body = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let line = body["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["lineId"] == line_id.to_string())
+        .expect("edited line");
+    assert_eq!(line["category"], "Medical");
+    assert_eq!(line["bucket"], "Medical");
+    assert_eq!(line["vendor"], "Alpheon");
+    assert_eq!(line["completed"], true);
+
+    let refused = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "ExternalRegisterSave",
+            serde_json::json!({
+                "lines": [{
+                    "lineId": Uuid::new_v4(),
+                    "payType": "Checking",
+                    "occurredOn": "2026-09-03",
+                    "amountMinor": 100,
+                    "scale": 2,
+                    "category": "Alpheon",
+                    "bucket": "",
+                    "vendor": "CVS",
+                    "description": "bad"
+                }]
+            }),
+        ),
+    )
+    .await;
+    assert!(!refused.ok, "Alpheon is a vendor, not a category");
+    assert_eq!(refused.error_code.as_deref(), Some("bad_category"));
+}
+
+#[test]
+fn cct_register_has_bucket_column_and_completed_edit() {
+    let register = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/ExternalRegister.tsx"),
+    )
+    .unwrap();
+    let css = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.css"))
+        .unwrap();
+    assert!(
+        register.contains("sortHead(\"Bucket\", \"bucket\")")
+            && register.contains("ariaLabel=\"New bucket\"")
+            && register.contains("ariaLabel={`Completed bucket ${line.lineId}`}")
+            && register.contains("ariaLabel={`Completed category ${line.lineId}`}")
+            && register.contains("ariaLabel=\"Bulk bucket\"")
+            && register.contains("BUCKET_OPTIONS")
+            && register.contains("\"Food\", \"Cash\", \"Bills\", \"Pets\", \"Medical\", \"HSA\"")
+            && register.contains("function BucketSelect")
+            && register.contains("catalogBuckets")
+            && register.contains("aria-label=\"Save completed edits\"")
+            && register.contains("aria-label=\"Cancel completed edits\"")
+            && register.contains("aria-label=\"Set bucket\"")
+            && register.contains("aria-label=\"Confirm bulk set bucket\"")
+            && register.contains("isBulkEligibleLine")
+            && register.contains("Select visible dated completed")
+            && register.contains("function BucketYearRing")
+            && register.contains("aria-label={`Bucket spend ${year}`}")
+            && register.contains("title=\"Dated lines in selected years\"")
+            && register.contains("COLUMN_FILTER_BLANK")
+            && register.contains(">Blank</option>")
+            && !register.contains("Dated lines in selected years</span>")
+            && !register.contains("external-bulk-hint"),
+        "CCT must show catalog Bucket dropdown, completed Save, dated bulk set bucket, and year bucket ring"
+    );
+    assert!(
+        css.contains(".external-completed-band")
+            && css.contains(".external-bucket-year")
+            && css.contains("width: fit-content")
+            && !css.contains(".external-bulk-hint"),
+        "Completed band must host a fit-content bulk bar and bucket-year donut"
+    );
+    assert!(
+        !register.contains("Medical-mom") && !register.contains("medical-mom"),
+        "Medical-mom alias must stay retired in the UI"
+    );
+    assert!(
+        !register.contains("Cash acct") && !register.contains("Bill acct"),
+        "Retired bucket spellings must not appear in CCT UI"
+    );
+    let planner = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/cash/ExternalAccountManager.tsx"),
+    )
+    .unwrap();
+    assert!(
+        planner.contains("aria-label=\"Bucket manager\"")
+            && planner.contains("debt-bucket-panel")
+            && planner.contains("Bucket Name")
+            && planner.contains(">Budget category<")
+            && planner.contains(">Associated bank<")
+            && planner.contains("aria-label=\"Add bucket\"")
+            && planner.contains("aria-label=\"Save bucket\"")
+            && planner.contains("aria-label=\"Budget buckets\"")
+            && planner.contains("Capital One")
+            && planner.contains("debt-bucket-bank")
+            && planner.contains("Add bank…")
+            && planner.contains("__add_bank__")
+            && planner.contains("aria-label=\"New bank name\"")
+            && planner.contains("function BucketBankField")
+            && planner.contains("ExternalBucketListGet")
+            && planner.contains("ExternalBucketSave")
+            && planner.contains("Bucket Transaction Managed")
+            && planner.contains("Scheduled element")
+            && planner.contains("Week Ahead")
+            && planner.contains("\"week_ahead\"")
+            && planner.contains("DEBT_PROCESSES")
+            && planner.contains("aria-label=\"Loans\"")
+            && planner.contains("aria-label=\"Escrow account\"")
+            && planner.contains("managed-section")
+            && planner.contains("title=\"Account Name\"")
+            && planner.contains("title=\"Loan Name\"")
+            && planner.contains("title=\"Loan type\"")
+            && planner.contains("managed-col-bucket")
+            && planner.contains("managed-col-type")
+            && planner.contains("\"Loans total\"")
+            && planner.contains("\"Escrow total\"")
+            && planner.contains("managed-debt-table")
+            && planner.contains("aria-label=\"Loan Element\"")
+            && planner.contains("aria-label=\"Loan Element details\"")
+            && planner.contains("aria-label=\"Element name\"")
+            && planner.contains("aria-label=\"Element amount\"")
+            && planner.contains("aria-label=\"Element start date\"")
+            && planner.contains("aria-label=\"Element stop date\"")
+            && planner.contains("aria-label=\"Open exceptions\"")
+            && planner.contains("CashElementSave")
+            && planner.contains("NEW_LOAN_ELEMENT")
+            && planner.contains("CashElementExceptions")
+            && !planner.contains(" · \" + money(element.amountMinor)")
+            && !planner.contains("title=\"Associated Bucket\"")
+            && !planner.contains("Choose the process in Loan setup")
+            && !planner.contains("[\"register\", \"Checking and Credit\"]")
+            && !planner.contains("aria-label=\"Bucket setup\"")
+            && !planner.contains("<th scope=\"row\">Total</th>"),
+        "Debt planner sections, dual totals, Scheduled element, Account Name, Loan Name, full Loan Element fields"
+    );
+    let catalog = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/cash/CashElementsCatalog.tsx"),
+    )
+    .unwrap();
+    assert!(
+        catalog.contains("\"Loan\""),
+        "Element Management account picker must include the Loan book"
+    );
+    let name_at = planner.find("Bucket Name").expect("Bucket Name header");
+    let cat_at = planner.find(">Budget category<").expect("Budget category header");
+    let bank_at = planner.find(">Associated bank<").expect("Associated bank header");
+    assert!(
+        name_at < cat_at && cat_at < bank_at,
+        "columns must be Bucket Name, Budget category, Associated bank"
+    );
+}
+
+#[tokio::test]
+async fn bulk_set_bucket_keeps_completed_and_skips_prior_year() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let food_a = Uuid::new_v4();
+    let food_b = Uuid::new_v4();
+    let prior = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [
+                {
+                    "lineId": food_a,
+                    "payType": "UCARD",
+                    "occurredOn": "2026-03-01",
+                    "amountMinor": 1200,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "",
+                    "vendor": "Weg",
+                    "description": "a",
+                    "completed": true,
+                    "trueUpOn": "2026-03-02"
+                },
+                {
+                    "lineId": food_b,
+                    "payType": "UCARD",
+                    "occurredOn": "2026-03-08",
+                    "amountMinor": 3400,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "",
+                    "vendor": "Walmart",
+                    "description": "b",
+                    "completed": true,
+                    "trueUpOn": "2026-03-09"
+                },
+                {
+                    "lineId": prior,
+                    "payType": "UCARD",
+                    "occurredOn": "2025-11-01",
+                    "amountMinor": 900,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "",
+                    "vendor": "Weg",
+                    "description": "prior",
+                    "completed": true,
+                    "trueUpOn": "2025-11-02"
+                }
+            ]
+        }),
+    )
+    .await;
+    // Bulk-style save: only current-year Food lines get bucket Cash.
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [
+                {
+                    "lineId": food_a,
+                    "payType": "UCARD",
+                    "occurredOn": "2026-03-01",
+                    "amountMinor": 1200,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "Cash",
+                    "vendor": "Weg",
+                    "description": "a",
+                    "completed": true,
+                    "trueUpOn": "2026-03-02"
+                },
+                {
+                    "lineId": food_b,
+                    "payType": "UCARD",
+                    "occurredOn": "2026-03-08",
+                    "amountMinor": 3400,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "Cash",
+                    "vendor": "Walmart",
+                    "description": "b",
+                    "completed": true,
+                    "trueUpOn": "2026-03-09"
+                }
+            ]
+        }),
+    )
+    .await;
+    let body = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let lines = body["lines"].as_array().unwrap();
+    let a = lines
+        .iter()
+        .find(|row| row["lineId"] == food_a.to_string())
+        .unwrap();
+    let b = lines
+        .iter()
+        .find(|row| row["lineId"] == food_b.to_string())
+        .unwrap();
+    let old = lines
+        .iter()
+        .find(|row| row["lineId"] == prior.to_string())
+        .unwrap();
+    assert_eq!(a["bucket"], "Cash");
+    assert_eq!(b["bucket"], "Cash");
+    assert_eq!(a["completed"], true);
+    assert_eq!(b["completed"], true);
+    // Prior year was omitted from the bulk save; category default Food sticks, not Cash.
+    assert_eq!(old["bucket"], "Food");
+    assert_eq!(old["completed"], true);
+}
+
+#[tokio::test]
+async fn register_refuses_unknown_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let refused = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "ExternalRegisterSave",
+            serde_json::json!({
+                "lines": [{
+                    "lineId": Uuid::new_v4(),
+                    "payType": "UCARD",
+                    "occurredOn": "2026-09-03",
+                    "amountMinor": 100,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "Grocery",
+                    "vendor": "Weg",
+                    "description": "bad bucket"
+                }]
+            }),
+        ),
+    )
+    .await;
+    assert!(!refused.ok, "Grocery is not a catalog bucket");
+    assert_eq!(refused.error_code.as_deref(), Some("bad_bucket"));
+}
+
+#[tokio::test]
+async fn debt_planner_bucket_catalog_save_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let listed = query_json(&platform, "ExternalBucketListGet", serde_json::json!({})).await;
+    let seed = listed["buckets"].as_array().unwrap();
+    assert!(seed.len() >= 7, "{seed:?}");
+    assert!(seed.iter().any(|b| b["name"] == "Food"));
+    assert!(seed.iter().any(|b| b["name"] == "Mom"));
+    assert!(!seed.iter().any(|b| b["name"] == "Mortgage"));
+    assert!(!seed.iter().any(|b| b["name"] == "Alphaeon Cat"));
+    assert!(!seed.iter().any(|b| b["name"] == "myClearbalance"));
+    let food_id = seed
+        .iter()
+        .find(|b| b["name"] == "Food")
+        .unwrap()["bucketId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    must_ok(
+        &platform,
+        "ExternalBucketSave",
+        serde_json::json!({
+            "bucketId": food_id,
+            "name": "Food",
+            "bank": "UCARD",
+            "description": "Groceries",
+            "budgetCategory": "Food"
+        }),
+    )
+    .await;
+    let after = query_json(&platform, "ExternalBucketListGet", serde_json::json!({})).await;
+    let food = after["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == "Food")
+        .expect("Food bucket");
+    assert_eq!(food["bank"], "UCARD");
+    assert_eq!(food["description"], "Groceries");
+    assert_eq!(food["budgetCategory"], "Food");
+    // Free-text bank (Add bank… UI writes the same field).
+    must_ok(
+        &platform,
+        "ExternalBucketSave",
+        serde_json::json!({
+            "bucketId": food_id,
+            "name": "Food",
+            "bank": "First National",
+            "description": "Groceries",
+            "budgetCategory": "Food"
+        }),
+    )
+    .await;
+    let custom = query_json(&platform, "ExternalBucketListGet", serde_json::json!({})).await;
+    let food_custom = custom["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == "Food")
+        .expect("Food bucket");
+    assert_eq!(food_custom["bank"], "First National");
+}
+
+#[tokio::test]
+async fn bucket_rename_updates_register_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let line_id = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": line_id,
+                "payType": "UCARD",
+                "occurredOn": "2026-09-01",
+                "amountMinor": 500,
+                "scale": 2,
+                "category": "Food",
+                "bucket": "Food",
+                "vendor": "Weg",
+                "description": "rename me"
+            }]
+        }),
+    )
+    .await;
+    let listed = query_json(&platform, "ExternalBucketListGet", serde_json::json!({})).await;
+    let food_id = listed["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == "Food")
+        .unwrap()["bucketId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    must_ok(
+        &platform,
+        "ExternalBucketSave",
+        serde_json::json!({
+            "bucketId": food_id,
+            "name": "Groceries",
+            "bank": "Capital One",
+            "description": "renamed",
+            "budgetCategory": "Food"
+        }),
+    )
+    .await;
+    let register = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let line = register["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["lineId"] == line_id.to_string())
+        .expect("line");
+    assert_eq!(line["bucket"], "Groceries");
+    let catalog = register["buckets"].as_array().unwrap();
+    assert!(
+        catalog.iter().any(|b| b == "Groceries") && !catalog.iter().any(|b| b == "Food"),
+        "catalog follows rename: {catalog:?}"
+    );
+    let buckets = query_json(&platform, "ExternalBucketListGet", serde_json::json!({})).await;
+    let groceries = buckets["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == "Groceries")
+        .expect("Groceries");
+    assert_eq!(groceries["bank"], "Capital One");
+}
+
+/// Loan Name links CCT to debts; Bucket funds escrow (Mom). Positive lowers Current; Mom negative is a deposit.
+#[tokio::test]
+async fn loan_name_links_debt_bucket_funds_escrow() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let cat_id = "a1000001-0000-4000-8000-000000000006";
+    let mom_id = "a1000001-0000-4000-8000-000000000008";
+    must_ok(
+        &platform,
+        "ExternalAccountManagerSave",
+        serde_json::json!({
+            "accounts": [{
+                "accountId": mom_id,
+                "name": "Mom shopping",
+                "accountName": "Mom",
+                "startingMinor": 100000,
+                "currentMinor": 100000,
+                "paymentMinor": null,
+                "reductionMinor": null,
+                "financeMinor": null,
+                "paidThrough": null,
+                "payProcess": "register",
+                "registerKey": "Mom"
+            }]
+        }),
+    )
+    .await;
+    let before = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let cat_before = before["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == cat_id)
+        .expect("Alphaeon Cat");
+    assert_eq!(cat_before["accountName"], "Alphaeon");
+    assert_eq!(cat_before["name"], "Alphaeon Cat");
+    assert_eq!(cat_before["payProcess"], "element");
+    let cat_start = cat_before["currentMinor"].as_i64().unwrap();
+    let cat_line = Uuid::new_v4();
+    let mom_spend = Uuid::new_v4();
+    let mom_deposit = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [
+                {
+                    "lineId": cat_line,
+                    "payType": "Checking",
+                    "occurredOn": "2026-10-05",
+                    "amountMinor": 23600,
+                    "scale": 2,
+                    "category": "Medical",
+                    "bucket": "Medical",
+                    "loanName": "Alphaeon Cat",
+                    "vendor": "Alpheon",
+                    "description": "cat payment",
+                    "completed": true,
+                    "trueUpOn": "2026-10-05"
+                },
+                {
+                    "lineId": mom_spend,
+                    "payType": "Checking",
+                    "occurredOn": "2026-10-06",
+                    "amountMinor": 1500,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "Mom",
+                    "loanName": "",
+                    "vendor": "Walmart",
+                    "description": "escrow spend",
+                    "completed": true,
+                    "trueUpOn": "2026-10-06"
+                },
+                {
+                    "lineId": mom_deposit,
+                    "payType": "Checking",
+                    "occurredOn": "2026-10-07",
+                    "amountMinor": -5000,
+                    "scale": 2,
+                    "category": "Other",
+                    "bucket": "Mom",
+                    "loanName": "",
+                    "vendor": "Deposit",
+                    "description": "escrow deposit",
+                    "completed": true,
+                    "trueUpOn": "2026-10-07"
+                }
+            ]
+        }),
+    )
+    .await;
+    let after = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let cat = after["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == cat_id)
+        .expect("Alphaeon Cat");
+    let mom = after["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == mom_id)
+        .expect("Mom shopping");
+    assert_eq!(cat["currentMinor"].as_i64().unwrap(), cat_start - 23600);
+    assert_eq!(cat["paidThrough"], "October");
+    // 100000 - 1500 - (-5000) = 103500
+    assert_eq!(mom["currentMinor"], 103500);
+}
+
+/// Week Ahead confirm on a Loan Element drafts CCT Open; balance drops only after CCT settle.
+#[tokio::test]
+async fn loan_element_confirm_drafts_cct_settle_moves_balance() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let cat_id = "a1000001-0000-4000-8000-000000000006";
+    let element_id = "e1000001-0000-4000-8000-000000000006";
+    let before = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let cat_before = before["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == cat_id)
+        .expect("Alphaeon Cat");
+    assert_eq!(cat_before["payProcess"], "element");
+    assert_eq!(cat_before["linkedElementId"], element_id);
+    let cat_start = cat_before["currentMinor"].as_i64().unwrap();
+    let occurrence_id = Uuid::new_v4();
+    let element_uuid = Uuid::parse_str(element_id).unwrap();
+    platform
+        .planned_occurrence_upsert(PlannedOccurrenceRecord {
+            occurrence_id,
+            element_id: element_uuid,
+            account: "Loan".into(),
+            kind: "Withdrawal".into(),
+            occurred_on: "2026-10-01".into(),
+            amount_minor: 23600,
+            confirmed_at: None,
+            note: "Alphaeon Cat".into(),
+            is_exception: false,
+            is_cancelled: false,
+        })
+        .await
+        .unwrap();
+    must_ok(
+        &platform,
+        "WeekAheadConfirm",
+        serde_json::json!({ "occurrenceId": occurrence_id }),
+    )
+    .await;
+    let mid = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let cat_mid = mid["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == cat_id)
+        .unwrap();
+    assert_eq!(
+        cat_mid["currentMinor"].as_i64().unwrap(),
+        cat_start,
+        "confirm must not move Current"
+    );
+    let register = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let draft = register["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["loanName"] == "Alphaeon Cat" && l["completed"] == false)
+        .expect("CCT Open draft");
+    assert_eq!(draft["amountMinor"], 23600);
+    assert_eq!(draft["category"], "Medical");
+    // Blank funding bucket projects to Medical for Medical category on read.
+    assert!(
+        draft["bucket"] == "" || draft["bucket"] == "Medical",
+        "bucket={:?}",
+        draft["bucket"]
+    );
+    let line_id = draft["lineId"].as_str().unwrap().to_string();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": line_id,
+                "payType": "Checking",
+                "occurredOn": "2026-10-01",
+                "amountMinor": 23600,
+                "scale": 2,
+                "category": "Medical",
+                "bucket": "Medical",
+                "loanName": "Alphaeon Cat",
+                "vendor": "Alpheon",
+                "description": "Week Ahead loan · Alphaeon Cat",
+                "completed": true,
+                "trueUpOn": "2026-10-01"
+            }]
+        }),
+    )
+    .await;
+    let after = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let cat = after["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == cat_id)
+        .unwrap();
+    assert_eq!(cat["currentMinor"].as_i64().unwrap(), cat_start - 23600);
+    assert_eq!(cat["paidThrough"], "October");
 }

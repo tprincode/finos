@@ -93,6 +93,12 @@ fn tax_magi_task_screens_keep_cents_needles() {
         "HSA stays $9,750 as cents"
     );
     assert!(
+        forecast.contains("NET_CAPITAL_LOSS_LIMIT_MINOR = 300_000")
+            && !forecast.contains("NET_CAPITAL_LOSS_LIMIT_MINOR = 3_000")
+            && !forecast.contains("NET_CAPITAL_LOSS_LIMIT_MINOR = 30_000_000"),
+        "the 1040 net capital-loss limit stays $3,000 as cents"
+    );
+    assert!(
         !forecast.contains("JOINT_TWO_PERSON_CLIFF_MINOR = 846_000_000")
             && !forecast.contains("APPLICATION_APTC_MINOR = 180_540_000")
             && !forecast.contains("HSA_CONTRIBUTION_MINOR: number = 97_500_000"),
@@ -180,6 +186,71 @@ fn cart_to_add_lot_uses_cart_price_input_not_div_100() {
     // Twin of cartPriceInput(327_200, 4) and 20 × $32.72 → $654.40 cents.
     assert_eq!(cart_price_input_twin(327_200, 4), "32.7200");
     assert_eq!(format_usd_cents(20 * 3_272, 2), "$654.40");
+}
+
+/// Avg 3 / Avg 6 stay scale-5 minors until formatPerShare divides once.
+#[test]
+fn calculator_avg_fields_use_scale_five_not_cents() {
+    let root = repo_root();
+    let ui = std::fs::read_to_string(root.join("packages/ui-components/src/index.tsx"))
+        .expect("ui-components");
+    let calc = std::fs::read_to_string(root.join("crates/financial-domain/src/calculator.rs"))
+        .expect("calculator.rs");
+    assert!(
+        calc.contains("PAY_AVG_SCALE: u8 = 5")
+            && calc.contains("mean_newest_complete_pays"),
+        "domain mean lands at scale 5"
+    );
+    assert!(
+        ui.contains("export function avg3Display")
+            && ui.contains("export function avg6Display")
+            && ui.contains("formatPerShare(row.avg3Minor")
+            && ui.contains("formatPerShare(row.avg6Minor"),
+        "UI displays DeclarationHistory avg fields via formatPerShare"
+    );
+    let sheet = ui
+        .split("export function CalculatorReturnSheet")
+        .nth(1)
+        .unwrap()
+        .split("function MonthPerThousandChart")
+        .next()
+        .unwrap();
+    assert!(
+        !sheet.contains("formatUsd(avg3")
+            && !sheet.contains("avg6Label(")
+            && !sheet.contains("meanNewestPays("),
+        "Calculator sheet must not recompute or cents-format Avg 3/6"
+    );
+}
+
+/// Calculator Excel keeps Plan/Price as integer minor + scale until write_number_with_format.
+#[test]
+fn calculator_export_keeps_minor_scale_until_excel_write() {
+    let root = repo_root();
+    let core = std::fs::read_to_string(root.join("crates/application-core/src/component_export.rs"))
+        .expect("component_export.rs");
+    let typed = core
+        .split("async fn calculator_typed_sheet(")
+        .nth(1)
+        .expect("calculator_typed_sheet")
+        .split("async fn trends_sheet(")
+        .next()
+        .expect("trends_sheet after typed calculator");
+    assert!(
+        typed.contains("money_cell(")
+            && typed.contains("Cell::Money {")
+            && typed.contains("Cell::Percent {")
+            && typed.contains("h.avg3_minor")
+            && typed.contains("h.avg6_minor")
+            && !typed.contains("mean_newest_pays")
+            && !typed.contains("money_text("),
+        "typed Calculator rows carry minor/scale; Avg 3/6 come from DeclarationHistory"
+    );
+    assert!(
+        core.contains("let major = *minor as f64 / 10f64.powi(i32::from(*scale))")
+            && core.contains("write_number_with_format"),
+        "Excel write divides minor by 10^scale once"
+    );
 }
 
 fn cart_price_input_twin(minor: i64, scale: u8) -> String {

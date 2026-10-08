@@ -240,11 +240,41 @@ pub fn first_ytd_roc_unknown_reason(
 pub const NO_ASSIGNED_LOT_SALES_NOTE: &str =
     "No assigned lot sales. Long-term and short-term stay unknown.";
 
+pub const UNDATED_LOT_SALE_NOTE: &str =
+    "A lot sale is dated before its lot. Long-term and short-term stay unknown until it is fixed.";
+
 /// Any unknown operand keeps the sum unknown (unknown ≠ 0).
 pub fn sum_known(left: Option<i64>, right: Option<i64>) -> Option<i64> {
     match (left, right) {
         (Some(a), Some(b)) => Some(a.saturating_add(b)),
         _ => None,
+    }
+}
+
+/// 1040 caps the net capital loss deducted against income at $3,000 a year.
+/// Minor units, scale 2.
+pub const NET_CAPITAL_LOSS_LIMIT_MINOR: i64 = 300_000;
+
+/// Net capital gain split into what MAGI may take this year and what carries forward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetCapitalGain {
+    /// Every part added up, gains and losses, uncapped. This is what the rows show.
+    pub net_minor: i64,
+    /// The slice MAGI takes. A net loss is limited to `NET_CAPITAL_LOSS_LIMIT_MINOR`.
+    pub magi_minor: i64,
+    /// Loss left over after the limit, negative. Zero when the net is a gain.
+    pub carryforward_minor: i64,
+}
+
+/// A net gain passes through whole. A net loss over the limit gives MAGI
+/// `-NET_CAPITAL_LOSS_LIMIT_MINOR` and carries the rest forward.
+pub fn net_capital_gain_for_magi(parts: &[i64]) -> NetCapitalGain {
+    let net_minor = parts.iter().fold(0i64, |sum, part| sum.saturating_add(*part));
+    let magi_minor = net_minor.max(-NET_CAPITAL_LOSS_LIMIT_MINOR);
+    NetCapitalGain {
+        net_minor,
+        magi_minor,
+        carryforward_minor: net_minor - magi_minor,
     }
 }
 
@@ -336,6 +366,50 @@ mod tests {
         assert_eq!(sum_known(Some(100), Some(40)), Some(140));
         assert_eq!(sum_known(Some(100), None), None);
         assert_eq!(sum_known(None, Some(40)), None);
+    }
+
+    #[test]
+    fn a_net_capital_gain_reaches_magi_whole() {
+        // $1,200.00 long + $300.00 short, scale 2.
+        let net = net_capital_gain_for_magi(&[120_000, 30_000]);
+        assert_eq!(net.net_minor, 150_000);
+        assert_eq!(net.magi_minor, 150_000);
+        assert_eq!(net.carryforward_minor, 0);
+    }
+
+    #[test]
+    fn a_net_loss_under_the_limit_reaches_magi_whole() {
+        // $1,800.00 loss is under the $3,000.00 limit.
+        let net = net_capital_gain_for_magi(&[-200_000, 20_000]);
+        assert_eq!(net.net_minor, -180_000);
+        assert_eq!(net.magi_minor, -180_000);
+        assert_eq!(net.carryforward_minor, 0);
+    }
+
+    #[test]
+    fn a_net_loss_over_the_limit_stops_at_three_thousand_and_carries_the_rest() {
+        // $10,000.00 loss: MAGI takes $3,000.00, $7,000.00 carries forward.
+        let net = net_capital_gain_for_magi(&[-1_000_000]);
+        assert_eq!(net.net_minor, -1_000_000);
+        assert_eq!(net.magi_minor, -NET_CAPITAL_LOSS_LIMIT_MINOR);
+        assert_eq!(net.magi_minor, -300_000);
+        assert_eq!(net.carryforward_minor, -700_000);
+    }
+
+    #[test]
+    fn a_gain_offsets_the_loss_before_the_limit_applies() {
+        // $10,000.00 loss netted against a $9,500.00 gain is a $500.00 loss.
+        let net = net_capital_gain_for_magi(&[-1_000_000, 950_000]);
+        assert_eq!(net.net_minor, -50_000);
+        assert_eq!(net.magi_minor, -50_000);
+        assert_eq!(net.carryforward_minor, 0);
+    }
+
+    #[test]
+    fn exactly_the_limit_carries_nothing() {
+        let net = net_capital_gain_for_magi(&[-300_000]);
+        assert_eq!(net.magi_minor, -300_000);
+        assert_eq!(net.carryforward_minor, 0);
     }
 
     #[test]

@@ -277,7 +277,7 @@ export function SymbolWindowTable({
   }, [client, reload, symbol]);
 
   return (
-    <div className="table-wrap">
+    <div className="table-wrap" data-part="market-impact-windows">
       <table className="market-impact-windows" aria-label="Market impact windows">
         <thead>
           <tr>

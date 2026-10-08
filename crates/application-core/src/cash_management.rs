@@ -569,8 +569,11 @@ pub async fn cash_references_for_week(
         let Some(account) = accounts.iter().find(|a| a.name == *name) else {
             continue;
         };
-        let symbol = financial_domain::cash_management::resolve_cash_symbol(&account.name, None)
-            .unwrap_or_default();
+        let symbol = financial_domain::cash_management::resolve_cash_symbol(
+            &account.name,
+            Some(account.cash_symbol.as_str()).filter(|s| !s.is_empty()),
+        )
+        .unwrap_or_default();
         let reference_minor = reference_cash_minor(
             canonical,
             account.account_id,

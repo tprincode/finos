@@ -500,9 +500,16 @@ export function CashManagementPanel({
           ) : (
             <p role="status">Loading Tax Planning…</p>
           )}
-          <details className="tax-car-detail" open>
+          <details
+            className="tax-car-detail"
+            id="car-lot-detail"
+            data-section="car-lot-detail"
+            open
+          >
             <summary>Car lot detail and Cash YTD</summary>
-            {carRocPlan ? <CarTaxPlanTable plan={carRocPlan} /> : null}
+            <div data-part="car-account-tax-plan">
+              {carRocPlan ? <CarTaxPlanTable plan={carRocPlan} /> : null}
+            </div>
             {cashYtd}
           </details>
         </section>
@@ -564,7 +571,13 @@ export function CashManagementPanel({
       {desk === "weekly" ? children : null}
       {desk === "weekly" ? weekAhead : null}
       {desk === "weekly" && activity === "chooser" ? (
-        <div className="cash-follow-up" aria-label="Cash week follow-up">
+        <div
+          className="cash-follow-up"
+          id="cash-week-activity"
+          data-section="week-activity"
+          data-part="cash-week-follow-up"
+          aria-label="Cash week follow-up"
+        >
           <p>
             Do you have any distributions, withdrawals, or cash payments to
             declare this week?
@@ -618,7 +631,12 @@ export function CashManagementPanel({
         </div>
       ) : null}
       {desk === "weekly" && activity === "distribution" ? (
-        <section aria-label="Distribution wizard">
+        <section
+          id="cash-week-activity"
+          data-section="week-activity"
+          data-part="cash-distribution-wizard"
+          aria-label="Distribution wizard"
+        >
           <ol className="cart-step-rail" aria-label="Distribution steps">
             {DIST_STEPS.map((name) => (
               <li key={name} aria-current={name === distStep ? "step" : undefined}>
@@ -800,7 +818,12 @@ export function CashManagementPanel({
         </section>
       ) : null}
       {desk === "weekly" && activity === "withdrawal" ? (
-        <section aria-label="Withdrawal wizard">
+        <section
+          id="cash-week-activity"
+          data-section="week-activity"
+          data-part="cash-withdrawal-wizard"
+          aria-label="Withdrawal wizard"
+        >
           <ol className="cart-step-rail" aria-label="Withdrawal steps">
             {WITHDRAW_STEPS.map((name) => (
               <li
@@ -941,7 +964,12 @@ export function CashManagementPanel({
         </section>
       ) : null}
       {desk === "weekly" && activity === "ssa" ? (
-        <section aria-label="Tom SSA wizard">
+        <section
+          id="cash-week-activity"
+          data-section="week-activity"
+          data-part="cash-ssa-wizard"
+          aria-label="Tom SSA wizard"
+        >
           <ol className="cart-step-rail" aria-label="Tom SSA steps">
             {SSA_STEPS.map((name) => (
               <li key={name} aria-current={name === ssaStep ? "step" : undefined}>
@@ -1115,7 +1143,12 @@ export function CashManagementPanel({
       ) : null}
       {desk === "weekly" ? (
       <>
-      <div className="trends-period-bar">
+      <div
+        className="trends-period-bar"
+        id="cash-week-selected"
+        data-section="week-selected"
+        data-part="cash-week-picker"
+      >
         <label className="income-week-label">
           Week
           <select
@@ -1137,7 +1170,7 @@ export function CashManagementPanel({
         </label>
       </div>
       <h3>This week confirmed transactions</h3>
-      <div className="table-wrap">
+      <div className="table-wrap" data-part="cash-week-transactions">
         <table aria-label="Cash management week">
           <thead>
             <tr>
@@ -1175,11 +1208,16 @@ export function CashManagementPanel({
       </>
       ) : null}
       {desk === "weekly" && distributions ? (
-        <section aria-label="Cash Management distributions YTD">
+        <section
+          id="cash-week-distributions"
+          data-section="week-distributions"
+          aria-label="Cash Management distributions YTD"
+        >
           <h3>Distributions (YTD)</h3>
           <div
             className="cm-dist-bar"
             aria-label="Distribution account totals"
+            data-part="cash-distribution-totals"
           >
             <button
               type="button"
@@ -1210,7 +1248,11 @@ export function CashManagementPanel({
             ))}
           </div>
           {(distributions.sections ?? []).length > 0 ? (
-            <div className="cm-dist-sections" aria-label="Distribution tax sections">
+            <div
+              className="cm-dist-sections"
+              aria-label="Distribution tax sections"
+              data-part="cash-distribution-tax-sections"
+            >
               {(distributions.sections ?? []).map((section) => (
                 <div key={section.id} className="cm-dist-section">
                   <p>
@@ -1221,7 +1263,7 @@ export function CashManagementPanel({
               ))}
             </div>
           ) : null}
-          <div className="table-wrap">
+          <div className="table-wrap" data-part="cash-distribution-lines">
             <table>
               <thead>
                 <tr>
@@ -1270,7 +1312,12 @@ export function CashManagementPanel({
         </section>
       ) : null}
       {desk === "weekly" && taxMonitor ? (
-        <section aria-label="Cash Management tax and ACA monitor">
+        <section
+          id="cash-week-tax-monitor"
+          data-section="week-tax-monitor"
+          data-part="cash-tax-aca-monitor"
+          aria-label="Cash Management tax and ACA monitor"
+        >
           <h3>Tax / ACA monitor</h3>
           <p>
             Federal withholding{" "}

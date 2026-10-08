@@ -251,7 +251,12 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
   return (
 <section aria-label="Add Investment">
   <h2>Add Investment</h2>
-  <p aria-label="Collector gaps">
+  <p
+    aria-label="Collector gaps"
+    id="add-investment-gaps"
+    data-section="add-investment-gaps"
+    data-part="collector-gaps"
+  >
     {wizSecurityId
       ? wizCollectorGaps.length
         ? `Open: ${wizCollectorGaps.join(", ")}`
@@ -259,9 +264,17 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
       : "Open gaps appear once this symbol is saved."}
   </p>
   {wizProcessASaved && wizSecurityId ? (
-    <section aria-label="Process A completion">
+    <section
+      aria-label="Process A completion"
+      id="add-investment-saved"
+      data-section="add-investment-saved"
+    >
       <h3>Research saved</h3>
-      <p role="status" aria-label="Add Investment completion status">
+      <p
+        data-part="completion-status"
+        role="status"
+        aria-label="Add Investment completion status"
+      >
         {wizCollectorComplete && wizPlanStored
           ? `${wizSymbol.trim().toUpperCase() || "This symbol"}: research and Plan are saved in the book. Nothing left to Confirm or Accept on this screen.`
           : processANeedsRemaining
@@ -283,7 +296,11 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
             : "optional — Add lots when you hold shares (Calculator already lists Plan at 0 shares)"}
         </li>
       </ul>
-      <dl className="process-a-completion-summary" aria-label="Saved identity summary">
+      <dl
+        className="process-a-completion-summary"
+        aria-label="Saved identity summary"
+        data-part="saved-identity-summary"
+      >
         <div>
           <dt>Symbol</dt>
           <dd>{wizSymbol.trim().toUpperCase() || "—"}</dd>
@@ -324,7 +341,7 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
           </dd>
         </div>
       </dl>
-      <table aria-label="Researched versus incomplete">
+      <table aria-label="Researched versus incomplete" data-part="researched-vs-incomplete">
         <thead>
           <tr>
             <th scope="col">Field</th>
@@ -376,7 +393,7 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
           </tr>
         </tbody>
       </table>
-      <div className="buttons dossier-actions">
+      <div className="buttons dossier-actions" data-part="saved-actions">
         {processANeedsRemaining ? (
           <button
             type="button"
@@ -437,7 +454,12 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
     and Apply tier are explicit owner actions. Lots are opened on Add Lot, not here.
     Save keeps this research on screen — it does not wipe fields.
   </p>
-  <div className="form-grid process-a-inputs">
+  <div
+    className="form-grid process-a-inputs"
+    id="add-investment-inputs"
+    data-section="add-investment-inputs"
+    data-part="research-inputs"
+  >
     <label>
       Symbol
       <input
@@ -490,7 +512,7 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
       {wizStoredUrlOffer}
     </p>
   ) : null}
-  <div className="buttons dossier-actions">
+  <div className="buttons dossier-actions" data-part="research-actions">
     <button
       type="button"
       aria-label="Research"
@@ -522,6 +544,9 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
       className="process-a-research-progress"
       aria-label="Research progress"
       aria-busy="true"
+      id="add-investment-progress"
+      data-section="add-investment-progress"
+      data-part="research-progress"
     >
       <p role="status" aria-live="polite">
         {researchActivity.label}
@@ -537,7 +562,7 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
     </section>
   ) : null}
   {researchActivity?.resultLine && !researchActivity.running ? (
-    <p role="status" aria-label="Research result">
+    <p data-part="research-result" role="status" aria-label="Research result">
       {researchActivity.resultLine}
     </p>
   ) : null}
@@ -545,7 +570,12 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
     <p role="status">{wizRetrieveNote}</p>
   ) : null}
   {wizResearchDone && !researchActivity?.running ? (
-    <section aria-label="Research results" className="process-a-results">
+    <section
+      aria-label="Research results"
+      className="process-a-results"
+      id="add-investment-results"
+      data-section="add-investment-results"
+    >
       <h3>Research results</h3>
       {(() => {
         const complete = wizEstablishComplete || (wizCollectorComplete && wizPlanStored);
@@ -571,7 +601,11 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
         );
       })()}
       {wizAskSecondUrl && !wizSecondUrlTried ? (
-        <section aria-label="Second distribution URL" className="process-a-second-url">
+        <section
+          aria-label="Second distribution URL"
+          className="process-a-second-url"
+          data-part="second-distribution-url"
+        >
           <p role="status">
             First history parse failed. Paste a second issuer URL once (same
             adapter). A second miss is a loud fail — no half adapter. Manual
@@ -603,7 +637,11 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
         </p>
       ) : null}
       {wizAskInception || processANeedsInception ? (
-        <section aria-label="Inception confirm" className="process-a-inception">
+        <section
+          aria-label="Inception confirm"
+          className="process-a-inception"
+          data-part="inception-confirm"
+        >
           <p role="status">
             Paid history is under 12
             {wizDecls.length
@@ -648,8 +686,12 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
           </div>
         </section>
       ) : null}
-      <section aria-label="Mandatory data checklist">
-      <table aria-label="Retrieved versus unknown">
+      <section
+        aria-label="Mandatory data checklist"
+        id="add-investment-checklist"
+        data-section="add-investment-checklist"
+      >
+      <table aria-label="Retrieved versus unknown" data-part="retrieved-vs-unknown">
         <thead>
           <tr>
             <th scope="col">Field</th>
@@ -918,6 +960,9 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
         <section
           className="research-notes-panel"
           aria-label="Research notes"
+          id="add-investment-notes"
+          data-section="add-investment-notes"
+          data-part="research-notes"
         >
           <h4>Research notes</h4>
           <p className="research-notes-overview">
@@ -938,7 +983,7 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
       ) : null}
 
       {wizDecls.length > 0 ? (
-        <div className="table-wrap">
+        <div className="table-wrap" data-part="last-declarations">
           <p>Last {formatCount(wizDecls.length)} declarations (newest first).</p>
           <table aria-label="Last declarations">
             <thead>
@@ -964,7 +1009,7 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
       ) : null}
 
       {(wizRemaining?.payments?.length ?? 0) > 0 ? (
-        <div className="table-wrap">
+        <div className="table-wrap" data-part="remaining-year-dates">
           <p>Remaining-year pay dates.</p>
           <table aria-label="Remaining year dates">
             <thead>
@@ -985,11 +1030,16 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
         </div>
       ) : null}
 
-      <section aria-label="Owner plan and tier actions">
+      <section
+        aria-label="Owner plan and tier actions"
+        id="add-investment-owner-actions"
+        data-section="add-investment-owner-actions"
+      >
         <h4>Owner actions</h4>
         <p
           className="process-a-dividend-basis"
           aria-label="Dividend statistics"
+          data-part="dividend-statistics"
         >
           {wizReview &&
           (wizReview.minMinor != null ||
@@ -1045,6 +1095,7 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
             <div
               className="process-a-plan-diff"
               aria-label="Proposed plan changes"
+              data-part="proposed-plan-changes"
             >
               <p>
                 Stored Plan {storedLabel} → this button {proposedLabel}
@@ -1067,7 +1118,7 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
             </div>
           );
         })()}
-        <div className="form-grid">
+        <div className="form-grid" data-part="owner-plan-inputs">
           <label>
             Underlying
             <input
@@ -1166,7 +1217,7 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
             Confirm Plan is ready — click it to write Plan into history for Shopping Cart.
           </p>
         )}
-        <div className="buttons">
+        <div className="buttons" data-part="owner-plan-actions">
           <button
             type="button"
             aria-label="Save identity"
@@ -1286,7 +1337,13 @@ export function NewInvestmentScreen(props: NewInvestmentScreenProps) {
         })()}
       </section>
 
-      <section aria-label="ROC research strip" className="roc-research-strip">
+      <section
+        aria-label="ROC research strip"
+        className="roc-research-strip"
+        id="add-investment-roc"
+        data-section="add-investment-roc"
+        data-part="roc-research"
+      >
         <h4>ROC research</h4>
         <p>
           {wizRoc && wizRoc.rocPctMinor != null

@@ -18,29 +18,6 @@ function comparisonTitle(period: CoveragePeriod): string {
   return "Weekly comparison";
 }
 
-function cadenceLabel(periods: number | null | undefined): string {
-  if (periods === 52) return "Weekly";
-  if (periods === 24) return "Twice monthly";
-  if (periods === 12) return "Monthly";
-  if (periods === 4) return "Quarterly";
-  if (periods === 1) return "Annual";
-  if (periods == null) return "No plan";
-  return `${periods} periods`;
-}
-
-function incomeRule(periods: number | null | undefined): string {
-  if (periods === 52) return "Current plan × 52";
-  if (periods === 12) return "Current plan × 12";
-  if (periods === 4) return "Current plan × 4";
-  if (periods === 1) return "Current plan × 1";
-  if (periods == null) return "No planned dividends";
-  return `Current plan × ${periods}`;
-}
-
-function expenseRule(_cadence: string): string {
-  return "Scheduled amounts projected forward 12 Months";
-}
-
 function MoneyRows({
   rows,
   scale,
@@ -77,62 +54,39 @@ function IncomeMath({
 }) {
   const money = (minor: number | null | undefined) =>
     minor == null ? "—" : formatUsd(minor, scale);
-  const groups = new Map<
-    string,
-    {
-      symbols: Set<string>;
-      payment: number | null;
-      year: number | null;
-      periods: number | null;
-    }
-  >();
-  for (const line of lines) {
-    const key = String(line.periods ?? "none");
-    const group = groups.get(key) ?? {
-      symbols: new Set<string>(),
-      payment: null,
-      year: null,
-      periods: line.periods,
-    };
-    group.symbols.add(line.symbol);
-    if (line.perPeriodMinor != null) group.payment = (group.payment ?? 0) + line.perPeriodMinor;
-    if (line.yearMinor != null) group.year = (group.year ?? 0) + line.yearMinor;
-    groups.set(key, group);
-  }
-  const rows = [...groups.values()].map((group) => ({
-    count: group.symbols.size,
-    payment: group.payment,
-    year: group.year,
-    periods: group.periods,
-  }));
   return (
-    <div className="table-wrap cash-coverage-table-wrap">
+    <div
+      className="table-wrap cash-coverage-table-wrap"
+      id="coverage-income-math"
+      data-section="coverage-income-math"
+      data-part="coverage-income"
+    >
       <p className="cash-coverage-caption">
         Amount per payment × periods for the next 12 months. Week above = year ÷ 52; Month = year ÷ 12.
       </p>
       <table aria-label="Coverage income math">
         <thead>
           <tr>
-            <th>Plan</th>
-            <th className="numeric">Symbols</th>
-            <th>How the year is made</th>
-            <th className="numeric">Current payments</th>
-            <th className="numeric">Annualized dividends</th>
+            <th>Account</th>
+            <th>Symbol</th>
+            <th className="numeric">Per payment</th>
+            <th className="numeric">Periods</th>
+            <th className="numeric">Year</th>
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 ? (
+          {lines.length === 0 ? (
             <tr>
               <td colSpan={5}>No planned dividends.</td>
             </tr>
           ) : (
-            rows.map((row) => (
-              <tr key={String(row.periods)}>
-                <th scope="row">{cadenceLabel(row.periods)}</th>
-                <td className="numeric">{row.count}</td>
-                <td>{incomeRule(row.periods)}</td>
-                <td className="numeric">{money(row.payment)}</td>
-                <td className="numeric">{money(row.year)}</td>
+            lines.map((line) => (
+              <tr key={`${line.account}:${line.symbol}`}>
+                <th scope="row">{line.account}</th>
+                <td>{line.symbol}</td>
+                <td className="numeric">{money(line.perPeriodMinor)}</td>
+                <td className="numeric">{line.periods ?? "—"}</td>
+                <td className="numeric">{money(line.yearMinor)}</td>
               </tr>
             ))
           )}
@@ -149,41 +103,39 @@ function ExpenseMath({
   lines: CashCoverageExpenseLine[];
   scale: number;
 }) {
-  const groups = new Map<string, { count: number; year: number }>();
-  for (const line of lines) {
-    const key = line.cadence.trim().toLowerCase() || "scheduled";
-    const group = groups.get(key) ?? { count: 0, year: 0 };
-    group.count += 1;
-    group.year += line.yearMinor;
-    groups.set(key, group);
-  }
-  const rows = [...groups.entries()];
   return (
-    <div className="table-wrap cash-coverage-table-wrap">
+    <div
+      className="table-wrap cash-coverage-table-wrap"
+      id="coverage-expense-math"
+      data-section="coverage-expense-math"
+      data-part="coverage-expense"
+    >
       <p className="cash-coverage-caption">
         Scheduled amount × remaining occurrences in the next 12 months. Week above = year ÷ 52; Month = year ÷ 12. Schedules past their stop date are left out.
       </p>
       <table aria-label="Coverage expense math">
         <thead>
           <tr>
-            <th>Schedule</th>
-            <th className="numeric">Withdrawals</th>
-            <th>How the year is made</th>
-            <th className="numeric">Annualized withdrawals</th>
+            <th>Account</th>
+            <th>Name</th>
+            <th className="numeric">Per</th>
+            <th className="numeric">Periods</th>
+            <th className="numeric">Year</th>
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 ? (
+          {lines.length === 0 ? (
             <tr>
-              <td colSpan={4}>No planned withdrawals.</td>
+              <td colSpan={5}>No planned withdrawals.</td>
             </tr>
           ) : (
-            rows.map(([cadence, row]) => (
-              <tr key={cadence}>
-                <th scope="row">{cadence.charAt(0).toUpperCase() + cadence.slice(1)}</th>
-                <td className="numeric">{row.count}</td>
-                <td>{expenseRule(cadence)}</td>
-                <td className="numeric">{formatUsd(row.year, scale)}</td>
+            lines.map((line) => (
+              <tr key={`${line.account}:${line.name}:${line.cadence}`}>
+                <th scope="row">{line.account}</th>
+                <td>{line.name}</td>
+                <td className="numeric">{formatUsd(line.perPeriodMinor, scale)}</td>
+                <td className="numeric">{line.periods}</td>
+                <td className="numeric">{formatUsd(line.yearMinor, scale)}</td>
               </tr>
             ))
           )}
@@ -220,13 +172,19 @@ export function CashCoveragePanel({
     <section
       className="cash-coverage"
       id="cash-coverage"
+      data-section="coverage-summary"
       aria-label="Income vs Expense planner"
     >
       <header className="cash-coverage-head">
         <h2>{title}</h2>
         <p className="cash-coverage-window">{window}</p>
       </header>
-      <div className="cash-coverage-periods" role="group" aria-label="Coverage period">
+      <div
+        className="cash-coverage-periods"
+        role="group"
+        aria-label="Coverage period"
+        data-part="coverage-period"
+      >
         {(
           [
             ["week", "Week"],
@@ -253,7 +211,7 @@ export function CashCoveragePanel({
       ) : null}
       {loading ? null : (
       <>
-      <div className="table-wrap cash-coverage-table-wrap">
+      <div className="table-wrap cash-coverage-table-wrap" data-part="coverage-plan">
         <p className="cash-coverage-caption">
           {title} · planned income vs planned withdrawals · {divisor}
         </p>

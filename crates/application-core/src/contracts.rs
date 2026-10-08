@@ -438,6 +438,15 @@ pub struct AccountRecord {
     pub account_id: Uuid,
     pub name: String,
     pub kind: String,
+    /// Money-market / sweep symbol for this brokerage account (empty = resolve by name).
+    #[serde(default)]
+    pub cash_symbol: String,
+    /// Broker / custodian account number as shown on statements.
+    #[serde(default)]
+    pub broker_account_number: String,
+    /// Optional minimum cash target in minor units (scale 2).
+    #[serde(default)]
+    pub min_balance_target_minor: Option<i64>,
     #[serde(default = "default_row_version")]
     pub row_version: i64,
 }
@@ -992,6 +1001,9 @@ pub struct CashElementRecord {
     pub start_on: String,
     #[serde(default)]
     pub stop_on: String,
+    /// `loan` | `distribution` | `withdrawal` | blank (legacy).
+    #[serde(default)]
+    pub association_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1004,6 +1016,11 @@ pub struct ExternalRegisterLine {
     pub amount_minor: i64,
     pub scale: u8,
     pub category: String,
+    #[serde(default)]
+    pub bucket: String,
+    /// Which loan this payment applies to (debts). Blank for ordinary spend / Mom escrow.
+    #[serde(default)]
+    pub loan_name: String,
     pub vendor: String,
     pub description: String,
     pub true_up_on: Option<String>,
@@ -1037,8 +1054,46 @@ pub struct ExternalRegisterGetBody {
     pub lines: Vec<ExternalRegisterLine>,
     pub pay_types: Vec<String>,
     pub categories: Vec<String>,
+    #[serde(default)]
+    pub buckets: Vec<String>,
+    #[serde(default)]
+    pub loan_names: Vec<String>,
     pub vendors: Vec<String>,
     pub total_count: u64,
+}
+
+/// Debt-planner budget bucket definition (catalog).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalBudgetBucket {
+    pub bucket_id: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub bank: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub budget_category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalBudgetBucketListBody {
+    pub buckets: Vec<ExternalBudgetBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalBudgetBucketSave {
+    #[serde(default)]
+    pub bucket_id: Option<Uuid>,
+    pub name: String,
+    #[serde(default)]
+    pub bank: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub budget_category: String,
 }
 
 /// One Completed-section row for ExternalRegisterExportGet (client sends the filtered set).
@@ -1052,6 +1107,8 @@ pub struct ExternalRegisterExportLine {
     #[serde(default = "external_export_scale")]
     pub scale: u8,
     pub category: String,
+    #[serde(default)]
+    pub bucket: String,
     pub vendor: String,
     pub description: String,
     #[serde(default)]
@@ -1107,6 +1164,9 @@ pub struct LoanVendorData {
 pub struct ExternalManagedAccount {
     pub account_id: Uuid,
     pub name: String,
+    /// Creditor / product family on the statement (Debt planner Account Name).
+    #[serde(default)]
+    pub account_name: String,
     pub kind: String,
     pub charges_interest: bool,
     pub starting_minor: Option<i64>,
@@ -1121,11 +1181,15 @@ pub struct ExternalManagedAccount {
     pub apr_ppm: Option<i64>,
     #[serde(default)]
     pub frequency: Option<String>,
+    /// Loan Name used on CCT (same string as name for seeded debts; Mom for escrow key).
     pub register_key: String,
     #[serde(default)]
     pub pay_process: Option<String>,
     #[serde(default)]
     pub linked_element_id: Option<Uuid>,
+    /// When true, loan is hidden from the Debt planner active list (history kept).
+    #[serde(default)]
+    pub inactive: bool,
     pub lines: Vec<ExternalRegisterLine>,
     #[serde(default)]
     pub vendor: Option<LoanVendorData>,
@@ -1142,6 +1206,8 @@ pub struct ExternalManagedGetBody {
 pub struct ExternalManagedAccountSave {
     pub account_id: Uuid,
     pub name: String,
+    #[serde(default)]
+    pub account_name: String,
     pub starting_minor: Option<i64>,
     pub current_minor: Option<i64>,
     pub payment_minor: Option<i64>,
@@ -1160,6 +1226,8 @@ pub struct ExternalManagedAccountSave {
     pub pay_process: String,
     #[serde(default)]
     pub linked_element_id: Option<Uuid>,
+    #[serde(default)]
+    pub inactive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1315,6 +1383,8 @@ pub struct CashElementListItem {
     pub start_on: String,
     #[serde(default)]
     pub stop_on: String,
+    #[serde(default)]
+    pub association_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_occurred_on: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2753,6 +2823,15 @@ pub struct TaxPlanningBody {
     /// Sum of `ira-contribution` activities whose date is in the as-of year.
     #[serde(default)]
     pub ira_contribution_minor: i64,
+    /// Long plus short term capital gain, uncapped. None while a sale cannot be placed.
+    #[serde(default)]
+    pub net_capital_gain_minor: Option<i64>,
+    /// The slice of that net MAGI takes, a loss limited to $3,000.
+    #[serde(default)]
+    pub capital_gain_magi_minor: Option<i64>,
+    /// Loss left over after the limit, negative. Zero when the net is a gain.
+    #[serde(default)]
+    pub capital_loss_carryforward_minor: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2801,6 +2880,24 @@ pub struct DeclarationHistoryRowBody {
     /// Every in-force declaration with a stored amount, newest pay date first. A stored zero counts.
     #[serde(default)]
     pub in_force_pays: Vec<DeclarationHistoryCellBody>,
+    /// Mean of the three newest complete pays at scale 5. Unknown until three pays exist.
+    #[serde(default)]
+    pub avg3_minor: Option<i64>,
+    #[serde(default)]
+    pub avg3_scale: u8,
+    #[serde(default)]
+    pub avg3_count: u8,
+    #[serde(default)]
+    pub avg3_complete: bool,
+    /// Mean of up to six newest complete pays at scale 5. Short lists still average; count is shown.
+    #[serde(default)]
+    pub avg6_minor: Option<i64>,
+    #[serde(default)]
+    pub avg6_scale: u8,
+    #[serde(default)]
+    pub avg6_count: u8,
+    #[serde(default)]
+    pub avg6_complete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3848,6 +3945,9 @@ pub struct UiModuleItem {
     /// Chart, table, or function already named by this module. The module row stays.
     #[serde(default)]
     pub parts: Vec<UiModulePart>,
+    /// Blocks of the screen, in the order the owner scrolls them. Feeds the page nav row.
+    #[serde(default)]
+    pub sections: Vec<UiModuleSection>,
     /// SQL citations. A name is shown only when the golden still finds `needle` in `path`.
     #[serde(default)]
     pub sqlite_tables: Vec<UiModuleTableCitation>,
@@ -3866,9 +3966,26 @@ pub struct UiModulePart {
     pub description: String,
     #[serde(default)]
     pub core_function_ids: Vec<String>,
+    /// Section of the screen holding this component. Empty only while the screen
+    /// has declared no sections yet.
+    #[serde(default)]
+    pub section: String,
+    /// `none` when this component has no sheet of its own; the screen's sheet
+    /// already carries its rows. Empty means an export arm is required.
+    #[serde(default)]
+    pub export: String,
     /// Export arm that fills this part's sheet. Filled when the catalog is served.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub export_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiModuleSection {
+    pub id: String,
+    pub title: String,
+    /// Anchor already on the page. Keeps shipped deep links landing where they did.
+    pub anchor: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

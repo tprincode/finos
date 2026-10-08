@@ -58,6 +58,11 @@ pub async fn connect(path: &Path) -> Result<SqlitePool, StorageError> {
         .max_connections(4)
         .connect_with(options)
         .await?;
+    // Touch when adding migrations so sqlx::migrate! re-embeds (blank Debt planner
+    // follows a binary that SELECTs columns the live DB never received).
+    // 0082: Truist Loan Element day 7 (not Car brokerage withdrawal).
+    // 0083: restore week_ahead interest verify for charges_interest debts.
+    // 0084: Newrez/Truist frequency + APR so interest projects under total payment.
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
 }

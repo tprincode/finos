@@ -46,7 +46,19 @@ pub trait Canonical: Send + Sync {
         name: Option<String>,
         kind: Option<String>,
         expected_version: Option<i64>,
+        cash_symbol: Option<String>,
+        broker_account_number: Option<String>,
+        min_balance_target_minor: Option<Option<i64>>,
     ) -> Result<AccountRecord, PlatformError> {
+        let _ = (
+            account_id,
+            name,
+            kind,
+            expected_version,
+            cash_symbol,
+            broker_account_number,
+            min_balance_target_minor,
+        );
         ni()
     }
     async fn snapshot_import_sqlite(
@@ -1219,6 +1231,18 @@ pub trait Canonical: Send + Sync {
         let _ = accounts;
         ni()
     }
+    async fn external_bucket_list_get(
+        &self,
+    ) -> Result<crate::contracts::ExternalBudgetBucketListBody, PlatformError> {
+        ni()
+    }
+    async fn external_bucket_save(
+        &self,
+        bucket: crate::contracts::ExternalBudgetBucketSave,
+    ) -> Result<crate::contracts::ExternalBudgetBucketListBody, PlatformError> {
+        let _ = bucket;
+        ni()
+    }
     async fn external_loans_due(
         &self,
         start: String,
@@ -1390,6 +1414,9 @@ impl Canonical for UnimplementedCanonical {
         _name: Option<String>,
         _kind: Option<String>,
         _expected_version: Option<i64>,
+        _cash_symbol: Option<String>,
+        _broker_account_number: Option<String>,
+        _min_balance_target_minor: Option<Option<i64>>,
     ) -> Result<AccountRecord, PlatformError> {
         ni()
     }

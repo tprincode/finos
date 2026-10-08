@@ -179,66 +179,78 @@ pub(crate) async fn ensure_seed(canonical: &dyn Canonical, _saturday: &str) -> R
         return Ok(());
     }
     let elements = canonical.cash_element_list().await?;
-    if elements.is_empty() {
-        let templates = [
-            (
-                "Income",
-                "Withdrawal",
-                "weekly",
-                77_500_i64,
-                "net",
-                "Sat",
-            ),
-            (
-                "Income",
-                "Withdrawal",
-                "weekly",
-                18_000,
-                "fed",
-                "Sat",
-            ),
-            (
-                "Income",
-                "Withdrawal",
-                "weekly",
-                4_500,
-                "state",
-                "Sat",
-            ),
-            (
-                "SSA_2026",
-                "Deposit",
-                "monthly",
-                TOM_SSA_EXPECTED_MINOR,
-                "tom",
-                "1",
-            ),
-            (
-                "SSA_2026",
-                "Deposit",
-                "monthly",
-                BARBARA_SSA_EXPECTED_MINOR,
-                "barbara",
-                "1",
-            ),
-            ("Car", "Withdrawal", "monthly", 85_000, "car", "1"),
-            ("Health", "Withdrawal", "monthly", 20_000, "hsa1", "1"),
-            ("Health", "Withdrawal", "monthly", 15_000, "hsa2", "1"),
-        ];
-        for (account, kind, cadence, amount, note, day) in templates {
-            let record = CashElementRecord {
-                element_id: Uuid::new_v4(),
-                account: account.into(),
-                kind: kind.into(),
-                cadence: cadence.into(),
-                amount_minor: amount,
-                note: note.into(),
-                weekday_or_month_day: day.into(),
-                start_on: String::new(),
-                stop_on: String::new(),
-            };
-            canonical.cash_element_upsert(record).await?;
-        }
+    // Loan elements may already exist from migration; still seed Income/SSA/Car/Health.
+    let has_income = elements
+        .iter()
+        .any(|e| e.account.eq_ignore_ascii_case("Income"));
+    if has_income {
+        return Ok(());
+    }
+    let templates = [
+        (
+            "Income",
+            "Withdrawal",
+            "weekly",
+            77_500_i64,
+            "net",
+            "Sat",
+        ),
+        (
+            "Income",
+            "Withdrawal",
+            "weekly",
+            18_000,
+            "fed",
+            "Sat",
+        ),
+        (
+            "Income",
+            "Withdrawal",
+            "weekly",
+            4_500,
+            "state",
+            "Sat",
+        ),
+        (
+            "SSA_2026",
+            "Deposit",
+            "monthly",
+            TOM_SSA_EXPECTED_MINOR,
+            "tom",
+            "1",
+        ),
+        (
+            "SSA_2026",
+            "Deposit",
+            "monthly",
+            BARBARA_SSA_EXPECTED_MINOR,
+            "barbara",
+            "1",
+        ),
+        ("Car", "Withdrawal", "monthly", 85_000, "car", "1"),
+        ("Health", "Withdrawal", "monthly", 20_000, "hsa1", "1"),
+        ("Health", "Withdrawal", "monthly", 15_000, "hsa2", "1"),
+    ];
+    for (account, kind, cadence, amount, note, day) in templates {
+        let association_kind = match account {
+            "Income" | "SSA_2026" | "FI Roth" | "Roth" => "distribution",
+            "Car" | "Health" => "withdrawal",
+            "Loan" => "loan",
+            _ => "",
+        };
+        let record = CashElementRecord {
+            element_id: Uuid::new_v4(),
+            account: account.into(),
+            kind: kind.into(),
+            cadence: cadence.into(),
+            amount_minor: amount,
+            note: note.into(),
+            weekday_or_month_day: day.into(),
+            start_on: String::new(),
+            stop_on: String::new(),
+            association_kind: association_kind.into(),
+        };
+        canonical.cash_element_upsert(record).await?;
     }
     Ok(())
 }
@@ -344,12 +356,26 @@ pub async fn week_ahead_get(
     ensure_horizon(canonical, &lookback, &end).await?;
     prune_off_schedule_occurrences(canonical, as_of).await?;
     let elements = canonical.cash_element_list().await?;
+    // Interest loans on pay_process=week_ahead use the Loan payments table (principal/interest
+    // verify). Do not also list their linked Loan elements in the main rows.
+    let managed = canonical.external_account_manager_get().await?;
+    let week_ahead_loan_element_ids: std::collections::HashSet<Uuid> = managed
+        .accounts
+        .iter()
+        .filter(|account| {
+            account.kind == "debt"
+                && !account.inactive
+                && account.pay_process.as_deref() == Some("week_ahead")
+        })
+        .filter_map(|account| account.linked_element_id)
+        .collect();
     let mut rows: Vec<WeekAheadRow> = canonical
         .planned_occurrence_list()
         .await?
         .into_iter()
         .filter(|o| o.confirmed_at.is_none() && !o.is_cancelled)
         .filter(|o| week_ahead_in_window(&o.account, &o.occurred_on, &start, &end))
+        .filter(|o| !week_ahead_loan_element_ids.contains(&o.element_id))
         .filter_map(|o| {
             let element = elements.iter().find(|e| e.element_id == o.element_id)?;
             if element.note.eq_ignore_ascii_case("dividend") {
@@ -516,6 +542,46 @@ pub async fn week_ahead_confirm(
             "already confirmed",
         ));
     }
+    let elements = canonical.cash_element_list().await?;
+    let element = elements.iter().find(|e| e.element_id == row.element_id);
+    let association = element
+        .map(|e| e.association_kind.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let is_loan = association == "loan"
+        || row.account.eq_ignore_ascii_case("Loan")
+        || element
+            .map(|e| e.account.eq_ignore_ascii_case("Loan"))
+            .unwrap_or(false);
+
+    if is_loan {
+        // Schedule acknowledgment → CCT Open draft. Balance moves when CCT settles.
+        canonical
+            .external_loan_apply_element(
+                row.element_id,
+                row.occurrence_id,
+                row.occurred_on.clone(),
+                row.amount_minor,
+            )
+            .await?;
+        row.confirmed_at = Some(chrono::Utc::now().to_rfc3339());
+        canonical.planned_occurrence_upsert(row.clone()).await?;
+        return Ok(ActivityRecord {
+            activity_id: Uuid::new_v4(),
+            account_id: Uuid::nil(),
+            security_id: None,
+            activity_type: "Loan_Cct_Draft".into(),
+            amount_minor: row.amount_minor,
+            scale: 2,
+            occurred_on: row.occurred_on,
+            corrects_activity_id: None,
+            import_batch_id: None,
+            idempotency_key: format!("week-ahead-loan-{}", row.occurrence_id),
+            federal_withholding_minor: 0,
+            state_withholding_minor: 0,
+            note: row.note,
+        });
+    }
+
     let ledger_name = ledger_account_name(&row.account);
     let account_id = account_id_named(canonical, ledger_name).await?;
     let posted = if row.account.eq_ignore_ascii_case("SSA_2026") {
@@ -595,13 +661,6 @@ pub async fn week_ahead_confirm(
     };
     row.confirmed_at = Some(chrono::Utc::now().to_rfc3339());
     canonical.planned_occurrence_upsert(row.clone()).await?;
-    canonical
-        .external_loan_apply_element(
-            row.element_id,
-            row.occurrence_id,
-            row.occurred_on,
-            row.amount_minor,
-        )
-        .await?;
+    // Loan balance is no longer applied on distribution/withdrawal confirm.
     Ok(posted)
 }

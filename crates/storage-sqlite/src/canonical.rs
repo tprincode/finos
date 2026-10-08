@@ -132,6 +132,13 @@ fn account_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AccountRecord, Plat
             .map_err(|e| PlatformError::new("parse_error", e.to_string()))?,
         name: row.try_get("name").map_err(|e| map_err(e.into()))?,
         kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+        cash_symbol: row
+            .try_get::<String, _>("cash_symbol")
+            .unwrap_or_default(),
+        broker_account_number: row
+            .try_get::<String, _>("broker_account_number")
+            .unwrap_or_default(),
+        min_balance_target_minor: row.try_get("min_balance_target_minor").unwrap_or(None),
         row_version: 1,
     })
 }
@@ -311,6 +318,7 @@ fn cash_element_from_row(
             .map_err(|e| map_err(e.into()))?,
         start_on: row.try_get("start_on").unwrap_or_default(),
         stop_on: row.try_get("stop_on").unwrap_or_default(),
+        association_kind: row.try_get("association_kind").unwrap_or_default(),
     })
 }
 
@@ -586,15 +594,24 @@ impl Canonical for LocalPlatform {
             account_id: Uuid::new_v4(),
             name,
             kind,
+            cash_symbol: String::new(),
+            broker_account_number: String::new(),
+            min_balance_target_minor: None,
             row_version: 1,
         };
-        sqlx::query("INSERT INTO account (account_id, name, kind) VALUES (?, ?, ?)")
-            .bind(record.account_id.to_string())
-            .bind(&record.name)
-            .bind(&record.kind)
-            .execute(&*pool)
-            .await
-            .map_err(|e| map_err(e.into()))?;
+        sqlx::query(
+            "INSERT INTO account (account_id, name, kind, cash_symbol, broker_account_number, min_balance_target_minor)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(record.account_id.to_string())
+        .bind(&record.name)
+        .bind(&record.kind)
+        .bind(&record.cash_symbol)
+        .bind(&record.broker_account_number)
+        .bind(record.min_balance_target_minor)
+        .execute(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
         audit(&pool, "AccountRegister", "account", &record.account_id.to_string()).await?;
         Ok(record)
     }
@@ -605,6 +622,9 @@ impl Canonical for LocalPlatform {
         name: Option<String>,
         kind: Option<String>,
         _expected_version: Option<i64>,
+        cash_symbol: Option<String>,
+        broker_account_number: Option<String>,
+        min_balance_target_minor: Option<Option<i64>>,
     ) -> Result<AccountRecord, PlatformError> {
         let mut current = self.account_get(account_id).await?;
         if let Some(name) = name {
@@ -613,35 +633,56 @@ impl Canonical for LocalPlatform {
         if let Some(kind) = kind {
             current.kind = kind;
         }
+        if let Some(sym) = cash_symbol {
+            current.cash_symbol = sym.trim().to_string();
+        }
+        if let Some(num) = broker_account_number {
+            current.broker_account_number = num.trim().to_string();
+        }
+        if let Some(target) = min_balance_target_minor {
+            current.min_balance_target_minor = target;
+        }
         let pool = self.pool.read().await;
-        sqlx::query("UPDATE account SET name = ?, kind = ? WHERE account_id = ?")
-            .bind(&current.name)
-            .bind(&current.kind)
-            .bind(account_id.to_string())
-            .execute(&*pool)
-            .await
-            .map_err(|e| map_err(e.into()))?;
+        sqlx::query(
+            "UPDATE account SET name = ?, kind = ?, cash_symbol = ?, broker_account_number = ?,
+             min_balance_target_minor = ? WHERE account_id = ?",
+        )
+        .bind(&current.name)
+        .bind(&current.kind)
+        .bind(&current.cash_symbol)
+        .bind(&current.broker_account_number)
+        .bind(current.min_balance_target_minor)
+        .bind(account_id.to_string())
+        .execute(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
         audit(&pool, "AccountUpdate", "account", &account_id.to_string()).await?;
         Ok(current)
     }
 
     async fn account_get(&self, account_id: Uuid) -> Result<AccountRecord, PlatformError> {
         let pool = self.pool.read().await;
-        let row = sqlx::query("SELECT account_id, name, kind FROM account WHERE account_id = ?")
-            .bind(account_id.to_string())
-            .fetch_optional(&*pool)
-            .await
-            .map_err(|e| map_err(e.into()))?
-            .ok_or_else(|| PlatformError::new("not_found", "account not found"))?;
+        let row = sqlx::query(
+            "SELECT account_id, name, kind, cash_symbol, broker_account_number, min_balance_target_minor
+             FROM account WHERE account_id = ?",
+        )
+        .bind(account_id.to_string())
+        .fetch_optional(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?
+        .ok_or_else(|| PlatformError::new("not_found", "account not found"))?;
         account_from_row(&row)
     }
 
     async fn account_list(&self) -> Result<Vec<AccountRecord>, PlatformError> {
         let pool = self.pool.read().await;
-        let rows = sqlx::query("SELECT account_id, name, kind FROM account ORDER BY name")
-            .fetch_all(&*pool)
-            .await
-            .map_err(|e| map_err(e.into()))?;
+        let rows = sqlx::query(
+            "SELECT account_id, name, kind, cash_symbol, broker_account_number, min_balance_target_minor
+             FROM account ORDER BY name",
+        )
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
         rows.iter().map(account_from_row).collect()
     }
 
@@ -2144,8 +2185,8 @@ impl Canonical for LocalPlatform {
         sqlx::query(
             "INSERT INTO cash_element (
                 element_id, account, kind, cadence, amount_minor, note,
-                weekday_or_month_day, start_on, stop_on
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                weekday_or_month_day, start_on, stop_on, association_kind
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(element_id) DO UPDATE SET
                 account = excluded.account,
                 kind = excluded.kind,
@@ -2154,7 +2195,8 @@ impl Canonical for LocalPlatform {
                 note = excluded.note,
                 weekday_or_month_day = excluded.weekday_or_month_day,
                 start_on = excluded.start_on,
-                stop_on = excluded.stop_on",
+                stop_on = excluded.stop_on,
+                association_kind = excluded.association_kind",
         )
         .bind(record.element_id.to_string())
         .bind(&record.account)
@@ -2165,6 +2207,7 @@ impl Canonical for LocalPlatform {
         .bind(&record.weekday_or_month_day)
         .bind(&record.start_on)
         .bind(&record.stop_on)
+        .bind(&record.association_kind)
         .execute(&*pool)
         .await
         .map_err(|e| map_err(e.into()))?;
@@ -2176,7 +2219,7 @@ impl Canonical for LocalPlatform {
         let pool = self.pool.read().await;
         let rows = sqlx::query(
             "SELECT element_id, account, kind, cadence, amount_minor, note,
-                    weekday_or_month_day, start_on, stop_on
+                    weekday_or_month_day, start_on, stop_on, association_kind
              FROM cash_element
              ORDER BY account, note",
         )
@@ -3716,6 +3759,21 @@ impl Canonical for LocalPlatform {
     ) -> Result<application_core::contracts::ExternalManagedGetBody, PlatformError> {
         let pool = self.pool.read().await;
         crate::external_account::save(&pool, accounts).await
+    }
+
+    async fn external_bucket_list_get(
+        &self,
+    ) -> Result<application_core::contracts::ExternalBudgetBucketListBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_bucket::list(&pool).await
+    }
+
+    async fn external_bucket_save(
+        &self,
+        bucket: application_core::contracts::ExternalBudgetBucketSave,
+    ) -> Result<application_core::contracts::ExternalBudgetBucketListBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_bucket::save(&pool, bucket).await
     }
 
     async fn external_loans_due(

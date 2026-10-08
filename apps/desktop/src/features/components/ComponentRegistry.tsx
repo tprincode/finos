@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { CoreFunctionsGet } from "@finos/app-contracts";
-import { LocalTauriFinanceClient } from "../../financeClient";
 import {
   ATLAS_TARGETS,
   type AtlasCmDesk,
@@ -11,10 +10,9 @@ import {
 import { ScreenAtlasScreen } from "../screen-atlas/ScreenAtlasScreen";
 import { groupByScreen, ownerPageGroups } from "./screenGroups";
 import { fieldNamesFor } from "../field-intent/fieldIndex";
+import { savePageWorkbook } from "../shared/saveWorkbook";
 
 export type CatalogModule = NonNullable<CoreFunctionsGet["modules"]>[number];
-
-const exportClient = new LocalTauriFinanceClient();
 
 type OwnerMeta = {
   purpose: string;
@@ -69,7 +67,19 @@ type ComponentLine = {
   query: string;
   catalogPurpose: string;
   menu: string;
+  /** Catalog section id holding this component. Empty until the screen declares one. */
+  sectionId: string;
+  sectionTitle: string;
 };
+
+/** A component the catalog has not placed yet. Shown, not hidden. */
+const UNSECTIONED = "Unsectioned";
+
+function sectionTitleOf(row: CatalogModule, sectionId: string): string {
+  if (!sectionId) return "";
+  const found = (row.sections ?? []).find((section) => section.id === sectionId);
+  return found?.title ?? sectionId;
+}
 
 function menuPathOf(row: CatalogModule): string {
   const menu = row.menu;
@@ -109,6 +119,8 @@ function componentLines(modules: CatalogModule[]): ComponentLine[] {
         query: row.exportKind || "",
         catalogPurpose: row.description || "",
         menu: menuPathOf(row),
+        sectionId: "",
+        sectionTitle: "",
       });
       continue;
     }
@@ -125,10 +137,43 @@ function componentLines(modules: CatalogModule[]): ComponentLine[] {
         query: part.exportKind || row.exportKind || "",
         catalogPurpose: part.description || "",
         menu: menuPathOf(row),
+        sectionId: part.section ?? "",
+        sectionTitle: sectionTitleOf(row, part.section ?? ""),
       });
     }
   }
   return lines;
+}
+
+type SectionGroup = { key: string; label: string; lines: ComponentLine[] };
+
+/**
+ * Screen, then section, then the components inside it. Declared sections keep
+ * catalog order so the registry reads like the page; anything unplaced lands in
+ * one trailing group so the gap is visible.
+ */
+function sectionGroups(modules: CatalogModule[]): SectionGroup[] {
+  const lines = componentLines(modules);
+  const groups: SectionGroup[] = [];
+  const indexOf = new Map<string, number>();
+  for (const row of modules) {
+    for (const section of row.sections ?? []) {
+      const key = `${row.id}:${section.id}`;
+      indexOf.set(key, groups.length);
+      groups.push({ key, label: section.title, lines: [] });
+    }
+  }
+  const loose: ComponentLine[] = [];
+  for (const line of lines) {
+    const at = indexOf.get(`${line.moduleId}:${line.sectionId}`);
+    if (at === undefined) loose.push(line);
+    else groups[at].lines.push(line);
+  }
+  const shown = groups.filter((group) => group.lines.length > 0);
+  if (loose.length > 0) {
+    shown.push({ key: "unsectioned", label: UNSECTIONED, lines: loose });
+  }
+  return shown;
 }
 
 function targetsFor(screen: string, desk?: string): AtlasTarget[] {
@@ -223,25 +268,7 @@ export function ComponentRegistry({
         moduleId: line.moduleId,
         partId: line.partId,
       }));
-      const result = await exportClient.executeQuery("ComponentPageExportGet", {
-        pageLabel: label,
-        asOfDate,
-        lines,
-      });
-      if (!result.ok || !result.bodyJson) {
-        throw new Error(result.errorCode ?? "Export failed");
-      }
-      const body = JSON.parse(result.bodyJson) as {
-        defaultFileName?: string;
-        bytesBase64?: string;
-      };
-      if (!body.bytesBase64) throw new Error("Export failed");
-      const bytes = Uint8Array.from(atob(body.bytesBase64), (c) => c.charCodeAt(0));
-      if (bytes.length === 0) throw new Error("Export failed");
-      const path = await invoke<string>("save_local_bytes", {
-        defaultFileName: body.defaultFileName ?? `${label}.xlsx`,
-        bytes: Array.from(bytes),
-      });
+      const path = await savePageWorkbook({ pageLabel: label, asOfDate, lines });
       setExportNote(`Saved ${path}`);
     } catch (err: unknown) {
       setExportNote(err instanceof Error ? err.message : String(err));
@@ -305,6 +332,7 @@ export function ComponentRegistry({
         embedded
       />
       {exportNote ? <p role="status">{exportNote}</p> : null}
+      <div id="registry-pages" data-section="registry-pages" data-part="registry-page-list">
       {outline ? (
         outline.pages.map((page) => (
           <PageSection
@@ -325,8 +353,15 @@ export function ComponentRegistry({
       ) : (
         <p>Loading components…</p>
       )}
+      </div>
       {outline && outline.also.length > 0 ? (
-        <section className="registry-page" aria-label="Also registered">
+        <section
+          className="registry-page"
+          aria-label="Also registered"
+          id="registry-also"
+          data-section="registry-also"
+          data-part="also-registered"
+        >
           <div className="registry-page-head">
             <h3>Also registered</h3>
             <button
@@ -412,17 +447,22 @@ function PageSection({
         ) : null}
       </div>
       <p>Tables: {tables}</p>
-      {componentLines(modules).map((line) => (
-        <ComponentRecord
-          key={line.key}
-          line={line}
-          tables={tables}
-          meta={ownerOf(meta, line.moduleId, line.partId)}
-          editor={editor}
-          onEdit={() => onEdit(line)}
-          onEditorChange={onEditorChange}
-          onSave={onSave}
-        />
+      {sectionGroups(modules).map((group) => (
+        <div key={group.key} className="registry-section" aria-label={`Section ${group.label}`}>
+          <h4>{group.label}</h4>
+          {group.lines.map((line) => (
+            <ComponentRecord
+              key={line.key}
+              line={line}
+              tables={tables}
+              meta={ownerOf(meta, line.moduleId, line.partId)}
+              editor={editor}
+              onEdit={() => onEdit(line)}
+              onEditorChange={onEditorChange}
+              onSave={onSave}
+            />
+          ))}
+        </div>
       ))}
     </section>
   );

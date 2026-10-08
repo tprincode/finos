@@ -100,7 +100,12 @@ export function AddLotScreen(props: AddLotScreenProps) {
           Unsaved edits. Confirm or Cancel — other screens stay blocked.
         </p>
       ) : null}
-      <div className="buttons dossier-actions">
+      <div
+        className="buttons dossier-actions"
+        id="add-lot-actions"
+        data-section="add-lot-actions"
+        data-part="add-lot-actions"
+      >
         <button
           type="button"
           aria-label="Confirm add lot"
@@ -129,31 +134,35 @@ export function AddLotScreen(props: AddLotScreenProps) {
           Cancel
         </button>
       </div>
-      <div className="form-grid">
-        <ResearchedSymbolCombobox
-          options={filteredAddLotSecurities}
-          query={addLotQuery}
-          onQueryChange={(q) => {
-            setAddLotQuery(q);
-            setAddLotSecurityId("");
-          }}
-          open={addLotSymbolOpen}
-          onOpenChange={setAddLotSymbolOpen}
-          selectedId={addLotSecurityId}
-          onSelect={selectAddLotSecurity}
-          disabled={busy || writesBlocked}
-          inputAriaLabel="Add lot symbol"
-          listId="add-lot-symbol-list"
-          listAriaLabel="Add lot symbol matches"
-        />
-        <AccountSelect
-          accounts={accounts}
-          value={addLotAccountId}
-          onChange={setAddLotAccountId}
-          ariaLabel="Add lot account"
-          disabled={busy || writesBlocked}
-        />
-        <label>
+      <div className="form-grid" id="add-lot-form" data-section="add-lot-form">
+        <div data-part="add-lot-symbol">
+          <ResearchedSymbolCombobox
+            options={filteredAddLotSecurities}
+            query={addLotQuery}
+            onQueryChange={(q) => {
+              setAddLotQuery(q);
+              setAddLotSecurityId("");
+            }}
+            open={addLotSymbolOpen}
+            onOpenChange={setAddLotSymbolOpen}
+            selectedId={addLotSecurityId}
+            onSelect={selectAddLotSecurity}
+            disabled={busy || writesBlocked}
+            inputAriaLabel="Add lot symbol"
+            listId="add-lot-symbol-list"
+            listAriaLabel="Add lot symbol matches"
+          />
+        </div>
+        <div data-part="add-lot-account">
+          <AccountSelect
+            accounts={accounts}
+            value={addLotAccountId}
+            onChange={setAddLotAccountId}
+            ariaLabel="Add lot account"
+            disabled={busy || writesBlocked}
+          />
+        </div>
+        <label data-part="add-lot-opened-on">
           Opened on
           <input
             aria-label="Add lot opened on"
@@ -163,7 +172,7 @@ export function AddLotScreen(props: AddLotScreenProps) {
             disabled={busy || writesBlocked}
           />
         </label>
-        <label>
+        <label data-part="add-lot-quantity">
           Quantity
           <input
             aria-label="Add lot quantity"
@@ -172,7 +181,7 @@ export function AddLotScreen(props: AddLotScreenProps) {
             disabled={busy || writesBlocked}
           />
         </label>
-        <label>
+        <label data-part="add-lot-unit-cost">
           Unit original $
           <input
             aria-label="Add lot unit original cost"
@@ -182,7 +191,7 @@ export function AddLotScreen(props: AddLotScreenProps) {
             placeholder="29.46"
           />
         </label>
-        <label>
+        <label data-part="add-lot-tax-cost">
           {carBuy ? (
             <span>
               <input
@@ -244,7 +253,7 @@ export function AddLotScreen(props: AddLotScreenProps) {
             !addLotCost.trim()
           ) {
             return (
-              <p role="status" aria-label="Add lot total confirmation">
+              <p data-part="add-lot-total" role="status" aria-label="Add lot total confirmation">
                 Enter qty and unit original $ — lot total = qty × unit.
               </p>
             );
@@ -289,7 +298,7 @@ export function AddLotScreen(props: AddLotScreenProps) {
             </p>
           );
         })()}
-        <label>
+        <label data-part="add-lot-origin">
           Origin
           <select
             aria-label="Add lot origin"

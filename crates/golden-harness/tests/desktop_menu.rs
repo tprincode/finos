@@ -353,6 +353,10 @@ fn native_and_in_app_menus_list_screens() {
         "in-app Tools must include Interest rate calculator"
     );
     assert!(
+        app.contains("navButton(\"account-management\", \"Account Management\")"),
+        "in-app Tools must include Account Management"
+    );
+    assert!(
         app.contains("navButton(\"task-manager\", \"Task Manager\")"),
         "in-app Tools must include Task Manager"
     );
@@ -373,16 +377,19 @@ fn native_and_in_app_menus_list_screens() {
         "Plan lives on the in-app bar only"
     );
     assert!(
-        app.contains("formatMenuWeek"),
-        "menubar must show the current week without weekday names"
+        app.contains("formatMenuWeek")
+            && app.contains("menubar-notice")
+            && app.contains("aria-label=\"Status\""),
+        "menubar must show week and status notice beside the activity chip"
     );
     assert!(
         week.contains("W36") || week.contains("formatMenuWeek"),
         "formatMenuWeek must exist"
     );
     assert!(
-        week.contains("${formatWeekNumber(id)} ${id.start} – ${id.end}"),
-        "menu week must be dates only"
+        week.contains("${formatWeekNumber(id)} - ${md(id.start)}-${md(id.end)}")
+            && week.contains("day.slice(5, 7)"),
+        "menu week must be month/day only without year"
     );
     let bat = std::fs::read_to_string(root.join("apps/desktop/start-finos-dev.bat")).unwrap();
     assert!(

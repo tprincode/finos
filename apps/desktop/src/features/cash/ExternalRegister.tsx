@@ -12,6 +12,8 @@ type RegisterLine = {
   amountMinor: number;
   scale: number;
   category: string;
+  bucket: string;
+  loanName?: string;
   vendor: string;
   description: string;
   trueUpOn?: string | null;
@@ -32,6 +34,8 @@ type RegisterBody = {
   lines: RegisterLine[];
   payTypes: string[];
   categories: string[];
+  buckets: string[];
+  loanNames?: string[];
   vendors: string[];
   totalCount: number;
 };
@@ -48,6 +52,8 @@ type EntryDraft = {
   occurredOn: string;
   amount: string;
   category: string;
+  bucket: string;
+  loanName: string;
   vendor: string;
   description: string;
 };
@@ -67,12 +73,17 @@ type OpenSortKey =
   | "occurredOn"
   | "amount"
   | "category"
+  | "bucket"
+  | "loanName"
   | "vendor"
   | "description"
   | "transfer"
   | "billpayDeposit"
   | "pay"
   | "withdrawal";
+
+/** Fallback when catalog has not loaded yet. */
+const BUCKET_OPTIONS = ["Food", "Cash", "Bills", "Pets", "Medical", "HSA", "Mom"] as const;
 
 function todayIso(): string {
   const now = new Date();
@@ -160,6 +171,8 @@ function emptyEntry(): EntryDraft {
     occurredOn: todayIso(),
     amount: "",
     category: "",
+    bucket: "",
+    loanName: "",
     vendor: "",
     description: "",
   };
@@ -180,6 +193,105 @@ function completedDateOf(line: RegisterLine): string {
   return stored || todayIso();
 }
 
+const BUCKET_RING_COLORS: Record<string, string> = {
+  Food: "#2e86ab",
+  Cash: "#28a745",
+  Bills: "#e76f51",
+  Pets: "#9b59b6",
+  Medical: "#f4a261",
+  HSA: "#1abc9c",
+  Mom: "#e9c46a",
+};
+
+const BUCKET_RING_FALLBACK = ["#5c7cfa", "#20c997", "#fd7e14", "#845ef7", "#e64980", "#12b886"];
+
+function bucketRingColor(name: string): string {
+  const known = BUCKET_RING_COLORS[name];
+  if (known) return known;
+  let hash = 0;
+  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return BUCKET_RING_FALLBACK[hash % BUCKET_RING_FALLBACK.length];
+}
+
+function moneyCompact(minor: number, scale = 2): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: scale,
+  }).format(minor / 10 ** scale);
+}
+
+function BucketYearRing({ lines }: { lines: RegisterLine[] }) {
+  const year = new Date().getFullYear();
+  const prefix = `${year}-`;
+  const totals = new Map<string, number>();
+  for (const line of lines) {
+    if (line.amountMinor <= 0) continue;
+    const on = (line.occurredOn ?? "").trim();
+    if (!on.startsWith(prefix)) continue;
+    const bucket = (line.bucket ?? "").trim();
+    if (!bucket) continue;
+    totals.set(bucket, (totals.get(bucket) ?? 0) + line.amountMinor);
+  }
+  const slices = [...totals.entries()]
+    .map(([name, minor]) => ({ name, minor, color: bucketRingColor(name) }))
+    .sort((a, b) => b.minor - a.minor || a.name.localeCompare(b.name));
+  const total = slices.reduce((sum, slice) => sum + slice.minor, 0);
+  const radius = 34;
+  const circumference = 2 * Math.PI * radius;
+  let cursor = 0;
+  return (
+    <div className="external-bucket-year" aria-label={`Bucket spend ${year}`}>
+      <div className="external-bucket-year-ring-wrap">
+        <svg className="external-bucket-year-ring" viewBox="0 0 100 100" aria-hidden="true">
+          <circle cx="50" cy="50" r={radius} fill="none" stroke="#eef2f6" strokeWidth="14" />
+          {slices.map((slice) => {
+            if (total <= 0 || slice.minor <= 0) return null;
+            const length = (slice.minor / total) * circumference;
+            const segment = (
+              <circle
+                key={slice.name}
+                cx="50"
+                cy="50"
+                r={radius}
+                fill="none"
+                stroke={slice.color}
+                strokeWidth="14"
+                strokeDasharray={`${length} ${circumference - length}`}
+                strokeDashoffset={-cursor}
+                transform="rotate(-90 50 50)"
+              />
+            );
+            cursor += length;
+            return segment;
+          })}
+        </svg>
+        <span className="external-bucket-year-total" aria-hidden="true">
+          {moneyCompact(total)}
+        </span>
+      </div>
+      <dl className="external-bucket-year-legend">
+        {slices.length === 0 ? (
+          <div>
+            <dt>No bucket spend</dt>
+            <dd>{year}</dd>
+          </div>
+        ) : (
+          slices.map((slice) => (
+            <div key={slice.name}>
+              <dt>
+                <span className="external-bucket-year-swatch" style={{ background: slice.color }} />
+                {slice.name}
+              </dt>
+              <dd>{moneyCompact(slice.minor)}</dd>
+            </div>
+          ))
+        )}
+      </dl>
+    </div>
+  );
+}
+
 function amountSearchText(minor: number, scale = 2): string {
   const text = amountText(minor, scale);
   const frac = Math.abs(minor) % 10 ** scale;
@@ -197,14 +309,23 @@ function parseAmount(raw: string): number | null {
   return Math.round(value * 100);
 }
 
+/** Column filter sentinel: empty string means All; this means value is blank. */
+const COLUMN_FILTER_BLANK = "__blank__";
+
 function columnHit(value: string, filter: string): boolean {
   if (!filter) return true;
+  if (filter === COLUMN_FILTER_BLANK) return value.trim() === "";
   return value === filter;
 }
 
 function lineYear(line: RegisterLine): string | null {
   const match = /^(\d{4})-/.exec((line.occurredOn ?? "").trim());
   return match ? match[1] : null;
+}
+
+/** Bulk bucket apply needs a dated line (year filter already scopes the list). */
+function isBulkEligibleLine(line: RegisterLine): boolean {
+  return lineYear(line) !== null;
 }
 
 const KNOWN_PAY_ACCOUNTS = new Set([
@@ -230,17 +351,52 @@ const KNOWN_PAY_ACCOUNTS = new Set([
 
 function ranked2026(
   lines: RegisterLine[],
-  field: "payType" | "category" | "vendor",
+  field: "payType" | "category" | "bucket" | "loanName" | "vendor",
   allow?: (name: string) => boolean,
 ): string[] {
   const counts = new Map<string, number>();
   for (const line of lines) {
     if (!(line.occurredOn ?? "").startsWith("2026")) continue;
-    const name = line[field].trim();
+    const name = (line[field] ?? "").trim();
     if (!name || (allow && !allow(name))) continue;
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   return [...counts.keys()].sort(byFrequency(counts));
+}
+
+function BucketSelect({
+  value,
+  options,
+  ariaLabel,
+  onChange,
+  onKeyDown,
+}: {
+  value: string;
+  options: string[];
+  ariaLabel: string;
+  onChange: (next: string) => void;
+  onKeyDown?: (event: { key: string; preventDefault: () => void }) => void;
+}) {
+  const names = options.length > 0 ? options : [...BUCKET_OPTIONS];
+  const known = new Set(names);
+  const trimmed = value.trim();
+  const selected = known.has(trimmed) ? trimmed : "";
+  return (
+    <select
+      aria-label={ariaLabel}
+      value={selected}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={onKeyDown}
+    >
+      <option value="">(none)</option>
+      {names.map((name) => (
+        <option key={name} value={name}>
+          {name}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 function SuggestInput({
@@ -300,6 +456,7 @@ function SuggestInput({
         aria-expanded={open && matches.length > 0}
         autoComplete="off"
         value={value}
+        onClick={(event) => event.stopPropagation()}
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
         onChange={(event) => {
@@ -383,6 +540,8 @@ function lineMatches(line: RegisterLine, query: string): boolean {
     line.occurredOn ?? "",
     amountSearchText(line.amountMinor, line.scale ?? 2),
     line.category,
+    line.bucket ?? "",
+    line.loanName ?? "",
     line.vendor,
     line.description,
     line.trueUpOn ?? "",
@@ -396,6 +555,8 @@ function lineChanged(original: RegisterLine, draft: RegisterLine): boolean {
     (original.occurredOn ?? "") !== (draft.occurredOn ?? "") ||
     original.amountMinor !== draft.amountMinor ||
     original.category !== draft.category ||
+    (original.bucket ?? "") !== (draft.bucket ?? "") ||
+    (original.loanName ?? "") !== (draft.loanName ?? "") ||
     original.vendor !== draft.vendor ||
     original.description !== draft.description ||
     (original.trueUpOn ?? "") !== (draft.trueUpOn ?? "")
@@ -407,6 +568,8 @@ function entryReady(entry: EntryDraft): boolean {
     entry.payType.trim() !== "" ||
     entry.amount.trim() !== "" ||
     entry.category.trim() !== "" ||
+    entry.bucket.trim() !== "" ||
+    entry.loanName.trim() !== "" ||
     entry.vendor.trim() !== "" ||
     entry.description.trim() !== ""
   );
@@ -416,7 +579,17 @@ async function readBody(result: { ok: boolean; errorCode?: string; bodyJson?: st
   if (!result.ok || !result.bodyJson) {
     throw new Error(result.errorCode || "External register request failed");
   }
-  return JSON.parse(result.bodyJson) as RegisterBody;
+  const body = JSON.parse(result.bodyJson) as RegisterBody;
+  return {
+    ...body,
+    buckets: body.buckets ?? [],
+    loanNames: body.loanNames ?? [],
+    lines: (body.lines ?? []).map((line) => ({
+      ...line,
+      bucket: line.bucket ?? "",
+      loanName: line.loanName ?? "",
+    })),
+  };
 }
 
 export function ExternalRegister({
@@ -434,6 +607,8 @@ export function ExternalRegister({
     occurredOn: "",
     amount: "",
     category: "",
+    bucket: "",
+    loanName: "",
     vendor: "",
     description: "",
     trueUpOn: "",
@@ -452,6 +627,9 @@ export function ExternalRegister({
   const [busy, setBusy] = useState(false);
   const [exportPreview, setExportPreview] = useState<ExportPreview | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
+  const [bulkIds, setBulkIds] = useState<string[]>([]);
+  const [bulkBucket, setBulkBucket] = useState("");
+  const [bulkConfirm, setBulkConfirm] = useState(false);
 
   const dirty =
     entryReady(entry) ||
@@ -471,6 +649,9 @@ export function ExternalRegister({
     setAmountInputs({});
     setEditingId(null);
     setEntry(emptyEntry());
+    setBulkIds([]);
+    setBulkBucket("");
+    setBulkConfirm(false);
   };
 
   useEffect(() => {
@@ -485,6 +666,9 @@ export function ExternalRegister({
           setAmountInputs({});
           setEditingId(null);
           setEntry(emptyEntry());
+          setBulkIds([]);
+          setBulkBucket("");
+          setBulkConfirm(false);
           setStatus(null);
         }
       } catch (err: unknown) {
@@ -511,6 +695,8 @@ export function ExternalRegister({
       occurredOn: new Map<string, number>(),
       amount: new Map<string, number>(),
       category: new Map<string, number>(),
+      bucket: new Map<string, number>(),
+      loanName: new Map<string, number>(),
       vendor: new Map<string, number>(),
       description: new Map<string, number>(),
       trueUpOn: new Map<string, number>(),
@@ -520,6 +706,8 @@ export function ExternalRegister({
       bump(counts.occurredOn, line.occurredOn ?? "");
       bump(counts.amount, amountText(line.amountMinor, line.scale));
       bump(counts.category, line.category);
+      bump(counts.bucket, line.bucket ?? "");
+      bump(counts.loanName, line.loanName ?? "");
       bump(counts.vendor, line.vendor);
       bump(counts.description, line.description);
       bump(counts.trueUpOn, line.trueUpOn ?? "");
@@ -527,14 +715,17 @@ export function ExternalRegister({
     return counts;
   }, [body]);
 
-  const suggestions = useMemo(
-    () => ({
+  const suggestions = useMemo(() => {
+    const loanFromLines = ranked2026(body?.lines ?? [], "loanName");
+    const loanCatalog = body?.loanNames ?? [];
+    const loanName = [...new Set([...loanCatalog, ...loanFromLines])].filter(Boolean);
+    return {
       payType: ranked2026(body?.lines ?? [], "payType", (name) => KNOWN_PAY_ACCOUNTS.has(name)),
       category: ranked2026(body?.lines ?? [], "category"),
+      loanName,
       vendor: ranked2026(body?.lines ?? [], "vendor"),
-    }),
-    [body],
-  );
+    };
+  }, [body]);
 
   const shown = useMemo(() => {
     const lines = body?.lines ?? [];
@@ -600,6 +791,8 @@ export function ExternalRegister({
         amountMinor,
         scale: 2,
         category: entry.category.trim(),
+        bucket: entry.bucket.trim(),
+        loanName: entry.loanName.trim(),
         vendor: entry.vendor.trim(),
         description: entry.description.trim(),
         trueUpOn: null,
@@ -670,6 +863,7 @@ export function ExternalRegister({
         amountMinor: view.amountMinor,
         scale: view.scale,
         category: view.category,
+        bucket: view.bucket ?? "",
         vendor: view.vendor,
         description: view.description,
         trueUpOn: completedDateOf(view),
@@ -753,6 +947,9 @@ export function ExternalRegister({
     }
   };
 
+  const catalogBuckets =
+    body?.buckets && body.buckets.length > 0 ? body.buckets : [...BUCKET_OPTIONS];
+  const knownBuckets = new Set(catalogBuckets);
   const viewOf = (line: RegisterLine) => drafts[line.lineId] ?? line;
   const stepsDone = (line: RegisterLine) =>
     Boolean(
@@ -771,19 +968,86 @@ export function ExternalRegister({
       columnHit((view.occurredOn ?? "").trim(), colFilters.occurredOn) &&
       columnHit(amountText(view.amountMinor, view.scale), colFilters.amount) &&
       columnHit(view.category.trim(), colFilters.category) &&
+      columnHit((view.bucket ?? "").trim(), colFilters.bucket) &&
+      columnHit((view.loanName ?? "").trim(), colFilters.loanName) &&
       columnHit(view.vendor.trim(), colFilters.vendor) &&
       columnHit(view.description.trim(), colFilters.description) &&
       columnHit(completedDateOf(view).trim(), colFilters.trueUpOn)
     );
   });
+  const completedDirty = completed.some(
+    (line) => drafts[line.lineId] && lineChanged(line, drafts[line.lineId]),
+  );
+  const bulkEligible = completedVisible.filter(isBulkEligibleLine);
+  const bulkSelectedVisible = bulkEligible.filter((line) => bulkIds.includes(line.lineId));
+  const allBulkSelected =
+    bulkEligible.length > 0 && bulkEligible.every((line) => bulkIds.includes(line.lineId));
   const setFilter = (key: keyof typeof colFilters, value: string) => {
     setColFilters((current) => ({ ...current, [key]: value }));
+  };
+  const toggleBulkId = (lineId: string) => {
+    setBulkIds((current) =>
+      current.includes(lineId) ? current.filter((id) => id !== lineId) : [...current, lineId],
+    );
+  };
+  const selectVisibleBulk = () => {
+    setBulkIds(bulkEligible.map((line) => line.lineId));
+  };
+  const clearBulk = () => {
+    setBulkIds([]);
+  };
+  const openBulkConfirm = () => {
+    if (bulkSelectedVisible.length === 0) {
+      setStatus("Select dated completed charges first.");
+      return;
+    }
+    if (!knownBuckets.has(bulkBucket.trim())) {
+      setStatus("Choose a defined bucket.");
+      return;
+    }
+    setBulkConfirm(true);
+  };
+  const applyBulkBucket = async () => {
+    const bucket = bulkBucket.trim();
+    const ids = bulkSelectedVisible.map((line) => line.lineId);
+    if (ids.length === 0 || !knownBuckets.has(bucket)) {
+      setBulkConfirm(false);
+      return;
+    }
+    const lines = bulkSelectedVisible.map((line) => {
+      const view = viewOf(line);
+      return {
+        ...view,
+        bucket,
+        completed: true,
+      };
+    });
+    setBusy(true);
+    setStatus(null);
+    try {
+      const result = await client.executeCommand("ExternalRegisterSave", { lines });
+      const next = await readBody(result);
+      setBody(next);
+      setDrafts({});
+      setAmountInputs({});
+      setEditingId(null);
+      setBulkIds([]);
+      setBulkBucket("");
+      setBulkConfirm(false);
+      setStatus(`Bucket set on ${ids.length} charges.`);
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   };
   const completedChoices = {
     payType: new Set<string>(),
     occurredOn: new Set<string>(),
     amount: new Set<string>(),
     category: new Set<string>(),
+    bucket: new Set<string>(),
+    loanName: new Set<string>(),
     vendor: new Set<string>(),
     description: new Set<string>(),
     trueUpOn: new Set<string>(),
@@ -794,6 +1058,8 @@ export function ExternalRegister({
     if (view.occurredOn?.trim()) completedChoices.occurredOn.add(view.occurredOn.trim());
     completedChoices.amount.add(amountText(view.amountMinor, view.scale));
     if (view.category.trim()) completedChoices.category.add(view.category.trim());
+    if ((view.bucket ?? "").trim()) completedChoices.bucket.add(view.bucket.trim());
+    if ((view.loanName ?? "").trim()) completedChoices.loanName.add(view.loanName!.trim());
     if (view.vendor.trim()) completedChoices.vendor.add(view.vendor.trim());
     if (view.description.trim()) completedChoices.description.add(view.description.trim());
     if (completedDateOf(view).trim()) completedChoices.trueUpOn.add(completedDateOf(view).trim());
@@ -803,6 +1069,8 @@ export function ExternalRegister({
     occurredOn: byFrequency(valueFrequency.occurredOn),
     amount: byFrequency(valueFrequency.amount),
     category: byFrequency(valueFrequency.category),
+    bucket: byFrequency(valueFrequency.bucket),
+    loanName: byFrequency(valueFrequency.loanName),
     vendor: byFrequency(valueFrequency.vendor),
     description: byFrequency(valueFrequency.description),
     trueUpOn: byFrequency(valueFrequency.trueUpOn),
@@ -812,6 +1080,8 @@ export function ExternalRegister({
     occurredOn: [...completedChoices.occurredOn].sort(rank.occurredOn),
     amount: [...completedChoices.amount].sort(rank.amount),
     category: [...completedChoices.category].sort(rank.category),
+    bucket: [...completedChoices.bucket].sort(rank.bucket),
+    loanName: [...completedChoices.loanName].sort(rank.loanName),
     vendor: [...completedChoices.vendor].sort(rank.vendor),
     description: [...completedChoices.description].sort(rank.description),
     trueUpOn: [...completedChoices.trueUpOn].sort(rank.trueUpOn),
@@ -918,6 +1188,16 @@ export function ExternalRegister({
               return a.payType.localeCompare(b.payType, undefined, { numeric: true, sensitivity: "base" });
             case "category":
               return a.category.localeCompare(b.category, undefined, { numeric: true, sensitivity: "base" });
+            case "bucket":
+              return (a.bucket ?? "").localeCompare(b.bucket ?? "", undefined, {
+                numeric: true,
+                sensitivity: "base",
+              });
+            case "loanName":
+              return (a.loanName ?? "").localeCompare(b.loanName ?? "", undefined, {
+                numeric: true,
+                sensitivity: "base",
+              });
             case "vendor":
               return a.vendor.localeCompare(b.vendor, undefined, { numeric: true, sensitivity: "base" });
             case "description":
@@ -995,8 +1275,13 @@ export function ExternalRegister({
 
   return (
     <section className="external-register" aria-label="Checking and Credit Transactions -CCT">
-      <div className="external-find">
-        <div className="external-find-grid" role="group" aria-label="Search">
+      <div className="external-find" id="external-find" data-section="external-find">
+        <div
+          className="external-find-grid"
+          role="group"
+          aria-label="Search"
+          data-part="external-search"
+        >
           <span className="external-find-label">Search</span>
           <input
             aria-label="Search external register"
@@ -1053,20 +1338,25 @@ export function ExternalRegister({
         </div>
       </div>
       {status ? <p role="status">{status}</p> : null}
-      <h3 className="external-open-head">
+      <h3 className="external-open-head" id="external-open" data-section="external-open">
         Open · {pending.length}
         {stepTotal("Transfer", "transfer", transferIds)}
         {stepTotal("Bill Pay Deposit", "billpay_deposit", billpayDepositIds)}
         {stepTotal("Pay Bill", "pay", payIds)}
         {stepTotal("Bill Pay Withdrawal", "withdrawal", withdrawalIds)}
       </h3>
-      <div className="table-wrap external-register-wrap external-open-wrap">
+      <div
+        className="table-wrap external-register-wrap external-open-wrap"
+        data-part="cct-register"
+      >
         <table aria-label="Pending external charges">
           <colgroup>
             <col className="open-paytype-col" />
             <col className="open-date-col" />
             <col className="open-spent-col" />
             <col className="open-category-col" />
+            <col className="open-bucket-col" />
+            <col className="open-bucket-col" />
             <col className="open-vendor-col" />
             <col className="open-desc-col" />
             <col className="open-tick-col" />
@@ -1080,6 +1370,8 @@ export function ExternalRegister({
               {sortHead("Date", "occurredOn")}
               {sortHead("Total spent", "amount")}
               {sortHead("Category", "category")}
+              {sortHead("Bucket", "bucket")}
+              {sortHead("Loan Name", "loanName")}
               {sortHead("Vendor", "vendor")}
               {sortHead("Description", "description")}
               {sortHead("Transfer", "transfer")}
@@ -1124,6 +1416,24 @@ export function ExternalRegister({
                   options={suggestions.category}
                   value={entry.category}
                   onChange={(category) => patchEntry({ category })}
+                  onKeyDown={addOnEnter}
+                />
+              </td>
+              <td>
+                <BucketSelect
+                  ariaLabel="New bucket"
+                  options={catalogBuckets}
+                  value={entry.bucket}
+                  onChange={(bucket) => patchEntry({ bucket })}
+                  onKeyDown={addOnEnter}
+                />
+              </td>
+              <td>
+                <SuggestInput
+                  ariaLabel="New loan name"
+                  options={suggestions.loanName}
+                  value={entry.loanName}
+                  onChange={(loanName) => patchEntry({ loanName })}
                   onKeyDown={addOnEnter}
                 />
               </td>
@@ -1225,6 +1535,22 @@ export function ExternalRegister({
                         />
                       </td>
                       <td>
+                        <BucketSelect
+                          ariaLabel={`Bucket ${line.lineId}`}
+                          options={catalogBuckets}
+                          value={draft.bucket ?? ""}
+                          onChange={(bucket) => patchDraft(line.lineId, { bucket })}
+                        />
+                      </td>
+                      <td>
+                        <SuggestInput
+                          ariaLabel={`Loan name ${line.lineId}`}
+                          options={suggestions.loanName}
+                          value={draft.loanName ?? ""}
+                          onChange={(loanName) => patchDraft(line.lineId, { loanName })}
+                        />
+                      </td>
+                      <td>
                         <SuggestInput
                           ariaLabel={`Vendor ${line.lineId}`}
                           options={suggestions.vendor}
@@ -1268,6 +1594,8 @@ export function ExternalRegister({
                       <td>{view.occurredOn ?? ""}</td>
                       <td className="numeric">{amountText(view.amountMinor, view.scale)}</td>
                       <td title={view.category}>{view.category}</td>
+                      <td title={view.bucket}>{view.bucket ?? ""}</td>
+                      <td title={view.loanName}>{view.loanName ?? ""}</td>
                       <td title={view.vendor}>{view.vendor}</td>
                       <td title={view.description}>{view.description}</td>
                       {stepCheck(line, view, Boolean(line.stepTransfer), transferIds, setTransferIds, "Transfer", line.stepTransferOn)}
@@ -1298,27 +1626,117 @@ export function ExternalRegister({
           </tbody>
         </table>
       </div>
-      <h3 className="external-open-head">
-        Completed · {completedVisible.length}
-        <button
-          type="button"
-          aria-label="Export"
-          disabled={busy || exportLoading || completedVisible.length === 0}
-          onClick={() => void requestCompletedExport()}
-        >
-          {exportLoading ? "Export…" : "Export"}
-        </button>
-      </h3>
-      <div className="table-wrap external-register-wrap external-completed-wrap">
+      <div
+        className="external-completed-band"
+        id="external-completed"
+        data-section="external-completed"
+      >
+        <div className="external-completed-controls">
+          <h3 className="external-open-head">
+            Completed · {completedVisible.length}
+            <button
+              type="button"
+              title="Save completed edits"
+              aria-label="Save completed edits"
+              className={completedDirty ? "is-unsaved" : undefined}
+              disabled={busy || !completedDirty}
+              onClick={() => void save()}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              title="Discard unsaved completed edits"
+              aria-label="Cancel completed edits"
+              disabled={busy || !completedDirty}
+              onClick={() => void load()}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              title="Export completed lines"
+              aria-label="Export"
+              disabled={busy || exportLoading || completedVisible.length === 0}
+              onClick={() => void requestCompletedExport()}
+            >
+              {exportLoading ? "Export…" : "Export"}
+            </button>
+          </h3>
+          {bulkEligible.length > 0 ? (
+            <div className="external-bulk-bucket" aria-label="Bulk set bucket">
+              <span className="external-bulk-count">{bulkSelectedVisible.length} selected</span>
+              <button
+                type="button"
+                title="Dated lines in selected years"
+                aria-label="Select visible dated completed"
+                disabled={busy || bulkEligible.length === 0}
+                onClick={selectVisibleBulk}
+              >
+                Select visible
+              </button>
+              <button
+                type="button"
+                title="Clear bulk selection"
+                aria-label="Clear bulk selection"
+                disabled={busy || bulkIds.length === 0}
+                onClick={clearBulk}
+              >
+                Clear
+              </button>
+              <BucketSelect
+                ariaLabel="Bulk bucket"
+                options={catalogBuckets}
+                value={bulkBucket}
+                onChange={setBulkBucket}
+              />
+              <button
+                type="button"
+                title="Dated lines in selected years"
+                aria-label="Set bucket"
+                disabled={
+                  busy ||
+                  bulkSelectedVisible.length === 0 ||
+                  !knownBuckets.has(bulkBucket.trim())
+                }
+                onClick={openBulkConfirm}
+              >
+                Set bucket…
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <div data-part="external-bucket-ring">
+          <BucketYearRing lines={(body?.lines ?? []).filter((line) => isComplete(line))} />
+        </div>
+      </div>
+      <div
+        className="table-wrap external-register-wrap external-completed-wrap"
+        data-part="external-completed-charges"
+      >
         <table aria-label="Completed external charges">
           <thead>
             <tr>
+              <th className="external-bulk-check-col">
+                <input
+                  type="checkbox"
+                  aria-label="Select all dated visible completed"
+                  checked={allBulkSelected}
+                  disabled={bulkEligible.length === 0 || busy}
+                  onChange={() => {
+                    if (allBulkSelected) clearBulk();
+                    else selectVisibleBulk();
+                  }}
+                />
+              </th>
               {(
                 [
                   ["Pay type", "payType", "Filter pay type"],
                   ["Date", "occurredOn", "Filter date"],
                   ["Total spent", "amount", "Filter total spent"],
                   ["Category", "category", "Filter category"],
+                  ["Bucket", "bucket", "Filter bucket"],
+                  ["Loan Name", "loanName", "Filter loan name"],
                   ["Vendor", "vendor", "Filter vendor"],
                   ["Description", "description", "Filter description"],
                   ["Completed", "trueUpOn", "Filter completed date"],
@@ -1333,6 +1751,7 @@ export function ExternalRegister({
                     onChange={(event) => setFilter(key, event.target.value)}
                   >
                     <option value="">All</option>
+                    <option value={COLUMN_FILTER_BLANK}>Blank</option>
                     {choiceLists[key].map((value) => (
                       <option key={value} value={value}>
                         {value}
@@ -1345,14 +1764,99 @@ export function ExternalRegister({
           </thead>
           <tbody>
             {completedVisible.map((line) => {
-              const view = viewOf(line);
+              const draft = drafts[line.lineId];
+              const view = draft ?? line;
+              const editing = editingId === line.lineId;
+              const eligible = isBulkEligibleLine(line);
+              const selected = bulkIds.includes(line.lineId);
               return (
-                <tr key={line.lineId} className="is-complete">
+                <tr
+                  key={line.lineId}
+                  className="is-complete"
+                  ref={editing ? editRowRef : undefined}
+                  onClick={() => startEdit(line)}
+                  onBlur={(event) => {
+                    if (!editing) return;
+                    const next = event.relatedTarget;
+                    if (next instanceof Node && editRowRef.current?.contains(next)) return;
+                    if (next == null) return;
+                    setEditingId(null);
+                  }}
+                >
+                  <td
+                    className="external-bulk-check-col"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {eligible ? (
+                      <input
+                        type="checkbox"
+                        aria-label={`Select completed ${line.lineId}`}
+                        checked={selected}
+                        disabled={busy}
+                        onChange={() => toggleBulkId(line.lineId)}
+                      />
+                    ) : null}
+                  </td>
                   <td>{view.payType}</td>
                   <td>{view.occurredOn ?? ""}</td>
-                  <td className="numeric">{amountText(view.amountMinor, view.scale)}</td>
-                  <td>{view.category}</td>
-                  <td>{view.vendor}</td>
+                  {editing && draft ? (
+                    <>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <input
+                          aria-label={`Completed total spent ${line.lineId}`}
+                          value={amountInputs[line.lineId] ?? amountText(draft.amountMinor, draft.scale)}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => {
+                            const text = event.target.value;
+                            setAmountInputs((current) => ({ ...current, [line.lineId]: text }));
+                            const amountMinor = parseAmount(text);
+                            if (amountMinor == null) return;
+                            patchDraft(line.lineId, { amountMinor });
+                          }}
+                        />
+                      </td>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <SuggestInput
+                          ariaLabel={`Completed category ${line.lineId}`}
+                          options={suggestions.category}
+                          value={draft.category}
+                          onChange={(category) => patchDraft(line.lineId, { category })}
+                        />
+                      </td>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <BucketSelect
+                          ariaLabel={`Completed bucket ${line.lineId}`}
+                          options={catalogBuckets}
+                          value={draft.bucket ?? ""}
+                          onChange={(bucket) => patchDraft(line.lineId, { bucket })}
+                        />
+                      </td>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <SuggestInput
+                          ariaLabel={`Completed loan name ${line.lineId}`}
+                          options={suggestions.loanName}
+                          value={draft.loanName ?? ""}
+                          onChange={(loanName) => patchDraft(line.lineId, { loanName })}
+                        />
+                      </td>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <SuggestInput
+                          ariaLabel={`Completed vendor ${line.lineId}`}
+                          options={suggestions.vendor}
+                          value={draft.vendor}
+                          onChange={(vendor) => patchDraft(line.lineId, { vendor })}
+                        />
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="numeric">{amountText(view.amountMinor, view.scale)}</td>
+                      <td>{view.category}</td>
+                      <td>{view.bucket ?? ""}</td>
+                      <td>{view.loanName ?? ""}</td>
+                      <td>{view.vendor}</td>
+                    </>
+                  )}
                   <td>{view.description}</td>
                   <td className="external-green-date">{completedDateOf(view)}</td>
                 </tr>
@@ -1361,6 +1865,55 @@ export function ExternalRegister({
           </tbody>
         </table>
       </div>
+      {bulkConfirm ? (
+        <div
+          className="home-av-dialog-backdrop"
+          onClick={() => setBulkConfirm(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm bulk set bucket"
+            data-part="external-set-bucket"
+            className="home-av-dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <h3>Set bucket</h3>
+              <button
+                type="button"
+                aria-label="Cancel bulk set bucket"
+                onClick={() => setBulkConfirm(false)}
+              >
+                Cancel
+              </button>
+            </header>
+            <p>
+              Set bucket {bulkBucket.trim()} on {bulkSelectedVisible.length} dated
+              completed charges?
+            </p>
+            <div className="income-export-preview-actions">
+              <button
+                type="button"
+                aria-label="Confirm bulk set bucket"
+                className="is-unsaved"
+                disabled={busy}
+                onClick={() => void applyBulkBucket()}
+              >
+                Confirm
+              </button>
+              <button
+                type="button"
+                aria-label="Cancel bulk set bucket"
+                disabled={busy}
+                onClick={() => setBulkConfirm(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {exportPreview ? (
         <div
           className="home-av-dialog-backdrop"
@@ -1370,6 +1923,7 @@ export function ExternalRegister({
             role="dialog"
             aria-modal="true"
             aria-label="CCT Completed export preview"
+            data-part="external-export-preview"
             className="home-av-dialog income-export-preview-dialog"
             onClick={(event) => event.stopPropagation()}
           >

@@ -80,6 +80,8 @@ export function IncomePlanScreen({
   return (
     <section
       className="income-plan-page"
+      id="income-plan-page"
+      data-section="income-plan-controls"
       aria-label="Income Plan"
       aria-busy={incomeWeekLoading}
     >
@@ -93,7 +95,12 @@ export function IncomePlanScreen({
             Loading the week…
           </p>
         ) : null}
-        <div className="income-plan-report-tabs" role="tablist" aria-label="Report type">
+        <div
+          className="income-plan-report-tabs"
+          role="tablist"
+          aria-label="Report type"
+          data-part="income-report-tabs"
+        >
           <button
             type="button"
             role="tab"
@@ -207,7 +214,7 @@ export function IncomePlanScreen({
             ];
             return (
               <>
-                <div className="income-week-bar">
+                <div className="income-week-bar" data-part="income-week-picker">
                   <label className="income-week-label">
                     Week
                     <select
@@ -275,7 +282,7 @@ export function IncomePlanScreen({
                   >
                     Back to Weekly grid
                   </button>
-                  <div className="income-print-export">
+                  <div className="income-print-export" data-part="income-export">
                     <button
                       type="button"
                       aria-label="Export"
@@ -294,30 +301,40 @@ export function IncomePlanScreen({
                     <span className="this-week-mark"> · this week</span>
                   ) : null}
                 </p>
-                <AccountTickPicker
-                  legend="Accounts"
-                  allLabel="All"
-                  mode="anyCombination"
-                  accounts={chips}
-                  allAccounts={INCOME_PLAN_DEFAULT_ACCOUNTS}
-                  selected={drillAccounts}
-                  onSelected={setDrillAccounts}
-                />
+                <div data-part="income-account-picker">
+                  <AccountTickPicker
+                    legend="Accounts"
+                    allLabel="All"
+                    mode="anyCombination"
+                    accounts={chips}
+                    allAccounts={INCOME_PLAN_DEFAULT_ACCOUNTS}
+                    selected={drillAccounts}
+                    onSelected={setDrillAccounts}
+                  />
+                </div>
               </>
             );
           })()}
-          <IncomePlanWeekPanel
-            week={incomeWeek}
-            selectedAccounts={drillAccounts}
-            onOpenSymbol={(symbol) => openPositionHub(symbol, "income")}
-          />
+          <div id="income-week-grid" data-section="income-week-grid" data-part="income-week-grid">
+            <IncomePlanWeekPanel
+              week={incomeWeek}
+              selectedAccounts={drillAccounts}
+              onOpenSymbol={(symbol) => openPositionHub(symbol, "income")}
+            />
+          </div>
         </>
       )}
-      <DividendWeeksPanel
-        perf={dividendPerf}
-        range={perfRange}
-        onRangeChange={onPerfRangeChange}
-      />
+      <div
+        id="income-dividend-weeks"
+        data-section="income-dividend-weeks"
+        data-part="plan-vs-decl"
+      >
+        <DividendWeeksPanel
+          perf={dividendPerf}
+          range={perfRange}
+          onRangeChange={onPerfRangeChange}
+        />
+      </div>
     </section>
   );
 }

@@ -491,7 +491,7 @@ async fn declaration_history_grid_filters_by_cadence_and_friday_columns() {
 }
 
 #[tokio::test]
-async fn calculator_lists_div1_and_cash_only_keeps_removed_plans() {
+async fn calculator_lists_div1_only_keeps_removed_plans() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data"))
         .await
@@ -1366,6 +1366,16 @@ async fn short_period_keeps_the_last_six_stored_pays() {
         vec![700, 600, 500, 400, 300, 200],
         "Avg 6 reads the last six stored pays, not the Period columns"
     );
+    // Pays are scale 2 cents: 7.00 … 2.00 → mean of six = 4.50 → 450000 @ scale 5
+    assert_eq!(row["avg6Minor"], 450_000);
+    assert_eq!(row["avg6Scale"], 5);
+    assert_eq!(row["avg6Count"], 6);
+    assert_eq!(row["avg6Complete"], true);
+    // Mean of three newest (7+6+5)/3 = 6.00 → 600000 @ scale 5
+    assert_eq!(row["avg3Minor"], 600_000);
+    assert_eq!(row["avg3Scale"], 5);
+    assert_eq!(row["avg3Count"], 3);
+    assert_eq!(row["avg3Complete"], true);
     let ui = std::fs::read_to_string(
         golden_harness::repo_root().join("packages/ui-components/src/index.tsx"),
     )
@@ -1377,8 +1387,10 @@ async fn short_period_keeps_the_last_six_stored_pays() {
         .split("function MonthPerThousandChart")
         .next()
         .unwrap();
-    assert!(sheet.contains("avg6Label(row.recentPays)"));
-    assert!(sheet.contains("meanNewestPays(pays, 3)"));
+    assert!(sheet.contains("avg3Display(row)"));
+    assert!(sheet.contains("avg6Display(row)"));
+    assert!(!sheet.contains("meanNewestPays("));
+    assert!(!sheet.contains("avg6Label("));
     assert!(sheet.contains("newestStoredPay(row.recentPays)"));
     assert!(
         sheet.contains("dividendScore(master, row.cells, undefined, row.inForcePays).threeYield"),
@@ -1389,8 +1401,10 @@ async fn short_period_keeps_the_last_six_stored_pays() {
         "3-pay yield does not walk the older end of the week grid"
     );
     assert!(
-        ui.contains("export function avg6Label"),
-        "Avg 6 shows the mean of up to six pays and the count"
+        ui.contains("export function avg6Display")
+            && ui.contains("formatPerShare(row.avg6Minor")
+            && ui.contains("formatPerShare(row.avg3Minor"),
+        "Avg 3/6 display uses DeclarationHistory scale-5 fields"
     );
     assert!(sheet.contains("planCheck(\n                inForce,"));
     assert!(sheet.contains("paidInViewCents(row.cells)"));
@@ -1419,8 +1433,12 @@ async fn short_period_keeps_the_last_six_stored_pays() {
         "Calculator blend stays Gain% × 2 plus plan FWD, divided by 2"
     );
     assert!(
-        financial_domain::collector::calculator_view_includes("CASH", "SPAXX", "Monthly"),
-        "a cash row stays on the calculator as a balance and a yield"
+        !financial_domain::collector::calculator_view_includes("CASH", "SPAXX", "Monthly"),
+        "cash stays off the Calculator"
+    );
+    assert!(
+        financial_domain::collector::calculator_view_includes("DIV-1", "AMDW", "Weekly"),
+        "DIV-1 stays on the Calculator"
     );
     let check = ui
         .split("export function planCheck(")
@@ -1605,10 +1623,14 @@ fn field_intent_stores_the_calculator_column_contract() {
         let slice = &columns[at..columns.len().min(at + 280)];
         assert!(
             slice.contains("status: \"still wrong\""),
-            "{name} stays still wrong (parked TVAL / unproven CASH-vs-DIV-1): {slice}"
+            "{name} stays still wrong (parked TVAL / Type): {slice}"
         );
     }
     assert_eq!(still_wrong, 4, "only Type and the TVAL family are still wrong");
+    assert!(
+        columns.contains("kind: \"cash\"") && columns.contains("kind: \"percent\""),
+        "field-intent names cash and percent kinds for Excel"
+    );
     let contract_fields = std::fs::read_to_string(
         root.join("apps/desktop/src/features/field-intent/contractFields.ts"),
     )
@@ -1627,9 +1649,9 @@ fn field_intent_stores_the_calculator_column_contract() {
     assert!(!week.contains("Duration::days(60)"));
 }
 
-/// Cash is one calculator row. Dividend columns are N/A, week cells stay blank, and the performance views skip it.
+/// Cash stays on Position Master (balance + yield) but off the Calculator sheet.
 #[tokio::test]
-async fn cash_calculator_row_is_a_balance_and_a_yield() {
+async fn cash_stays_off_the_calculator() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data"))
         .await
@@ -1759,6 +1781,16 @@ async fn cash_calculator_row_is_a_balance_and_a_yield() {
     assert_eq!(amdw["cashPar"], false);
     assert!(amdw["cashAnnualYieldBps"].is_null());
 
+    let calc = query_json(&platform, "CalculatorGet", serde_json::json!({})).await;
+    assert!(
+        calc["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["symbol"] != "SPAXX"),
+        "SPAXX stays off CalculatorGet: {calc}"
+    );
+
     let history = query_json(
         &platform,
         "DeclarationHistoryGet",
@@ -1770,21 +1802,14 @@ async fn cash_calculator_row_is_a_balance_and_a_yield() {
         }),
     )
     .await;
-    let cash_row = history["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["symbol"] == "SPAXX")
-        .expect("a cash row stays on the calculator");
-    let filled: Vec<_> = cash_row["cells"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|cell| !cell["amountPerShareMinor"].is_null())
-        .collect();
-    assert!(filled.is_empty(), "cash week cells stay blank: {cash_row}");
-    assert!(cash_row["recentPays"].as_array().unwrap().is_empty());
-    assert!(cash_row["inForcePays"].as_array().unwrap().is_empty());
+    assert!(
+        history["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["symbol"] != "SPAXX"),
+        "SPAXX stays off the Calculator sheet: {history}"
+    );
     let div_row = history["rows"]
         .as_array()
         .unwrap()
@@ -1811,22 +1836,18 @@ async fn cash_calculator_row_is_a_balance_and_a_yield() {
         .split("function MonthPerThousandChart")
         .next()
         .unwrap();
-    assert!(sheet.contains("Cash rate"));
-    assert!(sheet.contains("cashAnnualInterestCents("));
-    assert!(sheet.contains("aria-label={cash ? `${row.symbol} balance` : undefined}"));
-    assert!(sheet.contains("{cash ? \"N/A\" : check.text}"));
-    assert!(sheet.contains("!cash && check.atOrAbove"));
-    assert!(sheet.contains("cash || cell.amountPerShareMinor == null"));
-    assert!(sheet.contains("Dividend columns on that row are N/A"));
-    let filter = ui
-        .split("export function matchesCalculatorPerformanceView(")
+    assert!(!sheet.contains("Cash rate"));
+    assert!(!sheet.contains("Dividend columns on that row are N/A"));
+    assert!(sheet.contains("Only DIV-1 positions appear here"));
+    let eligible = ui
+        .split("function calculatorEligibleMaster")
         .nth(1)
         .unwrap()
-        .split("function calculatorEligibleMaster")
+        .split("export function DeclarationHistoryPanel")
         .next()
         .unwrap();
-    assert!(filter.contains("master?.cashPar"));
-    assert!(filter.contains("cadence === \"all\" && performance === \"all\""));
+    assert!(eligible.contains("DIV-1"));
+    assert!(!eligible.contains("CASH"));
     assert!(ui.contains("calculatorHouseholdExCashCents"));
     let parser = std::fs::read_to_string(
         golden_harness::repo_root().join("crates/import-engine/src/retrieve/adapters/moneymarket.rs"),
@@ -1845,4 +1866,216 @@ async fn cash_calculator_row_is_a_balance_and_a_yield() {
         .next()
         .unwrap();
     assert!(!followup.contains("dividend_actual_record"));
+}
+
+/// Typed Calculator Excel: cash + percent number formats, blank not $0, SPAXX off the sheet.
+#[tokio::test]
+async fn calculator_export_uses_excel_cash_and_percent_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let (div_id, _) = open_named(&platform, "AMDW", "Weekly").await;
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": div_id,
+            "amountPerShareMinor": 50,
+            "amountScale": 2,
+            "paymentPeriod": "2026-09-04",
+            "source": "import",
+            "enteredAt": "2026-09-04"
+        }),
+    )
+    .await;
+
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income-SPAXX", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "SPAXX", "name": "SPAXX"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": "SPAXX",
+            "declarationSource": "fidelity",
+            "sourceUrl": "https://fundresearch.fidelity.com/mutual-funds/performance-and-risk/31617H102",
+            "calendarPolicy": "issuer_calendar",
+            "collectorEnabled": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "replaceCadence": true,
+            "divType": "CASH",
+            "provider": "Fidelity",
+            "isActive": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-01-15",
+            "quantityMinor": 10000,
+            "quantityScale": 0,
+            "performanceCostMinor": 1000000,
+            "taxCostMinor": 1000000,
+            "scale": 2
+        }),
+    )
+    .await;
+
+    let exp = query_json(
+        &platform,
+        "ComponentExportGet",
+        serde_json::json!({
+            "moduleId": "calculator",
+            "partId": "calculator-sheet",
+            "asOfDate": "2026-10-05"
+        }),
+    )
+    .await;
+    assert_eq!(exp["defaultFileName"], "calculator-calculator-sheet.xlsx");
+    let bytes = b64_decode(exp["bytesBase64"].as_str().unwrap());
+    assert!(bytes.starts_with(b"PK"), "xlsx is a zip");
+    let unzipped = xlsx_text_parts(&bytes);
+    assert!(
+        unzipped.contains("$#,##0.00") && unzipped.contains("0.00%"),
+        "workbook embeds Excel cash and percent formats"
+    );
+    assert!(
+        unzipped.contains("AMDW") && !unzipped.contains("SPAXX"),
+        "DIV-1 row is present; cash SPAXX is not a Calculator export row"
+    );
+    assert!(
+        !unzipped.contains(">32.00<") && !unzipped.contains("\"32.00\""),
+        "Price/Plan stay numbers, not money strings"
+    );
+    assert!(
+        unzipped.contains("<v>") && !unzipped.contains("<v>unknown</v>"),
+        "typed cells write numbers; blank Plan is an empty cell, not the word unknown"
+    );
+
+    let core = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/component_export.rs"),
+    )
+    .unwrap();
+    assert!(
+        core.contains("calculator_typed_sheet")
+            && core.contains("Cell::Money")
+            && core.contains("Cell::Percent")
+            && core.contains("Cell::Blank")
+            && core.contains("write_number_with_format")
+            && core.contains("$#,##0.00")
+            && core.contains("0.00%"),
+        "one typed Calculator arm writes cash/percent cells"
+    );
+    let typed = core
+        .split("async fn calculator_typed_sheet(")
+        .nth(1)
+        .unwrap()
+        .split("async fn trends_sheet(")
+        .next()
+        .unwrap();
+    assert!(
+        !typed.contains("money_text("),
+        "typed Calculator path must not stringify money"
+    );
+
+    let save = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/shared/saveWorkbook.ts"),
+    )
+    .unwrap();
+    assert!(
+        save.contains("saveComponentWorkbook")
+            && save.contains("ComponentExportGet")
+            && save.contains("savePageWorkbook")
+            && save.contains("ComponentPageExportGet"),
+        "Calculator and Components share one download helper"
+    );
+    let app = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/App.tsx"),
+    )
+    .unwrap();
+    assert!(
+        app.contains("saveComponentWorkbook")
+            && app.contains("partId: \"calculator-sheet\""),
+        "Calculator screen calls the shared ComponentExportGet arm"
+    );
+    let registry = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/components/ComponentRegistry.tsx"),
+    )
+    .unwrap();
+    assert!(
+        registry.contains("savePageWorkbook"),
+        "Components page Excel uses the same helper"
+    );
+}
+
+fn b64_decode(s: &str) -> Vec<u8> {
+    fn val(c: u8) -> u8 {
+        match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => 0,
+        }
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        let (a, b, c, d) = (val(bytes[i]), val(bytes[i + 1]), val(bytes[i + 2]), val(bytes[i + 3]));
+        out.push((a << 2) | (b >> 4));
+        if bytes[i + 2] != b'=' {
+            out.push((b << 4) | (c >> 2));
+        }
+        if bytes[i + 3] != b'=' {
+            out.push((c << 6) | d);
+        }
+        i += 4;
+    }
+    out
+}
+
+fn xlsx_text_parts(bytes: &[u8]) -> String {
+    use std::io::{Cursor, Read};
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("xlsx zip");
+    let mut out = String::new();
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).unwrap();
+        let name = file.name().to_string();
+        if !(name.ends_with(".xml") || name.ends_with(".rels")) {
+            continue;
+        }
+        let mut body = String::new();
+        file.read_to_string(&mut body).unwrap();
+        out.push_str(&body);
+        out.push('\n');
+    }
+    out
 }

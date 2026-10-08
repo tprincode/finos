@@ -151,7 +151,12 @@ export function ImportWizard() {
       ) : null}
 
       {step === "imported" ? (
-        <section aria-label="Import step">
+        <section
+          aria-label="Import step"
+          id="import-step"
+          data-section="import-step"
+          data-part="import-step"
+        >
           <h2>1. Import</h2>
           <p>
             {batch
@@ -176,7 +181,12 @@ export function ImportWizard() {
       ) : null}
 
       {step === "validate" ? (
-        <section aria-label="Validate step">
+        <section
+          aria-label="Validate step"
+          id="validate-step"
+          data-section="validate-step"
+          data-part="validate-step"
+        >
           <h2>2. Validate</h2>
           <p>
             {filename}: {counts.ready} ready, {counts.duplicate} already in Finos,{" "}
@@ -238,7 +248,12 @@ export function ImportWizard() {
       ) : null}
 
       {step === "result" ? (
-        <section aria-label="Import result">
+        <section
+          aria-label="Import result"
+          id="loaded-step"
+          data-section="loaded-step"
+          data-part="loaded-step"
+        >
           <h2>Loaded</h2>
           <p role="status">{resultSummary}</p>
           {resultLines.length > 0 ? (

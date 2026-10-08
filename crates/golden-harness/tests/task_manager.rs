@@ -113,7 +113,8 @@ fn tools_menu_opens_task_manager() {
             && screen.contains("Snoozed")
             && screen.contains("Done (this week)")
             && screen.contains("aria-label=\"Add task\"")
-            && screen.contains("<h3>Add/View Task</h3>")
+            // The heading carries the nav anchor now, so match its text, not the bare tag.
+            && screen.contains(">Add/View Task</h3>")
             && screen.contains("ReminderTable")
             && screen.contains("taskReminderRows")
             && screen.contains("taskRuleText")

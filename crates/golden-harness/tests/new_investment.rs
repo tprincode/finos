@@ -3539,7 +3539,7 @@ async fn blank_characteristic_upsert_keeps_stored_tier() {
 }
 
 #[tokio::test]
-async fn paying_non_div1_with_a_plan_is_on_the_calculator() {
+async fn paying_non_div1_with_a_plan_stays_off_the_calculator() {
     let dir = tempfile::tempdir().unwrap();
     let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
     let (_account_id, security_id) = seed_identity(&platform, "EQTY1").await;
@@ -3574,13 +3574,13 @@ async fn paying_non_div1_with_a_plan_is_on_the_calculator() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|row| row["symbol"] == "EQTY1"),
-        "a paying Plan is a Calculator row even when the type is not DIV-1"
+            .all(|row| row["symbol"] != "EQTY1"),
+        "non DIV-1 stays off the Calculator"
     );
     assert_eq!(
         calc["planCount"].as_u64(),
         Some(0),
-        "home plan count stays DIV-1 and CASH"
+        "home plan count is DIV-1 only"
     );
     let hist = query_json(
         &platform,
@@ -3593,7 +3593,7 @@ async fn paying_non_div1_with_a_plan_is_on_the_calculator() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|row| row["symbol"] == "EQTY1"),
+            .all(|row| row["symbol"] != "EQTY1"),
         "declaration history uses the same listing rule"
     );
 }

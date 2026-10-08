@@ -1289,6 +1289,54 @@ fn weekly_grid_week_window_applies_on_select() {
 }
 
 #[test]
+fn week_plan_and_declared_kpis_stay_unknown_until_every_payer_is_known() {
+    let helper = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/ui-components/src/incomeWeekKpi.ts"),
+    )
+    .expect("incomeWeekKpi.ts");
+    assert!(
+        helper.contains("export function weekPlanKpi")
+            && helper.contains("export function weekDeclaredKpi")
+            && helper.contains("!row.planKnown")
+            && helper.contains("!row.declarationKnown")
+            && helper.contains("complete = missingSymbols.length === 0"),
+        "helpers must gate on known flags, not coerce unknown to $0"
+    );
+    let ui = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/ui-components/src/index.tsx"),
+    )
+    .expect("ui-components");
+    assert!(
+        ui.contains("weekPlanKpi(weekPayers)")
+            && ui.contains("weekDeclaredKpi(weekPayers)")
+            && ui.contains("kpiMoney(planKpi")
+            && ui.contains("kpiMoney(declKpi")
+            && ui.contains("kpi.complete ? formatUsdWhole(kpi.minor, scale) : \"—\""),
+        "Week plan / Week declared must show — until every non-cash payer is known"
+    );
+    assert!(
+        ui.contains("Week plan unknown; missing")
+            && ui.contains("Week declared unknown; missing")
+            && ui.contains("Missing: ${missing.join"),
+        "incomplete KPIs must list missing symbols"
+    );
+    assert!(
+        !ui.contains("planOf(r) > 0")
+            && ui.contains("weekPayers.filter((r) => r.planKnown)")
+            && ui.contains("weekPayers\n    .filter((r) => !r.declarationKnown)"),
+        "missing-declaration ticket must include no-plan payers, not only planOf > 0"
+    );
+    assert!(
+        ui.contains("Missing declaration (incl. no plan):"),
+        "exceptions line must call out no-plan names"
+    );
+    assert!(
+        ui.contains("weekPlanKpi(gPayers)") && ui.contains("weekDeclaredKpi(gPayers)"),
+        "cadence group Plan$/Decl$ use the same unknown gate"
+    );
+}
+
+#[test]
 fn weekly_report_by_position_keeps_decl_per_share_column() {
     let ui = std::fs::read_to_string(
         golden_harness::repo_root().join("packages/ui-components/src/index.tsx"),

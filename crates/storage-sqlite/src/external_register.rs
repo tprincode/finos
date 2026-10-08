@@ -5,8 +5,8 @@ use std::path::Path;
 
 use application_core::contracts::{ExternalRegisterGetBody, ExternalRegisterLine};
 use application_core::external_register::{
-    amount_to_minor, fixed_occurred_on, line_matches, normalize_category, normalize_pay_type,
-    normalize_vendor,
+    amount_to_minor, bucket_allowed, fixed_occurred_on, is_medical_mom_alias, line_matches,
+    normalize_category, normalize_pay_type, normalize_vendor, project_category_bucket,
 };
 use application_core::ports::platform::PlatformError;
 use calamine::{open_workbook, Data, Reader, Xlsx};
@@ -35,6 +35,11 @@ fn row_to_line(row: &sqlx::sqlite::SqliteRow) -> Result<ExternalRegisterLine, Pl
     let line_id = Uuid::parse_str(&line_id)
         .map_err(|_| PlatformError::new("bad_line_id", "stored register line id is not a uuid"))?;
     let scale: i64 = row.try_get("scale").map_err(map_sql)?;
+    let stored_category: String = row.try_get("category").map_err(map_sql)?;
+    let stored_bucket: String = row.try_get("bucket").map_err(map_sql)?;
+    let loan_name: String = row.try_get("loan_name").unwrap_or_default();
+    // Project Medical-mom → Medical + Medical on read only; do not UPDATE history here.
+    let (category, bucket) = project_category_bucket(&stored_category, &stored_bucket);
     Ok(ExternalRegisterLine {
         line_id,
         source_row: row.try_get("source_row").map_err(map_sql)?,
@@ -42,7 +47,9 @@ fn row_to_line(row: &sqlx::sqlite::SqliteRow) -> Result<ExternalRegisterLine, Pl
         occurred_on: row.try_get("occurred_on").map_err(map_sql)?,
         amount_minor: row.try_get("amount_minor").map_err(map_sql)?,
         scale: scale as u8,
-        category: row.try_get("category").map_err(map_sql)?,
+        category,
+        bucket,
+        loan_name,
         vendor: row.try_get("vendor").map_err(map_sql)?,
         description: row.try_get("description").map_err(map_sql)?,
         true_up_on: row.try_get("true_up_on").map_err(map_sql)?,
@@ -63,7 +70,7 @@ fn row_to_line(row: &sqlx::sqlite::SqliteRow) -> Result<ExternalRegisterLine, Pl
 async fn load_all(pool: &SqlitePool) -> Result<Vec<ExternalRegisterLine>, PlatformError> {
     let rows = sqlx::query(
         "SELECT line_id, source_row, pay_type, occurred_on, amount_minor, scale,
-                category, vendor, description, true_up_on, completed,
+                category, bucket, loan_name, vendor, description, true_up_on, completed,
                 step_transfer, step_billpay, step_billpay_deposit, step_pay, step_withdrawal,
                 step_transfer_on, step_billpay_on, step_billpay_deposit_on, step_pay_on,
                 step_withdrawal_on
@@ -78,13 +85,53 @@ async fn load_all(pool: &SqlitePool) -> Result<Vec<ExternalRegisterLine>, Platfo
     rows.iter().map(row_to_line).collect()
 }
 
+/// Raw rows for rewrite_names — no Medical-mom projection (must not persist the split).
+async fn load_raw_for_rewrite(pool: &SqlitePool) -> Result<Vec<(String, String, String, String)>, PlatformError> {
+    let rows = sqlx::query(
+        "SELECT line_id, pay_type, category, vendor FROM external_register_line",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(map_sql)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push((
+            row.try_get::<String, _>("line_id").map_err(map_sql)?,
+            row.try_get::<String, _>("pay_type").map_err(map_sql)?,
+            row.try_get::<String, _>("category").map_err(map_sql)?,
+            row.try_get::<String, _>("vendor").map_err(map_sql)?,
+        ));
+    }
+    Ok(out)
+}
+
 async fn rewrite_names(pool: &SqlitePool) -> Result<(), PlatformError> {
-    let all = load_all(pool).await?;
-    for line in all {
-        let pay_type = normalize_pay_type(&line.pay_type);
-        let category = normalize_category(&line.category);
-        let vendor = normalize_vendor(&line.vendor);
-        if pay_type == line.pay_type && category == line.category && vendor == line.vendor {
+    let all = load_raw_for_rewrite(pool).await?;
+    for (line_id, pay_type_raw, category_raw, vendor_raw) in all {
+        // Never persist Medical-mom → Medical+Medical here; owner edit saves the split.
+        if is_medical_mom_alias(&category_raw) {
+            let pay_type = normalize_pay_type(&pay_type_raw);
+            let vendor = normalize_vendor(&vendor_raw);
+            if pay_type == pay_type_raw && vendor == vendor_raw {
+                continue;
+            }
+            sqlx::query(
+                "UPDATE external_register_line
+                 SET pay_type = ?1, vendor = ?2
+                 WHERE line_id = ?3",
+            )
+            .bind(&pay_type)
+            .bind(&vendor)
+            .bind(&line_id)
+            .execute(pool)
+            .await
+            .map_err(map_sql)?;
+            continue;
+        }
+        let pay_type = normalize_pay_type(&pay_type_raw);
+        let category = normalize_category(&category_raw);
+        let vendor = normalize_vendor(&vendor_raw);
+        if pay_type == pay_type_raw && category == category_raw && vendor == vendor_raw {
             continue;
         }
         sqlx::query(
@@ -95,7 +142,7 @@ async fn rewrite_names(pool: &SqlitePool) -> Result<(), PlatformError> {
         .bind(&pay_type)
         .bind(&category)
         .bind(&vendor)
-        .bind(line.line_id.to_string())
+        .bind(&line_id)
         .execute(pool)
         .await
         .map_err(map_sql)?;
@@ -151,26 +198,67 @@ pub async fn get(
         .filter(|line| line_matches(line, &query))
         .cloned()
         .collect::<Vec<_>>();
+    let buckets = crate::external_bucket::list_names(pool).await?;
+    let loan_name_rows = sqlx::query(
+        "SELECT name, register_key FROM external_managed_account WHERE kind = 'debt'",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(map_sql)?;
+    let mut loan_name_values = Vec::new();
+    for row in loan_name_rows {
+        let name: String = row.try_get("name").map_err(map_sql)?;
+        let key: String = row.try_get("register_key").map_err(map_sql)?;
+        if !key.trim().is_empty() {
+            loan_name_values.push(key);
+        } else if !name.trim().is_empty() {
+            loan_name_values.push(name);
+        }
+    }
+    for line in &all {
+        if !line.loan_name.trim().is_empty() {
+            loan_name_values.push(line.loan_name.clone());
+        }
+    }
     Ok(ExternalRegisterGetBody {
         pay_types: distinct(all.iter().map(|line| line.pay_type.clone())),
         categories: distinct(all.iter().map(|line| line.category.clone())),
+        buckets,
+        loan_names: distinct(loan_name_values.into_iter()),
         vendors: distinct(all.iter().map(|line| line.vendor.clone())),
         total_count: all.len() as u64,
         lines,
     })
 }
 
+async fn ensure_buckets_in_catalog(
+    pool: &SqlitePool,
+    lines: &[ExternalRegisterLine],
+) -> Result<(), PlatformError> {
+    let catalog = crate::external_bucket::list_names(pool).await?;
+    for line in lines {
+        if !bucket_allowed(&line.bucket, &catalog) {
+            return Err(PlatformError::new(
+                "bad_bucket",
+                "Bucket must be a defined catalog name or blank",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub async fn save(
     pool: &SqlitePool,
     lines: Vec<ExternalRegisterLine>,
 ) -> Result<ExternalRegisterGetBody, PlatformError> {
+    ensure_buckets_in_catalog(pool, &lines).await?;
     let mut tx = pool.begin().await.map_err(map_sql)?;
     for line in lines {
         sqlx::query(
             "INSERT INTO external_register_line (
                 line_id, source_row, pay_type, occurred_on, amount_minor, scale,
-                category, vendor, description, true_up_on, completed
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                category, bucket, loan_name, vendor, description, true_up_on, completed
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(line_id) DO UPDATE SET
                 source_row = excluded.source_row,
                 pay_type = excluded.pay_type,
@@ -178,6 +266,8 @@ pub async fn save(
                 amount_minor = excluded.amount_minor,
                 scale = excluded.scale,
                 category = excluded.category,
+                bucket = excluded.bucket,
+                loan_name = excluded.loan_name,
                 vendor = excluded.vendor,
                 description = excluded.description,
                 true_up_on = CASE
@@ -198,6 +288,8 @@ pub async fn save(
         .bind(line.amount_minor)
         .bind(i64::from(line.scale))
         .bind(line.category)
+        .bind(line.bucket)
+        .bind(line.loan_name)
         .bind(line.vendor)
         .bind(line.description)
         .bind(line.true_up_on.clone())
@@ -442,7 +534,7 @@ pub async fn import_workbook(
         let source_row = (offset + 2) as i64;
         let cell = |index: usize| row.get(index).unwrap_or(&Data::Empty);
         let pay_type = normalize_pay_type(&cell_text(cell(pay_i)));
-        let category = normalize_category(&cell_text(cell(cat_i)));
+        let (category, bucket) = project_category_bucket(&cell_text(cell(cat_i)), "");
         let vendor = normalize_vendor(&cell_text(cell(vendor_i)));
         let description = cell_text(cell(desc_i));
         let amount = cell_amount(cell(spent_i));
@@ -452,6 +544,7 @@ pub async fn import_workbook(
         let true_up_on = cell_date(cell(true_i));
         if pay_type.is_empty()
             && category.is_empty()
+            && bucket.is_empty()
             && vendor.is_empty()
             && description.is_empty()
             && amount.is_none()
@@ -468,6 +561,8 @@ pub async fn import_workbook(
             amount_minor: amount.map(amount_to_minor).unwrap_or(0),
             scale: 2,
             category,
+            bucket,
+            loan_name: String::new(),
             vendor,
             description,
             true_up_on: true_up_on.clone(),
@@ -494,8 +589,8 @@ pub async fn import_workbook(
         sqlx::query(
             "INSERT INTO external_register_line (
                 line_id, source_row, pay_type, occurred_on, amount_minor, scale,
-                category, vendor, description, true_up_on, completed
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                category, bucket, loan_name, vendor, description, true_up_on, completed
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )
         .bind(line.line_id.to_string())
         .bind(line.source_row)
@@ -504,6 +599,8 @@ pub async fn import_workbook(
         .bind(line.amount_minor)
         .bind(i64::from(line.scale))
         .bind(line.category)
+        .bind(line.bucket)
+        .bind(line.loan_name)
         .bind(line.vendor)
         .bind(line.description)
         .bind(line.true_up_on.clone())
@@ -522,6 +619,7 @@ mod tests {
 
     use application_core::external_register::line_matches;
     use application_core::ports::canonical::Canonical;
+    use uuid::Uuid;
 
     use crate::platform::LocalPlatform;
 
@@ -533,6 +631,45 @@ mod tests {
         );
         let fallback = super::tick_day(Some("nope".into()));
         assert!(chrono::NaiveDate::parse_from_str(&fallback, "%Y-%m-%d").is_ok());
+    }
+
+    #[tokio::test]
+    async fn get_projects_medical_mom_without_rewriting_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+        let line_id = Uuid::new_v4();
+        {
+            let pool = platform.pool.read().await;
+            sqlx::query(
+                "INSERT INTO external_register_line (
+                    line_id, pay_type, occurred_on, amount_minor, scale,
+                    category, bucket, vendor, description, completed
+                 ) VALUES (?1, 'Checking', '2026-10-05', 2500, 2,
+                    'Medical-mom', '', 'CVS', 'visit', 0)",
+            )
+            .bind(line_id.to_string())
+            .execute(&*pool)
+            .await
+            .unwrap();
+        }
+        let body = platform.external_register_get(None).await.unwrap();
+        let line = body
+            .lines
+            .iter()
+            .find(|line| line.line_id == line_id)
+            .expect("projected line");
+        assert_eq!(line.category, "Medical");
+        assert_eq!(line.bucket, "Medical");
+        let pool = platform.pool.read().await;
+        let row = sqlx::query_as::<_, (String, String)>(
+            "SELECT category, bucket FROM external_register_line WHERE line_id = ?1",
+        )
+        .bind(line_id.to_string())
+        .fetch_one(&*pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "Medical-mom");
+        assert_eq!(row.1, "");
     }
 
     #[tokio::test]

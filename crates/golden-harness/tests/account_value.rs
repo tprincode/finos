@@ -504,6 +504,10 @@ fn home_charts_legend_replaces_sentence() {
     assert!(home.contains("<HomeDividendPlan"));
     assert!(home.contains("<AccountCashFlow"));
     assert!(
+        home.contains("data-part=\"account-cash-flow\""),
+        "Home ACFP keeps the registry part so App.css can stretch the chart column"
+    );
+    assert!(
         home.contains("weeks={accountValues?.weeks ?? trends?.weeks}"),
         "Home cash trend uses HomeOpenGet weeks, not a deferred TrendsGet"
     );

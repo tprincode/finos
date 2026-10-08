@@ -89,7 +89,12 @@ export function ContractCreateForm({
   const warnBoth = priorMinor != null && priorMinor !== 0 && premiumMinor != null;
 
   return (
-    <section aria-label="Create contract">
+    <section
+      aria-label="Create contract"
+      id="contract-create"
+      data-section="contract-create"
+      data-part="contract-create"
+    >
       <h3>Create contract</h3>
       <div className="table-wrap">
         <table aria-label="Create contract" className="contract-create">

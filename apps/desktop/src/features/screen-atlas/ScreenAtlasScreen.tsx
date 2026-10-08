@@ -380,7 +380,12 @@ export function ScreenAtlasScreen({
       aria-label={embedded ? "Registry capture" : "Screen Atlas"}
     >
       {embedded ? null : <h3>Capture</h3>}
-      <div className="row screen-atlas-actions">
+      <div
+        className="row screen-atlas-actions"
+        id="atlas-capture"
+        data-section="atlas-capture"
+        data-part="atlas-capture-actions"
+      >
         <button
           type="button"
           disabled={running}
@@ -441,7 +446,11 @@ export function ScreenAtlasScreen({
         </div>
       ) : null}
       {log.length > 0 ? (
-        <pre className="screen-atlas-log" aria-label="Screen atlas log">
+        <pre
+          className="screen-atlas-log"
+          aria-label="Screen atlas log"
+          data-part="atlas-log"
+        >
           {log.join("\n")}
         </pre>
       ) : null}
@@ -454,7 +463,9 @@ export function ScreenAtlasScreen({
           not a CI pixel golden. Regression stays on{" "}
           <code>cargo test -p golden-harness</code>.
         </p>
-        <h3>Viewer{viewDay ? ` — ${viewDay}` : ""}</h3>
+        <h3 id="atlas-viewer" data-section="atlas-viewer">
+          Viewer{viewDay ? ` — ${viewDay}` : ""}
+        </h3>
         <p>
           Click a name to preview one image (loads on demand). Or use{" "}
           <strong>Open folder in Explorer</strong> for the OS photo viewer.
@@ -497,7 +508,12 @@ export function ScreenAtlasScreen({
         </div>
       ) : null}
 
-      <div className="table-wrap">
+      <div
+        className="table-wrap"
+        id="atlas-targets"
+        data-section="atlas-targets"
+        data-part="atlas-targets"
+      >
         <table aria-label="Atlas targets">
           <thead>
             <tr>
@@ -556,7 +572,11 @@ function PngGroups({
       {sections.map((section) => (
         <div key={section.heading}>
           <h4>{section.heading}</h4>
-          <ul className="screen-atlas-file-list" aria-label="Screen atlas PNG list">
+          <ul
+            className="screen-atlas-file-list"
+            aria-label="Screen atlas PNG list"
+            data-part="atlas-file-list"
+          >
             {section.names.map((name) => (
               <li key={name}>
                 <button

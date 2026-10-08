@@ -35,24 +35,26 @@ export type TrendsCashAccountSpec = {
   title: string;
   key: keyof TrendsWeekPoint;
   color: string;
+  /** Catalog component id. A charted row cannot carry a literal `data-part`. */
+  part: string;
 };
 
 const PERIOD_OPTIONS = GRAPH_PERIOD_OPTIONS;
 
 const METRIC_CHARTS: TrendsCashAccountSpec[] = [
-  { title: "All Cash", key: "totalCashMinor", color: "#2a5f8f" },
-  { title: "Monthly Dividends", key: "monthlyDivsMinor", color: "#8a5a12" },
-  { title: "Total Fidelity & Schwab", key: "fidSchCombinedMinor", color: "#5b3d8a" },
+  { title: "All Cash", key: "totalCashMinor", color: "#2a5f8f", part: "all-cash" },
+  { title: "Monthly Dividends", key: "monthlyDivsMinor", color: "#8a5a12", part: "monthly-dividends" },
+  { title: "Total Fidelity & Schwab", key: "fidSchCombinedMinor", color: "#5b3d8a", part: "fidelity-schwab" },
 ];
 
 /** Cash-flow account list. The Trends Accounts grid charts market value, not these keys. */
 export const TRENDS_CASH_ACCOUNT_CHARTS: TrendsCashAccountSpec[] = [
-  { title: "Income", key: "incomeCashMinor", color: "#4a7a3d" },
-  { title: "FI Roth", key: "rothCashMinor", color: "#8a3d4a" },
-  { title: "Car", key: "carCashMinor", color: "#3d6b8a" },
-  { title: "Health", key: "healthCashMinor", color: "#3d7a6b" },
-  { title: "Speculation", key: "speculationCashMinor", color: "#7a5a3d" },
-  { title: "Account 9", key: "acct9CashMinor", color: "#5b3d8a" },
+  { title: "Income", key: "incomeCashMinor", color: "#4a7a3d", part: "chart-income" },
+  { title: "FI Roth", key: "rothCashMinor", color: "#8a3d4a", part: "chart-fi-roth" },
+  { title: "Car", key: "carCashMinor", color: "#3d6b8a", part: "chart-car" },
+  { title: "Health", key: "healthCashMinor", color: "#3d7a6b", part: "chart-health" },
+  { title: "Speculation", key: "speculationCashMinor", color: "#7a5a3d", part: "chart-speculation" },
+  { title: "Account 9", key: "acct9CashMinor", color: "#5b3d8a", part: "chart-account-9" },
 ];
 
 function latestIso(...days: Array<string | undefined>): string {
@@ -494,8 +496,18 @@ function DividendYearCompareChart({ points }: { points?: TrendIncomePoint[] }) {
     .join(". ");
   return (
     <>
-      <h3 className="trends-account-heading">Dividends paid by month</h3>
-      <div className="trends-chart-card dividend-year-compare" aria-label="Dividends paid by month">
+      <h3
+        className="trends-account-heading"
+        id="trends-dividends-by-month"
+        data-section="trends-dividends-by-month"
+      >
+        Dividends paid by month
+      </h3>
+      <div
+        className="trends-chart-card dividend-year-compare"
+        aria-label="Dividends paid by month"
+        data-part="dividends-paid-by-month"
+      >
         <ReactECharts
           option={dividendYearCompareOption(compare)}
           style={{ height: 300, width: "100%" }}
@@ -591,7 +603,12 @@ export function TrendsChartsPanel({
       : "no weeks in this period";
 
   return (
-    <div className="trends-charts" aria-label="Trends weekly charts">
+    <div
+      className="trends-charts"
+      id="trends-charts"
+      data-section="trends-period"
+      aria-label="Trends weekly charts"
+    >
       {missingRequired &&
       missingRequired.filter((code) => code !== "week_not_saved").length > 0 ? (
         <p className="trends-quality" role="status" aria-label="Trends data quality">
@@ -599,7 +616,7 @@ export function TrendsChartsPanel({
           {missingRequired.filter((code) => code !== "week_not_saved").join(", ")}
         </p>
       ) : null}
-      <div className="trends-period-bar">
+      <div className="trends-period-bar" data-part="trends-graphing-period">
         <label className="trends-period-label">
           Graphing period
           <span className="chart-default-choice">
@@ -628,7 +645,10 @@ export function TrendsChartsPanel({
           {chartPerf && chartPerf.weeks.length > 0 ? (
             <div
               className="trends-chart-card dividend-weeks-chart"
+              id="trends-declared"
+              data-section="trends-declared"
               aria-label="Declared vs Plan"
+              data-part="declared-vs-plan"
             >
               <ReactECharts
                 option={weeklyDeclVsPlanOption(chartPerf)}
@@ -639,8 +659,16 @@ export function TrendsChartsPanel({
               />
             </div>
           ) : null}
-          <div className="trends-chart-grid">
-            <div className="trends-chart-card" aria-label="Planned weekly income">
+          <div
+            className="trends-chart-grid"
+            id="trends-weekly-income"
+            data-section="trends-weekly-income"
+          >
+            <div
+              className="trends-chart-card"
+              aria-label="Planned weekly income"
+              data-part="planned-weekly-income"
+            >
               <ReactECharts
                 option={chartOptionFromValues(
                   "Planned weekly income",
@@ -654,7 +682,11 @@ export function TrendsChartsPanel({
                 lazyUpdate
               />
             </div>
-            <div className="trends-chart-card" aria-label="Reported weekly income">
+            <div
+              className="trends-chart-card"
+              aria-label="Reported weekly income"
+              data-part="reported-weekly-income"
+            >
               <ReactECharts
                 option={chartOptionFromValues(
                   "Reported weekly income",
@@ -669,7 +701,12 @@ export function TrendsChartsPanel({
               />
             </div>
             {METRIC_CHARTS.map((spec) => (
-              <div key={spec.key} className="trends-chart-card" aria-label={spec.title}>
+              <div
+                key={spec.key}
+                className="trends-chart-card"
+                aria-label={spec.title}
+                data-part={spec.part}
+              >
                 <ReactECharts
                   option={chartOption(
                     spec.title,
@@ -685,8 +722,13 @@ export function TrendsChartsPanel({
               </div>
             ))}
           </div>
-          <h3 className="trends-account-heading">Accounts</h3>
-          <div className="trends-chart-grid" aria-label="Trends account charts">
+          <h3 className="trends-account-heading" id="trends-accounts">Accounts</h3>
+          <div
+            className="trends-chart-grid"
+            data-section="trends-accounts"
+            data-part="trends-account-charts"
+            aria-label="Trends account charts"
+          >
             {accountCharts.map((series, i) => (
               <div
                 key={series.accountId}

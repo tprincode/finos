@@ -253,6 +253,13 @@ fn account_from_row(row: &sqlx::postgres::PgRow) -> Result<AccountRecord, Platfo
         account_id: parse_uuid(row, "account_id")?,
         name: row.try_get("name").map_err(|e| map_err(e.into()))?,
         kind: row.try_get("kind").map_err(|e| map_err(e.into()))?,
+        cash_symbol: row
+            .try_get::<String, _>("cash_symbol")
+            .unwrap_or_default(),
+        broker_account_number: row
+            .try_get::<String, _>("broker_account_number")
+            .unwrap_or_default(),
+        min_balance_target_minor: row.try_get("min_balance_target_minor").unwrap_or(None),
         row_version: row.try_get::<i32, _>("row_version").map_err(|e| map_err(e.into()))? as i64,
     })
 }
@@ -324,26 +331,38 @@ impl Canonical for PostgresPlatform {
             account_id: Uuid::new_v4(),
             name,
             kind,
+            cash_symbol: String::new(),
+            broker_account_number: String::new(),
+            min_balance_target_minor: None,
             row_version: 1,
         };
-        sqlx::query("INSERT INTO account (account_id, name, kind, row_version) VALUES ($1, $2, $3, 1)")
-            .bind(record.account_id.to_string())
-            .bind(&record.name)
-            .bind(&record.kind)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| map_err(e.into()))?;
+        sqlx::query(
+            "INSERT INTO account (account_id, name, kind, row_version, cash_symbol, broker_account_number, min_balance_target_minor)
+             VALUES ($1, $2, $3, 1, $4, $5, $6)",
+        )
+        .bind(record.account_id.to_string())
+        .bind(&record.name)
+        .bind(&record.kind)
+        .bind(&record.cash_symbol)
+        .bind(&record.broker_account_number)
+        .bind(record.min_balance_target_minor)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| map_err(e.into()))?;
         audit(&self.pool, "AccountRegister", "account", &record.account_id.to_string()).await?;
         Ok(record)
     }
 
     async fn account_get(&self, account_id: Uuid) -> Result<AccountRecord, PlatformError> {
-        let row = sqlx::query("SELECT account_id, name, kind, row_version FROM account WHERE account_id = $1")
-            .bind(account_id.to_string())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| map_err(e.into()))?
-            .ok_or_else(|| PlatformError::new("not_found", "account not found"))?;
+        let row = sqlx::query(
+            "SELECT account_id, name, kind, row_version, cash_symbol, broker_account_number, min_balance_target_minor
+             FROM account WHERE account_id = $1",
+        )
+        .bind(account_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| map_err(e.into()))?
+        .ok_or_else(|| PlatformError::new("not_found", "account not found"))?;
         account_from_row(&row)
     }
 
@@ -353,6 +372,9 @@ impl Canonical for PostgresPlatform {
         name: Option<String>,
         kind: Option<String>,
         expected_version: Option<i64>,
+        cash_symbol: Option<String>,
+        broker_account_number: Option<String>,
+        min_balance_target_minor: Option<Option<i64>>,
     ) -> Result<AccountRecord, PlatformError> {
         let mut current = self.account_get(account_id).await?;
         if let Some(name) = name {
@@ -361,13 +383,26 @@ impl Canonical for PostgresPlatform {
         if let Some(kind) = kind {
             current.kind = kind;
         }
+        if let Some(sym) = cash_symbol {
+            current.cash_symbol = sym.trim().to_string();
+        }
+        if let Some(num) = broker_account_number {
+            current.broker_account_number = num.trim().to_string();
+        }
+        if let Some(target) = min_balance_target_minor {
+            current.min_balance_target_minor = target;
+        }
         let result = if let Some(expected) = expected_version {
             sqlx::query(
-                "UPDATE account SET name = $1, kind = $2, row_version = row_version + 1
-                 WHERE account_id = $3 AND row_version = $4",
+                "UPDATE account SET name = $1, kind = $2, cash_symbol = $3, broker_account_number = $4,
+                 min_balance_target_minor = $5, row_version = row_version + 1
+                 WHERE account_id = $6 AND row_version = $7",
             )
             .bind(&current.name)
             .bind(&current.kind)
+            .bind(&current.cash_symbol)
+            .bind(&current.broker_account_number)
+            .bind(current.min_balance_target_minor)
             .bind(account_id.to_string())
             .bind(expected as i32)
             .execute(&self.pool)
@@ -375,11 +410,15 @@ impl Canonical for PostgresPlatform {
             .map_err(|e| map_err(e.into()))?
         } else {
             sqlx::query(
-                "UPDATE account SET name = $1, kind = $2, row_version = row_version + 1
-                 WHERE account_id = $3",
+                "UPDATE account SET name = $1, kind = $2, cash_symbol = $3, broker_account_number = $4,
+                 min_balance_target_minor = $5, row_version = row_version + 1
+                 WHERE account_id = $6",
             )
             .bind(&current.name)
             .bind(&current.kind)
+            .bind(&current.cash_symbol)
+            .bind(&current.broker_account_number)
+            .bind(current.min_balance_target_minor)
             .bind(account_id.to_string())
             .execute(&self.pool)
             .await

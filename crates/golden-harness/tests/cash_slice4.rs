@@ -961,10 +961,14 @@ fn n8_exceptions_screen_and_save() {
         repo_root().join("apps/desktop/src/features/navigation/ReturnToPrevious.tsx"),
     )
     .unwrap();
+    let nav_row = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/navigation/PageNavRow.tsx"),
+    )
+    .unwrap();
     let css = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.css")).unwrap();
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
     let return_rule = css
-        .find(".return-previous")
+        .find(".page-nav-row {")
         .map(|i| &css[i..css.len().min(i + 240)])
         .unwrap_or("");
     assert!(
@@ -980,8 +984,9 @@ fn n8_exceptions_screen_and_save() {
             && exceptions.contains("setEditOpen(false)")
             && catalog.contains("setExceptionsOpen(Boolean(editorOccurrenceId))")
             && back.contains("aria-label=\"Return to previous menu\"")
-            && app.contains("<ReturnToPrevious")
-            && return_rule.contains("position: absolute")
+            && app.contains("<PageNavRow")
+            && nav_row.contains("<ReturnToPrevious")
+            && return_rule.contains("display: flex")
             && exceptions.contains("CashElementExceptionEdit")
             && edit.contains("Cancel this transaction")
             && edit.contains("Modify this transaction")
@@ -1268,16 +1273,46 @@ fn busy_surface_covers_the_loading_chart() {
         chip_rule.contains("#e67a12") && chip_rule.contains("#c45f08"),
         "the Page activity button is orange while a read is open: {chip_rule}"
     );
-    let cover_rule = css
-        .split(".home-top-right > .busy-surface")
+    assert!(
+        css.contains(".home-top-right > [data-part=\"account-cash-flow\"]")
+            && css.contains(".home-top-right > [data-part=\"account-cash-flow\"] > .busy-surface")
+            && css.contains("flex: 1 1 auto"),
+        "ACFP flex chain must include the registry data-part wrapper — a direct \
+         .home-top-right > .busy-surface rule alone collapses the chart to half height"
+    );
+    assert!(
+        css.contains(".home-trend-focus-chart")
+            && css
+                .split(".home-trend-focus-chart {")
+                .nth(1)
+                .unwrap_or("")
+                .split('}')
+                .next()
+                .unwrap_or("")
+                .contains("min-height: 14rem"),
+        "ACFP chart keeps a 14rem floor"
+    );
+    let home_screen = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/home/HomeScreen.tsx"),
+    )
+    .unwrap();
+    let right = home_screen
+        .split("className=\"home-top-right\"")
         .nth(1)
-        .expect("home cover")
-        .split('}')
+        .expect("home-top-right")
+        .split("{incomeTxOpen")
         .next()
         .unwrap_or("");
     assert!(
-        cover_rule.contains("flex: 1 1 auto"),
-        "the home cash-flow cover stretches to the column: {cover_rule}"
+        right.contains("data-part=\"account-cash-flow\"")
+            && right.contains("<AccountCashFlow"),
+        "Home mounts ACFP inside data-part=account-cash-flow so CSS can stretch it"
+    );
+    let part_idx = right.find("data-part=\"account-cash-flow\"").unwrap();
+    let acfp_idx = right.find("<AccountCashFlow").unwrap();
+    assert!(
+        part_idx < acfp_idx,
+        "AccountCashFlow must sit inside the account-cash-flow part, not beside it"
     );
     let cover = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/shared/BusySurface.tsx"),

@@ -122,9 +122,18 @@ export function CashWeekDesk({
   if (weeks == null) return null;
 
   return (
-    <section className="cash-week-desk" aria-label="Cash week desk">
+    <section
+      className="cash-week-desk"
+      id="cash-week-desk"
+      data-section="cash-week-desk"
+      aria-label="Cash week desk"
+    >
       {overview ? (
-        <div className="trends-overview" aria-label="Cash week overview">
+        <div
+          className="trends-overview"
+          aria-label="Cash week overview"
+          data-part="cash-week-overview"
+        >
           <span>FID+SCH {formatUsd(overview.fidSchCombinedMinor ?? 0, scale)}</span>
           <span>WkΔ {formatUsd(overview.wkToWkChangeMinor ?? 0, scale)}</span>
           <span>
@@ -135,7 +144,7 @@ export function CashWeekDesk({
         </div>
       ) : null}
       {tableSaturdays.length > 0 ? (
-        <div className="table-wrap trends-week-table-wrap">
+        <div className="table-wrap trends-week-table-wrap" data-part="saved-cash-weeks">
           <table aria-label="Saved cash weeks">
             <thead>
               <tr>

@@ -126,7 +126,12 @@ export function ContractPositions({ client }: { client?: Client | null }) {
       />
 
       <h3>Open contracts · {openRows.length}</h3>
-      <div className="table-wrap">
+      <div
+        className="table-wrap"
+        id="contract-open"
+        data-section="contract-open"
+        data-part="contract-open"
+      >
         <table aria-label="Open contracts">
           <thead>
             <tr>
@@ -328,7 +333,12 @@ export function ContractPositions({ client }: { client?: Client | null }) {
       ) : null}
 
       <h3>Closed contracts · {closedRows.length}</h3>
-      <div className="table-wrap">
+      <div
+        className="table-wrap"
+        id="contract-closed"
+        data-section="contract-closed"
+        data-part="contract-closed"
+      >
         <table aria-label="Closed contracts">
           <thead>
             <tr>

@@ -460,6 +460,7 @@ pub const REGISTER_BOOKS: &[&str] = &[
     "Car",
     "Account 9",
     "SSA_2026",
+    "Loan",
 ];
 
 pub fn register_book_label(raw: &str) -> Option<&'static str> {
@@ -470,6 +471,7 @@ pub fn register_book_label(raw: &str) -> Option<&'static str> {
         "Car" => Some("Car"),
         "Account 9" | "9" => Some("Account 9"),
         "SSA_2026" => Some("SSA_2026"),
+        "Loan" => Some("Loan"),
         _ => None,
     }
 }

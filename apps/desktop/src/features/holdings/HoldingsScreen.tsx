@@ -59,7 +59,7 @@ export function HoldingsScreen({
     <section aria-label="Holdings">
       <h2>Holdings</h2>
       <p>Open lots. Owner assigns sales; no FIFO.</p>
-      <label>
+      <label id="holdings-list" data-section="holdings-list" data-part="holdings-filter">
         Filter holdings
         <input
           value={holdingsFilter}
@@ -67,89 +67,100 @@ export function HoldingsScreen({
           aria-label="Filter holdings"
         />
       </label>
-      <HoldingsPanel
-        lots={holdings?.lots ?? null}
-        filter={holdingsFilter}
-        onOpenSymbol={(symbol) => openPositionHub(symbol, "lots")}
-      />
+      <div data-part="holdings-panel">
+        <HoldingsPanel
+          lots={holdings?.lots ?? null}
+          filter={holdingsFilter}
+          onOpenSymbol={(symbol) => openPositionHub(symbol, "lots")}
+        />
+      </div>
       <p>
         Cart Confirm sell assigns the lot in the same step. This list is leftover posted
         sells only. Owner assigns; no FIFO.
       </p>
-      <LotCostTable
-        lots={(holdings?.lots ?? []).map((l) => ({
-          lotId: l.lotId,
-          symbol: l.symbol,
-          accountName: l.accountName,
-          remainingQuantityMinor: l.remainingQuantityMinor,
-          quantityScale: l.quantityScale,
-          openedOn: l.openedOn,
-          remainingPerformanceMinor: l.remainingPerformanceMinor,
-          remainingTaxMinor: l.remainingTaxMinor,
-          scale: l.scale,
-        }))}
-        value={lotId}
-        onChange={(nextLotId) => {
-          setLotId(nextLotId);
-          setAssignSellId("");
-          const nextLot = holdings?.lots.find((lot) => lot.lotId === nextLotId);
-          if (nextLot) {
-            setAssignQty(String(nextLot.remainingQuantityMinor));
-          }
-        }}
-        lastBySymbol={Object.fromEntries(
-          (calculator?.rows ?? []).map((r) => [r.symbol, r.lastPriceMinor]),
-        )}
-        sortMode={holdingsLotSort}
-        onSortModeChange={setHoldingsLotSort}
-        disabled={busy || writesBlocked}
-        ariaLabel="Open lots"
-      />
-      {selectedLot ? (
-        <>
-          {lotUnassignedSells.length === 0 ? (
-            <p>No unassigned sell for this symbol</p>
-          ) : (
-            <UnassignedSellTable
-              sells={lotUnassignedSells}
-              value={assignSellId}
-              onChange={(activityId) => {
-                setAssignSellId(activityId);
-                const sell = lotUnassignedSells.find((row) => row.activityId === activityId);
-                const qty = sell?.quantityMinor ?? selectedLot.remainingQuantityMinor;
-                setAssignQty(String(qty));
-              }}
-              disabled={busy || writesBlocked}
-            />
+      <div data-part="open-lots">
+        <LotCostTable
+          lots={(holdings?.lots ?? []).map((l) => ({
+            lotId: l.lotId,
+            symbol: l.symbol,
+            accountName: l.accountName,
+            remainingQuantityMinor: l.remainingQuantityMinor,
+            quantityScale: l.quantityScale,
+            openedOn: l.openedOn,
+            remainingPerformanceMinor: l.remainingPerformanceMinor,
+            remainingTaxMinor: l.remainingTaxMinor,
+            scale: l.scale,
+          }))}
+          value={lotId}
+          onChange={(nextLotId) => {
+            setLotId(nextLotId);
+            setAssignSellId("");
+            const nextLot = holdings?.lots.find((lot) => lot.lotId === nextLotId);
+            if (nextLot) {
+              setAssignQty(String(nextLot.remainingQuantityMinor));
+            }
+          }}
+          lastBySymbol={Object.fromEntries(
+            (calculator?.rows ?? []).map((r) => [r.symbol, r.lastPriceMinor]),
           )}
-          <label>
-            Quantity
-            <input
-              value={assignQty}
-              onChange={(e) => setAssignQty(e.target.value)}
-              disabled={busy || writesBlocked || !selectedSell}
-            />
-          </label>
-        </>
-      ) : (
-        <p>Pick an open lot, then a leftover sell.</p>
-      )}
-      <button
-        type="button"
-        aria-label="Assign lot"
-        disabled={busy || writesBlocked || !lotId || !selectedSell}
-        onClick={() => {
-          if (!lotId || !selectedSell) return;
-          void runCommand("LotAssign", {
-            lotId,
-            activityId: selectedSell.activityId,
-            quantityMinor: Number(assignQty),
-            quantityScale: selectedLot?.quantityScale ?? 0,
-          });
-        }}
-      >
-        Assign lot
-      </button>
+          sortMode={holdingsLotSort}
+          onSortModeChange={setHoldingsLotSort}
+          disabled={busy || writesBlocked}
+          ariaLabel="Open lots"
+        />
+      </div>
+      <div id="holdings-assign" data-section="holdings-assign">
+        {selectedLot ? (
+          <>
+            <div data-part="unassigned-sells">
+              {lotUnassignedSells.length === 0 ? (
+                <p>No unassigned sell for this symbol</p>
+              ) : (
+                <UnassignedSellTable
+                  sells={lotUnassignedSells}
+                  value={assignSellId}
+                  onChange={(activityId) => {
+                    setAssignSellId(activityId);
+                    const sell = lotUnassignedSells.find(
+                      (row) => row.activityId === activityId,
+                    );
+                    const qty = sell?.quantityMinor ?? selectedLot.remainingQuantityMinor;
+                    setAssignQty(String(qty));
+                  }}
+                  disabled={busy || writesBlocked}
+                />
+              )}
+            </div>
+            <label data-part="assign-quantity">
+              Quantity
+              <input
+                value={assignQty}
+                onChange={(e) => setAssignQty(e.target.value)}
+                disabled={busy || writesBlocked || !selectedSell}
+              />
+            </label>
+          </>
+        ) : (
+          <p>Pick an open lot, then a leftover sell.</p>
+        )}
+        <button
+          type="button"
+          aria-label="Assign lot"
+          data-part="assign-lot"
+          disabled={busy || writesBlocked || !lotId || !selectedSell}
+          onClick={() => {
+            if (!lotId || !selectedSell) return;
+            void runCommand("LotAssign", {
+              lotId,
+              activityId: selectedSell.activityId,
+              quantityMinor: Number(assignQty),
+              quantityScale: selectedLot?.quantityScale ?? 0,
+            });
+          }}
+        >
+          Assign lot
+        </button>
+      </div>
     </section>
   );
 }

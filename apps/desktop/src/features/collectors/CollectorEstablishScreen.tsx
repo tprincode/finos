@@ -26,7 +26,12 @@ export function CollectorEstablishScreen({
                 pays. New unpaid dates may be added. Amount changes ticket Except
                 or Reject. Empty / 403 / JS last_run is parked, not a wipe.
               </p>
-              <div className="table-wrap">
+              <div
+                className="table-wrap"
+                id="establish-fleet"
+                data-section="establish-fleet"
+                data-part="establish-collector-fleet"
+              >
                 <table aria-label="Establish collector fleet">
                   <thead>
                     <tr>

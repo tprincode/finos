@@ -21,70 +21,80 @@
           "kind": "chart",
           "title": "Account values",
           "description": "Live — qty × last price, including today",
-          "coreFunctionIds": ["home-weekly-actuals"]
+          "coreFunctionIds": ["home-weekly-actuals"],
+          "section": "home-account-values"
         },
         {
           "id": "graphing-period",
           "kind": "function",
           "title": "Graphing period",
           "description": "",
-          "coreFunctionIds": ["home-graphing-period"]
+          "coreFunctionIds": ["home-graphing-period"],
+          "section": "home-account-values"
         },
         {
           "id": "fidelity",
           "kind": "chart",
           "title": "Fidelity",
           "description": "Live — qty × last price, including today",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-account-values"
         },
         {
           "id": "schwab-total",
           "kind": "chart",
           "title": "Schwab Total",
           "description": "Live — qty × last price, including today",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-account-values"
         },
         {
           "id": "chart-income",
           "kind": "chart",
           "title": "Income",
           "description": "Live — qty × last price, including today",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-account-charts"
         },
         {
           "id": "chart-fi-roth",
           "kind": "chart",
           "title": "FI Roth",
           "description": "Live — qty × last price, including today",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-account-charts"
         },
         {
           "id": "chart-car",
           "kind": "chart",
           "title": "Car",
           "description": "Live — qty × last price, including today",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-account-charts"
         },
         {
           "id": "chart-health",
           "kind": "chart",
           "title": "Health",
           "description": "Live — qty × last price, including today",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-account-charts"
         },
         {
           "id": "chart-speculation",
           "kind": "chart",
           "title": "Speculation",
           "description": "Live — qty × last price, including today",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-account-charts"
         },
         {
           "id": "chart-account-9",
           "kind": "chart",
           "title": "Account 9",
           "description": "Live — qty × last price, including today",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-account-charts"
         }
       ],
       "sqliteTables": [
@@ -93,6 +103,10 @@
           "path": "crates/storage-sqlite/src/account_value.rs",
           "needle": "FROM account_market_value_daily"
         }
+      ],
+      "sections": [
+        { "id": "home-account-values", "title": "Account values", "anchor": "home-account-values" },
+        { "id": "home-account-charts", "title": "Charts", "anchor": "home-account-charts" }
       ]
     },
     {
@@ -103,7 +117,21 @@
       "menuAreas": ["Add Investment"],
       "screen": "new-investment",
       "coreFunctionIds": ["InvestmentGet"],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "establish-checklist",
+          "kind": "table",
+          "title": "Establish checklist",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "establish-checklist",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "establish-checklist", "title": "Establish checklist", "anchor": "establish-checklist" }
+      ]
     },
     {
       "id": "shopping-cart",
@@ -115,11 +143,112 @@
       "menu": { "kind": "nav", "label": "Shopping Cart" },
       "coreFunctionIds": ["shopping-cart-swap"],
       "host": "cart.rs",
+      "parts": [
+        {
+          "id": "cart-start-wizard",
+          "kind": "control",
+          "title": "Start a cart",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-start",
+          "export": "none"
+        },
+        {
+          "id": "open-cart-plan",
+          "kind": "figures",
+          "title": "Open cart plan",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-plan",
+          "export": "none"
+        },
+        {
+          "id": "execute-plan-panel",
+          "kind": "table",
+          "title": "Execute plan",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-execute",
+          "export": "none"
+        },
+        {
+          "id": "income-compare",
+          "kind": "table",
+          "title": "Income compare",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-execute",
+          "export": "none"
+        },
+        {
+          "id": "sell-plan",
+          "kind": "table",
+          "title": "Sell plan",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-sell",
+          "export": "none"
+        },
+        {
+          "id": "buy-scenario-a",
+          "kind": "table",
+          "title": "Buy scenario A",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-buy",
+          "export": "none"
+        },
+        {
+          "id": "buy-scenario-b",
+          "kind": "table",
+          "title": "Buy scenario B",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-buy",
+          "export": "none"
+        },
+        {
+          "id": "scenario-delta",
+          "kind": "table",
+          "title": "Scenario delta",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-critique",
+          "export": "none"
+        },
+        {
+          "id": "plan-critique",
+          "kind": "figures",
+          "title": "Plan critique",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-critique",
+          "export": "none"
+        },
+        {
+          "id": "cart-actions",
+          "kind": "control",
+          "title": "Evaluate, Agree, Save, Discard",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "cart-actions",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "cart-start", "title": "Start", "anchor": "cart-start" },
+        { "id": "cart-plan", "title": "Plan", "anchor": "cart-plan" },
+        { "id": "cart-execute", "title": "Execute", "anchor": "cart-execute" },
+        { "id": "cart-sell", "title": "Sell", "anchor": "cart-sell" },
+        { "id": "cart-buy", "title": "Buy", "anchor": "cart-buy" },
+        { "id": "cart-critique", "title": "Critique", "anchor": "cart-critique" },
+        { "id": "cart-actions", "title": "Actions", "anchor": "cart-actions" }
+      ],
       "sqliteTables": [
         {
           "name": "account",
           "path": "crates/storage-sqlite/src/canonical.rs",
-          "needle": "SELECT account_id, name, kind FROM account ORDER BY name"
+          "needle": "SELECT account_id, name, kind, cash_symbol, broker_account_number, min_balance_target_minor"
         },
         {
           "name": "lot",
@@ -161,7 +290,26 @@
       "screen": "cash-management",
       "cmDesk": "weekly",
       "coreFunctionIds": ["TrendsWeekSave"],
-      "host": "trends_app.rs"
+      "host": "trends_app.rs",
+      "parts": [
+        {
+          "id": "cash-week-overview",
+          "kind": "figures",
+          "title": "Cash week overview",
+          "section": "cash-week-desk",
+          "export": "none"
+        },
+        {
+          "id": "saved-cash-weeks",
+          "kind": "table",
+          "title": "Saved cash weeks",
+          "section": "cash-week-desk",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "cash-week-desk", "title": "Week desk", "anchor": "cash-week-desk" }
+      ]
     },
     {
       "id": "week-ahead",
@@ -180,22 +328,28 @@
           "kind": "function",
           "title": "Tasks",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "week-ahead"
         },
         {
           "id": "week-ahead-elements",
           "kind": "table",
           "title": "Elements",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "week-ahead"
         },
         {
           "id": "week-ahead-loans",
           "kind": "table",
           "title": "Loan payments",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "week-ahead"
         }
+      ],
+      "sections": [
+        { "id": "week-ahead", "title": "Week ahead", "anchor": "week-ahead" }
       ],
       "sqliteTables": [
         {
@@ -219,7 +373,86 @@
       "screen": "cash-management",
       "cmDesk": "car",
       "coreFunctionIds": ["cash-management-magi"],
-      "host": "tax_planning.rs"
+      "host": "tax_planning.rs",
+      "parts": [
+        {
+          "id": "magi-tiles",
+          "kind": "figures",
+          "title": "MAGI forecast tiles",
+          "section": "magi-forecast-tiles",
+          "export": "none"
+        },
+        {
+          "id": "magi-suggestions-preview",
+          "kind": "list",
+          "title": "Suggestions preview",
+          "section": "magi-forecast-tiles",
+          "export": "none"
+        },
+        {
+          "id": "magi-application-compare",
+          "kind": "table",
+          "title": "Application versus current MAGI",
+          "section": "magi-application",
+          "export": "none"
+        },
+        {
+          "id": "household-income-table",
+          "kind": "table",
+          "title": "Household income",
+          "section": "household-income-detail",
+          "export": "none"
+        },
+        {
+          "id": "magi-estimates-table",
+          "kind": "table",
+          "title": "MAGI estimates",
+          "section": "magi-estimates",
+          "export": "none"
+        },
+        {
+          "id": "household-deductions-table",
+          "kind": "table",
+          "title": "Household deductions",
+          "section": "household-deductions",
+          "export": "none"
+        },
+        {
+          "id": "tax-withholding-table",
+          "kind": "table",
+          "title": "Tax withholding",
+          "section": "tax-money",
+          "export": "none"
+        },
+        {
+          "id": "magi-suggestion-list",
+          "kind": "list",
+          "title": "MAGI suggestions",
+          "section": "magi-suggestions",
+          "export": "none"
+        },
+        {
+          "id": "aptc-facts",
+          "kind": "form",
+          "title": "Marketplace application and 1095-A",
+          "section": "household-aptc",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "magi-forecast-tiles", "title": "MAGI forecast", "anchor": "magi-forecast" },
+        { "id": "magi-application", "title": "Application", "anchor": "magi-application" },
+        {
+          "id": "household-income-detail",
+          "title": "Income",
+          "anchor": "household-income-detail"
+        },
+        { "id": "magi-estimates", "title": "Estimates", "anchor": "magi-estimates" },
+        { "id": "household-deductions", "title": "Deductions", "anchor": "household-deductions" },
+        { "id": "tax-money", "title": "Tax money", "anchor": "tax-money" },
+        { "id": "magi-suggestions", "title": "Suggestions", "anchor": "magi-suggestions" },
+        { "id": "household-aptc", "title": "APTC", "anchor": "household-aptc" }
+      ]
     },
     {
       "id": "magi-forecast",
@@ -271,7 +504,33 @@
       "menu": { "kind": "desk", "label": "Element Management" },
       "cmDesk": "elements",
       "coreFunctionIds": ["cash-management-elements"],
-      "host": "cash_register.rs"
+      "host": "cash_register.rs",
+      "parts": [
+        {
+          "id": "element-account-picker",
+          "kind": "control",
+          "title": "Managed accounts",
+          "section": "elements-catalog",
+          "export": "none"
+        },
+        {
+          "id": "element-deposits",
+          "kind": "table",
+          "title": "Deposits",
+          "section": "elements-catalog",
+          "export": "none"
+        },
+        {
+          "id": "element-withdrawals",
+          "kind": "table",
+          "title": "Withdrawals",
+          "section": "elements-catalog",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "elements-catalog", "title": "Elements", "anchor": "cash-elements" }
+      ]
     },
     {
       "id": "cm-cashflow-manager",
@@ -283,7 +542,78 @@
       "menu": { "kind": "desk", "label": "Cashflow Manager" },
       "cmDesk": "cashflow",
       "coreFunctionIds": ["cash-management-register"],
-      "host": "cash_register.rs"
+      "host": "cash_register.rs",
+      "parts": [
+        {
+          "id": "register-year-totals",
+          "kind": "table",
+          "title": "Current year totals",
+          "section": "register-controls",
+          "export": "none"
+        },
+        {
+          "id": "register-remaining-year",
+          "kind": "table",
+          "title": "Remaining this year",
+          "section": "register-controls",
+          "export": "none"
+        },
+        {
+          "id": "register-account-picker",
+          "kind": "control",
+          "title": "Managed accounts",
+          "section": "register-controls",
+          "export": "none"
+        },
+        {
+          "id": "register-view-switch",
+          "kind": "control",
+          "title": "Calendar or trend",
+          "section": "register-controls",
+          "export": "none"
+        },
+        {
+          "id": "register-trend-chart",
+          "kind": "chart",
+          "title": "Account cash flow trend",
+          "section": "register-trend",
+          "export": "none"
+        },
+        {
+          "id": "register-month-nav",
+          "kind": "control",
+          "title": "Register month",
+          "section": "register-calendar",
+          "export": "none"
+        },
+        {
+          "id": "register-month-flow",
+          "kind": "figures",
+          "title": "Month cash flow totals",
+          "section": "register-calendar",
+          "export": "none"
+        },
+        {
+          "id": "register-calendar-grid",
+          "kind": "table",
+          "title": "Register calendar",
+          "section": "register-calendar",
+          "export": "none"
+        },
+        {
+          "id": "register-day-transactions",
+          "kind": "table",
+          "title": "Day transactions",
+          "section": "register-day",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "register-controls", "title": "Totals", "anchor": "cash-register" },
+        { "id": "register-trend", "title": "Trend", "anchor": "register-trend" },
+        { "id": "register-calendar", "title": "Calendar", "anchor": "register-calendar" },
+        { "id": "register-day", "title": "Day", "anchor": "register-day" }
+      ]
     },
     {
       "id": "cm-weekly-updates",
@@ -294,7 +624,89 @@
       "screen": "cash-management",
       "cmDesk": "weekly",
       "coreFunctionIds": ["cash-management-post", "cash-management-week-ahead"],
-      "host": "cash_management.rs"
+      "host": "cash_management.rs",
+      "parts": [
+        {
+          "id": "cash-week-follow-up",
+          "kind": "control",
+          "title": "Week follow-up",
+          "section": "week-activity",
+          "export": "none"
+        },
+        {
+          "id": "cash-distribution-wizard",
+          "kind": "form",
+          "title": "Distribution wizard",
+          "section": "week-activity",
+          "export": "none"
+        },
+        {
+          "id": "cash-withdrawal-wizard",
+          "kind": "form",
+          "title": "Withdrawal wizard",
+          "section": "week-activity",
+          "export": "none"
+        },
+        {
+          "id": "cash-ssa-wizard",
+          "kind": "form",
+          "title": "Tom SSA wizard",
+          "section": "week-activity",
+          "export": "none"
+        },
+        {
+          "id": "cash-week-picker",
+          "kind": "control",
+          "title": "Select week",
+          "section": "week-selected",
+          "export": "none"
+        },
+        {
+          "id": "cash-week-transactions",
+          "kind": "table",
+          "title": "This week confirmed transactions",
+          "section": "week-selected",
+          "export": "none"
+        },
+        {
+          "id": "cash-distribution-totals",
+          "kind": "figures",
+          "title": "Distribution account totals",
+          "section": "week-distributions",
+          "export": "none"
+        },
+        {
+          "id": "cash-distribution-tax-sections",
+          "kind": "figures",
+          "title": "Distribution tax sections",
+          "section": "week-distributions",
+          "export": "none"
+        },
+        {
+          "id": "cash-distribution-lines",
+          "kind": "table",
+          "title": "Distributions year to date",
+          "section": "week-distributions",
+          "export": "none"
+        },
+        {
+          "id": "cash-tax-aca-monitor",
+          "kind": "figures",
+          "title": "Tax / ACA monitor",
+          "section": "week-tax-monitor",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "week-activity", "title": "Activity", "anchor": "cash-week-activity" },
+        { "id": "week-selected", "title": "This week", "anchor": "cash-week-selected" },
+        {
+          "id": "week-distributions",
+          "title": "Distributions",
+          "anchor": "cash-week-distributions"
+        },
+        { "id": "week-tax-monitor", "title": "Tax monitor", "anchor": "cash-week-tax-monitor" }
+      ]
     },
     {
       "id": "cm-car-account-tax",
@@ -306,7 +718,19 @@
       "menu": { "kind": "desk", "label": "Tax Planning" },
       "cmDesk": "car",
       "coreFunctionIds": ["cash-management-car-roc-plan", "cash-management-ytd"],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "car-account-tax-plan",
+          "kind": "table",
+          "title": "Car account tax planning",
+          "section": "car-lot-detail",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "car-lot-detail", "title": "Car lot detail", "anchor": "car-lot-detail" }
+      ]
     },
     {
       "id": "cm-coverage",
@@ -321,25 +745,44 @@
       "host": "cash_coverage.rs",
       "parts": [
         {
-          "id": "coverage-income",
-          "kind": "table",
-          "title": "Coverage income math",
-          "description": "",
-          "coreFunctionIds": []
-        },
-        {
-          "id": "coverage-expense",
-          "kind": "table",
-          "title": "Coverage expense math",
-          "description": "",
-          "coreFunctionIds": []
+          "id": "coverage-period",
+          "kind": "control",
+          "title": "Coverage period",
+          "section": "coverage-summary",
+          "export": "none"
         },
         {
           "id": "coverage-plan",
           "kind": "table",
           "title": "Coverage plan",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "coverage-summary"
+        },
+        {
+          "id": "coverage-income",
+          "kind": "table",
+          "title": "Coverage income math",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "coverage-income-math"
+        },
+        {
+          "id": "coverage-expense",
+          "kind": "table",
+          "title": "Coverage expense math",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "coverage-expense-math"
+        }
+      ],
+      "sections": [
+        { "id": "coverage-summary", "title": "Plan", "anchor": "cash-coverage" },
+        { "id": "coverage-income-math", "title": "Income math", "anchor": "coverage-income-math" },
+        {
+          "id": "coverage-expense-math",
+          "title": "Expense math",
+          "anchor": "coverage-expense-math"
         }
       ],
       "sqliteTables": [
@@ -364,12 +807,53 @@
       "description": "",
       "parts": [
         {
+          "id": "external-search",
+          "kind": "control",
+          "title": "Search",
+          "section": "external-find",
+          "export": "none"
+        },
+        {
           "id": "cct-register",
           "kind": "table",
           "title": "Checking and Credit Transactions",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "external-open"
+        },
+        {
+          "id": "external-bucket-ring",
+          "kind": "chart",
+          "title": "Bucket year ring",
+          "section": "external-completed",
+          "export": "none"
+        },
+        {
+          "id": "external-completed-charges",
+          "kind": "table",
+          "title": "Completed external charges",
+          "section": "external-completed",
+          "export": "none"
+        },
+        {
+          "id": "external-set-bucket",
+          "kind": "dialog",
+          "title": "Set bucket",
+          "section": "external-completed",
+          "export": "none"
+        },
+        {
+          "id": "external-export-preview",
+          "kind": "dialog",
+          "title": "Print / Export preview",
+          "section": "external-completed",
+          "export": "none"
         }
+      ],
+      "sections": [
+        { "id": "external-find", "title": "Search", "anchor": "external-find" },
+        { "id": "external-open", "title": "Open", "anchor": "external-open" },
+        { "id": "external-completed", "title": "Completed", "anchor": "external-completed" }
       ],
       "sqliteTables": [
         {
@@ -390,21 +874,83 @@
       "cmDesk": "manager",
       "coreFunctionIds": [],
       "host": "queries.rs",
-      "description": "Choose the process in Loan setup.",
+      "description": "Loan setup and budget bucket catalog (Food, Cash, Bills, Pets, Medical, HSA).",
       "parts": [
         {
           "id": "debt-accounts",
           "kind": "table",
           "title": "Debt planner",
           "description": "Choose the process in Loan setup.",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "debt-accounts-list"
+        },
+        {
+          "id": "loan-setup",
+          "kind": "dialog",
+          "title": "Loan setup",
+          "section": "debt-accounts-list",
+          "export": "none"
+        },
+        {
+          "id": "debt-buckets",
+          "kind": "table",
+          "title": "Budget buckets",
+          "description": "Add or edit bucket name, associated bank, description, and budget category.",
+          "coreFunctionIds": [],
+          "section": "bucket-manager"
+        },
+        {
+          "id": "loan-vendor-ring",
+          "kind": "chart",
+          "title": "Loan vendor ring",
+          "section": "loan-vendor",
+          "export": "none"
+        },
+        {
+          "id": "loan-facts",
+          "kind": "table",
+          "title": "Loan facts",
+          "section": "loan-vendor",
+          "export": "none"
+        },
+        {
+          "id": "loan-vendor-history",
+          "kind": "table",
+          "title": "Loan vendor history",
+          "section": "loan-vendor",
+          "export": "none"
+        },
+        {
+          "id": "loan-remaining-payments",
+          "kind": "table",
+          "title": "Remaining payments",
+          "section": "loan-vendor",
+          "export": "none"
+        },
+        {
+          "id": "loan-our-transactions",
+          "kind": "table",
+          "title": "Our transactions",
+          "section": "loan-register",
+          "export": "none"
         }
+      ],
+      "sections": [
+        { "id": "debt-accounts-list", "title": "Loans", "anchor": "managed-accounts" },
+        { "id": "bucket-manager", "title": "Buckets", "anchor": "debt-bucket-panel" },
+        { "id": "loan-vendor", "title": "Loan vendor", "anchor": "loan-vendor" },
+        { "id": "loan-register", "title": "Our transactions", "anchor": "managed-register" }
       ],
       "sqliteTables": [
         {
           "name": "external_managed_account",
           "path": "crates/storage-sqlite/src/external_account.rs",
           "needle": "FROM external_managed_account"
+        },
+        {
+          "name": "external_budget_bucket",
+          "path": "crates/storage-sqlite/src/external_bucket.rs",
+          "needle": "FROM external_budget_bucket"
         }
       ]
     },
@@ -430,63 +976,71 @@
           "kind": "table",
           "title": "Portfolio summary",
           "description": "Lifetime paid dividends (cash)",
-          "coreFunctionIds": ["home-open-tickets"]
+          "coreFunctionIds": ["home-open-tickets"],
+          "section": "home-overview"
         },
         {
           "id": "refresh-declarations",
           "kind": "function",
           "title": "Refresh declarations",
           "description": "",
-          "coreFunctionIds": ["home-refresh-declarations"]
+          "coreFunctionIds": ["home-refresh-declarations"],
+          "section": "home-overview"
         },
         {
           "id": "work-tickets",
           "kind": "function",
           "title": "Work Tickets",
           "description": "Stay until filed — not today's miss count",
-          "coreFunctionIds": ["home-open-tickets"]
+          "coreFunctionIds": ["home-open-tickets"],
+          "section": "home-overview"
         },
         {
           "id": "refresh-last-prices",
           "kind": "function",
           "title": "Refresh last prices",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-overview"
         },
         {
           "id": "income-through",
           "kind": "function",
           "title": "Income through",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-overview"
         },
         {
           "id": "income-through-transactions",
           "kind": "table",
           "title": "Income through transactions",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-overview"
         },
         {
           "id": "dividend-plan",
           "kind": "table",
           "title": "Dividend Plan",
           "description": "Plan annual dividend ÷ account market value",
-          "coreFunctionIds": ["home-dividend-plan-panel"]
+          "coreFunctionIds": ["home-dividend-plan-panel"],
+          "section": "home-overview"
         },
         {
           "id": "account-cash-flow",
           "kind": "chart",
           "title": "Account cash flow projection",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "home-overview"
         }
       ],
       "sqliteTables": [
         {
           "name": "account",
           "path": "crates/storage-sqlite/src/canonical.rs",
-          "needle": "SELECT account_id, name, kind FROM account ORDER BY name"
+          "needle": "SELECT account_id, name, kind, cash_symbol, broker_account_number, min_balance_target_minor"
         },
         {
           "name": "lot",
@@ -508,6 +1062,9 @@
           "path": "crates/storage-sqlite/src/trends.rs",
           "needle": "FROM account_balance_snapshot"
         }
+      ],
+      "sections": [
+        { "id": "home-overview", "title": "Overview", "anchor": "home-top-row" }
       ]
     },
     {
@@ -527,11 +1084,47 @@
       "description": "",
       "parts": [
         {
+          "id": "income-report-tabs",
+          "kind": "control",
+          "title": "Report type",
+          "section": "income-plan-controls",
+          "export": "none"
+        },
+        {
+          "id": "income-week-picker",
+          "kind": "control",
+          "title": "Select week",
+          "section": "income-plan-controls",
+          "export": "none"
+        },
+        {
+          "id": "income-export",
+          "kind": "control",
+          "title": "Print / Export",
+          "section": "income-plan-controls",
+          "export": "none"
+        },
+        {
+          "id": "income-account-picker",
+          "kind": "control",
+          "title": "Accounts",
+          "section": "income-plan-controls",
+          "export": "none"
+        },
+        {
+          "id": "income-week-grid",
+          "kind": "table",
+          "title": "Week grid",
+          "section": "income-week-grid",
+          "export": "none"
+        },
+        {
           "id": "plan-vs-decl",
           "kind": "table",
           "title": "Plan vs Decl",
           "description": "",
-          "coreFunctionIds": ["income-week-decl-per-share"]
+          "coreFunctionIds": ["income-week-decl-per-share"],
+          "section": "income-dividend-weeks"
         }
       ],
       "sqliteTables": [
@@ -545,6 +1138,11 @@
           "path": "crates/storage-sqlite/src/canonical.rs",
           "needle": "FROM dividend_actual ORDER BY occurred_on, actual_id"
         }
+      ],
+      "sections": [
+        { "id": "income-plan-controls", "title": "Controls", "anchor": "income-plan-page" },
+        { "id": "income-week-grid", "title": "Week grid", "anchor": "income-week-grid" },
+        { "id": "income-dividend-weeks", "title": "Plan vs Decl", "anchor": "income-dividend-weeks" }
       ]
     },
     {
@@ -564,7 +1162,8 @@
           "kind": "table",
           "title": "Calculator",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "calculator-sheet"
         }
       ],
       "sqliteTables": [
@@ -573,6 +1172,9 @@
           "path": "crates/storage-sqlite/src/plan.rs",
           "needle": "FROM plan_history WHERE effective_to IS NULL ORDER BY security_id"
         }
+      ],
+      "sections": [
+        { "id": "calculator-sheet", "title": "Calculator", "anchor": "calculator-page" }
       ]
     },
     {
@@ -584,7 +1186,20 @@
       "screen": "market-impact",
       "menu": { "kind": "nav", "label": "Market impact planner" },
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "market-impact-windows",
+          "kind": "table",
+          "title": "Market impact windows",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "market-impact-planner"
+        }
+      ],
+      "sections": [
+        { "id": "market-impact-planner", "title": "Windows", "anchor": "market-impact-planner" }
+      ]
     },
     {
       "id": "dashboard",
@@ -595,12 +1210,24 @@
       "screen": "dashboard",
       "menu": { "kind": "nav", "label": "Dashboard" },
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "dashboard-burndown",
+          "kind": "chart",
+          "title": "Burndown",
+          "section": "dashboard-burndown",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "dashboard-burndown", "title": "Burndown", "anchor": "dashboard-burndown" }
+      ]
     },
     {
       "id": "trends",
       "title": "Trends",
-      "folder": "apps/desktop/src/App.tsx",
+      "folder": "apps/desktop/src/features/graphing/",
       "status": "in-app",
       "menuAreas": ["Trends"],
       "screen": "trends",
@@ -613,74 +1240,98 @@
       "description": "",
       "parts": [
         {
+          "id": "trends-graphing-period",
+          "kind": "control",
+          "title": "Graphing period",
+          "section": "trends-period",
+          "export": "none"
+        },
+        {
+          "id": "trends-account-charts",
+          "kind": "chart",
+          "title": "Trends account charts",
+          "section": "trends-accounts",
+          "export": "none"
+        },
+        {
           "id": "live-by-risk",
           "kind": "chart",
           "title": "Live by risk",
           "description": "",
-          "coreFunctionIds": ["home-live-by-risk"]
+          "coreFunctionIds": ["home-live-by-risk"],
+          "section": "trends-risk"
         },
         {
           "id": "live-by-risk-level",
           "kind": "chart",
           "title": "Live by risk level",
           "description": "",
-          "coreFunctionIds": ["home-live-by-risk"]
+          "coreFunctionIds": ["home-live-by-risk"],
+          "section": "trends-risk"
         },
         {
           "id": "live-by-risk-allocation",
           "kind": "chart",
           "title": "Live by risk allocation",
           "description": "",
-          "coreFunctionIds": ["home-live-by-risk"]
+          "coreFunctionIds": ["home-live-by-risk"],
+          "section": "trends-risk"
         },
         {
           "id": "declared-vs-plan",
           "kind": "chart",
           "title": "Declared vs Plan",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "trends-declared"
         },
         {
           "id": "planned-weekly-income",
           "kind": "chart",
           "title": "Planned weekly income",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "trends-weekly-income"
         },
         {
           "id": "reported-weekly-income",
           "kind": "chart",
           "title": "Reported weekly income",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "trends-weekly-income"
         },
         {
           "id": "dividends-paid-by-month",
           "kind": "chart",
           "title": "Dividends paid by month",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "trends-dividends-by-month"
         },
         {
           "id": "all-cash",
           "kind": "chart",
           "title": "All Cash",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "trends-weekly-income"
         },
         {
           "id": "monthly-dividends",
           "kind": "chart",
           "title": "Monthly Dividends",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "trends-weekly-income"
         },
         {
           "id": "fidelity-schwab",
           "kind": "chart",
           "title": "Total Fidelity & Schwab",
           "description": "",
-          "coreFunctionIds": []
+          "coreFunctionIds": [],
+          "section": "trends-weekly-income"
         }
       ],
       "sqliteTables": [
@@ -689,6 +1340,14 @@
           "path": "crates/storage-sqlite/src/account_value.rs",
           "needle": "FROM account_market_value_daily"
         }
+      ],
+      "sections": [
+        { "id": "trends-period", "title": "Period", "anchor": "trends-charts" },
+        { "id": "trends-declared", "title": "Declared vs Plan", "anchor": "trends-declared" },
+        { "id": "trends-weekly-income", "title": "Weekly income", "anchor": "trends-weekly-income" },
+        { "id": "trends-accounts", "title": "Accounts", "anchor": "trends-accounts" },
+        { "id": "trends-risk", "title": "Risk", "anchor": "trends-risk" },
+        { "id": "trends-dividends-by-month", "title": "Dividends by month", "anchor": "trends-dividends-by-month" }
       ]
     },
     {
@@ -704,7 +1363,163 @@
         "position-hub-last-price",
         "position-details-owner-facts"
       ],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "plan-figures",
+          "kind": "table",
+          "title": "Plan Management figures",
+          "section": "plan-management",
+          "export": "none"
+        },
+        {
+          "id": "assigned-tier",
+          "kind": "function",
+          "title": "Assigned tier",
+          "section": "research-notes",
+          "export": "none"
+        },
+        {
+          "id": "roc-facts",
+          "kind": "table",
+          "title": "ROC",
+          "section": "research-notes",
+          "export": "none"
+        },
+        {
+          "id": "roc-years",
+          "kind": "table",
+          "title": "ROC years",
+          "section": "research-notes",
+          "export": "none"
+        },
+        {
+          "id": "work-ticket-queue",
+          "kind": "table",
+          "title": "Work ticket queue",
+          "section": "work-tickets",
+          "export": "none"
+        },
+        {
+          "id": "position-information-facts",
+          "kind": "table",
+          "title": "Position information",
+          "section": "position-information",
+          "export": "none"
+        },
+        {
+          "id": "calculator-snapshot-table",
+          "kind": "table",
+          "title": "Calculator snapshot",
+          "section": "calculator-snapshot",
+          "export": "none"
+        },
+        {
+          "id": "plan-and-yields-table",
+          "kind": "table",
+          "title": "Plan and yields",
+          "section": "plan-and-yields",
+          "export": "none"
+        },
+        {
+          "id": "holdings-by-account-table",
+          "kind": "table",
+          "title": "Holdings by account",
+          "section": "holdings-by-account",
+          "export": "none"
+        },
+        {
+          "id": "position-dossier",
+          "kind": "table",
+          "title": "Position dossier",
+          "section": "identity-and-economics",
+          "export": "none"
+        },
+        {
+          "id": "stored-declarations",
+          "kind": "table",
+          "title": "Stored declarations",
+          "section": "declarations",
+          "export": "none"
+        },
+        {
+          "id": "plan-payment-summary-table",
+          "kind": "table",
+          "title": "Plan payment summary",
+          "section": "plan-payment-summary",
+          "export": "none"
+        },
+        {
+          "id": "future-plan-payment-dates",
+          "kind": "table",
+          "title": "Future plan payment dates",
+          "section": "pay-dates",
+          "export": "none"
+        },
+        {
+          "id": "received-payment-totals",
+          "kind": "table",
+          "title": "Received payment totals",
+          "section": "received-payments",
+          "export": "none"
+        },
+        {
+          "id": "received-payments-by-year",
+          "kind": "table",
+          "title": "Received payments by year",
+          "section": "received-payments",
+          "export": "none"
+        },
+        {
+          "id": "ledger-dividends",
+          "kind": "table",
+          "title": "Ledger dividends",
+          "section": "ledger-income",
+          "export": "none"
+        },
+        {
+          "id": "symbol-lots",
+          "kind": "table",
+          "title": "Lots by account",
+          "section": "lots-by-account",
+          "export": "none"
+        },
+        {
+          "id": "owner-period-windows",
+          "kind": "table",
+          "title": "Owner period windows",
+          "section": "owner-period",
+          "export": "none"
+        },
+        {
+          "id": "evidence-windows",
+          "kind": "table",
+          "title": "Evidence windows",
+          "section": "owner-period",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "plan-management", "title": "Plan Management", "anchor": "hub-plan" },
+        { "id": "research-notes", "title": "Research notes", "anchor": "hub-research" },
+        { "id": "work-tickets", "title": "Work tickets", "anchor": "hub-tickets" },
+        {
+          "id": "position-information",
+          "title": "Position information",
+          "anchor": "hub-identity"
+        },
+        { "id": "calculator-snapshot", "title": "Calculator", "anchor": "hub-calculator" },
+        { "id": "plan-and-yields", "title": "Plan", "anchor": "hub-plan-yields" },
+        { "id": "holdings-by-account", "title": "By account", "anchor": "hub-accounts" },
+        { "id": "identity-and-economics", "title": "Identity facts", "anchor": "hub-facts" },
+        { "id": "declarations", "title": "Declarations", "anchor": "hub-declarations" },
+        { "id": "plan-payment-summary", "title": "Payment summary", "anchor": "hub-income" },
+        { "id": "pay-dates", "title": "Pay dates", "anchor": "hub-pay-dates" },
+        { "id": "received-payments", "title": "Received", "anchor": "hub-received" },
+        { "id": "ledger-income", "title": "Ledger", "anchor": "hub-ledger" },
+        { "id": "lots-by-account", "title": "Lots", "anchor": "hub-lots" },
+        { "id": "owner-period", "title": "Owner period", "anchor": "hub-periods" }
+      ]
     },
     {
       "id": "holdings",
@@ -716,6 +1531,64 @@
       "menu": { "kind": "nav", "label": "Holdings" },
       "coreFunctionIds": [],
       "host": "queries.rs",
+      "parts": [
+        {
+          "id": "holdings-filter",
+          "kind": "control",
+          "title": "Filter holdings",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "holdings-list",
+          "export": "none"
+        },
+        {
+          "id": "holdings-panel",
+          "kind": "table",
+          "title": "Holdings panel",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "holdings-list"
+        },
+        {
+          "id": "open-lots",
+          "kind": "table",
+          "title": "Open lots",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "holdings-list"
+        },
+        {
+          "id": "unassigned-sells",
+          "kind": "table",
+          "title": "Unassigned sells",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "holdings-assign",
+          "export": "none"
+        },
+        {
+          "id": "assign-quantity",
+          "kind": "control",
+          "title": "Assign quantity",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "holdings-assign",
+          "export": "none"
+        },
+        {
+          "id": "assign-lot",
+          "kind": "control",
+          "title": "Assign lot",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "holdings-assign",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "holdings-list", "title": "Open lots", "anchor": "holdings-list" },
+        { "id": "holdings-assign", "title": "Assign", "anchor": "holdings-assign" }
+      ],
       "description": "",
       "sqliteTables": [
         {
@@ -739,7 +1612,200 @@
       "screen": "new-investment",
       "menu": { "kind": "nav", "label": "Add Investment" },
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "collector-gaps",
+          "kind": "figures",
+          "title": "Collector gaps",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-gaps",
+          "export": "none"
+        },
+        {
+          "id": "completion-status",
+          "kind": "figures",
+          "title": "Completion status",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-saved",
+          "export": "none"
+        },
+        {
+          "id": "saved-identity-summary",
+          "kind": "figures",
+          "title": "Saved identity summary",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-saved",
+          "export": "none"
+        },
+        {
+          "id": "researched-vs-incomplete",
+          "kind": "table",
+          "title": "Researched versus incomplete",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-saved",
+          "export": "none"
+        },
+        {
+          "id": "saved-actions",
+          "kind": "control",
+          "title": "Next actions",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-saved",
+          "export": "none"
+        },
+        {
+          "id": "research-inputs",
+          "kind": "form",
+          "title": "Symbol and Template Dividend",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-inputs",
+          "export": "none"
+        },
+        {
+          "id": "research-actions",
+          "kind": "control",
+          "title": "Research and Save",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-inputs",
+          "export": "none"
+        },
+        {
+          "id": "research-progress",
+          "kind": "figures",
+          "title": "Research progress",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-progress",
+          "export": "none"
+        },
+        {
+          "id": "research-result",
+          "kind": "figures",
+          "title": "Research result",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-results",
+          "export": "none"
+        },
+        {
+          "id": "second-distribution-url",
+          "kind": "form",
+          "title": "Second distribution URL",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-results",
+          "export": "none"
+        },
+        {
+          "id": "inception-confirm",
+          "kind": "form",
+          "title": "Inception confirm",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-results",
+          "export": "none"
+        },
+        {
+          "id": "retrieved-vs-unknown",
+          "kind": "table",
+          "title": "Retrieved versus unknown",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-checklist",
+          "export": "none"
+        },
+        {
+          "id": "research-notes",
+          "kind": "figures",
+          "title": "Research notes",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-notes",
+          "export": "none"
+        },
+        {
+          "id": "last-declarations",
+          "kind": "table",
+          "title": "Last declarations",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-notes",
+          "export": "none"
+        },
+        {
+          "id": "remaining-year-dates",
+          "kind": "table",
+          "title": "Remaining year dates",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-notes",
+          "export": "none"
+        },
+        {
+          "id": "dividend-statistics",
+          "kind": "figures",
+          "title": "Dividend statistics",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-owner-actions",
+          "export": "none"
+        },
+        {
+          "id": "proposed-plan-changes",
+          "kind": "figures",
+          "title": "Proposed plan changes",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-owner-actions",
+          "export": "none"
+        },
+        {
+          "id": "owner-plan-inputs",
+          "kind": "form",
+          "title": "Owner plan and tier inputs",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-owner-actions",
+          "export": "none"
+        },
+        {
+          "id": "owner-plan-actions",
+          "kind": "control",
+          "title": "Owner plan and tier actions",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-owner-actions",
+          "export": "none"
+        },
+        {
+          "id": "roc-research",
+          "kind": "form",
+          "title": "ROC research",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-investment-roc",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "add-investment-gaps", "title": "Gaps", "anchor": "add-investment-gaps" },
+        { "id": "add-investment-saved", "title": "Research saved", "anchor": "add-investment-saved" },
+        { "id": "add-investment-inputs", "title": "Inputs", "anchor": "add-investment-inputs" },
+        { "id": "add-investment-progress", "title": "Progress", "anchor": "add-investment-progress" },
+        { "id": "add-investment-results", "title": "Results", "anchor": "add-investment-results" },
+        { "id": "add-investment-checklist", "title": "Checklist", "anchor": "add-investment-checklist" },
+        { "id": "add-investment-notes", "title": "Notes", "anchor": "add-investment-notes" },
+        { "id": "add-investment-owner-actions", "title": "Owner actions", "anchor": "add-investment-owner-actions" },
+        { "id": "add-investment-roc", "title": "ROC", "anchor": "add-investment-roc" }
+      ]
     },
     {
       "id": "add-lot",
@@ -750,7 +1816,94 @@
       "screen": "add-lot",
       "menu": { "kind": "nav", "label": "Add Lot" },
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "add-lot-actions",
+          "kind": "control",
+          "title": "Confirm and Cancel",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-lot-actions",
+          "export": "none"
+        },
+        {
+          "id": "add-lot-symbol",
+          "kind": "control",
+          "title": "Symbol",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-lot-form",
+          "export": "none"
+        },
+        {
+          "id": "add-lot-account",
+          "kind": "control",
+          "title": "Account",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-lot-form",
+          "export": "none"
+        },
+        {
+          "id": "add-lot-opened-on",
+          "kind": "control",
+          "title": "Opened on",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-lot-form",
+          "export": "none"
+        },
+        {
+          "id": "add-lot-quantity",
+          "kind": "control",
+          "title": "Quantity",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-lot-form",
+          "export": "none"
+        },
+        {
+          "id": "add-lot-unit-cost",
+          "kind": "control",
+          "title": "Unit original cost",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-lot-form",
+          "export": "none"
+        },
+        {
+          "id": "add-lot-tax-cost",
+          "kind": "control",
+          "title": "Unit tax cost",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-lot-form",
+          "export": "none"
+        },
+        {
+          "id": "add-lot-total",
+          "kind": "figures",
+          "title": "Lot total confirmation",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-lot-form",
+          "export": "none"
+        },
+        {
+          "id": "add-lot-origin",
+          "kind": "control",
+          "title": "Origin",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "add-lot-form",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "add-lot-actions", "title": "Actions", "anchor": "add-lot-actions" },
+        { "id": "add-lot-form", "title": "Lot details", "anchor": "add-lot-form" }
+      ]
     },
     {
       "id": "interest-rate",
@@ -762,7 +1915,85 @@
       "menu": { "kind": "nav", "label": "Interest rate calculator" },
       "coreFunctionIds": [],
       "host": "",
+      "parts": [
+        {
+          "id": "period-conversion",
+          "kind": "table",
+          "title": "Period conversion",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "interest-period"
+        },
+        {
+          "id": "contract-return",
+          "kind": "table",
+          "title": "Contract return projection",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "interest-contract",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "interest-period", "title": "Period conversion", "anchor": "interest-period" },
+        { "id": "interest-contract", "title": "Contract or premium", "anchor": "interest-contract" }
+      ],
       "description": "Compound equivalents on a 365-day year."
+    },
+    {
+      "id": "account-management",
+      "title": "Account Management",
+      "folder": "apps/desktop/src/features/accounts/",
+      "status": "extracted",
+      "menuAreas": ["Tools"],
+      "screen": "account-management",
+      "menu": { "kind": "nav", "label": "Account Management" },
+      "coreFunctionIds": [],
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "account-lists",
+          "kind": "control",
+          "title": "Account lists",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "accounts-tabs",
+          "export": "none"
+        },
+        {
+          "id": "brokerage-accounts",
+          "kind": "table",
+          "title": "Brokerage accounts",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "accounts-brokerage"
+        },
+        {
+          "id": "loan-accounts",
+          "kind": "table",
+          "title": "Loan accounts",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "accounts-loan",
+          "export": "none"
+        },
+        {
+          "id": "escrow-accounts",
+          "kind": "table",
+          "title": "Escrow accounts",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "accounts-escrow",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "accounts-tabs", "title": "Lists", "anchor": "accounts-tabs" },
+        { "id": "accounts-brokerage", "title": "Brokerage", "anchor": "accounts-brokerage" },
+        { "id": "accounts-loan", "title": "Loans", "anchor": "accounts-loan" },
+        { "id": "accounts-escrow", "title": "Escrow", "anchor": "accounts-escrow" }
+      ],
+      "description": "Brokerage account fields, loan Active/Inactive, escrow list (lists stay separate)."
     },
     {
       "id": "contract-positions",
@@ -778,6 +2009,7 @@
       "parts": [
         {
           "id": "contract-create",
+          "section": "contract-create",
           "kind": "function",
           "title": "Create contract",
           "description": "",
@@ -785,6 +2017,7 @@
         },
         {
           "id": "contract-open",
+          "section": "contract-open",
           "kind": "table",
           "title": "Open contracts",
           "description": "",
@@ -792,11 +2025,17 @@
         },
         {
           "id": "contract-closed",
+          "section": "contract-closed",
           "kind": "table",
           "title": "Closed contracts",
           "description": "",
           "coreFunctionIds": []
         }
+      ],
+      "sections": [
+        { "id": "contract-create", "title": "Create", "anchor": "contract-create" },
+        { "id": "contract-open", "title": "Open", "anchor": "contract-open" },
+        { "id": "contract-closed", "title": "Closed", "anchor": "contract-closed" }
       ],
       "sqliteTables": [
         {
@@ -830,11 +2069,35 @@
       "parts": [
         {
           "id": "cash-covered-puts",
+          "section": "roadmap-puts",
           "kind": "function",
           "title": "cash-covered short puts",
           "description": "A later hold reserves strike times 100 times quantity against cash. Cash does not move until assignment.",
           "coreFunctionIds": []
+        },
+        {
+          "id": "roadmap-checking",
+          "kind": "function",
+          "title": "Checking account",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "roadmap-checking",
+          "export": "none"
+        },
+        {
+          "id": "roadmap-transfers",
+          "kind": "function",
+          "title": "Inter-account transfers",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "roadmap-transfers",
+          "export": "none"
         }
+      ],
+      "sections": [
+        { "id": "roadmap-puts", "title": "Cash-covered puts", "anchor": "roadmap-puts" },
+        { "id": "roadmap-checking", "title": "Checking", "anchor": "roadmap-checking" },
+        { "id": "roadmap-transfers", "title": "Transfers", "anchor": "roadmap-transfers" }
       ]
     },
     {
@@ -851,11 +2114,34 @@
       "parts": [
         {
           "id": "calculator-columns",
+          "section": "field-intent-table",
           "kind": "table",
           "title": "Calculator columns",
           "description": "",
           "coreFunctionIds": []
+        },
+        {
+          "id": "field-intent-page",
+          "kind": "control",
+          "title": "Page filter",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "field-intent-controls",
+          "export": "none"
+        },
+        {
+          "id": "field-intent-status",
+          "kind": "control",
+          "title": "Status filter",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "field-intent-controls",
+          "export": "none"
         }
+      ],
+      "sections": [
+        { "id": "field-intent-controls", "title": "Filters", "anchor": "field-intent-controls" },
+        { "id": "field-intent-table", "title": "Fields", "anchor": "field-intent-table" }
       ]
     },
     {
@@ -868,6 +2154,86 @@
       "menu": { "kind": "nav", "label": "Task Manager" },
       "coreFunctionIds": ["cash-management-magi"],
       "host": "task.rs",
+      "parts": [
+        {
+          "id": "magi-cliff-panel",
+          "kind": "figures",
+          "title": "MAGI cliff panel",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "tasks-open",
+          "export": "none"
+        },
+        {
+          "id": "open-tasks",
+          "kind": "table",
+          "title": "Open this week",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "tasks-open",
+          "export": "none"
+        },
+        {
+          "id": "snoozed-tasks",
+          "kind": "table",
+          "title": "Snoozed",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "tasks-snoozed",
+          "export": "none"
+        },
+        {
+          "id": "done-tasks",
+          "kind": "table",
+          "title": "Done this week",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "tasks-done",
+          "export": "none"
+        },
+        {
+          "id": "built-task-rules",
+          "kind": "list",
+          "title": "Built task rules",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "tasks-rules",
+          "export": "none"
+        },
+        {
+          "id": "ticket-functions",
+          "kind": "list",
+          "title": "Ticket functions",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "tasks-rules",
+          "export": "none"
+        },
+        {
+          "id": "view-task",
+          "kind": "figures",
+          "title": "View task",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "tasks-rules",
+          "export": "none"
+        },
+        {
+          "id": "add-task",
+          "kind": "form",
+          "title": "Add task",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "tasks-rules",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "tasks-open", "title": "Open this week", "anchor": "tasks-open" },
+        { "id": "tasks-snoozed", "title": "Snoozed", "anchor": "tasks-snoozed" },
+        { "id": "tasks-done", "title": "Done", "anchor": "tasks-done" },
+        { "id": "tasks-rules", "title": "Add/View Task", "anchor": "tasks-rules" }
+      ],
       "sqliteTables": [
         {
           "name": "task",
@@ -879,13 +2245,27 @@
     {
       "id": "reevaluate-collector",
       "title": "Reevaluate collector",
-      "folder": "apps/desktop/src/App.tsx",
+      "folder": "apps/desktop/src/features/collectors/",
       "status": "in-app",
       "menuAreas": ["Tools"],
       "screen": "collector-establish",
       "menu": { "kind": "nav", "label": "Reevaluate collector" },
       "coreFunctionIds": [],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "establish-collector-fleet",
+          "kind": "table",
+          "title": "Establish collector fleet",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "establish-fleet",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "establish-fleet", "title": "Fleet", "anchor": "establish-fleet" }
+      ]
     },
     {
       "id": "tickets",
@@ -896,7 +2276,21 @@
       "screen": "tickets",
       "menu": { "kind": "nav", "label": "Tickets" },
       "coreFunctionIds": ["tickets-queue"],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "work-ticket-queue",
+          "kind": "table",
+          "title": "Work ticket queue",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "tickets-queue",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "tickets-queue", "title": "Work queue", "anchor": "tickets-queue" }
+      ]
     },
     {
       "id": "collectors",
@@ -912,7 +2306,98 @@
         "collectors-stats-truth",
         "tickets-queue"
       ],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "collector-run-actions",
+          "kind": "control",
+          "title": "Run actions",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "collectors-run",
+          "export": "none"
+        },
+        {
+          "id": "collector-run-log",
+          "kind": "table",
+          "title": "Collector run log",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "collectors-run",
+          "export": "none"
+        },
+        {
+          "id": "collector-statistics",
+          "kind": "figures",
+          "title": "Collector statistics",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "collectors-run",
+          "export": "none"
+        },
+        {
+          "id": "today-declaration-misses",
+          "kind": "table",
+          "title": "Today declaration misses",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "collectors-today",
+          "export": "none"
+        },
+        {
+          "id": "missing-collector-urls",
+          "kind": "table",
+          "title": "Missing issuer URLs",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "collectors-missing-urls",
+          "export": "none"
+        },
+        {
+          "id": "collector-fleet",
+          "kind": "table",
+          "title": "Collector fleet",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "collectors-fleet",
+          "export": "none"
+        },
+        {
+          "id": "collector-work-queue",
+          "kind": "table",
+          "title": "Work queue",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "collectors-work-queue",
+          "export": "none"
+        },
+        {
+          "id": "collector-retrieve-runs",
+          "kind": "table",
+          "title": "Retrieve runs",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "collectors-symbol",
+          "export": "none"
+        },
+        {
+          "id": "collector-retrieve-payload",
+          "kind": "table",
+          "title": "Retrieve payload",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "collectors-symbol",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "collectors-run", "title": "Run", "anchor": "collectors-run" },
+        { "id": "collectors-today", "title": "Today", "anchor": "collectors-today" },
+        { "id": "collectors-missing-urls", "title": "Missing URLs", "anchor": "collectors-missing-urls" },
+        { "id": "collectors-fleet", "title": "Fleet", "anchor": "collectors-fleet" },
+        { "id": "collectors-work-queue", "title": "Work queue", "anchor": "collectors-work-queue" },
+        { "id": "collectors-symbol", "title": "Symbol", "anchor": "collectors-symbol" }
+      ]
     },
     {
       "id": "import",
@@ -927,6 +2412,7 @@
       "parts": [
         {
           "id": "import-step",
+          "section": "import-step",
           "kind": "function",
           "title": "1. Import",
           "description": "",
@@ -934,6 +2420,7 @@
         },
         {
           "id": "validate-step",
+          "section": "validate-step",
           "kind": "function",
           "title": "2. Validate",
           "description": "",
@@ -941,11 +2428,17 @@
         },
         {
           "id": "loaded-step",
+          "section": "loaded-step",
           "kind": "function",
           "title": "Loaded",
           "description": "",
           "coreFunctionIds": []
         }
+      ],
+      "sections": [
+        { "id": "import-step", "title": "Import", "anchor": "import-step" },
+        { "id": "validate-step", "title": "Validate", "anchor": "validate-step" },
+        { "id": "loaded-step", "title": "Loaded", "anchor": "loaded-step" }
       ],
       "sqliteTables": [
         {
@@ -976,7 +2469,51 @@
         "settings-core-functions",
         "settings-retrieval-templates"
       ],
-      "host": "queries.rs"
+      "host": "queries.rs",
+      "parts": [
+        {
+          "id": "core-functions",
+          "kind": "table",
+          "title": "Core functions",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "settings-core-functions",
+          "export": "none"
+        },
+        {
+          "id": "retrieval-templates",
+          "kind": "table",
+          "title": "Retrieval templates",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "settings-templates",
+          "export": "none"
+        },
+        {
+          "id": "handoff-status",
+          "kind": "figures",
+          "title": "HandoffStatusGet",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "settings-handoff",
+          "export": "none"
+        },
+        {
+          "id": "settings-actions",
+          "kind": "control",
+          "title": "Device, snapshot and update actions",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "settings-actions",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "settings-core-functions", "title": "Core functions", "anchor": "settings-core-functions" },
+        { "id": "settings-templates", "title": "Retrieval templates", "anchor": "settings-templates" },
+        { "id": "settings-handoff", "title": "Handoff", "anchor": "settings-handoff" },
+        { "id": "settings-actions", "title": "Actions", "anchor": "settings-actions" }
+      ]
     },
     {
       "id": "components",
@@ -988,6 +2525,30 @@
       "menu": { "kind": "nav", "label": "Component Registry" },
       "coreFunctionIds": [],
       "host": "",
+      "parts": [
+        {
+          "id": "registry-page-list",
+          "kind": "list",
+          "title": "Pages and their components",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "registry-pages",
+          "export": "none"
+        },
+        {
+          "id": "also-registered",
+          "kind": "list",
+          "title": "Also registered",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "registry-also",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "registry-pages", "title": "Pages", "anchor": "registry-pages" },
+        { "id": "registry-also", "title": "Also registered", "anchor": "registry-also" }
+      ],
       "description": "UI extraction catalog: whether a screen has left App.tsx."
     },
     {
@@ -1000,6 +2561,49 @@
       "menu": { "kind": "embedded", "label": "Screen Atlas" },
       "coreFunctionIds": [],
       "host": "lib.rs",
+      "parts": [
+        {
+          "id": "atlas-capture-actions",
+          "kind": "control",
+          "title": "Capture actions",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "atlas-capture",
+          "export": "none"
+        },
+        {
+          "id": "atlas-log",
+          "kind": "figures",
+          "title": "Capture log",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "atlas-capture",
+          "export": "none"
+        },
+        {
+          "id": "atlas-file-list",
+          "kind": "list",
+          "title": "Captured PNG list",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "atlas-viewer",
+          "export": "none"
+        },
+        {
+          "id": "atlas-targets",
+          "kind": "table",
+          "title": "Atlas targets",
+          "description": "",
+          "coreFunctionIds": [],
+          "section": "atlas-targets",
+          "export": "none"
+        }
+      ],
+      "sections": [
+        { "id": "atlas-capture", "title": "Capture", "anchor": "atlas-capture" },
+        { "id": "atlas-viewer", "title": "Viewer", "anchor": "atlas-viewer" },
+        { "id": "atlas-targets", "title": "Targets", "anchor": "atlas-targets" }
+      ],
       "description": "Walk every menu surface, expand scroll panes, and save full-height PNGs plus an index."
     },
     {

@@ -15,6 +15,7 @@ const MANAGED_ELEMENT_ACCOUNTS = [
   "Car",
   "Account 9",
   "SSA_2026",
+  "Loan",
 ] as const;
 
 function selectedForBook(book: string): string[] {
@@ -178,7 +179,12 @@ export function CashElementsCatalog({
   );
 
   return (
-    <section className="cash-elements-catalog" id="cash-elements" aria-label="Elements catalog">
+    <section
+      className="cash-elements-catalog"
+      id="cash-elements"
+      data-section="elements-catalog"
+      aria-label="Elements catalog"
+    >
       <PageActivityCard page="elements" rootId="cash-elements" />
       <h3>Elements</h3>
       {editorOpen && exceptionsOpen && editorElement ? (
@@ -217,20 +223,26 @@ export function CashElementsCatalog({
         />
       ) : (
         <>
-          <AccountTickPicker
-            legend="Managed accounts"
-            allLabel="All managed accounts"
-            mode="allOrOne"
-            accounts={MANAGED_ELEMENT_ACCOUNTS}
-            selected={selectedForBook(book)}
-            onSelected={(next) => onBook(bookFromSelected(next))}
-          />
-          {drawFilter ? (
-            <p>Future unconfirmed withdrawals on Income, Speculation, and Account 9.</p>
-          ) : (
-            renderGroup("Deposits", "Add Deposit", "Deposit", deposits)
-          )}
-          {renderGroup("Withdrawals", "Add Withdrawal", "Withdrawal", withdrawals)}
+          <div data-part="element-account-picker">
+            <AccountTickPicker
+              legend="Managed accounts"
+              allLabel="All managed accounts"
+              mode="allOrOne"
+              accounts={MANAGED_ELEMENT_ACCOUNTS}
+              selected={selectedForBook(book)}
+              onSelected={(next) => onBook(bookFromSelected(next))}
+            />
+          </div>
+          <div data-part="element-deposits">
+            {drawFilter ? (
+              <p>Future unconfirmed withdrawals on Income, Speculation, and Account 9.</p>
+            ) : (
+              renderGroup("Deposits", "Add Deposit", "Deposit", deposits)
+            )}
+          </div>
+          <div data-part="element-withdrawals">
+            {renderGroup("Withdrawals", "Add Withdrawal", "Withdrawal", withdrawals)}
+          </div>
         </>
       )}
       <CashElementHistory

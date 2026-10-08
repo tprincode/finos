@@ -1914,6 +1914,7 @@ export function ShoppingCartScreen({
       {resumingCart ? (
         <p role="status">Returning to in-progress cart…</p>
       ) : !scenarioA ? (
+        <div id="cart-start" data-section="cart-start" data-part="cart-start-wizard">
         <CartStartWizard
           prompt={wizardPrompt}
           accounts={accounts}
@@ -1954,9 +1955,15 @@ export function ShoppingCartScreen({
             void create();
           }}
         />
+        </div>
       ) : (
         <>
-          <p aria-label="Open cart plan">
+          <p
+            aria-label="Open cart plan"
+            id="cart-plan"
+            data-section="cart-plan"
+            data-part="open-cart-plan"
+          >
             {accountName} · {scenarioA.name?.trim() || "Draft"}
           </p>
           <button
@@ -1969,6 +1976,7 @@ export function ShoppingCartScreen({
           </button>
           {agreedScene ? (
             <>
+            <div id="cart-execute" data-section="cart-execute" data-part="execute-plan-panel">
             <ExecutePlanPanel
               scenarioLabel={`Scenario ${scenarioA.slot ?? "A"}`}
               scenarioStatus={scenarioA.status}
@@ -2000,17 +2008,21 @@ export function ShoppingCartScreen({
               purchaseCostMinor={purchaseCostMinor}
               netDividendMinor={netDividendMinor}
             />
+            </div>
             {/*
               What the scenario change was, off the evaluation stored when the owner agreed.
               An agreed or completed cart used to show the close summary alone, so the week /
               month / year detail that the decision was made on disappeared the moment the cart
               closed. IncomeCompare reads `eval` directly, so nothing here is recomputed.
             */}
-            <IncomeCompare eval={scenarioA.eval ?? null} />
+            <div data-part="income-compare">
+              <IncomeCompare eval={scenarioA.eval ?? null} />
+            </div>
             </>
           ) : (
             <>
           {sellNote ? <p aria-label="Sell note">{sellNote}</p> : null}
+          <div id="cart-sell" data-section="cart-sell" data-part="sell-plan">
           <PlanSheetTable
             title="Sell"
             ariaLabel="Sell plan"
@@ -2140,6 +2152,8 @@ export function ShoppingCartScreen({
               </>
             }
           />
+          </div>
+          <div id="cart-buy" data-section="cart-buy" data-part="buy-scenario-a">
           <BuyBlock
             slot="A"
             rows={buyRowsA}
@@ -2169,6 +2183,7 @@ export function ShoppingCartScreen({
             </p>
           ) : null}
           {scenarioB ? (
+            <div data-part="buy-scenario-b">
             <BuyBlock
               slot="B"
               rows={buyRowsB}
@@ -2190,7 +2205,10 @@ export function ShoppingCartScreen({
               onAdd={() => void addBuy("B")}
               onRemoveRow={(lineId) => scenarioB && void removeBuy(scenarioB, lineId)}
             />
+            </div>
           ) : null}
+          </div>
+          <div id="cart-critique" data-section="cart-critique" data-part="scenario-delta">
           <ScenarioDelta
             sellRows={sellRowsAllocated}
             rowsA={buyRowsA}
@@ -2199,7 +2217,7 @@ export function ShoppingCartScreen({
             cashAfterA={budgetBalance(spendOf(buyRowsA))}
             cashAfterB={scenarioB ? budgetBalance(spendOf(buyRowsB)) : null}
           />
-          <section aria-label="Plan critique">
+          <section aria-label="Plan critique" data-part="plan-critique">
             <p>{critiqueFor("A", buyRowsA, scenarioB == null)}</p>
             {scenarioB ? (
               <>
@@ -2249,7 +2267,13 @@ export function ShoppingCartScreen({
               </label>
             ) : null}
           </section>
-          <div className="buttons">
+          </div>
+          <div
+            className="buttons"
+            id="cart-actions"
+            data-section="cart-actions"
+            data-part="cart-actions"
+          >
             <button
               type="button"
               aria-label="Evaluate scenario A"

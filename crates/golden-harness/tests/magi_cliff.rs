@@ -183,6 +183,24 @@ async fn g1_opening_lists_both_lines_and_inserts_no_activity() {
     let lines = payload["suggestions"].as_array().unwrap();
     assert!(lines.iter().any(|line| line.as_str().unwrap().starts_with("Cut remaining")));
     assert!(lines.iter().any(|line| line.as_str().unwrap().starts_with("Or book")));
+
+    // The capital-loss limit changes the MAGI number, not whether the task syncs.
+    let forecast = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/magiForecast.ts"),
+    )
+    .unwrap();
+    assert!(
+        forecast.contains("overageMinor: forecast.overage")
+            && forecast.contains("creditAtRiskMinor: forecast.creditAtRiskMinor")
+            && !forecast.contains("if (gains.unplaceableSale) return;"),
+        "MagiCliffTaskSync keeps reporting the current totals"
+    );
+    assert!(
+        forecast.contains("line.startsWith(\"Cut remaining\")")
+            && forecast.contains("line.startsWith(\"Or book\")")
+            && forecast.contains("line.startsWith(\"Or both\")"),
+        "only the cut / contribute lines reach the task payload"
+    );
 }
 
 #[tokio::test]

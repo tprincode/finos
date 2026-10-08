@@ -81,6 +81,7 @@ fn desktop_sources() -> String {
         "apps/desktop/src/features/collectors/CollectorsScreen.tsx",
         "apps/desktop/src/features/collectors/CollectorEstablishScreen.tsx",
         "apps/desktop/src/features/interest-rate/InterestRateCalculator.tsx",
+        "apps/desktop/src/features/accounts/AccountManagement.tsx",
         "apps/desktop/src/features/field-intent/FieldIntentScreen.tsx",
         "apps/desktop/src/features/contracts/ContractPositions.tsx",
         "apps/desktop/src/features/roadmap/RoadmapScreen.tsx",
@@ -159,8 +160,8 @@ fn owner_facing_calculated_fields_still_on_the_screens() {
             "Cash / money-market never receives an issuer declaration",
         ),
         (
-            "Income Plan weekComplete uses declTickets",
-            "const declTickets = planTickets.filter",
+            "Income Plan week payers exclude cash",
+            "const weekPayers = positionRows.filter((r) => !isCashSymbol(r.symbol))",
         ),
         ("Income Plan Decl $/sh", "Decl $/sh"),
         ("Income Plan % of Plan", "% of Plan"),
@@ -239,8 +240,18 @@ async fn live_screens_return_the_numbers_an_owner_would_check() {
     let calc_body: serde_json::Value =
         serde_json::from_str(calc.body_json.as_deref().unwrap_or("{}")).unwrap();
     assert!(
-        calc_body["rows"].as_array().map(|a| a.len()).unwrap_or(0) >= 40,
-        "Calculator must show imported plans, not an empty table: {calc_body}"
+        calc_body["rows"].as_array().map(|a| a.len()).unwrap_or(0) >= 38,
+        "Calculator must show imported DIV-1 plans, not an empty table: {calc_body}"
+    );
+    assert!(
+        calc_body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["symbol"] != "SPAXX"
+                && row["symbol"] != "FDRXX"
+                && row["symbol"] != "SWVXX"),
+        "cash stays off CalculatorGet: {calc_body}"
     );
 
     let dash = execute_query_on(&platform, &platform, qry("DashboardBurndownGet", as_of.clone()))
@@ -892,6 +903,7 @@ fn live_screens_atlas_catalog_and_snapshot_are_one_set() {
             "status",
             "folder",
             "menu areas",
+            "sections",
         ],
         &rows,
     )
@@ -946,6 +958,12 @@ fn live_screens_atlas_catalog_and_snapshot_are_one_set() {
             && !registry.contains("Export to Excel ${line.name}"),
         "component lines do not print a missing description or their own Excel button"
     );
+    assert!(
+        registry.contains("function sectionGroups(")
+            && registry.contains("aria-label={`Section ${group.label}`}")
+            && registry.contains("UNSECTIONED"),
+        "the registry groups components under their section and names the unplaced ones"
+    );
     for module in &catalog.modules {
         assert!(
             application_core::component_export::export_covers(&module.id, ""),
@@ -954,8 +972,19 @@ fn live_screens_atlas_catalog_and_snapshot_are_one_set() {
         );
         for part in &module.parts {
             assert!(
+                part.export.is_empty() || part.export == "none",
+                "component {} on {} has export `{}`. Use `none` or leave it empty — \
+                 a typo must not waive the export arm.",
+                part.id,
+                module.id,
+                part.export
+            );
+            if part.export == "none" {
+                continue;
+            }
+            assert!(
                 application_core::component_export::export_covers(&module.id, &part.id),
-                "add an export arm for part {} on {}",
+                "add an export arm for part {} on {}, or set its export to `none`",
                 part.id,
                 module.id
             );
@@ -1017,6 +1046,203 @@ fn quoted_field(src: &str, key: &str) -> Vec<String> {
     out
 }
 
+fn attr_values(src: &str, attr: &str) -> Vec<String> {
+    let needle = format!("{attr}=\"");
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(at) = rest.find(&needle) {
+        rest = &rest[at + needle.len()..];
+        let Some((value, next)) = rest.split_once('"') else {
+            break;
+        };
+        rest = next;
+        out.push(value.to_string());
+    }
+    out
+}
+
+/// Every `.ts`/`.tsx` behind a module's `folder`. That is a directory once the
+/// screen is extracted and a single file while it still sits in the shell.
+fn module_sources(folder: &str) -> String {
+    let path = repo_root().join(folder.trim_end_matches('/'));
+    if path.is_file() {
+        return std::fs::read_to_string(&path).unwrap_or_default();
+    }
+    let mut buf = String::new();
+    let Ok(entries) = std::fs::read_dir(&path) else {
+        return buf;
+    };
+    for entry in entries.flatten() {
+        let file = entry.path();
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext == "ts" || ext == "tsx" {
+            buf.push_str(&std::fs::read_to_string(&file).unwrap_or_default());
+            buf.push('\n');
+        }
+    }
+    buf
+}
+
+/// Ids declared by every module that reads from the same `folder`. Several
+/// modules share one folder, so a marker there belongs to any of them.
+fn declared_by_folder(
+    catalog: &application_core::contracts::CoreFunctionsGetBody,
+    pick: impl Fn(&application_core::contracts::UiModuleItem) -> Vec<String>,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut out: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for module in &catalog.modules {
+        out.entry(module.folder.clone())
+            .or_default()
+            .extend(pick(module));
+    }
+    out
+}
+
+/// Screen, then section, then the components inside it. The catalog is the
+/// crosscheck, so a section with no anchor, an anchor with no section, or a
+/// component sitting outside every section all fail here rather than leaving a
+/// shortcut the owner cannot reach.
+#[test]
+fn every_catalog_section_is_anchored_and_holds_its_components() {
+    let catalog = core_functions_catalog().expect("catalog");
+    let by_folder = declared_by_folder(&catalog, |module| {
+        module.sections.iter().map(|s| s.id.clone()).collect()
+    });
+    for module in &catalog.modules {
+        let src = module_sources(&module.folder);
+        let declared: Vec<&str> = module.sections.iter().map(|s| s.id.as_str()).collect();
+        let folder_declared = by_folder.get(&module.folder).cloned().unwrap_or_default();
+        for found in attr_values(&src, "data-section") {
+            assert!(
+                folder_declared.contains(&found),
+                "{} has data-section=\"{found}\" with no catalog section. \
+                 Register it under module `{}`. Do not delete the block.",
+                module.folder,
+                module.id
+            );
+        }
+        if module.sections.is_empty() {
+            continue;
+        }
+        for section in &module.sections {
+            assert!(
+                src.contains(&format!("data-section=\"{}\"", section.id)),
+                "mark the {} block in {} with data-section=\"{}\"",
+                section.title,
+                module.folder,
+                section.id
+            );
+            assert!(
+                src.contains(&format!("id=\"{}\"", section.anchor)),
+                "section `{}` on `{}` jumps to anchor `{}`, which is not in {}",
+                section.id,
+                module.id,
+                section.anchor,
+                module.folder
+            );
+        }
+        for part in &module.parts {
+            assert!(
+                declared.contains(&part.section.as_str()),
+                "component `{}` on `{}` names section `{}`, which `{}` does not declare",
+                part.id,
+                module.id,
+                part.section,
+                module.id
+            );
+        }
+    }
+}
+
+/// A component the registry lists must be findable on the screen, and a marked
+/// component must be in the registry. The reverse rule holds everywhere from
+/// the start; a module comes under the forward rule once it declares sections,
+/// which is how each screen batch joins the gate.
+#[test]
+fn every_registered_component_is_marked_on_its_screen() {
+    let catalog = core_functions_catalog().expect("catalog");
+    let by_folder = declared_by_folder(&catalog, |module| {
+        module.parts.iter().map(|p| p.id.clone()).collect()
+    });
+    for module in &catalog.modules {
+        let src = module_sources(&module.folder);
+        let folder_declared = by_folder.get(&module.folder).cloned().unwrap_or_default();
+        for found in attr_values(&src, "data-part") {
+            assert!(
+                folder_declared.contains(&found),
+                "{} has data-part=\"{found}\" with no registered component. \
+                 Add it to module `{}` in ui-modules.json. Do not delete the block.",
+                module.folder,
+                module.id
+            );
+        }
+        if module.sections.is_empty() {
+            continue;
+        }
+        for part in &module.parts {
+            // A component rendered by a `.map` cannot carry a literal attribute —
+            // the JSX writes `data-part={spec.part}`. It declares its id on the
+            // spec row instead, which keeps the registry id beside the definition.
+            let marked = src.contains(&format!("data-part=\"{}\"", part.id))
+                || src.contains(&format!("part: \"{}\"", part.id));
+            assert!(
+                marked,
+                "mark the {} block in {} with data-part=\"{}\", \
+                 or give its spec row part: \"{}\"",
+                part.title, module.folder, part.id, part.id
+            );
+        }
+    }
+}
+
+/// The nav row reads a static map so no screen pays for a catalog query. It
+/// only stays true while it matches the catalog section for section.
+#[test]
+fn page_nav_row_sections_match_the_catalog() {
+    let root = repo_root();
+    let nav = std::fs::read_to_string(root.join("apps/desktop/src/features/navigation/pageSections.ts"))
+        .expect("pageSections.ts");
+    let catalog = core_functions_catalog().expect("catalog");
+    for module in &catalog.modules {
+        if module.sections.is_empty() {
+            continue;
+        }
+        let key = if module.cm_desk.is_empty() {
+            module.screen.clone()
+        } else {
+            format!("{}/{}", module.screen, module.cm_desk)
+        };
+        assert!(
+            nav.contains(&format!("\"{key}\": [")),
+            "add a `{key}` entry to pageSections.ts for module `{}`",
+            module.id
+        );
+        for section in &module.sections {
+            assert!(
+                nav.contains(&format!(
+                    "{{ id: \"{}\", label: \"{}\", anchor: \"{}\" }}",
+                    section.id, section.title, section.anchor
+                )),
+                "pageSections.ts is missing `{}` ({} -> #{}) for `{key}`",
+                section.id,
+                section.title,
+                section.anchor
+            );
+        }
+    }
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).expect("App.tsx");
+    let row = std::fs::read_to_string(root.join("apps/desktop/src/features/navigation/PageNavRow.tsx"))
+        .expect("PageNavRow.tsx");
+    assert!(
+        app.contains("<PageNavRow") && row.contains("<ReturnToPrevious") && row.contains("<SectionNav"),
+        "the page nav row carries Return and the section shortcuts on every screen"
+    );
+}
+
+/// Named components Home and Trends must still register. This is the literal
+/// form of `every_registered_component_is_marked_on_its_screen`, kept until
+/// those two screens declare sections and carry `data-part`; the general rule
+/// covers them from that point. Do not delete it before then.
 #[test]
 fn home_component_lines_are_the_mounted_screen() {
     let catalog = core_functions_catalog().expect("catalog");

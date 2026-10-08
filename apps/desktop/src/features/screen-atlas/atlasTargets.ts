@@ -20,6 +20,7 @@ export type AtlasScreen =
   | "collector-establish"
   | "task-manager"
   | "interest-rate"
+  | "account-management"
   | "contract-positions"
   | "field-intent"
   | "roadmap"
@@ -227,6 +228,12 @@ export const ATLAS_TARGETS: readonly AtlasTarget[] = [
     label: "Interest rate calculator",
   },
   {
+    id: "account-management",
+    screen: "account-management",
+    menuPath: "Tools → Account Management",
+    label: "Account Management",
+  },
+  {
     id: "contract-positions",
     screen: "contract-positions",
     menuPath: "Tools → Contract positions",
@@ -284,6 +291,7 @@ export const ATLAS_SCREEN_IDS: readonly AtlasScreen[] = [
   "collector-establish",
   "task-manager",
   "interest-rate",
+  "account-management",
   "contract-positions",
   "field-intent",
   "roadmap",

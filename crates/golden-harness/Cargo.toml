@@ -57,3 +57,4 @@ financial-domain = { path = "../financial-domain" }
 tempfile.workspace = true
 tokio.workspace = true
 axum = { version = "0.8", default-features = false, features = ["json"] }
+zip = "2"

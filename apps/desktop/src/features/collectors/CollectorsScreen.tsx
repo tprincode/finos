@@ -138,7 +138,12 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                 Yahoo last price is separate and does not fill this page. Yahoo is
                 never a declaration source.
               </p>
-              <div className="buttons">
+              <div
+                className="buttons"
+                id="collectors-run"
+                data-section="collectors-run"
+                data-part="collector-run-actions"
+              >
                 <button
                   type="button"
                   aria-label="Run enabled collectors"
@@ -253,7 +258,7 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                     max={Math.max(collectorRunProgress.total, 1)}
                     value={collectorRunProgress.current}
                   />
-                  <div className="table-wrap">
+                  <div className="table-wrap" data-part="collector-run-log">
                     <table aria-label="Collector run log">
                       <thead>
                         <tr>
@@ -282,7 +287,7 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                 </section>
               ) : null}
               {collectorStats ? (
-                <p aria-label="Collector statistics">
+                <p aria-label="Collector statistics" data-part="collector-statistics">
                   Assigned {formatCount(collectorStats.assigned)}. Enabled{" "}
                   {formatCount(collectorStats.enabled)}. We collect these{" "}
                   {formatCount(collectorStats.enabled)} income names. Ran{" "}
@@ -336,7 +341,11 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                   .sort()
                   .at(-1);
                 return (
-                  <section aria-label="Today collector status">
+                  <section
+                    aria-label="Today collector status"
+                    id="collectors-today"
+                    data-section="collectors-today"
+                  >
                     <h3>Today&apos;s declaration status</h3>
                     <p>
                       As of {formatCollectorClock(latestStored || collectorStatusAt)}.{" "}
@@ -346,7 +355,7 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                       Older tickets below are a work queue, not this run.
                     </p>
                     {todayMisses.length > 0 ? (
-                      <div className="table-wrap">
+                      <div className="table-wrap" data-part="today-declaration-misses">
                         <table aria-label="Today declaration misses">
                           <thead>
                             <tr>
@@ -380,14 +389,18 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                   return null;
                 }
                 return (
-                  <section aria-label="Missing collector URLs">
+                  <section
+                    aria-label="Missing collector URLs"
+                    id="collectors-missing-urls"
+                    data-section="collectors-missing-urls"
+                  >
                     <h3>Missing issuer URLs</h3>
                     <p>
                       Paste Template Dividend (seed URL) for each failing DIV-1 or
                       CASH collector that has none. Apply before collect will succeed.
                       CASH does not take Template ROC. Empty cells stay empty.
                     </p>
-                    <div className="table-wrap">
+                    <div className="table-wrap" data-part="missing-collector-urls">
                       <table aria-label="Missing collector URLs">
                         <thead>
                           <tr>
@@ -459,14 +472,18 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                   </section>
                 );
               })()}
-              <section aria-label="Collector footer grid">
+              <section
+                aria-label="Collector footer grid"
+                id="collectors-fleet"
+                data-section="collectors-fleet"
+              >
               <h3>Fleet footer</h3>
               <p>
                 One row per open-lot collector — the same set as Run enabled.
                 Adapter is the face source. Missing ROC, declaration, price, or
                 actual is N/A, never $0.
               </p>
-              <div className="table-wrap">
+              <div className="table-wrap" data-part="collector-fleet">
                 <table aria-label="Collector fleet">
                   <thead>
                     <tr>
@@ -637,7 +654,12 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                 </table>
               </div>
               </section>
-              <section aria-label="Collector work queue">
+              <section
+                aria-label="Collector work queue"
+                id="collectors-work-queue"
+                data-section="collectors-work-queue"
+                data-part="collector-work-queue"
+              >
                 <h3>Work queue (not today&apos;s run log)</h3>
                 <p>
                   Open tickets stay until filed. Use Today&apos;s declaration status
@@ -687,7 +709,11 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                 />
               </section>
               {collectorSymbol ? (
-                <section aria-label="Collector symbol page">
+                <section
+                  aria-label="Collector symbol page"
+                  id="collectors-symbol"
+                  data-section="collectors-symbol"
+                >
                   <h3>{collectorSymbol}</h3>
                   <div className="buttons">
                     <button
@@ -713,7 +739,7 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                         : "unknown (not $0)"}
                     </p>
                   ) : null}
-                  <div className="table-wrap">
+                  <div className="table-wrap" data-part="collector-retrieve-runs">
                     <table aria-label="Retrieve runs">
                       <thead>
                         <tr>
@@ -746,7 +772,7 @@ export function CollectorsScreen(props: CollectorsScreenProps) {
                     </table>
                   </div>
                   {collectorPayload ? (
-                    <div className="table-wrap">
+                    <div className="table-wrap" data-part="collector-retrieve-payload">
                       <table aria-label="Collector retrieve payload">
                         <thead>
                           <tr>

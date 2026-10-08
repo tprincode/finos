@@ -11,6 +11,8 @@ use crate::contracts::{
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
 use chrono::{Months, NaiveDate};
+use financial_domain::calculator::{plan_payment_cents, PaymentCadence};
+use financial_domain::collector::calculator_view_includes;
 use financial_domain::trends::parse_iso_date;
 use uuid::Uuid;
 
@@ -155,6 +157,14 @@ pub async fn cash_coverage_get(
     let accounts = canonical.account_list().await?;
     let securities = canonical.security_list().await?;
     let plans = canonical.plan_history_list().await.unwrap_or_default();
+    let characteristics = canonical
+        .position_characteristic_list()
+        .await
+        .unwrap_or_default();
+    let char_by: HashMap<_, _> = characteristics
+        .iter()
+        .map(|c| (c.security_id, c))
+        .collect();
     let elements = canonical.cash_element_list().await.unwrap_or_default();
     let occurrences = canonical.planned_occurrence_list().await.unwrap_or_default();
 
@@ -165,6 +175,7 @@ pub async fn cash_coverage_get(
     let mut income_lines: Vec<CashCoverageIncomeLine> = Vec::new();
     let mut expense_lines: Vec<CashCoverageExpenseLine> = Vec::new();
 
+    // Same annual machine as Dividend Plan: DIV-1 + characteristic cadence periods.
     let mut grouped: HashMap<(String, String), (i64, i64)> = HashMap::new();
     for lot in &basis.lots {
         if lot.remaining_quantity_minor <= 0 {
@@ -190,6 +201,14 @@ pub async fn cash_coverage_get(
             .find(|s| s.security_id == lot.security_id)
             .map(|s| s.symbol.clone())
             .unwrap_or_else(|| "—".into());
+        let ch = char_by.get(&lot.security_id).copied();
+        if !calculator_view_includes(
+            ch.map(|c| c.div_type.as_str()).unwrap_or(""),
+            &symbol,
+            ch.map(|c| c.payment_frequency.as_str()).unwrap_or(""),
+        ) {
+            continue;
+        }
         let Some(plan) = current_plan(&plans, lot.security_id, as_of) else {
             income_lines.push(CashCoverageIncomeLine {
                 account: book.into(),
@@ -200,7 +219,12 @@ pub async fn cash_coverage_get(
             });
             continue;
         };
-        if plan.planning_periods_per_year == 0 || plan.amount_per_share_minor == 0 {
+        let periods = ch
+            .and_then(|c| PaymentCadence::parse(&c.payment_frequency))
+            .and_then(PaymentCadence::periods)
+            .map(i64::from)
+            .unwrap_or(0);
+        if periods == 0 || plan.amount_per_share_minor == 0 {
             income_lines.push(CashCoverageIncomeLine {
                 account: book.into(),
                 symbol,
@@ -210,13 +234,12 @@ pub async fn cash_coverage_get(
             });
             continue;
         }
-        let per = financial_domain::calculator::plan_payment_cents(
+        let per = plan_payment_cents(
             lot.remaining_quantity_minor,
             lot.quantity_scale,
             plan.amount_per_share_minor,
             plan.amount_scale,
         );
-        let periods = i64::from(plan.planning_periods_per_year);
         let entry = grouped.entry((book.to_string(), symbol)).or_insert((0, periods));
         entry.0 += per;
         entry.1 = periods;

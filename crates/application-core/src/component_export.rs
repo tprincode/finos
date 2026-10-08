@@ -1,13 +1,13 @@
 //! One workbook per catalog module and per named part. Blank stays blank.
-//! Missing money is the word unknown, never 0.
+//! Missing money is the word unknown, never 0. Calculator money/percent are Excel types.
 
-use rust_xlsxwriter::Workbook;
+use rust_xlsxwriter::{Format, Workbook};
 
 use crate::contracts::{
-    AccountValueHomeBody, CalculatorRowBody, CashCoverageRow, CashElementListItem,
-    CashManagementWeekRow, CashYtdRow, ComponentExportBody, DividendPlanRowBody,
-    ExternalManagedAccount, ExternalRegisterLine, HoldingsLotBody, IncomePlanPositionBody,
-    MarketImpactRowBody, PositionMasterRowBody, TrendsWeekPoint, WeekAheadRow,
+    AccountValueHomeBody, CashCoverageRow, CashElementListItem, CashManagementWeekRow, CashYtdRow,
+    ComponentExportBody, DeclarationHistoryRowBody, DividendPlanRowBody, ExternalManagedAccount,
+    ExternalRegisterLine, HoldingsLotBody, IncomePlanPositionBody, MarketImpactRowBody,
+    PositionMasterRowBody, TrendsWeekPoint, WeekAheadRow,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
@@ -16,6 +16,28 @@ struct Sheet {
     name: String,
     headers: Vec<&'static str>,
     rows: Vec<Vec<String>>,
+}
+
+/// Typed Excel cell. Calculator uses money/percent; other sheets stay Text.
+#[derive(Debug, Clone)]
+enum Cell {
+    Text(String),
+    Money { minor: i64, scale: u8 },
+    Percent { bps: i64 },
+    Shares { minor: i64, scale: u8 },
+    Count(i64),
+    Blank,
+}
+
+struct TypedSheet {
+    name: String,
+    headers: Vec<String>,
+    rows: Vec<Vec<Cell>>,
+}
+
+enum ExportSheet {
+    Text(Sheet),
+    Typed(TypedSheet),
 }
 
 pub fn export_covers(module_id: &str, part_id: &str) -> bool {
@@ -63,10 +85,14 @@ fn arm(module_id: &str, part_id: &str) -> Option<&'static str> {
         ("calculator", "") | ("calculator", "calculator-sheet") => "calculator",
         ("trends", "") | ("trends", "trends-weeks") => "trends",
         ("income-plan", "") => "income-plan",
-        ("market-impact", "") => "market-impact",
+        ("market-impact", "") | ("market-impact", "market-impact-windows") => "market-impact",
         ("dashboard", "") => "dashboard",
         ("position-details", "") => "position-master",
-        ("holdings", "") | ("lots", "") | ("add-lot", "") => "holdings",
+        ("holdings", "")
+        | ("holdings", "holdings-panel")
+        | ("holdings", "open-lots")
+        | ("lots", "")
+        | ("add-lot", "") => "holdings",
         ("shopping-cart", "") => "cart",
         ("cash-management", "") | ("cash-week-desk", "") | ("cm-cashflow-manager", "") => "cash-week",
         ("week-ahead", "") | ("cm-weekly-updates", "") => "week-ahead",
@@ -76,7 +102,10 @@ fn arm(module_id: &str, part_id: &str) -> Option<&'static str> {
         ("cash-elements", "") | ("cm-element-management", "") => "elements",
         ("cm-coverage", "") => "coverage",
         ("cm-external", "") | ("cm-external", "cct-register") => "register",
-        ("cm-debt-planner", "") | ("cm-debt-planner", "debt-accounts") => "debt",
+        ("cm-debt-planner", "")
+        | ("cm-debt-planner", "debt-accounts")
+        | ("cm-debt-planner", "debt-buckets") => "debt",
+        ("account-management", "") | ("account-management", "brokerage-accounts") => "accounts",
         ("new-investment-readiness", "") | ("add-position", "") | ("collectors", "") | ("reevaluate-collector", "") => {
             "securities"
         }
@@ -86,7 +115,7 @@ fn arm(module_id: &str, part_id: &str) -> Option<&'static str> {
         | ("contract-positions", "contract-closed") => "contracts",
         ("task-manager", "") | ("tickets", "") => "tasks",
         ("import", "") => "import",
-        ("interest-rate", "") => "interest",
+        ("interest-rate", "") | ("interest-rate", "period-conversion") => "interest",
         ("field-intent", "") | ("field-intent", "calculator-columns") => "field-intent",
         ("roadmap", "") | ("roadmap", "cash-covered-puts") => "catalog",
         ("settings", "") | ("components", "") | ("screen-atlas", "") | ("shell", "") => "catalog",
@@ -107,13 +136,19 @@ pub async fn export_component(
         )
     })?;
     let title = sheet_title(module_id, part_id);
-    let sheet = build_kind_sheet(canonical, module_id, part_id, as_of, kind).await?;
-    let named = Sheet {
-        name: title,
-        headers: sheet.headers,
-        rows: sheet.rows,
+    let sheet = if kind == "calculator" {
+        let mut typed = calculator_typed_sheet(canonical, as_of).await?;
+        typed.name = title;
+        ExportSheet::Typed(typed)
+    } else {
+        let built = build_kind_sheet(canonical, module_id, part_id, as_of, kind).await?;
+        ExportSheet::Text(Sheet {
+            name: title,
+            headers: built.headers,
+            rows: built.rows,
+        })
     };
-    let bytes = workbook_bytes(std::slice::from_ref(&named))
+    let bytes = export_workbook_bytes(std::slice::from_ref(&sheet))
         .map_err(|e| PlatformError::new("export_failed", e))?;
     let stem = if part_id.is_empty() {
         module_id.to_string()
@@ -153,7 +188,11 @@ async fn build_kind_sheet(
         "monthly-divs" => week_metric_sheet(canonical, as_of, "monthly").await,
         "all-cash" => week_metric_sheet(canonical, as_of, "cash").await,
         "fid-sch" => week_metric_sheet(canonical, as_of, "fidsch").await,
-        "calculator" => calculator_sheet(canonical).await,
+        "calculator" => {
+            // Typed path is taken in export_component / export_page. This arm
+            // stays for the string Sheet contract used by unique_sheet_names tests.
+            calculator_legacy_sheet(canonical).await
+        }
         "trends" => trends_sheet(canonical, as_of).await,
         "income-plan" => income_plan_sheet(canonical, as_of).await,
         "market-impact" => market_impact_sheet(canonical).await,
@@ -168,6 +207,7 @@ async fn build_kind_sheet(
         "coverage" => coverage_sheet(canonical, as_of).await,
         "register" => register_sheet(canonical).await,
         "debt" => debt_sheet(canonical).await,
+        "accounts" => accounts_sheet(canonical).await,
         "securities" => securities_sheet(canonical).await,
         "contracts" => contracts_sheet(canonical).await,
         "tasks" => tasks_sheet(canonical).await,
@@ -252,31 +292,119 @@ fn sheet_name(title: &str) -> String {
     name.chars().take(31).collect()
 }
 
+#[cfg(test)]
 fn workbook_bytes(sheets: &[Sheet]) -> Result<Vec<u8>, String> {
+    let export: Vec<ExportSheet> = sheets
+        .iter()
+        .map(|s| {
+            ExportSheet::Text(Sheet {
+                name: s.name.clone(),
+                headers: s.headers.clone(),
+                rows: s.rows.clone(),
+            })
+        })
+        .collect();
+    export_workbook_bytes(&export)
+}
+
+fn export_workbook_bytes(sheets: &[ExportSheet]) -> Result<Vec<u8>, String> {
     let mut wb = Workbook::new();
-    let names = unique_sheet_names(sheets);
+    let names = unique_export_sheet_names(sheets);
+    let money2 = Format::new().set_num_format("$#,##0.00");
+    let percent = Format::new().set_num_format("0.00%");
     for (sheet, name) in sheets.iter().zip(names) {
         let ws = wb.add_worksheet();
         ws.set_name(&name).map_err(|e| e.to_string())?;
-        for (c, h) in sheet.headers.iter().enumerate() {
-            ws.write_string(0, c as u16, *h)
-                .map_err(|e| e.to_string())?;
-        }
-        for (r, row) in sheet.rows.iter().enumerate() {
-            for (c, cell) in row.iter().enumerate() {
-                ws.write_string((r + 1) as u32, c as u16, cell)
-                    .map_err(|e| e.to_string())?;
+        match sheet {
+            ExportSheet::Text(sheet) => {
+                for (c, h) in sheet.headers.iter().enumerate() {
+                    ws.write_string(0, c as u16, *h)
+                        .map_err(|e| e.to_string())?;
+                }
+                for (r, row) in sheet.rows.iter().enumerate() {
+                    for (c, cell) in row.iter().enumerate() {
+                        ws.write_string((r + 1) as u32, c as u16, cell)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            ExportSheet::Typed(sheet) => {
+                for (c, h) in sheet.headers.iter().enumerate() {
+                    ws.write_string(0, c as u16, h)
+                        .map_err(|e| e.to_string())?;
+                }
+                for (r, row) in sheet.rows.iter().enumerate() {
+                    let excel_row = (r + 1) as u32;
+                    for (c, cell) in row.iter().enumerate() {
+                        let col = c as u16;
+                        match cell {
+                            Cell::Text(text) => {
+                                ws.write_string(excel_row, col, text)
+                                    .map_err(|e| e.to_string())?;
+                            }
+                            Cell::Blank => {}
+                            Cell::Money { minor, scale } => {
+                                let major = *minor as f64 / 10f64.powi(i32::from(*scale));
+                                let fmt = if *scale == 2 {
+                                    money2.clone()
+                                } else if *scale == 0 {
+                                    Format::new().set_num_format("$#,##0")
+                                } else {
+                                    Format::new().set_num_format(format!(
+                                        "$#,##0.{}",
+                                        "0".repeat(*scale as usize)
+                                    ))
+                                };
+                                ws.write_number_with_format(excel_row, col, major, &fmt)
+                                    .map_err(|e| e.to_string())?;
+                            }
+                            Cell::Percent { bps } => {
+                                let value = *bps as f64 / 10_000.0;
+                                ws.write_number_with_format(excel_row, col, value, &percent)
+                                    .map_err(|e| e.to_string())?;
+                            }
+                            Cell::Shares { minor, scale } => {
+                                let value = *minor as f64 / 10f64.powi(i32::from(*scale));
+                                ws.write_number(excel_row, col, value)
+                                    .map_err(|e| e.to_string())?;
+                            }
+                            Cell::Count(n) => {
+                                ws.write_number(excel_row, col, *n as f64)
+                                    .map_err(|e| e.to_string())?;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
     wb.save_to_buffer().map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
 fn unique_sheet_names(sheets: &[Sheet]) -> Vec<String> {
+    let export: Vec<ExportSheet> = sheets
+        .iter()
+        .map(|s| {
+            ExportSheet::Text(Sheet {
+                name: s.name.clone(),
+                headers: s.headers.clone(),
+                rows: s.rows.clone(),
+            })
+        })
+        .collect();
+    unique_export_sheet_names(&export)
+}
+
+fn unique_export_sheet_names(sheets: &[ExportSheet]) -> Vec<String> {
     let mut used = std::collections::HashSet::new();
     let mut names = Vec::with_capacity(sheets.len());
     for sheet in sheets {
-        let base = sheet_name(&sheet.name);
+        let title = match sheet {
+            ExportSheet::Text(s) => s.name.as_str(),
+            ExportSheet::Typed(s) => s.name.as_str(),
+        };
+        let base = sheet_name(title);
         let mut name = base.clone();
         let mut n = 2u32;
         while !used.insert(name.clone()) {
@@ -324,14 +452,22 @@ pub async fn export_page(
                 format!("no export arm for {module_id} {part_id}"),
             )
         })?;
-        let built = build_kind_sheet(canonical, module_id, part_id, as_of, kind).await?;
-        sheets.push(Sheet {
-            name: sheet_title(module_id, part_id),
-            headers: built.headers,
-            rows: built.rows,
-        });
+        let title = sheet_title(module_id, part_id);
+        if kind == "calculator" {
+            let mut typed = calculator_typed_sheet(canonical, as_of).await?;
+            typed.name = title;
+            sheets.push(ExportSheet::Typed(typed));
+        } else {
+            let built = build_kind_sheet(canonical, module_id, part_id, as_of, kind).await?;
+            sheets.push(ExportSheet::Text(Sheet {
+                name: title,
+                headers: built.headers,
+                rows: built.rows,
+            }));
+        }
     }
-    let bytes = workbook_bytes(&sheets).map_err(|e| PlatformError::new("export_failed", e))?;
+    let bytes =
+        export_workbook_bytes(&sheets).map_err(|e| PlatformError::new("export_failed", e))?;
     Ok(ComponentExportBody {
         default_file_name: page_file_name(page_label),
         bytes_base64: crate::cash_register::b64_encode(&bytes),
@@ -706,12 +842,24 @@ async fn week_metric_sheet(
     })
 }
 
-async fn calculator_sheet(canonical: &dyn Canonical) -> Result<Sheet, PlatformError> {
+async fn calculator_legacy_sheet(canonical: &dyn Canonical) -> Result<Sheet, PlatformError> {
     let body = crate::queries::calculator_view(canonical).await?;
     let rows = body
         .rows
         .iter()
-        .map(calculator_line)
+        .map(|row| {
+            vec![
+                row.symbol.clone(),
+                money_unknown(row.last_price_minor, row.last_price_scale.unwrap_or(2)),
+                row.payment_frequency.clone(),
+                money_text(row.remaining_quantity_minor, row.quantity_scale),
+                if row.plan_known {
+                    money_text(row.plan_payment_minor, row.plan_scale)
+                } else {
+                    String::new()
+                },
+            ]
+        })
         .collect();
     Ok(Sheet {
         name: "Calculator".into(),
@@ -720,19 +868,477 @@ async fn calculator_sheet(canonical: &dyn Canonical) -> Result<Sheet, PlatformEr
     })
 }
 
-fn calculator_line(row: &CalculatorRowBody) -> Vec<String> {
-    let price_scale = row.last_price_scale.unwrap_or(2);
-    vec![
-        row.symbol.clone(),
-        money_unknown(row.last_price_minor, price_scale),
-        row.payment_frequency.clone(),
-        money_text(row.remaining_quantity_minor, row.quantity_scale),
-        if row.plan_known {
-            money_text(row.plan_payment_minor, row.plan_scale)
-        } else {
-            "unknown".into()
-        },
+fn money_cell(minor: Option<i64>, scale: u8) -> Cell {
+    match minor {
+        None => Cell::Blank,
+        Some(v) => Cell::Money { minor: v, scale },
+    }
+}
+
+fn percent_cell(bps: Option<i64>) -> Cell {
+    match bps {
+        None => Cell::Blank,
+        Some(v) => Cell::Percent { bps: v },
+    }
+}
+
+fn text_or_dash(value: &str) -> Cell {
+    let t = value.trim();
+    if t.is_empty() {
+        Cell::Text("—".into())
+    } else {
+        Cell::Text(t.to_string())
+    }
+}
+
+/// Full live Calculator sheet: field-intent columns + dated week heads. DIV-1 only.
+async fn calculator_typed_sheet(
+    canonical: &dyn Canonical,
+    as_of: &str,
+) -> Result<TypedSheet, PlatformError> {
+    let master = crate::queries::position_master_view(canonical).await?;
+    let history = crate::queries::declaration_history_view(
+        canonical,
+        as_of,
+        "all",
+        None,
+        Some(as_of),
+        None,
+    )
+    .await?;
+    let history_by: std::collections::HashMap<&str, &DeclarationHistoryRowBody> = history
+        .rows
+        .iter()
+        .map(|row| (row.symbol.as_str(), row))
+        .collect();
+    let household_ex_cash: i64 = master
+        .rows
+        .iter()
+        .filter(|row| !row.cash_par)
+        .filter_map(|row| row.market_value_minor)
+        .sum();
+    let mut headers: Vec<String> = calculator_static_headers()
+        .iter()
+        .map(|h| (*h).to_string())
+        .collect();
+    for friday in &history.week_ends {
+        headers.push(friday.clone());
+    }
+    let mut rows = Vec::new();
+    for row in &master.rows {
+        if row.cash_par {
+            continue;
+        }
+        if !financial_domain::collector::calculator_view_includes(
+            &row.div_type,
+            &row.symbol,
+            &row.payment_frequency,
+        ) {
+            continue;
+        }
+        if row.remaining_quantity_minor <= 0 && !row.plan_known {
+            continue;
+        }
+        let hist = history_by.get(row.symbol.as_str()).copied();
+        rows.push(calculator_typed_row(
+            row,
+            hist,
+            household_ex_cash,
+            history.week_ends.len(),
+        ));
+    }
+    Ok(TypedSheet {
+        name: "Calculator".into(),
+        headers,
+        rows,
+    })
+}
+
+fn calculator_static_headers() -> &'static [&'static str] {
+    &[
+        "Symbol",
+        "Price",
+        "Port %",
+        "Risk",
+        "Account",
+        "Shares",
+        "Cost",
+        "Avg px",
+        "Gain $",
+        "Gain %",
+        "YOC",
+        "FWD",
+        "MC FWD",
+        "Annual",
+        "Plan",
+        "Type",
+        "Sched",
+        "Div recv",
+        "ROC $",
+        "Cost rec",
+        "ROC %",
+        "Declares",
+        "Ex-date",
+        "Payday",
+        "Decl freshness",
+        "Decl count",
+        "Ann / share",
+        "Recent / share",
+        "Recent total",
+        "Realized %",
+        "Calculator blend",
+        "MC TVAL",
+        "TVAL Δ",
+        "3-pay yield",
+        "Plan Δ",
+        "Over/Under",
+        "Plan pay",
+        "Current pay",
+        "Most current",
+        "Avg 3",
+        "Avg 6",
+        "Paid",
+        "Plan check",
     ]
+}
+
+fn calculator_typed_row(
+    row: &PositionMasterRowBody,
+    hist: Option<&DeclarationHistoryRowBody>,
+    household_ex_cash: i64,
+    week_count: usize,
+) -> Vec<Cell> {
+    let scale = row.scale;
+    let price_scale = row.last_price_scale.unwrap_or(2);
+    let port_bps = if household_ex_cash > 0 {
+        row.market_value_minor
+            .map(|mv| ((mv as i128 * 10_000) / household_ex_cash as i128) as i64)
+    } else {
+        None
+    };
+    let gain = row
+        .market_value_minor
+        .map(|mv| mv - row.remaining_performance_minor);
+    let blend = match (row.unrealized_pnl_bps, row.plan_fwd_yield_bps) {
+        (Some(pnl), Some(fwd)) => Some((pnl * 2 + fwd) / 2),
+        _ => None,
+    };
+    let mc_blend = match (row.unrealized_pnl_bps, row.most_current_fwd_yield_bps) {
+        (Some(pnl), Some(fwd)) => Some((pnl * 2 + fwd) / 2),
+        _ => None,
+    };
+    let tval_delta = match (mc_blend, blend) {
+        (Some(a), Some(b)) => Some(a - b),
+        _ => None,
+    };
+    let newest = hist.and_then(|h| h.recent_pays.first());
+    let newest_minor = newest.and_then(|p| p.amount_per_share_minor);
+    let newest_scale = newest.map(|p| p.amount_scale).unwrap_or(4);
+    let plan_pay = if row.plan_known && row.remaining_quantity_minor > 0 {
+        Some(lot_times_per_share(
+            row.plan_per_share_minor,
+            row.plan_scale,
+            row.remaining_quantity_minor,
+            row.quantity_scale,
+        ))
+    } else {
+        None
+    };
+    let current_pay = newest_minor.map(|per| {
+        lot_times_per_share(
+            per,
+            newest_scale,
+            row.remaining_quantity_minor,
+            row.quantity_scale,
+        )
+    });
+    let plan_delta = match (newest_minor, row.plan_known) {
+        (Some(per), true) => {
+            let decl = lot_times_per_share(
+                per,
+                newest_scale,
+                row.remaining_quantity_minor,
+                row.quantity_scale,
+            );
+            let plan = plan_pay.unwrap_or(0);
+            Some(decl - plan)
+        }
+        _ => None,
+    };
+    let over_under = match (newest_minor, row.plan_known) {
+        (Some(per), true) if row.plan_per_share_minor != 0 => {
+            let left = scale_to_scale4(per, newest_scale);
+            let right = scale_to_scale4(row.plan_per_share_minor, row.plan_scale);
+            if right == 0 {
+                None
+            } else {
+                Some(((left - right) * 10_000) / right)
+            }
+        }
+        _ => None,
+    };
+    let ann_share = if row.plan_known {
+        Some(row.plan_per_share_minor.saturating_mul(i64::from(
+            periods_per_year(&row.payment_frequency).unwrap_or(0),
+        )))
+    } else {
+        None
+    };
+    let recent_share = newest_minor.map(|per| {
+        per.saturating_mul(i64::from(
+            periods_per_year(&row.payment_frequency).unwrap_or(0),
+        ))
+    });
+    let recent_total = recent_share.map(|per_year| {
+        lot_times_per_share(
+            per_year,
+            newest_scale,
+            row.remaining_quantity_minor,
+            row.quantity_scale,
+        )
+    });
+    let three_yield = three_pay_yield_bps(hist, row.last_price_minor, &row.payment_frequency);
+    let paid = hist.and_then(|h| {
+        let mut sum: i64 = 0;
+        let mut any = false;
+        for cell in &h.cells {
+            if let Some(amt) = cell.amount_per_share_minor {
+                sum += scale_to_cents(amt, cell.amount_scale);
+                any = true;
+            }
+        }
+        if any {
+            Some(sum)
+        } else {
+            None
+        }
+    });
+    let plan_check = plan_check_text(hist, row.plan_known, row.plan_per_share_minor, row.plan_scale);
+    let avg3 = hist.and_then(|h| h.avg3_minor.map(|m| (m, h.avg3_scale)));
+    let avg6 = hist.and_then(|h| h.avg6_minor.map(|m| (m, h.avg6_scale)));
+    let roc = calculator_roc_percent(row);
+
+    let mut cells = vec![
+        Cell::Text(row.symbol.clone()),
+        money_cell(row.last_price_minor, price_scale),
+        percent_cell(port_bps),
+        text_or_dash(&row.risk_tier),
+        Cell::Text("—".into()),
+        Cell::Shares {
+            minor: row.remaining_quantity_minor,
+            scale: row.quantity_scale,
+        },
+        Cell::Money {
+            minor: row.remaining_performance_minor,
+            scale,
+        },
+        money_cell(row.unit_cost_minor, 2),
+        money_cell(gain, scale),
+        percent_cell(row.unrealized_pnl_bps),
+        percent_cell(row.plan_yoc_bps),
+        percent_cell(row.plan_fwd_yield_bps),
+        percent_cell(row.most_current_fwd_yield_bps),
+        money_cell(row.annual_plan_minor, scale),
+        if row.plan_known {
+            Cell::Money {
+                minor: row.plan_per_share_minor,
+                scale: row.plan_scale,
+            }
+        } else {
+            Cell::Blank
+        },
+        text_or_dash(&row.div_type),
+        text_or_dash(&row.payment_frequency),
+        if row.distributions_scope == "incomplete" {
+            Cell::Blank
+        } else {
+            money_cell(row.total_distributions_received_minor, scale)
+        },
+        if row.distributions_scope == "incomplete" {
+            Cell::Blank
+        } else {
+            money_cell(row.roc_distributions_minor, scale)
+        },
+        percent_cell(row.cost_recovery_bps),
+        match roc {
+            Some((minor, roc_scale)) => {
+                // Display percent: minor/10^scale is already a percent number (e.g. 99.7).
+                // Excel 0.00% wants a fraction, so convert percent → bps → fraction.
+                let bps = ((minor as f64 / 10f64.powi(i32::from(roc_scale))) * 100.0).round() as i64;
+                Cell::Percent { bps }
+            }
+            None => Cell::Blank,
+        },
+        text_or_dash(&row.declaration_weekday),
+        text_or_dash(&row.exdate_weekday),
+        text_or_dash(&row.payday_weekday),
+        text_or_dash(&row.declaration_freshness),
+        Cell::Count(row.declaration_count as i64),
+        money_cell(ann_share, row.plan_scale),
+        money_cell(recent_share, newest_scale),
+        money_cell(recent_total, 2),
+        percent_cell(row.cost_recovery_bps),
+        percent_cell(blend),
+        percent_cell(mc_blend),
+        percent_cell(tval_delta),
+        percent_cell(three_yield),
+        money_cell(plan_delta, 2),
+        percent_cell(over_under),
+        money_cell(plan_pay, 2),
+        money_cell(current_pay, 2),
+        money_cell(newest_minor, newest_scale),
+        match avg3 {
+            Some((minor, scale)) => Cell::Money { minor, scale },
+            None => Cell::Blank,
+        },
+        match avg6 {
+            Some((minor, scale)) => Cell::Money { minor, scale },
+            None => Cell::Blank,
+        },
+        money_cell(paid, 2),
+        Cell::Text(plan_check),
+    ];
+    let empty_weeks = week_count;
+    if let Some(h) = hist {
+        for cell in &h.cells {
+            cells.push(match cell.amount_per_share_minor {
+                None => Cell::Blank,
+                Some(amt) => Cell::Money {
+                    minor: amt,
+                    scale: cell.amount_scale,
+                },
+            });
+        }
+        for _ in h.cells.len()..empty_weeks {
+            cells.push(Cell::Blank);
+        }
+    } else {
+        for _ in 0..empty_weeks {
+            cells.push(Cell::Blank);
+        }
+    }
+    cells
+}
+
+fn periods_per_year(freq: &str) -> Option<u8> {
+    match freq.trim().to_ascii_lowercase().as_str() {
+        "weekly" => Some(52),
+        "monthly" => Some(12),
+        "quarterly" => Some(4),
+        "twice monthly" | "twice-monthly" | "semimonthly" => Some(24),
+        "annual" | "yearly" => Some(1),
+        _ => None,
+    }
+}
+
+fn scale_to_cents(minor: i64, scale: u8) -> i64 {
+    if scale <= 2 {
+        minor * 10i64.pow(u32::from(2 - scale))
+    } else {
+        minor / 10i64.pow(u32::from(scale - 2))
+    }
+}
+
+fn scale_to_scale4(minor: i64, scale: u8) -> i64 {
+    if scale <= 4 {
+        minor * 10i64.pow(u32::from(4 - scale))
+    } else {
+        minor / 10i64.pow(u32::from(scale - 4))
+    }
+}
+
+fn lot_times_per_share(
+    per_share_minor: i64,
+    per_share_scale: u8,
+    qty_minor: i64,
+    qty_scale: u8,
+) -> i64 {
+    // Result in cents (scale 2): (per * qty) / 10^(per_scale + qty_scale - 2)
+    let num = (per_share_minor as i128) * (qty_minor as i128);
+    let denom_exp = i32::from(per_share_scale) + i32::from(qty_scale) - 2;
+    if denom_exp >= 0 {
+        (num / 10i128.pow(denom_exp as u32)) as i64
+    } else {
+        (num * 10i128.pow((-denom_exp) as u32)) as i64
+    }
+}
+
+fn calculator_roc_percent(row: &PositionMasterRowBody) -> Option<(i64, u8)> {
+    let scale = row.roc_scale?;
+    if let Some(v) = row.roc_pct_2026_actual_minor {
+        return Some((v, scale));
+    }
+    if let Some(v) = row.roc_pct_2026_estimate_minor {
+        return Some((v, scale));
+    }
+    if let Some(v) = row.roc_pct_2025_actual_minor {
+        return Some((v, scale));
+    }
+    None
+}
+
+fn three_pay_yield_bps(
+    hist: Option<&DeclarationHistoryRowBody>,
+    last_price_minor: Option<i64>,
+    freq: &str,
+) -> Option<i64> {
+    let price = last_price_minor.filter(|p| *p > 0)?;
+    let periods = i64::from(periods_per_year(freq)?);
+    let pays = &hist?.in_force_pays;
+    let mut sum = 0i64;
+    let mut count = 0usize;
+    for pay in pays.iter().filter(|p| p.amount_per_share_minor.is_some()).take(3) {
+        let amt = pay.amount_per_share_minor?;
+        sum += scale_to_scale4(amt, pay.amount_scale);
+        count += 1;
+    }
+    if count < 3 {
+        return None;
+    }
+    let mean = sum / 3;
+    let annual = mean * periods;
+    // price is typically scale 2; convert to scale 4 for ratio
+    let price4 = scale_to_scale4(price, 2);
+    if price4 == 0 {
+        return None;
+    }
+    Some((annual * 10_000) / price4)
+}
+
+fn plan_check_text(
+    hist: Option<&DeclarationHistoryRowBody>,
+    plan_known: bool,
+    plan_minor: i64,
+    plan_scale: u8,
+) -> String {
+    if !plan_known {
+        return "unknown".into();
+    }
+    let Some(h) = hist else {
+        return "unknown".into();
+    };
+    let plan4 = scale_to_scale4(plan_minor, plan_scale);
+    let mut above = 0u32;
+    let mut equal = 0u32;
+    let mut below = 0u32;
+    for pay in &h.in_force_pays {
+        let Some(amt) = pay.amount_per_share_minor else {
+            continue;
+        };
+        let a = scale_to_scale4(amt, pay.amount_scale);
+        if a > plan4 {
+            above += 1;
+        } else if a < plan4 {
+            below += 1;
+        } else {
+            equal += 1;
+        }
+    }
+    let counted = above + equal + below;
+    if counted == 0 {
+        return "unknown".into();
+    }
+    format!("{above}↑ {equal}= {below}↓")
 }
 
 async fn trends_sheet(canonical: &dyn Canonical, as_of: &str) -> Result<Sheet, PlatformError> {
@@ -1029,6 +1635,34 @@ async fn debt_sheet(canonical: &dyn Canonical) -> Result<Sheet, PlatformError> {
     })
 }
 
+async fn accounts_sheet(canonical: &dyn Canonical) -> Result<Sheet, PlatformError> {
+    let rows = canonical
+        .account_list()
+        .await?
+        .into_iter()
+        .map(|row| {
+            vec![
+                row.name,
+                row.kind,
+                row.cash_symbol,
+                row.broker_account_number,
+                money_unknown(row.min_balance_target_minor, 2),
+            ]
+        })
+        .collect();
+    Ok(Sheet {
+        name: "Account Management".into(),
+        headers: vec![
+            "Account",
+            "Kind",
+            "Cash symbol",
+            "Broker account number",
+            "Min balance target",
+        ],
+        rows,
+    })
+}
+
 fn debt_line(row: &ExternalManagedAccount) -> Vec<String> {
     let apr = match row.apr_ppm {
         None => "unknown".into(),
@@ -1140,7 +1774,7 @@ fn interest_sheet() -> Sheet {
 fn field_intent_sheet() -> Sheet {
     Sheet {
         name: "Calculator columns".into(),
-        headers: vec!["Column", "Intent", "Formula", "Status"],
+        headers: vec!["Column", "Kind", "Intent", "Formula", "Status"],
         rows: field_intent_rows(),
     }
 }
@@ -1149,17 +1783,31 @@ fn field_intent_rows() -> Vec<Vec<String>> {
     const SOURCE: &str = include_str!("../../../apps/desktop/src/features/field-intent/calculatorColumns.ts");
     let mut rows = Vec::new();
     let mut name = String::new();
+    let mut kind = String::new();
     let mut intent = String::new();
     let mut formula = String::new();
     let mut status = String::new();
     let mut seen = false;
     let mut pending = "";
-    let flush = |rows: &mut Vec<Vec<String>>, seen: &mut bool, name: &mut String, intent: &mut String, formula: &mut String, status: &mut String| {
+    let flush = |rows: &mut Vec<Vec<String>>,
+                 seen: &mut bool,
+                 name: &mut String,
+                 kind: &mut String,
+                 intent: &mut String,
+                 formula: &mut String,
+                 status: &mut String| {
         if *seen {
-            rows.push(vec![name.clone(), intent.clone(), formula.clone(), status.clone()]);
+            rows.push(vec![
+                name.clone(),
+                kind.clone(),
+                intent.clone(),
+                formula.clone(),
+                status.clone(),
+            ]);
         }
         *seen = false;
         name.clear();
+        kind.clear();
         intent.clear();
         formula.clear();
         status.clear();
@@ -1167,9 +1815,20 @@ fn field_intent_rows() -> Vec<Vec<String>> {
     for line in SOURCE.lines() {
         let line = line.trim();
         if let Some(value) = quoted_field(line, "name") {
-            flush(&mut rows, &mut seen, &mut name, &mut intent, &mut formula, &mut status);
+            flush(
+                &mut rows,
+                &mut seen,
+                &mut name,
+                &mut kind,
+                &mut intent,
+                &mut formula,
+                &mut status,
+            );
             name = value;
             seen = true;
+            pending = "";
+        } else if let Some(value) = quoted_field(line, "kind") {
+            kind = value;
             pending = "";
         } else if let Some(value) = quoted_field(line, "intent") {
             intent = value;
@@ -1193,7 +1852,15 @@ fn field_intent_rows() -> Vec<Vec<String>> {
             pending = "";
         }
     }
-    flush(&mut rows, &mut seen, &mut name, &mut intent, &mut formula, &mut status);
+    flush(
+        &mut rows,
+        &mut seen,
+        &mut name,
+        &mut kind,
+        &mut intent,
+        &mut formula,
+        &mut status,
+    );
     rows
 }
 
@@ -1316,6 +1983,7 @@ mod tests {
             "cm-coverage",
             "cm-external",
             "cm-debt-planner",
+            "account-management",
             "home",
             "income-plan",
             "calculator",
@@ -1350,6 +2018,7 @@ mod tests {
         assert!(export_covers("trends", "trends-weeks"));
         assert!(export_covers("cm-external", "cct-register"));
         assert!(export_covers("cm-debt-planner", "debt-accounts"));
+        assert!(export_covers("cm-debt-planner", "debt-buckets"));
         assert!(export_covers("field-intent", "calculator-columns"));
         assert!(export_covers("contract-positions", "contract-create"));
         assert!(export_covers("contract-positions", "contract-open"));

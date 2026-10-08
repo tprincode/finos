@@ -1,6 +1,6 @@
 //! External-account register: date fixes from the tracker sheet, search, and cents.
 
-use rust_xlsxwriter::Workbook;
+use rust_xlsxwriter::{Format, Formula, Workbook};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -49,6 +49,74 @@ pub fn normalize_pay_type(raw: &str) -> String {
     }
 }
 
+fn category_key(raw: &str) -> String {
+    raw.trim().to_lowercase()
+}
+
+/// Medical-mom was a category standing in for bucket Mom. Not a spend category.
+pub fn is_medical_mom_alias(raw: &str) -> bool {
+    matches!(
+        category_key(raw).as_str(),
+        "medical-mom" | "medical mom" | "medicalmom"
+    )
+}
+
+pub fn refuse_category(raw: &str) -> Result<(), PlatformError> {
+    match category_key(raw).as_str() {
+        "alpheon" | "alphaeon" => Err(PlatformError::new(
+            "bad_category",
+            "Alpheon is a vendor, not a category",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Seeded catalog names (Debt planner). Owner may add more via ExternalBucketSave.
+pub const SEED_BUCKETS: &[&str] = &["Food", "Cash", "Bills", "Pets", "Medical", "HSA"];
+
+fn is_retired_bucket(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_lowercase().as_str(),
+        "cash acct" | "bill acct"
+    )
+}
+
+pub fn is_seed_bucket(raw: &str) -> bool {
+    let key = raw.trim().to_lowercase();
+    SEED_BUCKETS
+        .iter()
+        .any(|name| name.to_lowercase() == key)
+}
+
+/// Blank and seed names OK here. Catalog-only names are checked at save against the table.
+/// Retired Cash acct / Bill acct are refused. Mom is an escrow bucket.
+pub fn refuse_bucket(raw: &str) -> Result<(), PlatformError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    if is_retired_bucket(trimmed) {
+        return Err(PlatformError::new(
+            "bad_bucket",
+            "Bucket must be a catalog name or blank",
+        ));
+    }
+    if is_seed_bucket(trimmed) {
+        return Ok(());
+    }
+    // Non-seed non-retired: allow parse; storage validates catalog membership.
+    Ok(())
+}
+
+/// True when a normalized bucket is allowed by the catalog name list (or blank).
+pub fn bucket_allowed(raw: &str, catalog: &[String]) -> bool {
+    let name = normalize_bucket(raw);
+    if name.is_empty() {
+        return true;
+    }
+    catalog.iter().any(|entry| entry == &name)
+}
+
 pub fn normalize_category(raw: &str) -> String {
     let trimmed = raw.trim();
     match trimmed.to_lowercase().as_str() {
@@ -57,7 +125,6 @@ pub fn normalize_category(raw: &str) -> String {
         "cash acct" => "Cash acct".into(),
         "bill acct" => "Bill acct".into(),
         "medical" | "med" => "Medical".into(),
-        "medical-mom" | "medical mom" | "medicalmom" => "Medical-mom".into(),
         "pets" => "Pets".into(),
         "mom" => "Mom".into(),
         "home" => "Home".into(),
@@ -80,8 +147,57 @@ pub fn normalize_category(raw: &str) -> String {
         "ira" => "IRA".into(),
         "yikes" => "Yikes".into(),
         "cori" => "Cori".into(),
+        // Legacy alias stays as stored spelling until owner edits; projection splits it on read.
+        "medical-mom" | "medical mom" | "medicalmom" => trimmed.to_string(),
         _ => trimmed.to_string(),
     }
+}
+
+/// Whose budget funded the charge. Blank stays blank — never copy category.
+pub fn normalize_bucket(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    match trimmed.to_lowercase().as_str() {
+        "food" => "Food".into(),
+        "cash" => "Cash".into(),
+        "bills" => "Bills".into(),
+        "pets" => "Pets".into(),
+        "medical" => "Medical".into(),
+        "hsa" => "HSA".into(),
+        "mom" => "Mom".into(),
+        _ => trimmed.to_string(),
+    }
+}
+
+/// When bucket is blank, default to the catalog name that matches the spend category.
+pub fn default_bucket_for_category(category: &str) -> Option<&'static str> {
+    match category_key(category).as_str() {
+        "food" => Some("Food"),
+        "cash" | "cash acct" => Some("Cash"),
+        "bills" | "bill acct" => Some("Bills"),
+        "pets" => Some("Pets"),
+        "medical" => Some("Medical"),
+        "hsa" => Some("HSA"),
+        _ => None,
+    }
+}
+
+/// On read (and on write of the legacy alias): Medical-mom → category Medical + bucket Medical.
+/// Blank bucket fills from [`default_bucket_for_category`] for catalog peers.
+pub fn project_category_bucket(category: &str, bucket: &str) -> (String, String) {
+    let bucket_norm = normalize_bucket(bucket);
+    if is_medical_mom_alias(category) && bucket_norm.is_empty() {
+        return ("Medical".into(), "Medical".into());
+    }
+    let cat = normalize_category(category);
+    if bucket_norm.is_empty() {
+        if let Some(def) = default_bucket_for_category(&cat) {
+            return (cat, def.to_string());
+        }
+    }
+    (cat, bucket_norm)
 }
 
 pub fn normalize_vendor(raw: &str) -> String {
@@ -151,6 +267,8 @@ pub fn line_matches(line: &ExternalRegisterLine, query: &str) -> bool {
         line.occurred_on.as_deref().unwrap_or(""),
         amount.as_str(),
         line.category.as_str(),
+        line.bucket.as_str(),
+        line.loan_name.as_str(),
         line.vendor.as_str(),
         line.description.as_str(),
         line.true_up_on.as_deref().unwrap_or(""),
@@ -194,6 +312,24 @@ pub fn line_from_json(row: &Value) -> Result<ExternalRegisterLine, PlatformError
         .and_then(|v| v.as_u64())
         .map(|n| n as u8)
         .unwrap_or(2);
+    let raw_category = row
+        .get("category")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    refuse_category(raw_category)?;
+    let raw_bucket = row
+        .get("bucket")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    refuse_bucket(raw_bucket)?;
+    let loan_name = row
+        .get("loanName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    // Write path: medical-mom (+ blank bucket) persists as Medical + Mom.
+    let (category, bucket) = project_category_bucket(raw_category, raw_bucket);
     Ok(ExternalRegisterLine {
         line_id,
         source_row: line_source_row(row),
@@ -201,11 +337,9 @@ pub fn line_from_json(row: &Value) -> Result<ExternalRegisterLine, PlatformError
         occurred_on,
         amount_minor,
         scale,
-        category: normalize_category(
-            row.get("category")
-                .and_then(|v| v.as_str())
-                .unwrap_or(""),
-        ),
+        category,
+        bucket,
+        loan_name,
         vendor: normalize_vendor(
             row.get("vendor")
                 .and_then(|v| v.as_str())
@@ -344,7 +478,9 @@ mod tests {
             occurred_on: Some("2026-06-22".into()),
             amount_minor: 1578,
             scale: 2,
-            category: "Cash acct".into(),
+            category: "Food".into(),
+            bucket: "Cash acct".into(),
+            loan_name: String::new(),
             vendor: "amz".into(),
             description: "amz grow bug lights".into(),
             true_up_on: Some("2026-06-27".into()),
@@ -362,6 +498,7 @@ mod tests {
         };
         assert!(line_matches(&line, "grow"));
         assert!(line_matches(&line, "UCARD"));
+        assert!(line_matches(&line, "Cash acct"));
         assert!(line_matches(&line, "15.78"));
         assert!(line_matches(&line, "2026-06-27"));
         assert!(!line_matches(&line, "zzz"));
@@ -372,8 +509,9 @@ mod tests {
     fn names_collapse_to_one_spelling() {
         assert_eq!(normalize_category("food"), "Food");
         assert_eq!(normalize_category("Food"), "Food");
-        assert_eq!(normalize_category("medical-mom"), "Medical-mom");
-        assert_eq!(normalize_category("Medical mom"), "Medical-mom");
+        assert_eq!(normalize_bucket("food"), "Food");
+        assert_eq!(normalize_bucket("cash"), "Cash");
+        assert_eq!(normalize_bucket(""), "");
         assert_eq!(normalize_vendor("amz"), "AMZ");
         assert_eq!(normalize_vendor("Amazon"), "AMZ");
         assert_eq!(normalize_pay_type("ucard"), "UCARD");
@@ -381,6 +519,74 @@ mod tests {
         assert_eq!(normalize_pay_type("Cheking"), "Checking");
         assert_eq!(normalize_pay_type("cap"), "CAP");
         assert_eq!(normalize_pay_type("Cap"), "CAP");
+    }
+
+    #[test]
+    fn medical_mom_projects_to_medical_and_medical_bucket() {
+        assert_eq!(
+            project_category_bucket("medical-mom", ""),
+            ("Medical".into(), "Medical".into())
+        );
+        assert_eq!(
+            project_category_bucket("Medical-mom", ""),
+            ("Medical".into(), "Medical".into())
+        );
+        assert_eq!(
+            project_category_bucket("Medical", ""),
+            ("Medical".into(), "Medical".into())
+        );
+        assert_eq!(
+            project_category_bucket("Medical", "Medical"),
+            ("Medical".into(), "Medical".into())
+        );
+        assert_eq!(
+            project_category_bucket("Food", ""),
+            ("Food".into(), "Food".into())
+        );
+        assert_eq!(
+            project_category_bucket("Cash acct", ""),
+            ("Cash acct".into(), "Cash".into())
+        );
+        assert_eq!(
+            project_category_bucket("Bill acct", ""),
+            ("Bill acct".into(), "Bills".into())
+        );
+        assert_eq!(
+            project_category_bucket("Mom", ""),
+            ("Mom".into(), "".into())
+        );
+    }
+
+    #[test]
+    fn alpheon_is_refused_as_category() {
+        assert!(refuse_category("Alpheon").is_err());
+        assert!(refuse_category("alphaeon").is_err());
+        assert!(refuse_category("Medical").is_ok());
+    }
+
+    #[test]
+    fn bucket_seed_set_and_retired_names() {
+        assert!(refuse_bucket("").is_ok());
+        assert!(refuse_bucket("Food").is_ok());
+        assert!(refuse_bucket("Cash").is_ok());
+        assert!(refuse_bucket("Bills").is_ok());
+        assert!(refuse_bucket("Pets").is_ok());
+        assert!(refuse_bucket("Medical").is_ok());
+        assert!(refuse_bucket("HSA").is_ok());
+        assert!(refuse_bucket("Mom").is_ok());
+        assert!(refuse_bucket("Cash acct").is_err());
+        assert!(refuse_bucket("Bill acct").is_err());
+        assert_eq!(normalize_bucket("food"), "Food");
+        assert_eq!(normalize_bucket("hsa"), "HSA");
+        assert_eq!(normalize_bucket("mom"), "Mom");
+        assert!(bucket_allowed(
+            "Food",
+            &SEED_BUCKETS.iter().map(|s| (*s).to_string()).collect::<Vec<_>>()
+        ));
+        assert!(!bucket_allowed(
+            "Grocery",
+            &SEED_BUCKETS.iter().map(|s| (*s).to_string()).collect::<Vec<_>>()
+        ));
     }
 }
 
@@ -415,6 +621,11 @@ fn export_lines_from_json(json: &Value) -> Result<Vec<ExternalRegisterExportLine
                 .min(8) as u8,
             category: row
                 .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            bucket: row
+                .get("bucket")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
@@ -458,11 +669,12 @@ fn completed_print_html(lines: &[ExternalRegisterExportLine], printed_at: &str) 
     let mut rows = String::new();
     for line in lines {
         rows.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td class=\"numeric\">{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"completed\">{}</td></tr>",
+            "<tr><td>{}</td><td>{}</td><td class=\"numeric\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"completed\">{}</td></tr>",
             escape_html(&line.pay_type),
             escape_html(line.occurred_on.as_deref().unwrap_or("")),
             escape_html(&fmt_money(line.amount_minor, line.scale)),
             escape_html(&line.category),
+            escape_html(&line.bucket),
             escape_html(&line.vendor),
             escape_html(&line.description),
             escape_html(line.true_up_on.as_deref().unwrap_or("")),
@@ -483,7 +695,7 @@ td.completed {{ background: #7dcea0; font-weight: 700; }}
 <h1>Checking and Credit Transactions — Completed</h1>
 <p>Printed {printed} · {count} rows</p>
 <table>
-<thead><tr><th>Pay type</th><th>Date</th><th>Total spent</th><th>Category</th><th>Vendor</th><th>Description</th><th>Completed</th></tr></thead>
+<thead><tr><th>Pay type</th><th>Date</th><th>Total spent</th><th>Category</th><th>Bucket</th><th>Vendor</th><th>Description</th><th>Completed</th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
 </body></html>"#,
@@ -495,16 +707,17 @@ td.completed {{ background: #7dcea0; font-weight: 700; }}
 
 fn completed_text(lines: &[ExternalRegisterExportLine], printed_at: &str) -> String {
     let mut text = format!(
-        "CCT Completed\nPrinted {printed_at}\nRows {}\nPay type | Date | Total spent | Category | Vendor | Description | Completed\n",
+        "CCT Completed\nPrinted {printed_at}\nRows {}\nPay type | Date | Total spent | Category | Bucket | Vendor | Description | Completed\n",
         lines.len()
     );
     for line in lines {
         text.push_str(&format!(
-            "{} | {} | {} | {} | {} | {} | {}\n",
+            "{} | {} | {} | {} | {} | {} | {} | {}\n",
             line.pay_type,
             line.occurred_on.as_deref().unwrap_or(""),
             fmt_money(line.amount_minor, line.scale),
             line.category,
+            line.bucket,
             line.vendor,
             line.description,
             line.true_up_on.as_deref().unwrap_or(""),
@@ -567,26 +780,50 @@ fn simple_pdf(text: &str) -> Vec<u8> {
     out
 }
 
+fn money_num_format(scale: u8) -> String {
+    if scale == 0 {
+        "$#,##0".into()
+    } else {
+        format!("$#,##0.{}", "0".repeat(scale as usize))
+    }
+}
+
+fn amount_major(minor: i64, scale: u8) -> f64 {
+    minor as f64 / 10f64.powi(i32::from(scale))
+}
+
 fn completed_xlsx(lines: &[ExternalRegisterExportLine]) -> Result<Vec<u8>, String> {
     let mut wb = Workbook::new();
     let sheet = wb.add_worksheet();
     sheet.set_name("Completed").map_err(|e| e.to_string())?;
+    let head = Format::new().set_bold();
+    let total_label = Format::new().set_bold();
+    let money = Format::new().set_num_format(money_num_format(2));
     let headers = [
         "Pay type",
         "Date",
         "Total spent",
         "Category",
+        "Bucket",
         "Vendor",
         "Description",
         "Completed",
     ];
     for (c, name) in headers.iter().enumerate() {
         sheet
-            .write_string(0, c as u16, *name)
+            .write_string_with_format(0, c as u16, *name, &head)
             .map_err(|e| e.to_string())?;
     }
+    let mut total_major = 0.0;
     for (r, line) in lines.iter().enumerate() {
         let row = (r + 1) as u32;
+        let amount = amount_major(line.amount_minor, line.scale);
+        total_major += amount;
+        let cell_money = if line.scale == 2 {
+            money.clone()
+        } else {
+            Format::new().set_num_format(money_num_format(line.scale))
+        };
         sheet
             .write_string(row, 0, &line.pay_type)
             .map_err(|e| e.to_string())?;
@@ -594,19 +831,38 @@ fn completed_xlsx(lines: &[ExternalRegisterExportLine]) -> Result<Vec<u8>, Strin
             .write_string(row, 1, line.occurred_on.as_deref().unwrap_or(""))
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 2, &fmt_money(line.amount_minor, line.scale))
+            .write_number_with_format(row, 2, amount, &cell_money)
             .map_err(|e| e.to_string())?;
         sheet
             .write_string(row, 3, &line.category)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 4, &line.vendor)
+            .write_string(row, 4, &line.bucket)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 5, &line.description)
+            .write_string(row, 5, &line.vendor)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 6, line.true_up_on.as_deref().unwrap_or(""))
+            .write_string(row, 6, &line.description)
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_string(row, 7, line.true_up_on.as_deref().unwrap_or(""))
+            .map_err(|e| e.to_string())?;
+    }
+    if !lines.is_empty() {
+        let total_row = (lines.len() + 1) as u32;
+        let last_data_row = lines.len() + 1; // Excel 1-based: header row 1, data starts row 2
+        sheet
+            .write_string_with_format(total_row, 0, "Total", &total_label)
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_formula_with_format(
+                total_row,
+                2,
+                Formula::new(format!("=SUM(C2:C{last_data_row})"))
+                    .set_result(format!("{total_major:.2}")),
+                &money,
+            )
             .map_err(|e| e.to_string())?;
     }
     wb.save_to_buffer().map_err(|e| e.to_string())

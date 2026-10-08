@@ -67,7 +67,7 @@ import { WeekAheadPanel } from "./features/cash/WeekAhead";
 import { weekAheadTaskHandlers } from "./features/cash/weekAheadActions";
 import { CashRegisterPanel } from "./features/cash/CashRegister";
 import { CashElementsCatalog } from "./features/cash/CashElementsCatalog";
-import { ReturnToPrevious } from "./features/navigation/ReturnToPrevious";
+import { PageNavRow } from "./features/navigation/PageNavRow";
 import { peekNav, popNav, pushNav } from "./features/navigation/navStack";
 import {
   applyCashNav,
@@ -83,6 +83,7 @@ import { MagiDrawHead } from "./features/task-manager/MagiCliffPanel";
 import { useMagiCliffNav } from "./features/task-manager/magiCutNav";
 import { MarketImpactPlanner } from "./features/market-impact/MarketImpactPlanner";
 import { InterestRateCalculator } from "./features/interest-rate/InterestRateCalculator";
+import { AccountManagement } from "./features/accounts/AccountManagement";
 import { FieldIntentScreen } from "./features/field-intent/FieldIntentScreen";
 import { RoadmapScreen } from "./features/roadmap/RoadmapScreen";
 import { ComponentRegistry } from "./features/components/ComponentRegistry";
@@ -138,6 +139,7 @@ import {
   type LotSortMode,
 } from "./features/shared/pickers";
 import { PageActivityBar } from "./features/shared/PageActivityBar";
+import { saveComponentWorkbook } from "./features/shared/saveWorkbook";
 import { openImportWizardWindow } from "./openImportWizard";
 import {
   CalculatorReturnSheet,
@@ -748,6 +750,7 @@ type Screen =
   | "collector-establish"
   | "task-manager"
   | "interest-rate"
+  | "account-management"
   | "contract-positions"
   | "field-intent"
   | "roadmap"
@@ -774,6 +777,7 @@ const SCREENS: readonly Screen[] = [
   "collector-establish",
   "task-manager",
   "interest-rate",
+  "account-management",
   "contract-positions",
   "field-intent",
   "roadmap",
@@ -8662,6 +8666,7 @@ export default function App() {
               {navButton("collector-establish", "Reevaluate collector")}
               {navButton("task-manager", "Task Manager")}
               {navButton("interest-rate", "Interest rate calculator")}
+              {navButton("account-management", "Account Management")}
               {navButton("contract-positions", "Contract positions")}
               {navButton("field-intent", "Field intent")}
               {navButton("roadmap", "Roadmap")}
@@ -8672,6 +8677,13 @@ export default function App() {
         </div>
         <div className="menubar-status">
           <PageActivityBar />
+          <p
+            className="menubar-notice"
+            aria-label="Status"
+            title={actionMessage ?? ""}
+          >
+            {actionMessage ?? ""}
+          </p>
           <p className="menubar-week" aria-label="Current week">
             {formatMenuWeek(incomeWeek?.start ?? asOfDate)}
           </p>
@@ -8701,7 +8713,9 @@ export default function App() {
         </div>
       ) : null}
       <main className="container" aria-label="finos">
-      <ReturnToPrevious
+      <PageNavRow
+        screen={screen}
+        cmDesk={screen === "cash-management" ? cmDesk : undefined}
         onReturn={() => {
           const dest = peekNav();
           leaveWithoutSaving(
@@ -8939,19 +8953,6 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      {(screen !== "home" ||
-        /snapshot|Saved |Restart/i.test(actionMessage ?? "")) &&
-      actionMessage &&
-      !(screen === "trends" && actionMessage.startsWith("Opened Import for ")) &&
-      // Screen Atlas completion is only meaningful on that tool — do not sticky it on Tickets etc.
-      !(
-        actionMessage.startsWith("Screen Atlas") &&
-        screen !== "screen-atlas" &&
-        screen !== "components"
-      ) &&
-      !restarting ? (
-        <p>{actionMessage}</p>
-      ) : null}
       {writesBlocked ? (
         <p className="blocked">Ordinary writes are blocked until restore or explicit review.</p>
       ) : null}
@@ -9000,7 +9001,13 @@ export default function App() {
       ) : null}
 
       {screen === "calculator" ? (
-        <section aria-label="Calculator" className="calculator-page">
+        <section
+          aria-label="Calculator"
+          className="calculator-page"
+          id="calculator-page"
+          data-section="calculator-sheet"
+          data-part="calculator-sheet"
+        >
           <h2>Calculator</h2>
           <CalculatorReturnSheet
             rows={positionMaster?.rows ?? null}
@@ -9059,6 +9066,15 @@ export default function App() {
               void loadDeclHistory(asOfDate, "custom", start, iso);
             }}
             onOpenSymbol={(symbol) => openPositionHub(symbol)}
+            onExport={() => {
+              void saveComponentWorkbook({
+                moduleId: "calculator",
+                partId: "calculator-sheet",
+                asOfDate,
+              }).catch(() => {
+                /* dialog cancel or write fail — leave the sheet as-is */
+              });
+            }}
           />
         </section>
       ) : null}
@@ -9170,7 +9186,12 @@ export default function App() {
       ) : null}
 
       {screen === "dashboard" ? (
-        <section aria-label="Dashboard">
+        <section
+          aria-label="Dashboard"
+          id="dashboard-burndown"
+          data-section="dashboard-burndown"
+          data-part="dashboard-burndown"
+        >
           <h2>Dashboard</h2>
           <DashboardBurndownPanel burndown={burndown} />
         </section>
@@ -10505,6 +10526,7 @@ export default function App() {
               Show all tickets
             </button>
           ) : null}
+          <div id="tickets-queue" data-section="tickets-queue" data-part="work-ticket-queue">
           <WorkTicketQueue
             tickets={workTickets}
             filterSymbol={ticketFocusSymbol || undefined}
@@ -10542,6 +10564,7 @@ export default function App() {
             }
             onFile={(t) => void fileWorkTicket(t as WorkTicketRecord)}
           />
+          </div>
         </section>
       ) : null}
 
@@ -10628,6 +10651,7 @@ export default function App() {
       ) : null}
 
       {screen === "interest-rate" ? <InterestRateCalculator /> : null}
+      {screen === "account-management" ? <AccountManagement /> : null}
 
       {screen === "contract-positions" ? <ContractPositions client={client} /> : null}
 
@@ -10674,14 +10698,14 @@ export default function App() {
               <dd>{health.contractVersion}</dd>
             </dl>
           )}
-          <h3>Core functions</h3>
+          <h3 id="settings-core-functions" data-section="settings-core-functions">Core functions</h3>
           <p>
             Owner-facing functions the golden harness must still find after a
             change. Last changed is when that function's files last moved. Last
             verified is when its sentinel last passed. Also verify lists the
             golden test names that must still pass when that function changes.
           </p>
-          <div className="table-wrap">
+          <div className="table-wrap" data-part="core-functions">
             <table aria-label="Core functions">
               <thead>
                 <tr>
@@ -10711,7 +10735,7 @@ export default function App() {
               </tbody>
             </table>
           </div>
-          <h3>Retrieval templates</h3>
+          <h3 id="settings-templates" data-section="settings-templates">Retrieval templates</h3>
           <p>
             Standing templates: adapter name, Template Dividend, Template ROC, and
             content hash. Inception is optional — rare exception for names too
@@ -10719,7 +10743,7 @@ export default function App() {
             land, inception is N/A. Under 12, inception (when set) confirms the
             short history is complete.
           </p>
-          <div className="table-wrap">
+          <div className="table-wrap" data-part="retrieval-templates">
             <table aria-label="Retrieval templates">
               <thead>
                 <tr>
@@ -10853,7 +10877,7 @@ export default function App() {
               </tbody>
             </table>
           </div>
-          <h3>HandoffStatusGet</h3>
+          <h3 id="settings-handoff" data-section="settings-handoff" data-part="handoff-status">HandoffStatusGet</h3>
           {handoffError ? <p className="blocked">{handoffError}</p> : null}
           {handoff ? (
             <dl className="health">
@@ -10875,7 +10899,7 @@ export default function App() {
               disabled={busy || writesBlocked}
             />
           </label>
-          <div className="buttons">
+          <div className="buttons" id="settings-actions" data-section="settings-actions" data-part="settings-actions">
             <button
               type="button"
               aria-label="Save device name"

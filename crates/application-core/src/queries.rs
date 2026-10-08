@@ -146,6 +146,7 @@ const ORDINARY_WRITES: &[&str] = &[
     "ExternalRegisterMarkStep",
     "ExternalRegisterImport",
     "ExternalAccountManagerSave",
+    "ExternalBucketSave",
     "LoanPaymentConfirm",
     "TaskRuleSet",
     "TaskAdd",
@@ -6159,7 +6160,7 @@ fn recent_pays_newest_first(
     pays
 }
 
-async fn declaration_history_view(
+pub(crate) async fn declaration_history_view(
     canonical: &dyn Canonical,
     as_of: &str,
     cadence_filter: &str,
@@ -6234,27 +6235,17 @@ async fn declaration_history_view(
         if !cadence_filter_matches(freq, cadence_filter) {
             continue;
         }
-        if financial_domain::current_price::uses_cash_par(div_type, &security.symbol) {
-            rows.push(DeclarationHistoryRowBody {
-                symbol: security.symbol.clone(),
-                payment_frequency: freq.to_string(),
-                cells: week_ends
-                    .iter()
-                    .map(|_| DeclarationHistoryCellBody {
-                        amount_per_share_minor: None,
-                        amount_scale: 0,
-                    })
-                    .collect(),
-                recent_pays: Vec::new(),
-                in_force_pays: Vec::new(),
-            });
-            continue;
-        }
         let decls = canonical
             .issuer_declaration_list(security.security_id)
             .await?;
         let in_force_pays = in_force_pays_newest_first(&decls);
         let recent_pays = recent_pays_newest_first(&decls);
+        let complete_pays: Vec<(i64, u8)> = recent_pays
+            .iter()
+            .filter_map(|p| p.amount_per_share_minor.map(|m| (m, p.amount_scale)))
+            .collect();
+        let avg3 = financial_domain::calculator::mean_newest_complete_pays(&complete_pays, 3, true);
+        let avg6 = financial_domain::calculator::mean_newest_complete_pays(&complete_pays, 6, false);
         let mut by_week: std::collections::HashMap<String, (String, i64, u8)> =
             std::collections::HashMap::new();
         for d in &decls {
@@ -6292,6 +6283,14 @@ async fn declaration_history_view(
             cells,
             recent_pays,
             in_force_pays,
+            avg3_minor: avg3.minor,
+            avg3_scale: avg3.scale,
+            avg3_count: avg3.count,
+            avg3_complete: avg3.complete,
+            avg6_minor: avg6.minor,
+            avg6_scale: avg6.scale,
+            avg6_count: avg6.count,
+            avg6_complete: avg6.complete,
         });
     }
     rows.sort_by(|a, b| {
@@ -8444,6 +8443,7 @@ async fn car_roc_plan_view(
     let mut long_term = None;
     let mut short_term = None;
     let mut assigned_car_sales = 0u64;
+    let mut undated_car_sales = 0u64;
     for asgn in &assignments {
         let Some(lot) = basis.lots.iter().find(|l| l.lot_id == asgn.lot_id) else {
             continue;
@@ -8470,16 +8470,23 @@ async fn car_roc_plan_view(
             Some(financial_domain::lot::HoldingTerm::Short) => {
                 short_term = financial_domain::roc::sum_known(short_term.or(Some(0)), Some(gain));
             }
-            None => {}
+            None => undated_car_sales += 1,
         }
     }
-    if assigned_car_sales > 0 {
+    if undated_car_sales > 0 {
+        // A sale that cannot be placed in a term leaves both buckets unknown.
+        // Reporting the rest as a finished number would hide that gain or loss.
+        long_term = None;
+        short_term = None;
+    } else if assigned_car_sales > 0 {
         long_term = long_term.or(Some(0));
         short_term = short_term.or(Some(0));
     }
     let lot_sale_pl_minor = financial_domain::roc::sum_known(long_term, short_term);
     let lot_sale_note = if assigned_car_sales == 0 {
         financial_domain::roc::NO_ASSIGNED_LOT_SALES_NOTE
+    } else if undated_car_sales > 0 {
+        financial_domain::roc::UNDATED_LOT_SALE_NOTE
     } else {
         "Tax-lot gain or loss. Long-term if held more than one year. Not a 1099."
     };
@@ -10422,6 +10429,7 @@ pub async fn execute_query_on(
         "ExternalAccountManagerGet" => {
             map_q(&request, canonical.external_account_manager_get().await)
         }
+        "ExternalBucketListGet" => map_q(&request, canonical.external_bucket_list_get().await),
         "SecurityGet" => match juuid(&json, "securityId") {
             Some(id) => map_q(&request, canonical.security_get(id).await),
             None => query_err(&request, "missing_security_id"),
@@ -11008,17 +11016,27 @@ pub async fn execute_command_on(
             map_c(&request, canonical.account_register(name, kind).await)
         }
         "AccountUpdate" => match juuid(&json, "accountId") {
-            Some(id) => map_c(
-                &request,
-                canonical
-                    .account_update(
-                        id,
-                        jstr(&json, "name"),
-                        jstr(&json, "kind"),
-                        request.expected_version,
-                    )
-                    .await,
-            ),
+            Some(id) => {
+                let min_balance = if json.get("minBalanceTargetMinor").is_some() {
+                    Some(json.get("minBalanceTargetMinor").and_then(|v| v.as_i64()))
+                } else {
+                    None
+                };
+                map_c(
+                    &request,
+                    canonical
+                        .account_update(
+                            id,
+                            jstr(&json, "name"),
+                            jstr(&json, "kind"),
+                            request.expected_version,
+                            jstr(&json, "cashSymbol"),
+                            jstr(&json, "brokerAccountNumber"),
+                            min_balance,
+                        )
+                        .await,
+                )
+            }
             None => command_err(&request, "missing_account_id"),
         },
         "SnapshotImport" => {
@@ -14730,6 +14748,13 @@ pub async fn execute_command_on(
                     canonical.external_account_manager_save(accounts).await,
                 ),
                 Err(err) => command_err(&request, &err.code),
+            }
+        }
+        "ExternalBucketSave" => {
+            match serde_json::from_value::<crate::contracts::ExternalBudgetBucketSave>(json.clone())
+            {
+                Ok(bucket) => map_c(&request, canonical.external_bucket_save(bucket).await),
+                Err(_) => command_err(&request, "bad_bucket"),
             }
         }
         "TaskRuleSet" => {

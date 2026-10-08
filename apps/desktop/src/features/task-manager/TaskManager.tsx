@@ -321,8 +321,9 @@ export function TaskManager({
         plan week.
       </p>
 
-      <h3>Open this week</h3>
+      <h3 id="tasks-open" data-section="tasks-open">Open this week</h3>
       {magiTaskId && onCutDraws && onCloseMagi ? (
+        <div data-part="magi-cliff-panel">
         <MagiCliffPanel
           client={client}
           taskId={magiTaskId}
@@ -333,17 +334,18 @@ export function TaskManager({
           onClose={onCloseMagi}
           onPosted={() => void reload()}
         />
+        </div>
       ) : null}
-      {renderRows(open, true)}
+      <div data-part="open-tasks">{renderRows(open, true)}</div>
 
-      <h3>Snoozed</h3>
-      {renderRows(ignored, false)}
+      <h3 id="tasks-snoozed" data-section="tasks-snoozed">Snoozed</h3>
+      <div data-part="snoozed-tasks">{renderRows(ignored, false)}</div>
 
-      <h3>Done (this week)</h3>
-      {renderRows(done, false)}
+      <h3 id="tasks-done" data-section="tasks-done">Done (this week)</h3>
+      <div data-part="done-tasks">{renderRows(done, false)}</div>
 
-      <h3>Add/View Task</h3>
-      <ul aria-label="Built task rules">
+      <h3 id="tasks-rules" data-section="tasks-rules">Add/View Task</h3>
+      <ul aria-label="Built task rules" data-part="built-task-rules">
         {rules
           .filter((rule) => rule.code === "magi_cliff_over")
           .map((rule) => (
@@ -362,7 +364,7 @@ export function TaskManager({
       </ul>
       <h3>Ticket functions</h3>
       <p>Tickets are collector exceptions. Tasks are weekly reminders.</p>
-      <ul aria-label="Ticket functions">
+      <ul aria-label="Ticket functions" data-part="ticket-functions">
         {TICKET_FUNCTIONS.map((row) => (
           <li key={row.code}>
             {row.code} ({row.tool}): {row.purpose}
@@ -382,7 +384,7 @@ export function TaskManager({
           }
         }
         return (
-          <div className="task-view" aria-label="View task">
+          <div className="task-view" aria-label="View task" data-part="view-task">
             <p>
               <span className="fact-label">Name</span> {name}
             </p>
@@ -392,7 +394,7 @@ export function TaskManager({
           </div>
         );
       })()}
-      <div className="task-manager-add">
+      <div className="task-manager-add" data-part="add-task">
         <label>
           Title
           <input

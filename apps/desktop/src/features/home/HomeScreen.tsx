@@ -116,9 +116,13 @@ export function HomeScreen({
   return (
     <>
         <HomePaintMark />
-        <div className="home-top-row">
+        <div className="home-top-row" id="home-top-row" data-section="home-overview">
         {summary ? (
-        <section className="home-portfolio-pane" aria-label="Portfolio summary">
+        <section
+          className="home-portfolio-pane"
+          data-part="portfolio-summary"
+          aria-label="Portfolio summary"
+        >
           <dl className="portfolio-summary">
             <div className="ps-head-row">
             <div className="ps-cell ps-mv">
@@ -197,6 +201,7 @@ export function HomeScreen({
                   <button
                     type="button"
                     className="ps-date-link"
+                    data-part="income-through"
                     aria-label="Income through transactions"
                     onClick={() => setIncomeTxOpen(true)}
                   >
@@ -266,6 +271,7 @@ export function HomeScreen({
               </p>
               <button
                 type="button"
+                data-part="refresh-declarations"
                 aria-label="Refresh declarations"
                 aria-busy={declarationBusy}
                 disabled={declarationBusy || busy}
@@ -295,6 +301,7 @@ export function HomeScreen({
               </p>
               <button
                 type="button"
+                data-part="work-tickets"
                 aria-label="Work Tickets"
                 onClick={() => {
                   onWorkTickets();
@@ -317,6 +324,7 @@ export function HomeScreen({
               </p>
               <button
                 type="button"
+                data-part="refresh-last-prices"
                 aria-label="Refresh last prices"
                 aria-busy={lastPriceBusy}
                 disabled={lastPriceBusy || busy}
@@ -345,10 +353,12 @@ export function HomeScreen({
         )}
         <div className="home-top-right">
         <HomeDividendPlan plan={dividendPlan} />
-        <AccountCashFlow
-          weeks={accountValues?.weeks ?? trends?.weeks}
-          asOf={asOfDate}
-        />
+        <div data-part="account-cash-flow">
+          <AccountCashFlow
+            weeks={accountValues?.weeks ?? trends?.weeks}
+            asOf={asOfDate}
+          />
+        </div>
         </div>
         </div>
         {incomeTxOpen ? (
@@ -360,6 +370,7 @@ export function HomeScreen({
               role="dialog"
               aria-modal="true"
               aria-label="Income through transactions"
+              data-part="income-through-transactions"
               className="home-av-dialog income-tx-dialog"
               onClick={(event) => event.stopPropagation()}
             >

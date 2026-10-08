@@ -38,7 +38,11 @@ export function FieldIntentScreen() {
       <p role="status">
         {rows.length} fields, {stillWrong} still wrong.
       </p>
-      <label>
+      <label
+        id="field-intent-controls"
+        data-section="field-intent-controls"
+        data-part="field-intent-page"
+      >
         Page
         <select
           aria-label="Field intent page"
@@ -53,7 +57,7 @@ export function FieldIntentScreen() {
           ))}
         </select>
       </label>
-      <label>
+      <label data-part="field-intent-status">
         Status
         <select
           aria-label="Field intent status"
@@ -65,7 +69,12 @@ export function FieldIntentScreen() {
           <option value="still wrong">Still wrong</option>
         </select>
       </label>
-      <div className="table-wrap">
+      <div
+        className="table-wrap"
+        id="field-intent-table"
+        data-section="field-intent-table"
+        data-part="calculator-columns"
+      >
         <table aria-label="Field intent">
           <thead>
             <tr>

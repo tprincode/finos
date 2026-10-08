@@ -12,7 +12,11 @@ export function MarketImpactPlanner({
   onOpenSymbol?: (symbol: string) => void;
 }) {
   return (
-    <section aria-label="Market impact planner">
+    <section
+      aria-label="Market impact planner"
+      id="market-impact-planner"
+      data-section="market-impact-planner"
+    >
       <h2>Market impact planner</h2>
       <p>
         One row per Calculator symbol. Bull and Bear dates are that symbol’s owner

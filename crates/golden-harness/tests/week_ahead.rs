@@ -154,6 +154,7 @@ async fn clm_account_is_listed_and_a_dividend_note_is_not() {
             weekday_or_month_day: "Sat".into(),
             start_on: String::new(),
             stop_on: String::new(),
+            association_kind: String::new(),
         })
         .await
         .unwrap();
@@ -168,6 +169,7 @@ async fn clm_account_is_listed_and_a_dividend_note_is_not() {
             weekday_or_month_day: "Sat".into(),
             start_on: String::new(),
             stop_on: String::new(),
+            association_kind: String::new(),
         })
         .await
         .unwrap();

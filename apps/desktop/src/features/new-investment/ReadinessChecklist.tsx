@@ -47,6 +47,9 @@ export function ReadinessChecklist({
     <section
       aria-label="Establish checklist"
       className="process-a-establish-checklist"
+      id="establish-checklist"
+      data-section="establish-checklist"
+      data-part="establish-checklist"
     >
       <h4>Establish checklist</h4>
       <table>

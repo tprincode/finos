@@ -281,11 +281,13 @@ pub enum HoldingTerm {
     Long,
 }
 
+/// None only when a date will not parse or the sale predates the lot. A same-day
+/// round trip is a short-term sale, not a non-event.
 pub fn holding_term(opened_on: &str, sold_on: &str) -> Option<HoldingTerm> {
     let opened = chrono::NaiveDate::parse_from_str(&opened_on[..10.min(opened_on.len())], "%Y-%m-%d")
         .ok()?;
     let sold = chrono::NaiveDate::parse_from_str(&sold_on[..10.min(sold_on.len())], "%Y-%m-%d").ok()?;
-    if sold <= opened {
+    if sold < opened {
         return None;
     }
     let anniversary = opened.checked_add_months(chrono::Months::new(12))?;
@@ -475,5 +477,15 @@ mod tests {
             Some(HoldingTerm::Long)
         );
         assert_eq!(holding_term("2026-01-15", "2026-06-01"), Some(HoldingTerm::Short));
+    }
+
+    #[test]
+    fn same_day_round_trip_is_short_term_not_dropped() {
+        assert_eq!(
+            holding_term("2026-03-04", "2026-03-04"),
+            Some(HoldingTerm::Short)
+        );
+        assert_eq!(holding_term("2026-03-04", "2026-03-03"), None);
+        assert_eq!(holding_term("", "2026-03-04"), None);
     }
 }

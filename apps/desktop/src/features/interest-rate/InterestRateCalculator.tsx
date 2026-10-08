@@ -77,8 +77,10 @@ export function InterestRateCalculator() {
         columns fill. A monthly 3.50% is 51.11% annual, same as the spreadsheet.
       </p>
 
-      <h3>Period conversion</h3>
-      <div className="table-wrap">
+      <h3 id="interest-period" data-section="interest-period">
+        Period conversion
+      </h3>
+      <div className="table-wrap" data-part="period-conversion">
         <table aria-label="Period conversion">
           <thead>
             <tr>
@@ -125,12 +127,14 @@ export function InterestRateCalculator() {
         </table>
       </div>
 
-      <h3>Contract or premium</h3>
+      <h3 id="interest-contract" data-section="interest-contract">
+        Contract or premium
+      </h3>
       <p className="interest-rate-sub">
         Start is today. Enter the end date so hold days drive the monthly and
         annual projection. Premium ÷ contract is the return for that hold.
       </p>
-      <div className="table-wrap">
+      <div className="table-wrap" data-part="contract-return">
         <table aria-label="Contract return projection">
           <thead>
             <tr>

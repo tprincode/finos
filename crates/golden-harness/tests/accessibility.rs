@@ -87,11 +87,13 @@ fn accessibility_primary_actions_have_accessible_names() {
     .expect("SymbolWindowRow.tsx");
     assert!(
         position_details.contains("aria-label=\"Plan Management\"")
-            && position_details.contains("meanNewestPays(")
-            && position_details.contains("recentPays")
+            && position_details.contains("avg3Display(historyRow)")
+            && position_details.contains("avg6Display(historyRow)")
+            && position_details.contains("avg6Minor")
             && position_details.contains("minPaidDeclaration(inForce)")
+            && !position_details.contains("meanNewestPays(")
             && !position_details.contains("lastPaidDeclarations("),
-        "Plan Management shows Avg 6 from the calculator helper, not a second average"
+        "Plan Management shows Avg 3/6 from DeclarationHistory, not a second average"
     );
     let add_lot = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/add-lot/AddLotScreen.tsx"),
@@ -109,8 +111,12 @@ fn accessibility_primary_actions_have_accessible_names() {
         repo_root().join("apps/desktop/src/features/components/ComponentRegistry.tsx"),
     )
     .expect("ComponentRegistry.tsx");
+    let section_nav = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/navigation/SectionNav.tsx"),
+    )
+    .expect("SectionNav.tsx");
     let sources = format!(
-        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{cash_week_desk}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}\n{household_income}\n{cash_coverage}\n{home_dividend_plan}\n{home_screen}\n{home_trend_focus}\n{plan_horizon}\n{income_plan_screen}\n{collectors_screen}\n{collector_establish}\n{cart_screen}\n{cart_execute}\n{cart_rail}\n{position_details}\n{symbol_window}\n{add_lot}\n{add_investment}\n{holdings}\n{component_registry}"
+        "{app}\n{ui}\n{list}\n{trends_capture}\n{trends_charts}\n{cash_week_desk}\n{home_account_charts}\n{decl_chart}\n{import_wizard}\n{dividend_weeks}\n{cash_management}\n{household_income}\n{cash_coverage}\n{home_dividend_plan}\n{home_screen}\n{home_trend_focus}\n{plan_horizon}\n{income_plan_screen}\n{collectors_screen}\n{collector_establish}\n{cart_screen}\n{cart_execute}\n{cart_rail}\n{position_details}\n{symbol_window}\n{add_lot}\n{add_investment}\n{holdings}\n{component_registry}\n{section_nav}"
     );
     for name in [
         "aria-label=\"Import wizard\"",
@@ -150,6 +156,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Next-year plan dates\"",
         "aria-label=\"Confirm next-year plan dates\"",
         "aria-label=\"Calculator\"",
+        "aria-label=\"Export Excel\"",
         "aria-label=\"Distribution history\"",
         "aria-label=\"Payment frequency filter\"",
         "aria-label=\"History period\"",
@@ -186,7 +193,7 @@ fn accessibility_primary_actions_have_accessible_names() {
         "aria-label=\"Declarations\"",
         "aria-label=\"Lots by account\"",
         "aria-label=\"Ledger income\"",
-        "aria-label=\"Position hub sections\"",
+        "aria-label=\"Sections on this page\"",
         "aria-label=\"Position hub summary\"",
         "aria-label=\"Collector action status\"",
         "aria-label=\"Collector run progress\"",
@@ -918,18 +925,23 @@ fn plan_management_shows_typed_change_and_shares_are_not_a_missing_lot() {
     assert!(plan.contains("aria-label=\"Plan amount\""));
     assert!(plan.contains("FWD at this amount"));
     assert!(plan.contains("planFwdAtAmountBps("));
-    assert!(plan.contains("meanNewestPays(pays, 3)"));
-    assert!(plan.contains("${Math.min(payCount, 3)} of 3, unknown"));
+    assert!(plan.contains("avg3Display(historyRow)"));
+    assert!(plan.contains("avg6Display(historyRow)"));
     assert!(plan.contains("minPaidDeclaration("));
     assert!(plan.contains("planDecisionImpact("));
     assert!(plan.contains("formatScale6(impact.perShareDeltaUnits)"));
     assert!(plan.contains("formatScale6(impact.paymentDeltaUnits)"));
     assert!(plan.contains("formatScale6(impact.annualDeltaUnits)"));
-    assert!(plan.contains("${formatUsd(avg, 2)} (${Math.min(payCount, 6)} of 6)"));
+    assert!(!plan.contains("formatUsd(avg, 2)"));
     let plan_section = plan.split("id=\"hub-identity\"").next().unwrap();
     assert!(plan_section.contains("aria-label=\"Stored Plan decision reason\""));
     assert!(plan_section.contains("planReason === \"Match Most Current\""));
-    assert!(plan_section.contains("planReason === \"Match Avg 6 (owner typed)\" && avg != null"));
+    assert!(
+        plan_section.contains("Match Avg 6 (owner typed)")
+            && plan_section.contains("avg6Minor != null")
+            && plan_section.contains("scaledDollars(avg6Minor, avg6Scale)"),
+        "Match Avg 6 prefills from DeclarationHistory avg6 at its scale"
+    );
     assert!(!screen.contains("Use Most Current as Plan"));
     assert!(!screen.contains("Use Avg 6 as Plan"));
     let identity = screen

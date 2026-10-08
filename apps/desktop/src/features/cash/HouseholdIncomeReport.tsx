@@ -7,6 +7,7 @@ import {
   COMPUTER_SCHEDULE_C_MINOR,
   HALF_SE_EST_MINOR,
   HSA_CONTRIBUTION_MINOR,
+  NET_CAPITAL_LOSS_LIMIT_MINOR,
   forecastMagi,
   planParts,
 } from "./magiForecast";
@@ -116,14 +117,6 @@ export function HouseholdIncomeReport({
   const roc = planParts(plan, "roc");
   const carLt = planParts(plan, "ltcg");
   const carSt = planParts(plan, "stcg");
-  const magiEoy =
-    ira.eoy +
-    job.eoy +
-    ordinary.eoy +
-    ssa.eoy +
-    BARBARA_LTCG_MINOR +
-    carLt.eoy +
-    carSt.eoy;
 
   const [aptc, setAptc] = useState<AptcFacts>(loadAptc);
   const [slcspText, setSlcspText] = useState(() => dollarsField(loadAptc().slcspMinor));
@@ -157,7 +150,9 @@ export function HouseholdIncomeReport({
     hole,
     isEstimate,
     suggestionLines,
+    gains,
   } = forecast;
+  const magiEoy = ira.eoy + job.eoy + ordinary.eoy + ssa.eoy + gains.magiMinor;
   const confidence = isEstimate ? "Estimate" : "Booked";
   const leadSuggestions = suggestionLines.slice(0, 2);
 
@@ -270,7 +265,13 @@ export function HouseholdIncomeReport({
 
       <div className="household-income-top">
       <div className="household-income-lead">
-      <div className="tax-cliff household-income-tiles" aria-label="MAGI forecast">
+      <div
+        className="tax-cliff household-income-tiles"
+        id="magi-forecast"
+        data-section="magi-forecast-tiles"
+        data-part="magi-tiles"
+        aria-label="MAGI forecast"
+      >
         <div>
           <span>MAGI after estimates vs {money(cliff, scale)}</span>
           <strong className={over ? "is-over" : "is-under"}>{money(after, scale)}</strong>
@@ -298,6 +299,7 @@ export function HouseholdIncomeReport({
       {showSuggestions && leadSuggestions.length > 0 ? (
         <section
           className="household-income-lead-suggest"
+          data-part="magi-suggestions-preview"
           aria-label="MAGI suggestions preview"
         >
           <h4>
@@ -312,9 +314,13 @@ export function HouseholdIncomeReport({
       ) : null}
       </div>
 
-      <div className="household-income-compare">
+      <div
+        className="household-income-compare"
+        id="magi-application"
+        data-section="magi-application"
+      >
       <h4>What that means against this year’s projection</h4>
-      <div className="table-wrap car-tax-table-wrap">
+      <div className="table-wrap car-tax-table-wrap" data-part="magi-application-compare">
         <table aria-label="Application versus current MAGI">
           <thead>
             <tr>
@@ -359,8 +365,8 @@ export function HouseholdIncomeReport({
       </div>
       </div>
       </div>
-      <h4>Income</h4>
-      <div className="table-wrap car-tax-table-wrap">
+      <h4 id="household-income-detail" data-section="household-income-detail">Income</h4>
+      <div className="table-wrap car-tax-table-wrap" data-part="household-income-table">
         <table aria-label="Household income">
           <thead>
             <tr>
@@ -392,6 +398,31 @@ export function HouseholdIncomeReport({
                 <td>{row.form1040}</td>
               </tr>
             ))}
+            {gains.carryforwardMinor < 0 ? (
+              <tr className="tax-in-magi">
+                <th scope="row">
+                  Capital loss over the 1040 limit
+                  <span className="household-row-note">
+                    {" "}
+                    Net loss is {money(Math.abs(gains.netMinor), scale)}. MAGI takes{" "}
+                    {money(NET_CAPITAL_LOSS_LIMIT_MINOR, scale)} this year;{" "}
+                    {money(Math.abs(gains.carryforwardMinor), scale)} carries forward.
+                  </span>
+                </th>
+                <td colSpan={2} />
+                <td className="numeric">{money(-gains.carryforwardMinor, scale)}</td>
+                <td>100%</td>
+                <td>Carryforward</td>
+              </tr>
+            ) : null}
+            {gains.unplaceableSale ? (
+              <tr className="tax-in-magi">
+                <th scope="row" colSpan={6}>
+                  A lot sale is dated before its lot, so capital gains are missing
+                  from this total.
+                </th>
+              </tr>
+            ) : null}
             <tr className="tax-magi-sum">
               <th scope="row">MAGI-included total</th>
               <td colSpan={2} />
@@ -402,8 +433,8 @@ export function HouseholdIncomeReport({
         </table>
       </div>
 
-      <h4>Estimates</h4>
-      <div className="table-wrap car-tax-table-wrap">
+      <h4 id="magi-estimates" data-section="magi-estimates">Estimates</h4>
+      <div className="table-wrap car-tax-table-wrap" data-part="magi-estimates-table">
         <table aria-label="MAGI estimates">
           <thead>
             <tr>
@@ -469,8 +500,8 @@ export function HouseholdIncomeReport({
         Estimate rows feed the forecast tile. They are not booked ledger facts.
       </p>
 
-      <h4>Deductions</h4>
-      <div className="table-wrap car-tax-table-wrap">
+      <h4 id="household-deductions" data-section="household-deductions">Deductions</h4>
+      <div className="table-wrap car-tax-table-wrap" data-part="household-deductions-table">
         <table aria-label="Household deductions">
           <thead>
             <tr>
@@ -493,8 +524,8 @@ export function HouseholdIncomeReport({
         </table>
       </div>
 
-      <h4>Tax money</h4>
-      <div className="table-wrap car-tax-table-wrap">
+      <h4 id="tax-money" data-section="tax-money">Tax money</h4>
+      <div className="table-wrap car-tax-table-wrap" data-part="tax-withholding-table">
         <table aria-label="Tax withholding">
           <thead>
             <tr>
@@ -542,7 +573,12 @@ export function HouseholdIncomeReport({
       </p>
 
       {showSuggestions && suggestionLines.length > 0 ? (
-        <section aria-label="MAGI suggestions">
+        <section
+          id="magi-suggestions"
+          data-section="magi-suggestions"
+          data-part="magi-suggestion-list"
+          aria-label="MAGI suggestions"
+        >
           <h4>Suggestions{hole > 0 ? ` that close ${money(hole, scale)}` : ""}</h4>
           <ul>
             {suggestionLines.map((line) => (
@@ -552,7 +588,13 @@ export function HouseholdIncomeReport({
         </section>
       ) : null}
 
-      <section className="household-aptc" aria-label="APTC from 1095-A">
+      <section
+        className="household-aptc"
+        id="household-aptc"
+        data-section="household-aptc"
+        data-part="aptc-facts"
+        aria-label="APTC from 1095-A"
+      >
         <h4>Marketplace application and 1095-A</h4>
         <div className="household-aptc-grid">
           <label>

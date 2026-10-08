@@ -83,10 +83,14 @@ fn coverage_menu_is_fourth_cash_management_child() {
             && ui.contains("Weekly comparison")
             && ui.contains("next 12 months")
             && ui.contains("Amount per payment × periods")
+            && ui.contains("<th>Account</th>")
+            && ui.contains("<th>Symbol</th>")
+            && ui.contains("<th>Name</th>")
+            && ui.contains("Per payment")
             && ui.contains("cash-coverage-loading")
             && ui.contains("Loading {periodChip}")
             && ui.contains("minor == null ? \"—\""),
-        "Coverage prints — for unknown; comparison is the forward plan; math tables show amount × periods"
+        "Coverage prints — for unknown; comparison is the forward plan; math tables list account lines"
     );
 }
 
@@ -226,6 +230,23 @@ async fn income_week_plan_minus_unpaid_element_is_known_plan_unknown_actual() {
         }),
     )
     .await;
+    must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "Loan",
+            "name": "coverage-loan",
+            "kind": "Withdrawal",
+            "cadence": "monthly",
+            "weekdayOrMonthDay": "1",
+            "amountMinor": 500_000,
+            "asOfDate": "2026-09-18",
+            "startOn": "",
+            "stopOn": "",
+            "occurrences": []
+        }),
+    )
+    .await;
 
     let plan = query_json(
         &platform,
@@ -272,9 +293,19 @@ async fn income_week_plan_minus_unpaid_element_is_known_plan_unknown_actual() {
     );
     let lines = cover["incomeLines"].as_array().expect("income math");
     let reg = lines.iter().find(|l| l["symbol"] == "REG1").unwrap();
+    assert_eq!(reg["account"], "Income", "{reg}");
     assert_eq!(reg["perPeriodMinor"].as_i64(), Some(10_000), "{reg}");
     assert_eq!(reg["periods"].as_i64(), Some(52), "{reg}");
     assert_eq!(reg["yearMinor"].as_i64(), Some(520_000), "{reg}");
+    let expense_lines = cover["expenseLines"].as_array().expect("expense math");
+    assert!(
+        expense_lines.iter().any(|l| l["account"] == "Income" && l["name"] == "coverage-week"),
+        "expense math lists Income line: {expense_lines:?}"
+    );
+    assert!(
+        !expense_lines.iter().any(|l| l["account"] == "Loan" || l["name"] == "coverage-loan"),
+        "Loan is outside Coverage books: {expense_lines:?}"
+    );
     let car = rows.iter().find(|r| r["account"] == "Car").unwrap();
     assert_eq!(
         car["planExpenseMinor"].as_i64(),
@@ -286,5 +317,45 @@ async fn income_week_plan_minus_unpaid_element_is_known_plan_unknown_actual() {
         health["planExpenseMinor"].as_i64(),
         Some(4_615),
         "Health $200/mo × 12 / 52: {cover}"
+    );
+
+    let cover_month = query_json(
+        &platform,
+        "CashCoverageGet",
+        serde_json::json!({"asOfDate": "2026-09-18", "period": "month"}),
+    )
+    .await;
+    let income_month = cover_month["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["account"] == "Income")
+        .unwrap();
+    assert_eq!(
+        income_month["planIncomeMinor"].as_i64(),
+        Some(520_000 / 12),
+        "Coverage Income month = year/12 from characteristic cadence: {cover_month}"
+    );
+    let dividend = query_json(
+        &platform,
+        "DividendPlanHomeGet",
+        serde_json::json!({"asOfDate": "2026-09-18"}),
+    )
+    .await;
+    let div_income = dividend["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["accountName"] == "Income")
+        .unwrap();
+    assert_eq!(
+        div_income["monthlyIncomeMinor"].as_i64(),
+        income_month["planIncomeMinor"].as_i64(),
+        "Coverage Income month matches Dividend Plan Monthly Income: cover={cover_month} plan={dividend}"
+    );
+    assert_eq!(
+        div_income["annualDividendMinor"].as_i64(),
+        Some(520_000),
+        "Dividend Plan annual uses same DIV-1 × cadence machine: {dividend}"
     );
 }

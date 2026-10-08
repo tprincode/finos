@@ -169,8 +169,12 @@ export type CoreFunctionsGet = {
       title: string;
       description?: string;
       coreFunctionIds?: string[];
+      section?: string;
+      /** `none` when the component has no sheet of its own. */
+      export?: string;
       exportKind?: string;
     }>;
+    sections?: Array<{ id: string; title: string; anchor: string }>;
     sqliteTables?: Array<{ name: string; path: string; needle: string }>;
   }>;
 };
@@ -198,6 +202,9 @@ export type AccountRecord = {
   accountId: string;
   name: string;
   kind: string;
+  cashSymbol?: string;
+  brokerAccountNumber?: string;
+  minBalanceTargetMinor?: number | null;
   rowVersion?: number;
 };
 
@@ -581,6 +588,16 @@ export type DeclarationHistoryGet = {
       amountPerShareMinor: number | null;
       amountScale: number;
     }>;
+    /** Mean of three newest complete pays at scale 5. Unknown until three pays exist. */
+    avg3Minor?: number | null;
+    avg3Scale?: number;
+    avg3Count?: number;
+    avg3Complete?: boolean;
+    /** Mean of up to six newest complete pays at scale 5. Short lists still average. */
+    avg6Minor?: number | null;
+    avg6Scale?: number;
+    avg6Count?: number;
+    avg6Complete?: boolean;
   }>;
 };
 
@@ -1102,6 +1119,12 @@ export type TaxPlanningGet = {
   car?: CarRocPlanGet | null;
   ytd?: CashYtdGet | null;
   iraContributionMinor?: number;
+  /** Long plus short term capital gain, uncapped. Null while a sale cannot be placed. */
+  netCapitalGainMinor?: number | null;
+  /** The slice of that net MAGI takes, a loss limited to $3,000. */
+  capitalGainMagiMinor?: number | null;
+  /** Loss left over after the limit, negative. Zero when the net is a gain. */
+  capitalLossCarryforwardMinor?: number | null;
 };
 
 export type CarRocPlanGet = {

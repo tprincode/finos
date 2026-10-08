@@ -163,7 +163,12 @@ export function CashRegisterPanel({
     : [];
 
   return (
-    <section className="cash-register" id="cash-register" aria-label="Cashflow manager">
+    <section
+      className="cash-register"
+      id="cash-register"
+      data-section="register-controls"
+      aria-label="Cashflow manager"
+    >
       <div className="cashflow-manager-head">
         <h3>{view === "calendar" ? `${book} cashflow manager` : "cashflow manager"}</h3>
         {onManageElements ? (
@@ -195,27 +200,33 @@ export function CashRegisterPanel({
         </button>
       </div>
       {yearTotals.open ? (
-        <WeekReportTable report={yearTotals.report} error={yearTotals.error} />
+        <div data-part="register-year-totals">
+          <WeekReportTable report={yearTotals.report} error={yearTotals.error} />
+        </div>
       ) : null}
       {remainingYear.open ? (
-        <WeekReportTable report={remainingYear.report} error={remainingYear.error} />
+        <div data-part="register-remaining-year">
+          <WeekReportTable report={remainingYear.report} error={remainingYear.error} />
+        </div>
       ) : null}
       <div className="cashflow-picker-row">
-        {view === "calendar" ? (
-          <AccountTickPicker
-            legend="Managed accounts"
-            mode="exactlyOne"
-            showAll={false}
-            accounts={BOOKS}
-            selected={[book]}
-            onSelected={(next) => {
-              if (next[0]) onBook(next[0]);
-            }}
-          />
-        ) : (
-          <span />
-        )}
-        <div className="buttons" aria-label="Register view">
+        <div data-part="register-account-picker">
+          {view === "calendar" ? (
+            <AccountTickPicker
+              legend="Managed accounts"
+              mode="exactlyOne"
+              showAll={false}
+              accounts={BOOKS}
+              selected={[book]}
+              onSelected={(next) => {
+                if (next[0]) onBook(next[0]);
+              }}
+            />
+          ) : (
+            <span />
+          )}
+        </div>
+        <div className="buttons" aria-label="Register view" data-part="register-view-switch">
           <button
             type="button"
             aria-label="Register calendar"
@@ -235,7 +246,13 @@ export function CashRegisterPanel({
         </div>
       </div>
       {view === "trend" ? (
-        <div className="register-trend-wrap" aria-label="Register trend">
+        <div
+          className="register-trend-wrap"
+          id="register-trend"
+          data-section="register-trend"
+          data-part="register-trend-chart"
+          aria-label="Register trend"
+        >
           <AccountCashFlow weeks={weeks} asOf={asOfDate} />
         </div>
       ) : (
@@ -259,7 +276,12 @@ export function CashRegisterPanel({
       {!focusDay ? (
         <p role="status">Select a date on the calendar to list that day’s transactions.</p>
       ) : (
-        <div className="table-wrap">
+        <div
+          className="table-wrap"
+          id="register-day"
+          data-section="register-day"
+          data-part="register-day-transactions"
+        >
           {focusDay ? (
             <h4 aria-label="Day transactions">{focusDay} transactions</h4>
           ) : null}
@@ -384,8 +406,16 @@ function RegisterMonthGrid({
   const showActual = monthStart <= asOfDate;
   const showPlanned = monthEnd > asOfDate;
   return (
-    <div className="register-calendar-wrap">
-      <div className="register-month-nav" aria-label="Register month">
+    <div
+      className="register-calendar-wrap"
+      id="register-calendar"
+      data-section="register-calendar"
+    >
+      <div
+        className="register-month-nav"
+        aria-label="Register month"
+        data-part="register-month-nav"
+      >
         <button type="button" aria-label="Previous month" onClick={onPrev}>
           Previous
         </button>
@@ -394,7 +424,11 @@ function RegisterMonthGrid({
           Next
         </button>
       </div>
-      <div className="home-trend-focus-flow register-month-flow" aria-label="Month cash flow totals">
+      <div
+        className="home-trend-focus-flow register-month-flow"
+        aria-label="Month cash flow totals"
+        data-part="register-month-flow"
+      >
         {showActual ? (
           <>
             <span className="home-trend-focus-label">Actual Income</span>
@@ -436,7 +470,11 @@ function RegisterMonthGrid({
           {money(monthEndMinor)}
         </span>
       </div>
-      <table className="register-calendar" aria-label="Register calendar">
+      <table
+        className="register-calendar"
+        aria-label="Register calendar"
+        data-part="register-calendar-grid"
+      >
         <thead>
           <tr>
             {WEEKDAYS.map((name) => (

@@ -212,6 +212,38 @@ fn group(label: &str, rows: &[&TaxPlanningRow]) -> TaxPlanningGroup {
     }
 }
 
+fn is_capital_gain_key(key: &str) -> bool {
+    key == "ltcg" || key == "stcg"
+}
+
+/// MAGI takes a capital gain whole, but a net capital loss only to the 1040 limit.
+/// The rows keep the uncapped net; the cap lands here, once per column.
+fn magi_column(
+    rows: &[&TaxPlanningRow],
+    pick: impl Fn(&TaxPlanningRow) -> Option<i64>,
+) -> Option<i64> {
+    let mut plain = 0i64;
+    let mut gains: Vec<i64> = Vec::new();
+    for row in rows {
+        let value = pick(row)?;
+        if is_capital_gain_key(&row.key) {
+            gains.push(value);
+        } else {
+            plain += value;
+        }
+    }
+    Some(plain + financial_domain::roc::net_capital_gain_for_magi(&gains).magi_minor)
+}
+
+fn magi_group(label: &str, rows: &[&TaxPlanningRow]) -> TaxPlanningGroup {
+    TaxPlanningGroup {
+        label: label.into(),
+        ytd_minor: magi_column(rows, |r| r.ytd_minor),
+        projected_minor: magi_column(rows, |r| r.projected_minor),
+        total_minor: magi_column(rows, |r| r.total_minor),
+    }
+}
+
 pub async fn tax_planning_get(
     canonical: &dyn Canonical,
     as_of: &str,
@@ -301,20 +333,32 @@ pub async fn tax_planning_get(
         ssa_proj,
         "magi",
     );
+    // No lot sale is a decided $0 — this section reports status, and nothing sold
+    // is nothing gained. A sale we could not place in a term stays unknown.
+    let gain_ytd = |stored: Option<i64>| {
+        if car.lot_sale_count == 0 {
+            stored.or(Some(0))
+        } else {
+            stored
+        }
+    };
+    let long_ytd = gain_ytd(car.ytd_long_term_gain_minor);
+    let short_ytd = gain_ytd(car.ytd_short_term_gain_minor);
+    // Nothing plans a future lot sale, so a known YTD means $0 still to come.
     push_row(
         &mut rows,
         "ltcg",
         "Long Term Capital Gains",
-        car.ytd_long_term_gain_minor.or(Some(0)),
-        Some(0),
+        long_ytd,
+        long_ytd.map(|_| 0),
         "magi_ltcg",
     );
     push_row(
         &mut rows,
         "stcg",
         "Short Term Capital Gains",
-        car.ytd_short_term_gain_minor.or(Some(0)),
-        Some(0),
+        short_ytd,
+        short_ytd.map(|_| 0),
         "magi",
     );
 
@@ -326,10 +370,16 @@ pub async fn tax_planning_get(
         .collect();
     let not_magi_rows: Vec<&TaxPlanningRow> = rows.iter().filter(|r| r.magi_impact == "none").collect();
     let all_rows: Vec<&TaxPlanningRow> = rows.iter().collect();
+    let net_gain = rows
+        .iter()
+        .filter(|r| is_capital_gain_key(&r.key))
+        .map(|r| r.total_minor)
+        .collect::<Option<Vec<i64>>>()
+        .map(|parts| financial_domain::roc::net_capital_gain_for_magi(&parts));
 
     Ok(TaxPlanningBody {
         as_of_date: as_of.to_string(),
-        magi_included: group("MAGI-included", &magi_rows),
+        magi_included: magi_group("MAGI-included", &magi_rows),
         not_magi: group("No MAGI impact", &not_magi_rows),
         all_sources: group("All income sources", &all_rows),
         rows,
@@ -338,6 +388,9 @@ pub async fn tax_planning_get(
         car: Some(car.clone()),
         ytd: Some(ytd),
         ira_contribution_minor,
+        net_capital_gain_minor: net_gain.map(|n| n.net_minor),
+        capital_gain_magi_minor: net_gain.map(|n| n.magi_minor),
+        capital_loss_carryforward_minor: net_gain.map(|n| n.carryforward_minor),
     })
 }
 
@@ -359,4 +412,76 @@ async fn ira_contribution_year_minor(
         })
         .map(|row| row.amount_minor)
         .sum())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(key: &str, impact: &str, total: Option<i64>) -> TaxPlanningRow {
+        TaxPlanningRow {
+            key: key.into(),
+            label: key.into(),
+            ytd_minor: total,
+            projected_minor: total.map(|_| 0),
+            total_minor: total,
+            magi_impact: impact.into(),
+        }
+    }
+
+    #[test]
+    fn magi_group_takes_the_capped_slice_not_the_whole_loss() {
+        // $20,000.00 of ordinary income against a $10,000.00 long-term loss.
+        let rows = vec![
+            row("ira", "magi", Some(2_000_000)),
+            row("ltcg", "magi_ltcg", Some(-1_000_000)),
+            row("stcg", "magi", Some(0)),
+        ];
+        let refs: Vec<&TaxPlanningRow> = rows.iter().collect();
+        let group = magi_group("MAGI-included", &refs);
+        assert_eq!(group.total_minor, Some(2_000_000 - 300_000));
+        assert_ne!(group.total_minor, Some(2_000_000 - 1_000_000));
+        assert_eq!(group.ytd_minor, Some(1_700_000));
+        assert_eq!(group.projected_minor, Some(0));
+    }
+
+    #[test]
+    fn a_gain_reaches_the_magi_group_whole() {
+        let rows = vec![
+            row("ira", "magi", Some(2_000_000)),
+            row("ltcg", "magi_ltcg", Some(500_000)),
+            row("stcg", "magi", Some(0)),
+        ];
+        let refs: Vec<&TaxPlanningRow> = rows.iter().collect();
+        assert_eq!(
+            magi_group("MAGI-included", &refs).total_minor,
+            Some(2_500_000)
+        );
+    }
+
+    #[test]
+    fn one_unknown_row_keeps_the_magi_group_unknown() {
+        let rows = vec![
+            row("ira", "magi", Some(2_000_000)),
+            row("ordinary", "magi", None),
+            row("ltcg", "magi_ltcg", Some(-1_000_000)),
+            row("stcg", "magi", Some(0)),
+        ];
+        let refs: Vec<&TaxPlanningRow> = rows.iter().collect();
+        assert_eq!(magi_group("MAGI-included", &refs).total_minor, None);
+    }
+
+    #[test]
+    fn all_income_sources_keeps_the_uncapped_loss() {
+        let rows = vec![
+            row("ira", "magi", Some(2_000_000)),
+            row("ltcg", "magi_ltcg", Some(-1_000_000)),
+            row("stcg", "magi", Some(0)),
+        ];
+        let refs: Vec<&TaxPlanningRow> = rows.iter().collect();
+        assert_eq!(
+            group("All income sources", &refs).total_minor,
+            Some(1_000_000)
+        );
+    }
 }

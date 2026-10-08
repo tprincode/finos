@@ -1,0 +1,3 @@
+ALTER TABLE account ADD COLUMN IF NOT EXISTS cash_symbol TEXT NOT NULL DEFAULT '';
+ALTER TABLE account ADD COLUMN IF NOT EXISTS broker_account_number TEXT NOT NULL DEFAULT '';
+ALTER TABLE account ADD COLUMN IF NOT EXISTS min_balance_target_minor BIGINT;

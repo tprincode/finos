@@ -64,7 +64,12 @@ export function WeekAheadPanel({
   const tasks = week.tasks ?? [];
 
   return (
-    <section className="week-ahead" aria-label="Week ahead">
+    <section
+      className="week-ahead"
+      id="week-ahead"
+      data-section="week-ahead"
+      aria-label="Week ahead"
+    >
       <h3>Week ahead</h3>
       <BusySurface busy={!!busy}>
       <h3>Tasks</h3>
@@ -80,26 +85,28 @@ export function WeekAheadPanel({
           onPosted={onMagiPosted ?? (() => {})}
         />
       ) : null}
-      <ReminderTable
-        label="Tasks"
-        rows={taskReminderRows({
-          rows: tasks,
-          actions: true,
-          pendingId: pendingId ?? null,
-          onOpenSymbol,
-          onOpenMagi,
-          onResolve: onResolveTask,
-          onSnooze: onIgnoreTask,
-          snoozeAria: (title) => `Snooze ${title} till next plan week`,
-        })}
-      />
+      <div data-part="week-ahead-tasks">
+        <ReminderTable
+          label="Tasks"
+          rows={taskReminderRows({
+            rows: tasks,
+            actions: true,
+            pendingId: pendingId ?? null,
+            onOpenSymbol,
+            onOpenMagi,
+            onResolve: onResolveTask,
+            onSnooze: onIgnoreTask,
+            snoozeAria: (title) => `Snooze ${title} till next plan week`,
+          })}
+        />
+      </div>
       <div className="week-ahead-section-head">
         <h3>Elements</h3>
         <button type="button" aria-label="Add element" onClick={onAddElement}>
           Add element
         </button>
       </div>
-      <div className="table-wrap">
+      <div className="table-wrap" data-part="week-ahead-elements">
         <table aria-label="Week ahead elements">
           <thead>
             <tr>
@@ -169,7 +176,7 @@ export function WeekAheadPanel({
         </table>
       </div>
       {(week.loans ?? []).length > 0 ? (
-        <div className="table-wrap">
+        <div className="table-wrap" data-part="week-ahead-loans">
           <h3>Loan payments</h3>
           <table aria-label="Week ahead loan payments">
             <thead>
@@ -202,6 +209,10 @@ export function WeekAheadPanel({
   );
 }
 
+function dollarsField(minor: number, scale: number): string {
+  return formatUsd(minor, scale).replace(/[$,]/g, "");
+}
+
 function LoanPayRow({
   loan,
   scale,
@@ -220,44 +231,76 @@ function LoanPayRow({
     interestMinor: number;
   }) => void;
 }) {
-  const paymentMinor = loan.paymentMinor;
-  const projectedInterest = formatUsd(loan.interestMinor, loan.scale ?? scale).replace(
-    /[$,]/g,
-    "",
-  );
+  const moneyScale = loan.scale ?? scale;
+  const projectedPayment = dollarsField(loan.paymentMinor, moneyScale);
+  const projectedInterest = dollarsField(loan.interestMinor, moneyScale);
+  const [payment, setPayment] = useState(projectedPayment);
   const [interest, setInterest] = useState(projectedInterest);
   const parse = (text: string) => {
     const value = Number(text.replace(/[$,]/g, ""));
     if (!Number.isFinite(value) || value < 0) return null;
     return Math.round(value * 100);
   };
+  const paymentMinor = parse(payment);
   const interestMinor = parse(interest);
-  const principalMinor = interestMinor == null ? null : paymentMinor - interestMinor;
-  const ready = principalMinor != null && principalMinor >= 0;
+  const principalMinor =
+    paymentMinor == null || interestMinor == null ? null : paymentMinor - interestMinor;
+  const interestTooHigh =
+    paymentMinor != null && interestMinor != null && interestMinor > paymentMinor;
+  const ready =
+    paymentMinor != null &&
+    paymentMinor > 0 &&
+    interestMinor != null &&
+    principalMinor != null &&
+    principalMinor >= 0 &&
+    !interestTooHigh;
+  const dirty = payment !== projectedPayment || interest !== projectedInterest;
   return (
     <tr>
       <td>{loan.dueOn}</td>
       <td>{loan.name}</td>
-      <td className="numeric">{formatUsd(paymentMinor, loan.scale ?? scale)}</td>
+      <td>
+        <input
+          aria-label={`${loan.name} total payment`}
+          inputMode="decimal"
+          value={payment}
+          title="Total payment from the statement (principal + interest). Interest cannot exceed this."
+          onChange={(event) => setPayment(event.target.value)}
+        />
+      </td>
       <td className="numeric" aria-label={`${loan.name} principal`}>
-        {ready ? formatUsd(principalMinor, loan.scale ?? scale) : "—"}
+        {ready ? formatUsd(principalMinor, moneyScale) : "—"}
       </td>
       <td>
         <input
           aria-label={`${loan.name} interest`}
           inputMode="decimal"
           value={interest}
+          title="Interest portion from the statement or projection"
           onChange={(event) => setInterest(event.target.value)}
         />
+        {interestTooHigh ? (
+          <div className="loan-pay-error" role="status">
+            Interest cannot exceed total payment
+          </div>
+        ) : null}
       </td>
       <td>
         <button
           type="button"
           aria-label={`Confirm ${loan.name} loan payment`}
           disabled={busy || pending || !ready}
-          className={interest !== projectedInterest ? "is-unsaved" : undefined}
+          className={dirty ? "is-unsaved" : undefined}
           onClick={() => {
-            if (interestMinor == null || principalMinor == null || principalMinor < 0) return;
+            if (
+              paymentMinor == null ||
+              interestMinor == null ||
+              principalMinor == null ||
+              principalMinor < 0 ||
+              interestTooHigh
+            ) {
+              return;
+            }
             onConfirm({
               accountId: loan.accountId,
               dueOn: loan.dueOn,
