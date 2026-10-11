@@ -7,10 +7,12 @@ alwaysApply: true
 
 If rust, SQL, migrations, the native menu, or a command the running exe has not loaded changed, restart in the same turn.
 
-1. Write `%LOCALAPPDATA%\com.finos.desktop\restart.token` with an ISO stamp and a reason. Delete `%LOCALAPPDATA%\com.finos.desktop\page-loaded.log` in the same step so an old Home line cannot pass.
+**Do not restart** for ordinary Vite UI work: TypeScript/TSX, CSS, or screen text/label changes under `apps/desktop/src` and packages the Vite graph already serves. Those update via HMR. There is no File → Reload.
+
+1. Write `%LOCALAPPDATA%\com.finos.desktop\restart.token` with an ISO stamp and a reason. Delete `%LOCALAPPDATA%\com.finos.desktop\page-loaded.log` in the same step so an old Home line cannot pass. Prefer not leaving a token while also cold-starting `finos.bat` in a way that races `first_pass` (supervisor skips `first_pass` when a token already exists).
 2. Stop every `finos-desktop` so repo-root `finos.bat` starts one `finos (dev)` child. Do not start `start-finos-dev.bat` alone. Do not `npm run desktop:build`.
 3. Run `.\scripts\app-up.ps1`. It exits 0 only when exactly one `finos-desktop.exe` is running, exactly one `start-finos-dev.bat` launcher is running, and `page loaded Home` is newer than that process. `http://localhost:1420` answering is not proof. A second desktop or a second dev launcher is a failed turn.
-4. Read `%LOCALAPPDATA%\com.finos.desktop\dev-console.log`. `panicked`, `Failed to setup`, or `npm error` is a failed turn. A window full of errors is not complete. The same sentences are checked by `app-up.ps1`.
-5. If the parent is missing, start repo-root `finos.bat` only.
+4. Run `.\scripts\dev-health.ps1` after `app-up` (or instead when diagnosing). It reuses the app-up gates and greps `dev-console.log`, `dev-console.prev.log`, and `ui-errors.log` for `panicked`, `Failed to setup`, `npm error`, and related hard fails. Read those logs when it fails. A window full of errors is not complete.
+5. If the parent is missing, start repo-root `finos.bat` only (do not also pre-write `restart.token` unless you intend a token-only consume path).
 
 Do not leave File → Restart as owner homework.

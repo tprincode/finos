@@ -4,12 +4,16 @@ use std::collections::HashSet;
 
 use uuid::Uuid;
 
-use crate::contracts::{CartScenarioBody, CartScenarioListBody};
+use crate::contracts::{
+    CartCashAlignLinkRepairBody, CartCashAlignLinkRepairItem, CartScenarioBody,
+    CartScenarioListBody,
+};
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
 use financial_domain::calculator::PaymentCadence;
 use financial_domain::cart::{no_cash_account, plan_fwd_yield_bps};
 use financial_domain::current_price::uses_cash_par;
+use financial_domain::money::to_usd_cents;
 
 const CASH_SYMBOLS: &[&str] = &["SPAXX", "CASH", "FDRXX", "SWVXX"];
 
@@ -683,6 +687,9 @@ pub async fn execute_cash_align(
     };
     let current_minor = pile.dollars_minor;
     let delta = target_minor - current_minor;
+    // Non-zero delta must post journal + link activity_id. Zero delta leaves activity_id
+    // NULL by design (no cash move) — CashIntegritySync only tickets NULL when a matching
+    // journal row exists the same day (historical forensic residue).
     let mut align_activity_id: Option<Uuid> = None;
     if delta > 0 {
         let (_body, activity_id) = crate::cash_pile::deposit_with_activity(
@@ -703,6 +710,12 @@ pub async fn execute_cash_align(
         )
         .await?;
         align_activity_id = Some(activity_id);
+    }
+    if delta != 0 && align_activity_id.is_none() {
+        return Err(PlatformError::new(
+            "cash_align_missing_activity",
+            "cash align posted a move but did not link an activity_id",
+        ));
     }
     canonical
         .cart_execute_step_add(
@@ -736,6 +749,197 @@ pub async fn execute_cash_align(
         .await?;
     supersede_sibling_slots(canonical, &scene, scenario_id).await?;
     canonical.cart_scenario_get(scenario_id).await
+}
+
+fn align_link_candidate_type(activity_type: &str) -> bool {
+    activity_type.eq_ignore_ascii_case("ETF Purchase")
+        || activity_type.eq_ignore_ascii_case("deposit")
+        || activity_type.eq_ignore_ascii_case("withdrawal")
+}
+
+fn amount_matches_need(amount_minor: i64, need_minor: i64, buy_spend_minor: i64) -> bool {
+    const TOL: i64 = 10;
+    let a = amount_minor.abs();
+    (a - need_minor).abs() <= TOL || (a - buy_spend_minor).abs() <= TOL
+}
+
+fn link_type_rank(activity_type: &str) -> u8 {
+    if activity_type.eq_ignore_ascii_case("ETF Purchase") {
+        0
+    } else if activity_type.eq_ignore_ascii_case("withdrawal") {
+        1
+    } else if activity_type.eq_ignore_ascii_case("deposit") {
+        2
+    } else {
+        9
+    }
+}
+
+/// Owner-approved one-shot: link completed NULL cash_align steps to same-day journal
+/// rows (ETF Purchase / withdrawal / deposit) by amount. Does not move cash.
+pub async fn link_null_cash_align_activities(
+    canonical: &dyn Canonical,
+) -> Result<CartCashAlignLinkRepairBody, PlatformError> {
+    let accounts = canonical.account_list().await?;
+    let mut scanned = 0u64;
+    let mut linked = 0u64;
+    let mut skipped = 0u64;
+    let mut items = Vec::new();
+    let mut used_activity: HashSet<Uuid> = HashSet::new();
+
+    // Activities already referenced by any cart step stay off-limits.
+    for account in &accounts {
+        let scenes = canonical
+            .cart_scenario_list(account.account_id)
+            .await
+            .unwrap_or(CartScenarioListBody { items: vec![] });
+        for scene in &scenes.items {
+            for step in &scene.execute_steps {
+                if let Some(id) = step.activity_id {
+                    used_activity.insert(id);
+                }
+            }
+        }
+    }
+
+    for account in &accounts {
+        let scenes = canonical
+            .cart_scenario_list(account.account_id)
+            .await
+            .unwrap_or(CartScenarioListBody { items: vec![] });
+        for scene in scenes.items {
+            if scene.status != "complete" {
+                continue;
+            }
+            let Some(align) = scene
+                .execute_steps
+                .iter()
+                .find(|s| s.kind == "cash_align" && s.activity_id.is_none())
+            else {
+                continue;
+            };
+            let _ = align;
+            scanned += 1;
+            let day = if scene.as_of.len() >= 10 {
+                scene.as_of[..10].to_string()
+            } else {
+                scene.as_of.clone()
+            };
+
+            let mut sell_proceeds = 0_i64;
+            for step in scene.execute_steps.iter().filter(|s| s.kind == "sell") {
+                let Some(aid) = step.activity_id else {
+                    continue;
+                };
+                sell_proceeds += canonical.activity_get(aid).await?.amount_minor;
+            }
+            let mut buy_spend = 0_i64;
+            for step in scene.execute_steps.iter().filter(|s| s.kind == "buy") {
+                let Some(lot_id) = step.lot_id else {
+                    continue;
+                };
+                let lot = canonical.lot_get(lot_id).await?;
+                buy_spend += to_usd_cents(lot.performance_basis_minor, lot.scale);
+            }
+            let need_minor = (buy_spend - sell_proceeds).max(0);
+
+            let journal = canonical
+                .activity_list_in_range(Some(account.account_id), &day, &day)
+                .await
+                .unwrap_or_default();
+            let mut candidates: Vec<_> = journal
+                .into_iter()
+                .filter(|a| align_link_candidate_type(&a.activity_type))
+                .filter(|a| !used_activity.contains(&a.activity_id))
+                .filter(|a| amount_matches_need(a.amount_minor, need_minor, buy_spend))
+                .collect();
+            candidates.sort_by_key(|a| {
+                (
+                    link_type_rank(&a.activity_type),
+                    (a.amount_minor.abs() - need_minor).abs(),
+                )
+            });
+
+            if candidates.is_empty() {
+                skipped += 1;
+                items.push(CartCashAlignLinkRepairItem {
+                    scenario_id: scene.scenario_id,
+                    account_name: scene.account_name.clone(),
+                    as_of: day,
+                    status: "skipped".into(),
+                    activity_id: None,
+                    activity_type: None,
+                    reason: format!(
+                        "no same-day ETF Purchase/withdrawal/deposit matching need {need_minor} (buy {buy_spend}, sell {sell_proceeds})"
+                    ),
+                });
+                continue;
+            }
+            if candidates.len() > 1 {
+                let top = &candidates[0];
+                let second = &candidates[1];
+                let top_dist = (top.amount_minor.abs() - need_minor).abs();
+                let second_dist = (second.amount_minor.abs() - need_minor).abs();
+                if link_type_rank(&top.activity_type) == link_type_rank(&second.activity_type)
+                    && top_dist == second_dist
+                {
+                    skipped += 1;
+                    items.push(CartCashAlignLinkRepairItem {
+                        scenario_id: scene.scenario_id,
+                        account_name: scene.account_name.clone(),
+                        as_of: day,
+                        status: "skipped".into(),
+                        activity_id: None,
+                        activity_type: None,
+                        reason: "ambiguous same-day matches; not linking".into(),
+                    });
+                    continue;
+                }
+            }
+
+            let chosen = &candidates[0];
+            match canonical
+                .cart_execute_step_link_align(scene.scenario_id, chosen.activity_id)
+                .await
+            {
+                Ok(()) => {
+                    used_activity.insert(chosen.activity_id);
+                    linked += 1;
+                    items.push(CartCashAlignLinkRepairItem {
+                        scenario_id: scene.scenario_id,
+                        account_name: scene.account_name.clone(),
+                        as_of: day,
+                        status: "linked".into(),
+                        activity_id: Some(chosen.activity_id),
+                        activity_type: Some(chosen.activity_type.clone()),
+                        reason: format!(
+                            "linked to {} amount {}",
+                            chosen.activity_type, chosen.amount_minor
+                        ),
+                    });
+                }
+                Err(err) => {
+                    skipped += 1;
+                    items.push(CartCashAlignLinkRepairItem {
+                        scenario_id: scene.scenario_id,
+                        account_name: scene.account_name.clone(),
+                        as_of: day,
+                        status: "skipped".into(),
+                        activity_id: None,
+                        activity_type: None,
+                        reason: err.message,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(CartCashAlignLinkRepairBody {
+        scanned,
+        linked,
+        skipped,
+        items,
+    })
 }
 
 /// Executing one slot closes the whole plan. The comparison copy in the other slot used to stay

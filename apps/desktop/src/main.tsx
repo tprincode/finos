@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
 import { ImportWizard } from "./ImportWizard";
+import { logUiError } from "./features/shell/logUiError";
 
 function showBootError(message: string): void {
   const el = document.getElementById("root");
@@ -14,6 +15,7 @@ function showBootError(message: string): void {
     "margin:1rem;padding:1rem;white-space:pre-wrap;font:14px/1.4 Consolas,monospace;background:#2a1010;color:#f6d7d7";
   pre.textContent = `finos failed to start:\n\n${message}`;
   el.appendChild(pre);
+  logUiError("boot", message);
 }
 
 class BootErrorBoundary extends Component<
@@ -40,6 +42,7 @@ class BootErrorBoundary extends Component<
       return;
     }
     this.setState({ error: text });
+    logUiError("BootErrorBoundary", text);
     void invoke("page_loaded", { screen: "Home failed", detail: text }).catch(() => {});
   }
 

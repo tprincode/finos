@@ -369,6 +369,51 @@ pub struct CashIntegrityGetBody {
     pub rows: Vec<CashIntegrityBody>,
 }
 
+/// One finding from CashIntegritySync (gap and/or unlinked cart align).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashIntegritySyncItem {
+    pub kind: String,
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub code: String,
+    pub reason: String,
+    pub scenario_id: Option<Uuid>,
+    pub ticket_raised: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashIntegritySyncBody {
+    pub scanned: u64,
+    pub raised: u64,
+    pub gap_count: u64,
+    pub unlinked_align_count: u64,
+    pub items: Vec<CashIntegritySyncItem>,
+}
+
+/// One linked (or skipped) cash_align row from CartCashAlignLinkRepair.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CartCashAlignLinkRepairItem {
+    pub scenario_id: Uuid,
+    pub account_name: String,
+    pub as_of: String,
+    pub status: String,
+    pub activity_id: Option<Uuid>,
+    pub activity_type: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CartCashAlignLinkRepairBody {
+    pub scanned: u64,
+    pub linked: u64,
+    pub skipped: u64,
+    pub items: Vec<CartCashAlignLinkRepairItem>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CartScenarioListBody {

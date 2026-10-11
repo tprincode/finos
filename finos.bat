@@ -117,7 +117,10 @@ if errorlevel 1 (
 title finos
 powershell -NoProfile -Command "[IO.File]::WriteAllText('%PIDFILE%', [string](Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId)"
 
+rem FIRST=1 only for a true cold start. If a restart.token is already present,
+rem skip first_pass forever so consume cannot race a second start-finos-dev.
 set "FIRST=1"
+if exist "%TOKEN%" set "FIRST=0"
 echo finos supervisor watching %TOKEN%
 echo File -- Restart writes that token and this window Start-Process-es a new finos ^(dev^) console.
 echo Close this window or Ctrl+C to stop auto-relaunch.
@@ -137,6 +140,8 @@ call :start_dev
 goto sleep
 
 :consume
+rem Never also take first_pass after a token-driven start in this supervisor life.
+set "FIRST=0"
 call :wait_exe_gone
 if errorlevel 1 (
   echo %DATE% parent %TIME% stale restart.token: desktop is already running. Removing token.
@@ -155,14 +160,38 @@ if exist "%DEVPID%" (
   set /p LIVEDEV=<"%DEVPID%"
 )
 if defined LIVEDEV (
-  call :pid_is_live_cmd "%LIVEDEV%"
+  call :pid_is_live_dev "%LIVEDEV%"
   if not errorlevel 1 (
     echo %DATE% parent %TIME% A finos ^(dev^) start is already running. Not starting a second copy.
     exit /b 0
   )
 )
 powershell -NoProfile -Command "Start-Process -FilePath '%DEVBAT%' -WorkingDirectory '%REPO%\apps\desktop' -WindowStyle Normal"
+rem Wait until the child writes start.pid so a later loop cannot start a twin.
+call :wait_dev_pid
 exit /b 0
+
+:pid_is_live_dev
+set "CHECKPID=%~1"
+if "%CHECKPID%"=="" exit /b 1
+powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter ('ProcessId=%CHECKPID%'); if (-not $p) { exit 1 }; $c = [string]$p.CommandLine; $t = [string](Get-Process -Id %CHECKPID% -EA SilentlyContinue).MainWindowTitle; if ($t -eq 'finos (dev)' -or $c -match '(?i)start-finos-dev\.bat') { exit 0 } else { exit 1 }"
+exit /b %ERRORLEVEL%
+
+:wait_dev_pid
+set /a _dev=0
+:wait_dev_pid_loop
+if exist "%DEVPID%" (
+  set "CHILD="
+  set /p CHILD=<"%DEVPID%"
+  if defined CHILD (
+    call :pid_is_live_dev "%CHILD%"
+    if not errorlevel 1 exit /b 0
+  )
+)
+set /a _dev+=1
+if %_dev% GEQ 20 exit /b 0
+ping -n 2 127.0.0.1 >nul
+goto wait_dev_pid_loop
 
 :pid_is_live_cmd
 set "CHECKPID=%~1"

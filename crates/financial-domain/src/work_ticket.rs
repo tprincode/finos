@@ -23,6 +23,10 @@ pub const CODE_MISSING_SEED_URL: &str = "missing_seed_url";
 pub const CODE_DECLARATION_RETRIEVE_TIMEOUT: &str = "declaration_retrieve_timeout";
 pub const TOOL_ESTABLISH_RECERTIFY: &str = "establish_recertify";
 pub const CODE_COLLECTOR_ESTABLISH_INCOMPLETE: &str = "collector_establish_incomplete";
+/// Owner reviews pile vs journal fold / cart align link (CashIntegritySync).
+pub const TOOL_REVIEW_CASH_INTEGRITY: &str = "review_cash_integrity";
+pub const CODE_CASH_INTEGRITY_GAP: &str = "cash_integrity_gap";
+pub const CODE_CART_ALIGN_UNLINKED: &str = "cart_align_unlinked";
 
 /// Codes this slice can raise. Every entry must have a tool (`tool_for_code`).
 pub const RAISEABLE_CODES: &[&str] = &[
@@ -52,6 +56,8 @@ pub const RAISEABLE_CODES: &[&str] = &[
     CODE_ADAPTER_URL_MISMATCH,
     CODE_MISSING_SEED_URL,
     CODE_COLLECTOR_ESTABLISH_INCOMPLETE,
+    CODE_CASH_INTEGRITY_GAP,
+    CODE_CART_ALIGN_UNLINKED,
 ];
 
 pub fn tool_for_code(code: &str) -> Option<&'static str> {
@@ -82,6 +88,7 @@ pub fn tool_for_code(code: &str) -> Option<&'static str> {
         "roc_estimate" => TOOL_RUN_ROC,
         CODE_ROC_PCT_CHANGE => TOOL_ROC_CONFIRM,
         CODE_COLLECTOR_ESTABLISH_INCOMPLETE => TOOL_ESTABLISH_RECERTIFY,
+        CODE_CASH_INTEGRITY_GAP | CODE_CART_ALIGN_UNLINKED => TOOL_REVIEW_CASH_INTEGRITY,
         _ => return None,
     })
 }
@@ -111,6 +118,7 @@ pub fn field_for_code(code: &str) -> &'static str {
         | crate::mlp_sec::CODE_PAYABLE_DATE_MOVED => "remaining_year",
         "roc_estimate" | CODE_ROC_PCT_CHANGE => "roc_estimate",
         CODE_COLLECTOR_ESTABLISH_INCOMPLETE => "establish",
+        CODE_CASH_INTEGRITY_GAP | CODE_CART_ALIGN_UNLINKED => "cash_integrity",
         _ => "last_run",
     }
 }

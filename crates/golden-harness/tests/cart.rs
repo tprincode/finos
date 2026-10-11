@@ -2850,6 +2850,270 @@ async fn cart_purchase_then_align_pile_equals_fold() {
     );
 }
 
+/// Owner repair links a completed NULL cash_align to a same-day amount-matched journal row.
+#[tokio::test]
+async fn cash_align_link_repair_links_null_to_same_day_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = account["accountId"].as_str().unwrap();
+    let (spaxx_id, _cash_lot) =
+        research_and_open(&platform, account_id, "SPAXX", 500_000, 2, 500_000).await;
+    must_ok(
+        &platform,
+        "TrendsWeekSave",
+        serde_json::json!({
+            "periodStart": "2026-09-19",
+            "periodEnd": "2026-09-25",
+            "capturedAt": "2026-09-25T18:00:00Z",
+            "profitMinor": 0,
+            "monthlyDivsMinor": 0,
+            "fidelityTotalMinor": 500_000,
+            "schwabTotalMinor": 0,
+            "incomeBalanceMinor": 500_000,
+            "incomeCashMinor": 500_000,
+            "acct9CashMinor": 0,
+            "acct9EtfValueMinor": 0,
+            "scale": 2
+        }),
+    )
+    .await;
+    let haky = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "HAKY", "name": "HAKY"}),
+    )
+    .await;
+    let haky_id = haky["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": haky_id,
+            "priceSource": "public",
+            "sourceSymbol": "HAKY",
+            "declarationSource": "issuer",
+            "sourceUrl": "https://example.test/haky",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot(&platform, haky_id, "HAKY")
+        .await
+        .expect("complete");
+    let haky_lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": haky_id,
+            "openedOn": "2026-01-01",
+            "origin": "purchase",
+            "quantityMinor": 100,
+            "quantityScale": 0,
+            "performanceBasisMinor": 300_000,
+            "taxBasisMinor": 300_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    let muib = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "MUIB", "name": "MUIB"}),
+    )
+    .await;
+    let muib_id = muib["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": muib_id,
+            "priceSource": "public",
+            "sourceSymbol": "MUIB",
+            "declarationSource": "issuer",
+            "sourceUrl": "https://example.test/muib",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        muib_id,
+        "MUIB",
+        "Twice monthly",
+        true,
+    )
+    .await
+    .expect("complete muib");
+    let scene = must_ok(
+        &platform,
+        "CartScenarioCreate",
+        serde_json::json!({
+            "accountId": account_id,
+            "asOf": "2026-09-26",
+            "name": "Repair link cart"
+        }),
+    )
+    .await;
+    let scenario_id = scene["scenarioId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "CartSellLineAdd",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "lotId": haky_lot["lotId"],
+            "qtyMinor": 100,
+            "qtyScale": 0,
+            "unitMinor": 3_200
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartBuyLineAdd",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "securityId": muib_id,
+            "qtyWhole": 20,
+            "lastMinor": 3_300,
+            "priceScale": 2,
+            "planAnnualMinor": 11_040
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartScenarioAgree",
+        serde_json::json!({ "scenarioId": scenario_id }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartExecuteSell",
+        serde_json::json!({ "scenarioId": scenario_id, "occurredOn": "2026-09-26" }),
+    )
+    .await;
+    let buy_lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": muib_id,
+            "openedOn": "2026-09-26",
+            "origin": "purchase",
+            "quantityMinor": 20,
+            "quantityScale": 0,
+            "performanceBasisMinor": 66_000,
+            "taxBasisMinor": 66_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartExecuteBuyStep",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "lotId": buy_lot["lotId"]
+        }),
+    )
+    .await;
+    let pile_now = query_body(
+        &platform,
+        "CashPileGet",
+        serde_json::json!({ "accountId": account_id }),
+    )
+    .await;
+    let target = pile_now["dollarsMinor"].as_i64().unwrap();
+    must_ok(
+        &platform,
+        "CartExecuteCashAlign",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "occurredOn": "2026-09-26",
+            "targetMinor": target
+        }),
+    )
+    .await;
+    // Forensic residue: journal cash move exists, align still NULL.
+    let posted = must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": spaxx_id,
+            "activityType": "ETF Purchase",
+            "amountMinor": 66_000,
+            "scale": 2,
+            "occurredOn": "2026-09-26"
+        }),
+    )
+    .await;
+    let repair = must_ok(
+        &platform,
+        "CartCashAlignLinkRepair",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(repair["linked"].as_u64(), Some(1), "repair: {repair}");
+    let scene_after = query_body(
+        &platform,
+        "CartScenarioGet",
+        serde_json::json!({ "scenarioId": scenario_id }),
+    )
+    .await;
+    let align = scene_after["executeSteps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["kind"] == "cash_align")
+        .expect("cash_align");
+    assert_eq!(
+        align["activityId"].as_str(),
+        posted["activityId"].as_str(),
+        "align linked: {align} repair={repair}"
+    );
+    // Idempotent: second run links nothing more.
+    let again = must_ok(
+        &platform,
+        "CartCashAlignLinkRepair",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(again["linked"].as_u64(), Some(0), "idempotent: {again}");
+}
+
+/// Non-zero cash_align must refuse when activity_id would be missing (source gate).
+#[test]
+fn cash_align_nonzero_requires_activity_id() {
+    let root = golden_harness::repo_root();
+    let cart = std::fs::read_to_string(root.join("crates/application-core/src/cart.rs")).unwrap();
+    assert!(
+        cart.contains("cash_align_missing_activity")
+            && cart.contains("delta != 0 && align_activity_id.is_none()"),
+        "non-zero align must refuse without activity_id"
+    );
+    assert!(
+        cart.contains("Zero delta leaves activity_id")
+            || cart.contains("Zero delta leaves activity_id NULL"),
+        "zero-delta NULL activity_id must stay documented as intentional"
+    );
+}
+
 /// Journal-only deposit (no lot bump) makes CashIntegrityGet report a gap.
 #[tokio::test]
 async fn cash_integrity_get_flags_gap() {
@@ -2907,6 +3171,292 @@ async fn cash_integrity_get_flags_gap() {
     let row = &integrity["rows"].as_array().unwrap()[0];
     assert_eq!(row["ok"], false, "orphan deposit journal must fail integrity: {integrity}");
     assert_eq!(row["gapMinor"].as_i64().unwrap(), -5_000);
+}
+
+/// CashIntegritySync raises tickets for pile≠fold and for NULL cash_align with matching journal.
+#[tokio::test]
+async fn cash_integrity_sync_raises_gap_and_unlinked_align() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = account["accountId"].as_str().unwrap();
+    let (spaxx_id, cash_lot) =
+        research_and_open(&platform, account_id, "SPAXX", 500_000, 2, 500_000).await;
+    must_ok(
+        &platform,
+        "TrendsWeekSave",
+        serde_json::json!({
+            "periodStart": "2026-09-19",
+            "periodEnd": "2026-09-25",
+            "capturedAt": "2026-09-25T18:00:00Z",
+            "profitMinor": 0,
+            "monthlyDivsMinor": 0,
+            "fidelityTotalMinor": 500_000,
+            "schwabTotalMinor": 0,
+            "incomeBalanceMinor": 500_000,
+            "incomeCashMinor": 500_000,
+            "acct9CashMinor": 0,
+            "acct9EtfValueMinor": 0,
+            "scale": 2
+        }),
+    )
+    .await;
+
+    let haky = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "HAKY", "name": "HAKY"}),
+    )
+    .await;
+    let haky_id = haky["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": haky_id,
+            "priceSource": "public",
+            "sourceSymbol": "HAKY",
+            "declarationSource": "issuer",
+            "sourceUrl": "https://example.test/haky",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot(&platform, haky_id, "HAKY")
+        .await
+        .expect("complete");
+    let haky_lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": haky_id,
+            "openedOn": "2026-01-01",
+            "origin": "purchase",
+            "quantityMinor": 100,
+            "quantityScale": 0,
+            "performanceBasisMinor": 300_000,
+            "taxBasisMinor": 300_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    let muib = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "MUIB", "name": "MUIB"}),
+    )
+    .await;
+    let muib_id = muib["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": muib_id,
+            "priceSource": "public",
+            "sourceSymbol": "MUIB",
+            "declarationSource": "issuer",
+            "sourceUrl": "https://example.test/muib",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        muib_id,
+        "MUIB",
+        "Twice monthly",
+        true,
+    )
+    .await
+    .expect("complete muib");
+    let scene = must_ok(
+        &platform,
+        "CartScenarioCreate",
+        serde_json::json!({
+            "accountId": account_id,
+            "asOf": "2026-09-27",
+            "name": "Unlinked align cart"
+        }),
+    )
+    .await;
+    let scenario_id = scene["scenarioId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "CartSellLineAdd",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "lotId": haky_lot["lotId"],
+            "qtyMinor": 100,
+            "qtyScale": 0,
+            "unitMinor": 3_200
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartBuyLineAdd",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "securityId": muib_id,
+            "qtyWhole": 20,
+            "lastMinor": 3_272,
+            "priceScale": 2,
+            "planAnnualMinor": 11_040
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartScenarioAgree",
+        serde_json::json!({ "scenarioId": scenario_id }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartExecuteSell",
+        serde_json::json!({ "scenarioId": scenario_id, "occurredOn": "2026-09-27" }),
+    )
+    .await;
+    let buy_lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": muib_id,
+            "openedOn": "2026-09-27",
+            "origin": "purchase",
+            "quantityMinor": 20,
+            "quantityScale": 0,
+            "performanceBasisMinor": 66_000,
+            "taxBasisMinor": 66_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartExecuteBuyStep",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "lotId": buy_lot["lotId"]
+        }),
+    )
+    .await;
+    // Force zero-delta align → NULL activity_id (intentional path).
+    let pile_now = query_body(
+        &platform,
+        "CashPileGet",
+        serde_json::json!({ "accountId": account_id }),
+    )
+    .await;
+    let target = pile_now["dollarsMinor"].as_i64().expect("pile");
+    let closed = must_ok(
+        &platform,
+        "CartExecuteCashAlign",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "occurredOn": "2026-09-27",
+            "targetMinor": target
+        }),
+    )
+    .await;
+    assert_eq!(closed["status"], "complete");
+    let scene_after = query_body(
+        &platform,
+        "CartScenarioGet",
+        serde_json::json!({ "scenarioId": scenario_id }),
+    )
+    .await;
+    let align = scene_after["executeSteps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["kind"] == "cash_align")
+        .expect("cash_align");
+    assert!(
+        align["activityId"].is_null(),
+        "zero-delta align keeps NULL activity_id: {align}"
+    );
+    // After complete: orphan deposit (gap) + same-day journal without align link (unlinked).
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": spaxx_id,
+            "activityType": "deposit",
+            "amountMinor": 5_000,
+            "scale": 2,
+            "occurredOn": "2026-09-26"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": spaxx_id,
+            "activityType": "ETF Purchase",
+            "amountMinor": 1_000,
+            "scale": 2,
+            "occurredOn": "2026-09-27"
+        }),
+    )
+    .await;
+    let _ = cash_lot;
+
+    let synced = must_ok(&platform, "CashIntegritySync", serde_json::json!({})).await;
+    assert!(
+        synced["gapCount"].as_u64().unwrap_or(0) >= 1,
+        "sync must see pile≠fold: {synced}"
+    );
+    assert!(
+        synced["unlinkedAlignCount"].as_u64().unwrap_or(0) >= 1,
+        "sync must see unlinked align: {synced}"
+    );
+    assert!(
+        synced["raised"].as_u64().unwrap_or(0) >= 1,
+        "sync must raise tickets: {synced}"
+    );
+    let items = synced["items"].as_array().cloned().unwrap_or_default();
+    assert!(
+        items.iter().any(|i| i["code"] == "cash_integrity_gap"),
+        "gap item: {synced}"
+    );
+    assert!(
+        items.iter().any(|i| i["code"] == "cart_align_unlinked"),
+        "unlinked item: {synced}"
+    );
+    let tickets = query_body(&platform, "WorkTicketList", serde_json::json!({})).await;
+    let open = tickets["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| t["status"] == "open")
+        .collect::<Vec<_>>();
+    assert!(
+        open.iter().any(|t| t["code"] == "cash_integrity_gap"),
+        "open gap ticket: {tickets}"
+    );
+    assert!(
+        open.iter().any(|t| t["code"] == "cart_align_unlinked"),
+        "open unlinked ticket: {tickets}"
+    );
 }
 
 /// A missing add-lot scale stays blank. Scale 2 of minor 3272 is $32.72, not $0.3272.

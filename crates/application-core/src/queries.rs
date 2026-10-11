@@ -36,7 +36,8 @@ use crate::contracts::{
     RetrieveRunListBody, RetrieveRunRecord, RocCandidateBody, RocResearchBody,
     RocResearchObservation, RoiBody, SecurityRecord, TierSuggestionBody, TrendPoint, TrendsBody,
     TrendsWeekPoint, UpdaterCheckBody,     WorkTicketListBody, WorkTicketRecord,
-    WorkTicketSyncMissesBody, FINANCE_CLIENT_CONTRACT_VERSION,
+    WorkTicketSyncMissesBody, CashIntegritySyncBody, CashIntegritySyncItem,
+    FINANCE_CLIENT_CONTRACT_VERSION,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::{Platform, PlatformError};
@@ -141,6 +142,8 @@ const ORDINARY_WRITES: &[&str] = &[
     "WorkTicketResolve",
     "WorkTicketFile",
     "WorkTicketSyncMisses",
+    "CashIntegritySync",
+    "CartCashAlignLinkRepair",
     "CollectorFieldDecisionSet",
     "PlanHorizonAssumeNextYear",
     "ExternalRegisterSave",
@@ -3873,6 +3876,18 @@ fn remediation_lines_for_code(code: &str, detail: &str) -> Vec<String> {
                     .into(),
             );
         }
+        "cash_integrity_gap" => {
+            lines.push(
+                "Open Cash Integrity / week Accept: pile must equal fold(last Friday cash, journal). Post missing lot moves or correct orphan journal rows."
+                    .into(),
+            );
+        }
+        "cart_align_unlinked" => {
+            lines.push(
+                "Link the completed cart cash_align step to its ETF Purchase/deposit activity, or re-run Confirm cash on a new cart. Historical NULL links are residue from before align persisted activity_id."
+                    .into(),
+            );
+        }
         _ => {}
     }
     lines
@@ -4386,6 +4401,176 @@ async fn work_ticket_sync_misses(
         fail_count,
         fail_ticket_count,
         fail_ticket_parity,
+    })
+}
+
+fn cash_align_journal_match(activity_type: &str) -> bool {
+    activity_type.eq_ignore_ascii_case("ETF Purchase")
+        || activity_type.eq_ignore_ascii_case("deposit")
+        || activity_type.eq_ignore_ascii_case("withdrawal")
+        || activity_type.eq_ignore_ascii_case("ira-contribution")
+}
+
+async fn cash_security_for_account(
+    canonical: &dyn Canonical,
+    account_id: Uuid,
+) -> Option<(Uuid, String)> {
+    let account = canonical.account_get(account_id).await.ok()?;
+    let symbol = financial_domain::cash_management::resolve_cash_symbol(
+        &account.name,
+        Some(account.cash_symbol.as_str()).filter(|s| !s.is_empty()),
+    )?;
+    let secs = canonical.security_list().await.ok()?;
+    secs.into_iter()
+        .find(|s| s.symbol.eq_ignore_ascii_case(&symbol))
+        .map(|s| (s.security_id, s.symbol))
+}
+
+/// Surface pile≠fold and completed cash_align steps with NULL activity_id that still
+/// have a matching journal row (historical forensic residue). Raises work tickets on
+/// the account cash-symbol security when present.
+async fn cash_integrity_sync(
+    canonical: &dyn Canonical,
+) -> Result<CashIntegritySyncBody, PlatformError> {
+    let as_of = today_iso();
+    let accounts = canonical.account_list().await?;
+    let mut scanned = 0u64;
+    let mut raised = 0u64;
+    let mut gap_count = 0u64;
+    let mut unlinked_align_count = 0u64;
+    let mut items = Vec::new();
+
+    for account in &accounts {
+        scanned += 1;
+        let row = crate::cash_integrity::integrity_for_account(
+            canonical,
+            account.account_id,
+            &as_of,
+        )
+        .await?;
+        if !row.ok {
+            gap_count += 1;
+            let gap = row.gap_minor.unwrap_or(0);
+            let reason = format!(
+                "Cash pile does not match journal fold (gap {} cents) as of {as_of}.",
+                gap
+            );
+            let mut ticket_raised = false;
+            if let Some((sec_id, symbol)) =
+                cash_security_for_account(canonical, account.account_id).await
+            {
+                let code = financial_domain::work_ticket::CODE_CASH_INTEGRITY_GAP;
+                let existing = canonical
+                    .work_ticket_list(Some(sec_id), Some("open".into()))
+                    .await
+                    .unwrap_or_default();
+                let had_open = existing.iter().any(|t| t.code == code);
+                if work_ticket_raise_or_bump(
+                    canonical,
+                    sec_id,
+                    &symbol,
+                    code,
+                    &reason,
+                    "",
+                )
+                .await
+                .is_ok()
+                    && !had_open
+                {
+                    raised += 1;
+                }
+                ticket_raised = true;
+            }
+            items.push(CashIntegritySyncItem {
+                kind: "gap".into(),
+                account_id: account.account_id,
+                account_name: account.name.clone(),
+                code: financial_domain::work_ticket::CODE_CASH_INTEGRITY_GAP.into(),
+                reason,
+                scenario_id: None,
+                ticket_raised,
+            });
+        }
+
+        let scenes = canonical
+            .cart_scenario_list(account.account_id)
+            .await
+            .unwrap_or(crate::contracts::CartScenarioListBody { items: vec![] });
+        for scene in scenes.items {
+            if scene.status != "complete" {
+                continue;
+            }
+            let unlinked: Vec<_> = scene
+                .execute_steps
+                .iter()
+                .filter(|s| s.kind == "cash_align" && s.activity_id.is_none())
+                .collect();
+            if unlinked.is_empty() {
+                continue;
+            }
+            let day = if scene.as_of.len() >= 10 {
+                scene.as_of[..10].to_string()
+            } else {
+                scene.as_of.clone()
+            };
+            let journal = canonical
+                .activity_list_in_range(Some(account.account_id), &day, &day)
+                .await
+                .unwrap_or_default();
+            let has_match = journal.iter().any(|a| cash_align_journal_match(&a.activity_type));
+            if !has_match {
+                // Zero-delta align with no journal move — intentional NULL, not forensic residue.
+                continue;
+            }
+            unlinked_align_count += 1;
+            let reason = format!(
+                "Completed cart {} cash_align has NULL activity_id while journal has ETF Purchase/deposit/ira-contribution on {day}.",
+                scene.scenario_id
+            );
+            let mut ticket_raised = false;
+            if let Some((sec_id, symbol)) =
+                cash_security_for_account(canonical, account.account_id).await
+            {
+                let code = financial_domain::work_ticket::CODE_CART_ALIGN_UNLINKED;
+                let existing = canonical
+                    .work_ticket_list(Some(sec_id), Some("open".into()))
+                    .await
+                    .unwrap_or_default();
+                let had_open = existing.iter().any(|t| t.code == code);
+                if work_ticket_raise_or_bump(
+                    canonical,
+                    sec_id,
+                    &symbol,
+                    code,
+                    &reason,
+                    "",
+                )
+                .await
+                .is_ok()
+                    && !had_open
+                {
+                    raised += 1;
+                }
+                ticket_raised = true;
+            }
+            items.push(CashIntegritySyncItem {
+                kind: "unlinked_align".into(),
+                account_id: account.account_id,
+                account_name: account.name.clone(),
+                code: financial_domain::work_ticket::CODE_CART_ALIGN_UNLINKED.into(),
+                reason,
+                scenario_id: Some(scene.scenario_id),
+                ticket_raised,
+            });
+        }
+    }
+
+    Ok(CashIntegritySyncBody {
+        scanned,
+        raised,
+        gap_count,
+        unlinked_align_count,
+        items,
     })
 }
 
@@ -11651,6 +11836,10 @@ pub async fn execute_command_on(
             None => command_err(&request, "missing_exception_id"),
         },
         "WorkTicketSyncMisses" => map_c(&request, work_ticket_sync_misses(canonical).await),
+        "CashIntegritySync" => map_c(&request, cash_integrity_sync(canonical).await),
+        "CartCashAlignLinkRepair" => {
+            map_c(&request, crate::cart::link_null_cash_align_activities(canonical).await)
+        }
         "WorkTicketFile" => match juuid(&json, "ticketId") {
             Some(id) => map_c(
                 &request,

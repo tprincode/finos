@@ -1738,6 +1738,41 @@ export type CashIntegrityGet = {
   rows: CashIntegrityRow[];
 };
 
+export type CashIntegritySyncItem = {
+  kind: string;
+  accountId: string;
+  accountName: string;
+  code: string;
+  reason: string;
+  scenarioId?: string | null;
+  ticketRaised: boolean;
+};
+
+export type CashIntegritySync = {
+  scanned: number;
+  raised: number;
+  gapCount: number;
+  unlinkedAlignCount: number;
+  items: CashIntegritySyncItem[];
+};
+
+export type CartCashAlignLinkRepairItem = {
+  scenarioId: string;
+  accountName: string;
+  asOf: string;
+  status: string;
+  activityId?: string | null;
+  activityType?: string | null;
+  reason: string;
+};
+
+export type CartCashAlignLinkRepair = {
+  scanned: number;
+  linked: number;
+  skipped: number;
+  items: CartCashAlignLinkRepairItem[];
+};
+
 export type BacktestGet = {
   runs: Array<{
     runId: string;

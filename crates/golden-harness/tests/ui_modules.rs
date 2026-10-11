@@ -570,6 +570,45 @@ fn home_page_loaded_is_logged_after_the_home_screen_commits() {
             && check.contains("start-finos-dev.bat"),
         "app-up.ps1 counts the desktop and the dev launcher and requires the Home line"
     );
+    let health = std::fs::read_to_string(repo_root().join("scripts/dev-health.ps1")).unwrap();
+    assert!(
+        health.contains("app-up.ps1")
+            && health.contains("dev-console.prev.log")
+            && health.contains("ui-errors.log")
+            && health.contains("panicked")
+            && health.contains("informational, not a gate"),
+        "dev-health.ps1 greps current console hard fails; prior is informational"
+    );
+    let tee = std::fs::read_to_string(repo_root().join("apps/desktop/dev-console.ps1")).unwrap();
+    assert!(
+        tee.contains("dev-console.prev.log") && tee.contains("=== launch"),
+        "dev-console.ps1 rotates the prior console before a fresh tee"
+    );
+    let bat = std::fs::read_to_string(repo_root().join("finos.bat")).unwrap();
+    assert!(
+        bat.contains("if exist \"%TOKEN%\" set \"FIRST=0\"")
+            && bat.contains("pid_is_live_dev")
+            && bat.contains("wait_dev_pid"),
+        "finos.bat skips first_pass when a token exists and waits for the dev pid"
+    );
+    assert!(
+        rule.contains("dev-health.ps1") && rule.contains("HMR"),
+        "restart rule names HMR vs restart and dev-health"
+    );
+    let host2 = std::fs::read_to_string(repo_root().join("apps/desktop/src-tauri/src/lib.rs"))
+        .unwrap();
+    assert!(
+        host2.contains("fn ui_error_log") && host2.contains("ui-errors.log"),
+        "host appends ui-errors.log"
+    );
+    let ui_log = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/shell/logUiError.ts"),
+    )
+    .unwrap();
+    assert!(
+        ui_log.contains("ui_error_log") && boot.contains("logUiError"),
+        "boot and shell log UI errors to the sidecar"
+    );
 }
 
 /// The desktop died at boot on 2026-10-03 with "Cannot read properties of null (reading

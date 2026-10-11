@@ -17,7 +17,7 @@ Contract version: `1.0.0-draft` (`FINANCE_CLIENT_CONTRACT_VERSION`).
 | Exceptions | `ExceptionAcknowledge` | `ExceptionList` | `ExceptionRaised` |
 | Health | — | `HealthGet` | — |
 | Core functions | — | `CoreFunctionsGet` | — |
-| Work tickets | `WorkTicketResolve`, `WorkTicketFile`, `WorkTicketSyncMisses` | `WorkTicketList` | — |
+| Work tickets | `WorkTicketResolve`, `WorkTicketFile`, `WorkTicketSyncMisses`, `CashIntegritySync`, `CartCashAlignLinkRepair` | `WorkTicketList` | — |
 | Snapshot and restore | `SnapshotCreate`, `SnapshotRestore`, `HandoffResolve`, `SnapshotImport` | `SnapshotHeadGet`, `HandoffStatusGet` | `SnapshotPublished`, `HandoffBlocked` |
 
 Does not touch tables of: Registries, Capture, Ledger, Market/dividend, Planning, Reporting — except through the canonical port.
@@ -90,7 +90,7 @@ Does not write Ledger facts (reads via queries). MAGI oracles are locked (ADR-00
 | Dashboard | — | `DashboardBurndownGet`, `DashboardGet` | — |
 | Account values (Home) | — | `AccountValueHomeGet` (`points`, `trendsPoints`, `incomePoints`) | — |
 | Dividend plan (Home) | — | `DividendPlanHomeGet` | — |
-| Cash pile | — | `CashPileGet` | — |
+| Cash pile | `CashIntegritySync` | `CashPileGet`, `CashIntegrityGet` | — |
 
 Read models are not authoritative (ADR-0008). Week snapshot writes are Reporting; the owner enters them on Cash Management. `incomePoints` are closed Sat–Fri week actuals plotted on Friday.
 

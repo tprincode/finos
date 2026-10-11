@@ -2073,6 +2073,29 @@ fn page_loaded(screen: String, detail: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Append one line to ui-errors.log (menubar / boot failures). Does not change cash or books.
+#[tauri::command]
+fn ui_error_log(message: String) -> Result<(), String> {
+    let dir = app_data_dir_fs();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("ui-errors.log dir: {e}"))?;
+    let path = dir.join("ui-errors.log");
+    let mut line = message.replace('\r', " ").replace('\n', " ");
+    if line.len() > 2000 {
+        line.truncate(2000);
+    }
+    if line.trim().is_empty() {
+        return Ok(());
+    }
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("ui-errors.log: {e}"))?;
+    writeln!(file, "{line}").map_err(|e| format!("ui-errors.log write: {e}"))?;
+    Ok(())
+}
+
 /// Coding launch serves the UI from Vite on localhost:1420. The host writes
 /// app-data `restart.token` and exits. Repo-root `finos.bat` / `finos.sh`
 /// (already running, or started here) relaunches the titled finos (dev) stack.
@@ -2348,7 +2371,8 @@ pub fn run() {
             screen_atlas_clear_run_token,
             app_exit,
             app_restart,
-            page_loaded
+            page_loaded,
+            ui_error_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

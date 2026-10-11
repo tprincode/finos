@@ -162,6 +162,16 @@ const TICKET_FUNCTIONS = [
     tool: "establish_recertify",
     purpose: "Establish has not finished.",
   },
+  {
+    code: "cash_integrity_gap",
+    tool: "review_cash_integrity",
+    purpose: "Money-market pile does not match the journal fold from the last Friday cash lock.",
+  },
+  {
+    code: "cart_align_unlinked",
+    tool: "review_cash_integrity",
+    purpose: "A completed cart cash_align step has no activity_id while a matching cash journal row exists.",
+  },
 ];
 
 const BUILT_PLAN_RULES = [

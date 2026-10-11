@@ -147,6 +147,7 @@ import {
   type LotSortMode,
 } from "./features/shared/pickers";
 import { PageActivityBar } from "./features/shared/PageActivityBar";
+import { logUiError } from "./features/shell/logUiError";
 import {
   isSaveCancelled,
   saveComponentWorkbook,
@@ -969,6 +970,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!actionMessage) return;
+    if (/fail|error|refused|panic|could not|broken/i.test(actionMessage)) {
+      logUiError("actionMessage", actionMessage);
+    }
+  }, [actionMessage]);
   const [deviceName, setDeviceName] = useState("");
   const [asOfDate, setAsOfDate] = useState(() =>
     saturdayOfWeek(new Date().toISOString().slice(0, 10)),
@@ -2673,6 +2680,7 @@ export default function App() {
     }
     const syncTickets = await client.executeCommand("WorkTicketSyncMisses", {});
     let syncedOpen: number | null = null;
+    let collectorRaised = 0;
     if (syncTickets.ok && syncTickets.bodyJson) {
       try {
         const body = JSON.parse(syncTickets.bodyJson) as {
@@ -2682,14 +2690,25 @@ export default function App() {
         if (typeof body.openCount === "number") {
           syncedOpen = body.openCount;
         }
-        if ((body.raised ?? 0) > 0) {
-          setActionMessage(
-            `Opened ${formatCount(body.raised ?? 0)} collector tickets (${formatCount(body.openCount ?? 0)} open).`,
-          );
-        }
+        collectorRaised = body.raised ?? 0;
       } catch {
         /* list still loads */
       }
+    }
+    const cashSync = await client.executeCommand("CashIntegritySync", {});
+    let cashRaised = 0;
+    if (cashSync.ok && cashSync.bodyJson) {
+      try {
+        const body = JSON.parse(cashSync.bodyJson) as { raised?: number };
+        cashRaised = body.raised ?? 0;
+      } catch {
+        /* tickets still reload */
+      }
+    }
+    if (collectorRaised + cashRaised > 0) {
+      setActionMessage(
+        `Opened ${formatCount(collectorRaised + cashRaised)} tickets (${formatCount(syncedOpen ?? 0)} open after collector sync).`,
+      );
     }
     const ticketResult = await client.executeQuery("WorkTicketList", {});
     if (ticketResult.ok && ticketResult.bodyJson) {

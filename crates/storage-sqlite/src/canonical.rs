@@ -3252,6 +3252,15 @@ impl Canonical for LocalPlatform {
             .await
     }
 
+    async fn cart_execute_step_link_align(
+        &self,
+        scenario_id: Uuid,
+        activity_id: Uuid,
+    ) -> Result<(), PlatformError> {
+        let pool = self.pool.read().await;
+        crate::cart::execute_step_link_align(&*pool, scenario_id, activity_id).await
+    }
+
     async fn cart_execute_cash_baseline_set_if_empty(
         &self,
         scenario_id: Uuid,

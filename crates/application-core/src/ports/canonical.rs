@@ -973,6 +973,15 @@ pub trait Canonical: Send + Sync {
     ) -> Result<(), PlatformError> {
         ni()
     }
+    /// Link a NULL cash_align step to a journal activity (owner repair; no cash move).
+    async fn cart_execute_step_link_align(
+        &self,
+        scenario_id: Uuid,
+        activity_id: Uuid,
+    ) -> Result<(), PlatformError> {
+        let _ = (scenario_id, activity_id);
+        ni()
+    }
     async fn cart_execute_cash_baseline_set_if_empty(
         &self,
         scenario_id: Uuid,

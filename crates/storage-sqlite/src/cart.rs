@@ -611,6 +611,31 @@ pub async fn execute_step_add(
     Ok(())
 }
 
+/// Owner repair: set activity_id on the NULL cash_align step for a completed scenario.
+pub async fn execute_step_link_align(
+    pool: &SqlitePool,
+    scenario_id: Uuid,
+    activity_id: Uuid,
+) -> Result<(), PlatformError> {
+    let result = sqlx::query(
+        "UPDATE cart_execute_step SET activity_id = ?
+         WHERE scenario_id = ? AND kind = 'cash_align'
+           AND (activity_id IS NULL OR activity_id = '')",
+    )
+    .bind(activity_id.to_string())
+    .bind(scenario_id.to_string())
+    .execute(pool)
+    .await
+    .map_err(|e| map_err(e.into()))?;
+    if result.rows_affected() == 0 {
+        return Err(PlatformError::new(
+            "align_not_linkable",
+            "no NULL cash_align step to link on this scenario",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn scenario_discard(pool: &SqlitePool, scenario_id: Uuid) -> Result<(), PlatformError> {
     let scene = scenario_get(pool, scenario_id).await?;
     if scene.status != "draft" {

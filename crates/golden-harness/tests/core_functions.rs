@@ -182,6 +182,8 @@ fn core_functions_catalog_sentinels_still_exist() {
         "LastPriceAutoWindowGet",
         "CashPileGet",
         "CashIntegrityGet",
+        "CashIntegritySync",
+        "CartCashAlignLinkRepair",
         "WorkTicketList",
         "DividendPerformanceGet",
     ] {
