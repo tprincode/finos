@@ -71,6 +71,42 @@ pub fn is_etf_sale(activity_type: &str) -> bool {
     activity_type == "ETF Sale"
 }
 
+/// Journal types that increase the money-market pile (live cash SOT).
+pub fn cash_journal_inflow(activity_type: &str) -> bool {
+    activity_type.eq_ignore_ascii_case("deposit")
+        || activity_type.eq_ignore_ascii_case("ira-contribution")
+        || is_etf_sale(activity_type)
+}
+
+/// Journal types that decrease the money-market pile.
+pub fn cash_journal_outflow(activity_type: &str) -> bool {
+    activity_type.eq_ignore_ascii_case("withdrawal")
+        || is_etf_purchase(activity_type)
+        || matches!(
+            activity_type,
+            "IRA_Distribution" | "Roth_Distribution" | "HSA_Withdrawal"
+        )
+}
+
+pub fn is_cash_adjust(activity_type: &str) -> bool {
+    activity_type.eq_ignore_ascii_case("Cash_Adjust")
+}
+
+/// Signed cents applied to prior Friday cash for one journal row (magnitude uses abs for in/out).
+pub fn cash_journal_delta_cents(activity_type: &str, amount_minor: i64, scale: u8) -> i64 {
+    let cents = crate::money::to_usd_cents(amount_minor, scale);
+    if is_cash_adjust(activity_type) {
+        return cents;
+    }
+    if cash_journal_inflow(activity_type) {
+        return cents.abs();
+    }
+    if cash_journal_outflow(activity_type) {
+        return -cents.abs();
+    }
+    0
+}
+
 /// Types Cash Management may post.
 pub fn is_cash_distribution_type(activity_type: &str) -> bool {
     matches!(
@@ -267,31 +303,30 @@ pub fn tax_payment_credit_minor(federal_minor: i64, state_minor: i64) -> i64 {
     federal_minor + state_minor
 }
 
-/// Calendar month of an event date (TR-AC-06). Not a sum of Sat–Fri week cells.
-/// Sat–Fri week, or SSA_2026 dated from Saturday minus 4 calendar days through Friday.
+/// How far back unconfirmed past-due stays on Week Ahead (weekly carry + one monthly + SSA).
+pub const WEEK_AHEAD_PAST_DUE_LOOKBACK_DAYS: i64 = 35;
+
+/// Week Ahead list window: hide not-yet-due; recent past-due stays until Confirm.
+/// `as_of` is the planner day (not Friday). Due when `occurred_on <= as_of`.
+/// Older than as_of − 35 days leaves the board (still in Element history).
+/// Dates after as_of stay hidden even when they fall inside this Sat–Fri week.
 pub fn week_ahead_in_window(
-    account: &str,
+    _account: &str,
     occurred_on: &str,
-    week_start: &str,
-    week_end: &str,
+    _week_start: &str,
+    as_of: &str,
 ) -> bool {
-    if crate::income_plan::occurred_in_week(occurred_on, week_start, week_end) {
-        return true;
-    }
-    if !account.eq_ignore_ascii_case("SSA_2026") {
-        return false;
-    }
     let Some(on) = crate::trends::parse_iso_date(occurred_on) else {
         return false;
     };
-    let Some(sat) = crate::trends::parse_iso_date(week_start) else {
+    let Some(today) = crate::trends::parse_iso_date(as_of) else {
         return false;
     };
-    let Some(fri) = crate::trends::parse_iso_date(week_end) else {
+    if on > today {
         return false;
-    };
-    let early = sat - Duration::days(4);
-    on >= early && on <= fri
+    }
+    let earliest = today - Duration::days(WEEK_AHEAD_PAST_DUE_LOOKBACK_DAYS);
+    on >= earliest
 }
 
 pub fn occurred_in_calendar_month(occurred_on: &str, year: i32, month: u32) -> bool {
@@ -635,6 +670,14 @@ pub fn element_is_retired(stop_on: &str, as_of: NaiveDate) -> bool {
     crate::trends::parse_iso_date(stop_on.trim()).is_some_and(|stop| stop < as_of)
 }
 
+/// Active Element Management catalog rows still have a next hit.
+/// Completed one-times and exhausted series (Next —) stay in history only.
+pub fn element_catalog_active(next_occurred_on: Option<&str>) -> bool {
+    next_occurred_on
+        .map(|on| !on.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn last_of_month(year: i32, month: u32) -> Option<NaiveDate> {
     let first = NaiveDate::from_ymd_opt(year, month, 1)?;
     if month == 12 {
@@ -789,6 +832,18 @@ mod tests {
     fn prove_subtotal_identity() {
         assert_eq!(validate_cash_distribution("IRA_Distribution", Some(100_000), 18_000, 4_500).unwrap(), 77_500);
         assert_eq!(net_minor(100_000, 18_000, 4_500), 77_500);
+    }
+
+    #[test]
+    fn cash_journal_fold_includes_ira_contribution_and_etf_purchase() {
+        assert_eq!(cash_journal_delta_cents("ira-contribution", 250_000, 2), 250_000);
+        assert_eq!(cash_journal_delta_cents("deposit", 8_000, 2), 8_000);
+        assert_eq!(cash_journal_delta_cents("ETF Sale", 50_000, 2), 50_000);
+        assert_eq!(cash_journal_delta_cents("ETF Purchase", 266_385, 2), -266_385);
+        assert_eq!(cash_journal_delta_cents("Withdrawal", 3_000, 2), -3_000);
+        assert_eq!(cash_journal_delta_cents("IRA_Distribution", 70_000, 2), -70_000);
+        assert_eq!(cash_journal_delta_cents("Cash_Adjust", -500, 2), -500);
+        assert_eq!(cash_journal_delta_cents("sell", 10_000, 2), 0);
     }
 
     #[test]
@@ -975,30 +1030,79 @@ mod tests {
     }
 
     #[test]
-    fn week_ahead_ssa_lookback_is_four_calendar_days() {
+    fn week_ahead_hides_not_yet_due_keeps_past_due() {
+        // Due today.
         assert!(week_ahead_in_window(
             "Income",
             "2026-09-12",
             "2026-09-12",
-            "2026-09-18"
+            "2026-09-12"
         ));
+        // Recent past due stays until Confirm (within 35 days).
         assert!(week_ahead_in_window(
             "SSA_2026",
             "2026-09-08",
             "2026-09-12",
-            "2026-09-18"
+            "2026-09-12"
         ));
-        assert!(!week_ahead_in_window(
+        assert!(week_ahead_in_window(
             "SSA_2026",
             "2026-09-07",
             "2026-09-12",
-            "2026-09-18"
+            "2026-09-12"
+        ));
+        // Last Saturday still lists on the next Saturday (7 days < 35).
+        assert!(week_ahead_in_window(
+            "Income",
+            "2026-09-12",
+            "2026-09-19",
+            "2026-09-19"
+        ));
+        // Later this week but not yet due — hidden (Friday of this week on Saturday).
+        assert!(!week_ahead_in_window(
+            "Income",
+            "2026-09-18",
+            "2026-09-12",
+            "2026-09-12"
         ));
         assert!(!week_ahead_in_window(
             "Income",
-            "2026-09-08",
+            "2026-09-15",
             "2026-09-12",
-            "2026-09-18"
+            "2026-09-12"
+        ));
+        // After as_of reaches the due day, it shows.
+        assert!(week_ahead_in_window(
+            "Income",
+            "2026-09-15",
+            "2026-09-12",
+            "2026-09-15"
+        ));
+        // Ancient backlog leaves the board (still in Element history).
+        assert!(!week_ahead_in_window(
+            "Health",
+            "2025-01-15",
+            "2026-10-04",
+            "2026-10-10"
+        ));
+        assert!(!week_ahead_in_window(
+            "Car",
+            "2026-01-12",
+            "2026-10-04",
+            "2026-10-10"
+        ));
+        // Edge of lookback: as_of − 35 days still lists.
+        assert!(week_ahead_in_window(
+            "Health",
+            "2026-09-05",
+            "2026-10-04",
+            "2026-10-10"
+        ));
+        assert!(!week_ahead_in_window(
+            "Health",
+            "2026-09-04",
+            "2026-10-04",
+            "2026-10-10"
         ));
     }
 
@@ -1181,6 +1285,14 @@ mod tests {
         assert!(!element_is_retired("2026-12-25", as_of));
         assert!(!element_is_retired("2026-09-22", as_of));
         assert!(element_is_retired("2026-08-01", as_of));
+    }
+
+    #[test]
+    fn element_catalog_active_needs_next_date() {
+        assert!(element_catalog_active(Some("2026-10-15")));
+        assert!(!element_catalog_active(Some("")));
+        assert!(!element_catalog_active(Some("   ")));
+        assert!(!element_catalog_active(None));
     }
 
     #[test]

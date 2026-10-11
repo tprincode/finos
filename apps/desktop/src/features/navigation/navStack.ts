@@ -5,6 +5,11 @@ export type NavFrame = {
   restore: () => void;
 };
 
+/**
+ * Caller-based Return: push a frame when opening a child screen; shell Return and
+ * child Confirm/Cancel call `returnToCaller(id)` (or `popNav`) so restore runs.
+ * Never hardcode the destination screen on exit — the caller's `restore` owns it.
+ */
 let frames: NavFrame[] = [];
 const listeners = new Set<() => void>();
 
@@ -15,6 +20,22 @@ function emit() {
 export function pushNav(frame: NavFrame) {
   frames.push(frame);
   emit();
+}
+
+/**
+ * Record the calling place before `setScreen` to the child. Replaces a top frame
+ * with the same `id` without running its restore (re-open of the same child).
+ */
+export function openFromCaller(frame: NavFrame & { id: string }) {
+  if (frames[frames.length - 1]?.id === frame.id) {
+    frames.pop();
+  }
+  pushNav(frame);
+}
+
+/** Pop and restore when the top frame is this child; otherwise leave the stack alone. */
+export function returnToCaller(id: string): boolean {
+  return popNavIf(id);
 }
 
 export function peekNav(): NavFrame | null {

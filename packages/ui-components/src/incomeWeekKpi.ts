@@ -7,6 +7,8 @@ export type WeekMoneyRow = {
   plannedMinor?: number | null;
   declarationKnown?: boolean;
   declarationMinor?: number | null;
+  actualKnown?: boolean;
+  actualMinor?: number | null;
 };
 
 export type WeekKpi = {
@@ -34,6 +36,18 @@ export function weekDeclaredKpi(payers: WeekMoneyRow[]): WeekKpi {
   const complete = missingSymbols.length === 0;
   const minor = complete
     ? payers.reduce((sum, row) => sum + (row.declarationMinor ?? 0), 0)
+    : 0;
+  return { complete, minor, missingSymbols };
+}
+
+/** Reported = broker cash. Unknown stays incomplete (—), never summed as $0. */
+export function weekReportedKpi(payers: WeekMoneyRow[]): WeekKpi {
+  const missingSymbols = payers
+    .filter((row) => !row.actualKnown)
+    .map((row) => row.symbol);
+  const complete = missingSymbols.length === 0;
+  const minor = complete
+    ? payers.reduce((sum, row) => sum + (row.actualMinor ?? 0), 0)
     : 0;
   return { complete, minor, missingSymbols };
 }

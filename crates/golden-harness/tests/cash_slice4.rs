@@ -97,11 +97,22 @@ fn n2_element_dirty_joins_leave_and_restart() {
         app.contains("elementDirty")
             && app.contains("leaveWithoutSaving")
             && app.contains("if (elementDirty && !(ontoCm && dest === \"elements\"))")
-            && app.contains("cashDirty ||\n        elementDirty ||\n        externalDirty ||\n        managerDirty ||\n        marketImpactDirty"),
+            && app.contains("cashDirty ||")
+            && app.contains("elementDirty ||")
+            && app.contains("externalDirty ||")
+            && app.contains("managerDirty ||")
+            && app.contains("marketImpactDirty"),
         "N2: elementDirty joins leaveWithoutSaving"
     );
     assert!(
-        app.contains("pdDirty ||\n      wizDirty ||\n      addLotDirty ||\n      cashDirty ||\n      elementDirty ||\n      externalDirty ||\n      managerDirty ||\n      marketImpactDirty"),
+        app.contains("pdDirty ||")
+            && app.contains("wizDirty ||")
+            && app.contains("addLotDirty ||")
+            && app.contains("cashDirty ||")
+            && app.contains("elementDirty ||")
+            && app.contains("externalDirty ||")
+            && app.contains("managerDirty ||")
+            && app.contains("marketImpactDirty"),
         "N2: elementDirty joins unsaved bar / Restart guard"
     );
     let editor = std::fs::read_to_string(
@@ -279,8 +290,12 @@ fn n4_catalog_edit_opens_same_editor() {
             && catalog.contains("canAdd")
             && catalog.contains(">Deposits<")
             && catalog.contains(">Withdrawals<")
-            && catalog.contains("Add Deposit")
-            && catalog.contains("Add Withdrawal")
+            && catalog.contains("Create new deposit")
+            && catalog.contains("Create new withdrawal")
+            && catalog.contains("Active series only")
+            && catalog.contains("nextOccurredOn")
+            && editor.contains("Create new element")
+            && editor.contains("Element account")
             && editor.contains("Schedule Date")
             && editor.contains("Never expires")
             && editor.contains("Exceptions")
@@ -288,7 +303,7 @@ fn n4_catalog_edit_opens_same_editor() {
             && editor.contains("element-exceptions-link")
             && catalog.contains("CashElementExceptions")
             && editor.contains("element-editor-account"),
-        "N4: catalog Edit mounts CashElementEditor; picker is All-or-one managed accounts"
+        "N4: catalog Edit mounts CashElementEditor; Create new deposit/withdrawal; All-or-one managed accounts"
     );
     let picker = std::fs::read_to_string(
         repo_root().join("packages/ui-components/src/AccountTickPicker.tsx"),
@@ -382,7 +397,15 @@ async fn n6_ytd_account_and_tax_remaining_null_not_zero() {
         .collect();
     assert_eq!(
         labels,
-        vec!["Income", "FI Roth", "Health", "Car", "Account 9", "SSA_2026"],
+        vec![
+            "Income",
+            "FI Roth",
+            "Health",
+            "Car",
+            "Account 9",
+            "SSA_2026",
+            "Loan",
+        ],
         "{account}"
     );
     let blank = rows.iter().any(|r| r["remainingMinor"].is_null());
@@ -561,7 +584,9 @@ fn n7_week_ahead_and_capture_grid_still_locked() {
         "w1_unconfirmed_income_triple_and_car_no_dividends",
         "w2_confirm_car_posts_withdrawal_and_leaves_list",
         "w3_check_tomorrow_saturday_income_net_stays_listed",
-        "w4_ssa_saturday_minus_4_listed_minus_5_not",
+        "w4_unconfirmed_elements_stay_past_due_until_confirm",
+        "w4b_not_yet_due_this_week_stays_hidden",
+        "w4c_ancient_past_due_leaves_week_ahead_board",
         "w5_edit_health_amount_then_confirm_hsa_withdrawal",
         "w6_capture_grid_still_one_six_row_table",
         "w7_desk_planned_reported_blank_not_zero",
@@ -1959,12 +1984,16 @@ async fn n12b_health_history_lists_on_schedule_past_plans() {
     );
 }
 
+fn upcoming_count_one(item: &serde_json::Value) -> usize {
+    item["upcoming"].as_array().map(|a| a.len()).unwrap_or(0)
+}
+
 fn upcoming_count(list: &serde_json::Value) -> usize {
     list["items"]
         .as_array()
         .unwrap_or(&Vec::new())
         .iter()
-        .map(|i| i["upcoming"].as_array().map(|a| a.len()).unwrap_or(0))
+        .map(upcoming_count_one)
         .sum()
 }
 
@@ -1977,9 +2006,12 @@ async fn n13_element_list_get_does_not_insert_occurrences() {
         serde_json::json!({"account": "all", "asOfDate": "2026-09-22"}),
     )
     .await;
+    let before_items = empty["items"].as_array().unwrap();
     assert!(
-        empty["items"].as_array().unwrap().is_empty(),
-        "list get does not seed elements: {empty}"
+        before_items
+            .iter()
+            .all(|r| r["account"] == "Loan" && upcoming_count_one(r) == 0),
+        "list get does not seed Income/Car or insert occurrences: {empty}"
     );
     let _ahead = query_json(
         &platform,
@@ -2322,5 +2354,159 @@ fn home_chart_hits_are_not_printed_on_the_error_stream() {
     assert!(
         !src.contains("cash-flow hits") && !src.contains("eprintln!"),
         "Home chart hits must stay off stderr; that stream paints red"
+    );
+}
+
+#[tokio::test]
+async fn n15_one_time_confirm_leaves_active_catalog_stays_in_history() {
+    let (_dir, platform) = seeded_platform().await;
+    let saved = must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "Car",
+            "name": "one-shot tow",
+            "kind": "Withdrawal",
+            "cadence": "one-time",
+            "weekdayOrMonthDay": "",
+            "startOn": "2026-09-01",
+            "amountMinor": 45_000,
+            "asOfDate": "2026-09-01",
+            "occurrences": [{
+                "occurredOn": "2026-09-08",
+                "amountMinor": 45_000
+            }]
+        }),
+    )
+    .await;
+    let element_id = saved["element"]["elementId"]
+        .as_str()
+        .expect("elementId")
+        .to_string();
+    let occ_id = saved["occurrences"][0]["occurrenceId"]
+        .as_str()
+        .expect("occurrenceId")
+        .to_string();
+
+    let as_of = "2026-09-08";
+    let list_before = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Car", "asOfDate": as_of}),
+    )
+    .await;
+    let before_row = list_before["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["elementId"] == element_id)
+        .expect("one-time listed before confirm");
+    assert_eq!(before_row["nextOccurredOn"], "2026-09-08");
+    assert!(
+        financial_domain::cash_management::element_catalog_active(
+            before_row["nextOccurredOn"].as_str()
+        ),
+        "active catalog includes series with next: {before_row}"
+    );
+
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": as_of}),
+    )
+    .await;
+    assert!(
+        ahead["rows"].as_array().unwrap().iter().any(|r| {
+            r["occurrenceId"] == occ_id && r["account"] == "Car"
+        }),
+        "due one-time is on Week Ahead: {ahead}"
+    );
+
+    let reg = query_json(
+        &platform,
+        "CashRegisterGet",
+        serde_json::json!({
+            "account": "Car",
+            "period": "1M",
+            "asOfDate": as_of
+        }),
+    )
+    .await;
+    assert!(
+        reg["rows"].as_array().unwrap().iter().any(|r| {
+            r["occurredOn"] == "2026-09-08"
+                && r["withdrawalMinor"] == 45_000
+                && r["status"] == "Planned"
+        }),
+        "Cashflow register shows planned one-time: {reg}"
+    );
+
+    let posted = must_ok(
+        &platform,
+        "WeekAheadConfirm",
+        serde_json::json!({"occurrenceId": occ_id}),
+    )
+    .await;
+    assert_eq!(posted["activityType"], "Withdrawal");
+    assert_eq!(posted["amountMinor"], 45_000);
+
+    let after_ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": as_of}),
+    )
+    .await;
+    assert!(
+        !after_ahead["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["occurrenceId"] == occ_id),
+        "confirmed one-time leaves Week Ahead: {after_ahead}"
+    );
+
+    let list_after = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Car", "asOfDate": "2026-09-10"}),
+    )
+    .await;
+    let after_row = list_after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["elementId"] == element_id)
+        .expect("series remains for history");
+    assert!(
+        after_row["nextOccurredOn"].is_null()
+            || after_row["nextOccurredOn"].as_str().unwrap_or("").is_empty(),
+        "no next after confirm: {after_row}"
+    );
+    assert_eq!(after_row["stopOn"], "2026-09-08");
+    assert!(
+        !financial_domain::cash_management::element_catalog_active(
+            after_row["nextOccurredOn"].as_str()
+        ),
+        "active catalog hides completed one-time: {after_row}"
+    );
+
+    let history = query_json(
+        &platform,
+        "CashElementHistoryGet",
+        serde_json::json!({
+            "elementId": element_id,
+            "duration": "all",
+            "asOfDate": "2026-09-10"
+        }),
+    )
+    .await;
+    assert_eq!(history["retired"], true, "{history}");
+    assert!(
+        history["rows"].as_array().unwrap().iter().any(|r| {
+            r["occurredOn"] == "2026-09-08"
+                && r["status"] == "Actual"
+                && r["amountMinor"] == 45_000
+        }),
+        "history keeps Actual after confirm: {history}"
     );
 }

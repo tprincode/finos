@@ -8,6 +8,12 @@ type WorkbookBody = {
   bytesBase64?: string;
 };
 
+/** Owner closed the Save dialog without writing. */
+export function isSaveCancelled(err: unknown): boolean {
+  const text = String(err).toLowerCase();
+  return text.includes("cancelled") || text.includes("canceled");
+}
+
 async function saveBytes(body: WorkbookBody): Promise<string> {
   if (!body.bytesBase64) throw new Error("Export failed");
   const bytes = Uint8Array.from(atob(body.bytesBase64), (c) => c.charCodeAt(0));

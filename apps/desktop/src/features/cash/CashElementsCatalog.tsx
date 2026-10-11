@@ -99,13 +99,15 @@ export function CashElementsCatalog({
   const items = (catalog?.items ?? []).filter(
     (el) => book === "all" || el.account === book,
   );
-  const deposits = items.filter((el) => isDeposit(el.kind));
+  const active = (el: CashElementRecord) =>
+    Boolean(el.nextOccurredOn && el.nextOccurredOn.trim());
+  const deposits = items.filter((el) => isDeposit(el.kind) && active(el));
   const withdrawals = drawFilter
     ? (catalog?.items ?? []).filter((el) => magiFutureUnconfirmedWithdrawal(el, asOfDate))
-    : items.filter((el) => !isDeposit(el.kind));
+    : items.filter((el) => !isDeposit(el.kind) && active(el));
   const money = (minor: number | null | undefined) =>
     minor == null ? "—" : formatUsd(minor, 2);
-  const canAdd = Boolean(book) && book !== "all" && !busy;
+  const canAdd = !busy;
   const showAccount = book === "all";
 
   const startAdd = (kind: "Deposit" | "Withdrawal") => {
@@ -116,7 +118,7 @@ export function CashElementsCatalog({
 
   const renderGroup = (
     title: "Deposits" | "Withdrawals",
-    addLabel: "Add Deposit" | "Add Withdrawal",
+    addLabel: "Create new deposit" | "Create new withdrawal",
     kind: "Deposit" | "Withdrawal",
     rows: CashElementRecord[],
   ) => (
@@ -130,7 +132,7 @@ export function CashElementsCatalog({
           disabled={!canAdd}
           onClick={() => startAdd(kind)}
         >
-          +
+          {addLabel}
         </button>
       </div>
       <div className="table-wrap">
@@ -233,15 +235,23 @@ export function CashElementsCatalog({
               onSelected={(next) => onBook(bookFromSelected(next))}
             />
           </div>
+          <p className="elements-active-caption">
+            Active series only. Completed and expired stay in Transaction register below.
+          </p>
           <div data-part="element-deposits">
             {drawFilter ? (
               <p>Future unconfirmed withdrawals on Income, Speculation, and Account 9.</p>
             ) : (
-              renderGroup("Deposits", "Add Deposit", "Deposit", deposits)
+              renderGroup("Deposits", "Create new deposit", "Deposit", deposits)
             )}
           </div>
           <div data-part="element-withdrawals">
-            {renderGroup("Withdrawals", "Add Withdrawal", "Withdrawal", withdrawals)}
+            {renderGroup(
+              "Withdrawals",
+              "Create new withdrawal",
+              "Withdrawal",
+              withdrawals,
+            )}
           </div>
         </>
       )}

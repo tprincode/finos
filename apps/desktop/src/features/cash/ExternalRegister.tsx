@@ -933,14 +933,17 @@ export function ExternalRegister({
       }
       const body = JSON.parse(result.bodyJson) as ExportPreview;
       const bytes = Uint8Array.from(atob(body.bytesBase64), (c) => c.charCodeAt(0));
-      await invoke("save_local_bytes", {
+      const path = await invoke<string>("save_local_bytes", {
         defaultFileName: body.defaultFileName,
         bytes: Array.from(bytes),
       });
       setExportPreview(null);
-      setStatus(`Saved ${body.defaultFileName} on this computer.`);
+      setStatus(`Saved ${path}`);
     } catch (err: unknown) {
-      setStatus(`Save failed: ${String(err)}`);
+      const text = String(err).toLowerCase();
+      if (!text.includes("cancelled") && !text.includes("canceled")) {
+        setStatus(`Save failed: ${String(err)}`);
+      }
     } finally {
       setExportLoading(false);
       setBusy(false);

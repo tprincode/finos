@@ -240,21 +240,22 @@ export const CALCULATOR_COLUMN_INTENT: readonly CalculatorColumnIntent[] = [
     name: "Calculator blend",
     kind: "percent",
     intent:
-      "Legacy Calculator TVAL V3. Blend of unrealized gain and Plan yield on price. Not Holdings TVAL. TVAL 2.1 is not this column.",
+      "Authority Calculator TVAL V3 (see docs/architecture/tval-inventory.md). Blend of unrealized gain and Plan yield on price. Not Holdings P&L%+Annual%. Holdings has no TVAL column. TVAL 2.1 is not this column.",
     formula: "(Gain% × 2 + FWD) / 2",
     status: "still wrong",
   },
   {
     name: "MC TVAL",
     kind: "percent",
-    intent: "Same blend, using the newest-declaration yield.",
+    intent:
+      "Same TVAL V3 blend, using the newest-declaration yield on price (MC FWD). See tval-inventory.md.",
     formula: "(Gain% × 2 + MC FWD) / 2",
     status: "still wrong",
   },
   {
     name: "TVAL Δ",
     kind: "percent",
-    intent: "How far the declaration score has moved from the Plan score.",
+    intent: "How far the declaration score has moved from the Plan score (MC TVAL − Calculator blend).",
     formula: "MC TVAL − TVAL",
     status: "still wrong",
   },
@@ -344,3 +345,9 @@ export const CALCULATOR_COLUMN_INTENT: readonly CalculatorColumnIntent[] = [
     status: "matches",
   },
 ];
+
+/** Header hover tooltips on Calculator — same formulas as Field Intent. */
+export const CALCULATOR_COLUMN_FORMULAS: Readonly<Record<string, string>> =
+  Object.fromEntries(
+    CALCULATOR_COLUMN_INTENT.map((col) => [col.name, col.formula]),
+  );

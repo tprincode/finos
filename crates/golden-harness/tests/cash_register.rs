@@ -100,10 +100,17 @@ async fn seeded_platform() -> (tempfile::TempDir, LocalPlatform, serde_json::Val
 }
 
 async fn seed_week(platform: &LocalPlatform) -> serde_json::Value {
-    query_json(
+    let _ = query_json(
         platform,
         "WeekAheadGet",
         serde_json::json!({"asOfDate": "2026-08-29"}),
+    )
+    .await;
+    // Car monthly day-1 is due 2026-09-01; as-of ceiling hides not-yet-due on 8/29.
+    query_json(
+        platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-01"}),
     )
     .await
 }
@@ -266,6 +273,7 @@ async fn r2_calendar_and_trend_series_equal() {
             && ui.contains("Actual withdrawals")
             && ui.contains("exactlyOne")
             && ui.contains("Manage Elements")
+            && ui.contains("Create new element")
             && ui.contains("aria-label=\"Register view\"")
             && ui.contains("is-debit")
             && ui.contains("is-credit")
@@ -678,8 +686,13 @@ fn r7_week_ahead_and_capture_grid_still_locked() {
     assert!(
         ahead
             .match_indices("inputMode=\"decimal\"")
-            .all(|(idx, _)| ahead[idx.saturating_sub(80)..idx].contains("interest")),
-        "inline decimal is loan interest only — plan Edit uses onOpenEditor"
+            .all(|(idx, _)| {
+                let window = &ahead[idx.saturating_sub(120)..idx];
+                window.contains("interest")
+                    || window.contains("total payment")
+                    || window.contains("balance after")
+            }),
+        "inline decimal is loan payment/interest/balance only — plan Edit uses onOpenEditor"
     );
 }
 
@@ -1527,14 +1540,14 @@ async fn one_time_on_tenth_fifth_shows_in_this_week() {
     let ahead = query_json(
         &platform,
         "WeekAheadGet",
-        serde_json::json!({"asOfDate": "2026-10-04"}),
+        serde_json::json!({"asOfDate": "2026-10-05"}),
     )
     .await;
     assert!(
         ahead["rows"].as_array().unwrap().iter().any(|row| {
             row["account"] == "FI Roth" && row["occurredOn"] == "2026-10-05"
         }),
-        "10/5 is inside Sat 10/3–Fri 10/9: {ahead}"
+        "10/5 due on as-of lists inside Sat 10/3–Fri 10/9: {ahead}"
     );
     must_ok(
         &platform,
@@ -1545,7 +1558,7 @@ async fn one_time_on_tenth_fifth_shows_in_this_week() {
     let again = query_json(
         &platform,
         "WeekAheadGet",
-        serde_json::json!({"asOfDate": "2026-10-04"}),
+        serde_json::json!({"asOfDate": "2026-10-05"}),
     )
     .await;
     assert!(
@@ -1836,7 +1849,7 @@ async fn fi_roth_confirm_posts_on_fi_roth_not_income() {
     let ahead = query_json(
         &platform,
         "WeekAheadGet",
-        serde_json::json!({"asOfDate": "2026-10-04"}),
+        serde_json::json!({"asOfDate": "2026-10-05"}),
     )
     .await;
     let row = ahead["rows"]

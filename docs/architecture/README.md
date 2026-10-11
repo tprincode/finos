@@ -22,6 +22,7 @@ Governing target architecture for the Finance Management System.
 | [checkpoint-2026-08-19.md](checkpoint-2026-08-19.md) | Profile A architecture checkpoint: good / bad / next (morning 2026-08-19) |
 | [checkpoint-2026-08-19-rescore.md](checkpoint-2026-08-19-rescore.md) | Same-day rescore after updater + Docker Postgres adapter |
 | [execution.md](execution.md) | Step-by-step board: Now / Next / pass checks (agent must not wait) |
+| [tval-inventory.md](tval-inventory.md) | Calculator TVAL V3 vs Holdings P&L%/Annual%; no Holdings TVAL |
 
 ## Locked outcomes (summary)
 

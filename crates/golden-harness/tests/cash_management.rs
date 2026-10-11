@@ -1386,6 +1386,45 @@ fn completed_section_stamps_and_greens_only_the_completed_date() {
 }
 
 #[test]
+fn debt_planner_our_transactions_export_to_excel_prompts_for_path() {
+    let planner = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/cash/ExternalAccountManager.tsx"),
+    )
+    .unwrap();
+    let css = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.css"))
+        .unwrap();
+    let host = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src-tauri/src/lib.rs"),
+    )
+    .unwrap();
+    assert!(
+        planner.contains("managed-register-heading")
+            && planner.contains("`Our ${selected.name} transactions`")
+            && planner.contains("aria-label=\"Export to excel\"")
+            && planner.contains("Export to excel")
+            && planner.contains("exportOurTransactions")
+            && planner.contains("ExternalRegisterExportGet")
+            && planner.contains("save_local_bytes")
+            && planner.contains("Our ${selected.name} transactions")
+            && planner.contains("safeTitle"),
+        "Debt planner list is Our {{account}} transactions with Save-file default from that title"
+    );
+    assert!(
+        css.contains(".managed-register-heading")
+            && css.contains("justify-content: space-between"),
+        "Export button sits on the same row as Our {{account}} transactions, to the right"
+    );
+    assert!(
+        host.contains("fn save_local_bytes")
+            && host.contains(".set_directory(&dir)")
+            && host.contains(".set_file_name(&default_file_name)")
+            && host.contains(".save_file()"),
+        "export must prompt for file name and directory via the established save dialog"
+    );
+}
+
+#[test]
 fn cct_completed_export_offers_print_pdf_excel() {
     let register = std::fs::read_to_string(
         golden_harness::repo_root().join("apps/desktop/src/features/cash/ExternalRegister.tsx"),
@@ -1729,6 +1768,24 @@ async fn truist_car_loan_day_7_isolated_from_car_brokerage_withdrawal() {
         "principal + interest = payment: {truist_loan}"
     );
 
+    // Next Sat–Fri week after the 7th — unpaid loan must still be on the planner.
+    let next_week = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({ "asOfDate": "2026-10-11" }),
+    )
+    .await;
+    assert_eq!(next_week["periodStart"], "2026-10-10");
+    let past = next_week["loans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Truist BANK")
+        .unwrap_or_else(|| {
+            panic!("unpaid Truist must remain on Week Ahead after its due week: {next_week}")
+        });
+    assert_eq!(past["dueOn"], "2026-10-07", "{past}");
+
     let mig = std::fs::read_to_string(
         golden_harness::repo_root()
             .join("crates/storage-sqlite/migrations/0082_truist_loan_day_7_not_car_brokerage.sql"),
@@ -1885,6 +1942,69 @@ async fn truist_week_ahead_confirm_reduces_current_by_principal_only() {
             .unwrap_or("")
             .ends_with("-07"),
         "next due stays on the 7th: {truist_after}"
+    );
+}
+
+/// Statement ending balance overrides current − principal when the bank split disagrees.
+#[tokio::test]
+async fn loan_confirm_balance_after_overrides_principal_math() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let before = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let truist = before["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Truist BANK")
+        .unwrap()
+        .clone();
+    let start = truist["currentMinor"].as_i64().unwrap();
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({ "asOfDate": "2026-10-07" }),
+    )
+    .await;
+    let loan = ahead["loans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Truist BANK")
+        .expect("Truist loan row");
+    let principal = loan["principalMinor"].as_i64().unwrap();
+    let interest = loan["interestMinor"].as_i64().unwrap();
+    // Bank ending balance differs from current − entered principal (interest split drift).
+    let statement_after = start - principal + 477;
+    must_ok(
+        &platform,
+        "LoanPaymentConfirm",
+        serde_json::json!({
+            "accountId": truist["accountId"],
+            "dueOn": "2026-10-07",
+            "principalMinor": principal,
+            "interestMinor": interest,
+            "balanceAfterMinor": statement_after,
+        }),
+    )
+    .await;
+    let after = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let truist_after = after["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "Truist BANK")
+        .unwrap();
+    assert_eq!(
+        truist_after["currentMinor"].as_i64().unwrap(),
+        statement_after,
+        "statement balance after wins over current − principal"
+    );
+    assert_ne!(
+        statement_after,
+        start - principal,
+        "fixture must disagree so the override is exercised"
     );
 }
 
@@ -2057,6 +2177,191 @@ fn account_table_lands_locked_broker_fields() {
             && contracts.contains("pub broker_account_number:")
             && contracts.contains("pub min_balance_target_minor:"),
         "AccountRecord must expose cash_symbol, broker_account_number, min_balance_target_minor"
+    );
+}
+
+async fn open_cash_lot(
+    platform: &LocalPlatform,
+    account_id: &str,
+    symbol: &str,
+    qty_minor: i64,
+) {
+    let security = must_ok(
+        platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": symbol, "name": symbol}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap().to_string();
+    must_ok(
+        platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": security_id,
+            "priceSource": "public",
+            "sourceSymbol": symbol,
+            "declarationSource": "issuer",
+            "sourceUrl": format!("https://example.test/{}/distributions", symbol.to_ascii_lowercase()),
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot(platform, &security_id, symbol)
+        .await
+        .expect("complete collector");
+    must_ok(
+        platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": security_id,
+            "openedOn": "2026-09-01",
+            "origin": "purchase",
+            "quantityMinor": qty_minor,
+            "quantityScale": 2,
+            "performanceBasisMinor": qty_minor,
+            "taxBasisMinor": qty_minor,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cash_pile_prefers_account_cash_symbol_over_name_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let health = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Health", "kind": "ira"}),
+    )
+    .await;
+    let account_id = health["accountId"].as_str().unwrap();
+    assert_eq!(
+        health["cashSymbol"].as_str(),
+        Some("FDRXX"),
+        "register fills the name-map default"
+    );
+    open_cash_lot(&platform, account_id, "SPAXX", 4_200).await;
+    must_ok(
+        &platform,
+        "AccountUpdate",
+        serde_json::json!({ "accountId": account_id, "cashSymbol": "SPAXX" }),
+    )
+    .await;
+    let pile = query_json(
+        &platform,
+        "CashPileGet",
+        serde_json::json!({ "accountId": account_id }),
+    )
+    .await;
+    assert_eq!(pile["found"], true);
+    assert_eq!(
+        pile["symbol"].as_str(),
+        Some("SPAXX"),
+        "stored column wins over Health→FDRXX map"
+    );
+    assert_eq!(pile["dollarsMinor"].as_i64(), Some(4_200));
+
+    let week = query_json(
+        &platform,
+        "TrendsWeekGet",
+        serde_json::json!({ "asOfDate": "2026-09-11" }),
+    )
+    .await;
+    let health_ref = week["cashReferences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["accountName"] == "Health")
+        .expect("Health cash reference");
+    assert_eq!(
+        health_ref["cashSymbol"].as_str(),
+        Some("SPAXX"),
+        "Trends cash label follows account.cash_symbol"
+    );
+}
+
+#[tokio::test]
+async fn cash_pile_prefers_column_lot_over_larger_other_mm_lot() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let health = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Health", "kind": "ira"}),
+    )
+    .await;
+    let account_id = health["accountId"].as_str().unwrap();
+    open_cash_lot(&platform, account_id, "FDRXX", 50_000).await;
+    open_cash_lot(&platform, account_id, "SPAXX", 1_500).await;
+    must_ok(
+        &platform,
+        "AccountUpdate",
+        serde_json::json!({ "accountId": account_id, "cashSymbol": "SPAXX" }),
+    )
+    .await;
+    let pile = query_json(
+        &platform,
+        "CashPileGet",
+        serde_json::json!({ "accountId": account_id }),
+    )
+    .await;
+    assert_eq!(pile["found"], true);
+    assert_eq!(
+        pile["symbol"].as_str(),
+        Some("SPAXX"),
+        "preferred column lot wins even when another MM lot is larger"
+    );
+    assert_eq!(pile["dollarsMinor"].as_i64(), Some(1_500));
+}
+
+#[test]
+fn desktop_cash_surfaces_pass_stored_cash_symbol() {
+    let app = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/App.tsx"),
+    )
+    .unwrap();
+    let cart = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/shopping-cart/ShoppingCartScreen.tsx"),
+    )
+    .unwrap();
+    let cash_flow = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/cash/AccountCashFlow.tsx"),
+    )
+    .unwrap();
+    let trends = std::fs::read_to_string(
+        golden_harness::repo_root()
+            .join("apps/desktop/src/features/graphing/TrendsCharts.tsx"),
+    )
+    .unwrap();
+    let contracts = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/app-contracts/src/index.ts"),
+    )
+    .unwrap();
+    assert!(
+        contracts.contains("storedCashSymbol")
+            && contracts.contains("ACCOUNT_CASH_SYMBOL[accountName.trim()]"),
+        "accountCashSymbol takes stored column before the name map"
+    );
+    assert!(
+        app.contains("accountCashSymbol(account, [], stored)")
+            && cart.contains("selectedAccount?.cashSymbol")
+            && cash_flow.contains("storedCashSymbol")
+            && cash_flow.contains("AccountList")
+            && trends.contains("accountCashSymbol(account, [], stored)")
+            && trends.contains("accounts?: Array<Pick<AccountListItem"),
+        "Cart/Home/AccountCashFlow/Trends pass AccountRecord.cashSymbol into the resolve helper"
     );
 }
 
@@ -2547,6 +2852,114 @@ async fn bucket_rename_updates_register_lines() {
         .find(|b| b["name"] == "Groceries")
         .expect("Groceries");
     assert_eq!(groceries["bank"], "Capital One");
+}
+
+/// Credit balance edit freezes applied history so Get/reconcile cannot rewrite Current.
+/// Completed CCT rows are not updated (Mom shopping RCA / R-24).
+#[tokio::test]
+async fn mom_shopping_credit_balance_edit_holds_after_reconcile() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let mom_id = "a1000001-0000-4000-8000-000000000008";
+    must_ok(
+        &platform,
+        "ExternalAccountManagerSave",
+        serde_json::json!({
+            "accounts": [{
+                "accountId": mom_id,
+                "name": "Mom shopping",
+                "accountName": "Mom",
+                "startingMinor": 196915,
+                "currentMinor": 196915,
+                "paymentMinor": null,
+                "reductionMinor": null,
+                "financeMinor": null,
+                "paidThrough": null,
+                "payProcess": "register",
+                "registerKey": "Mom"
+            }]
+        }),
+    )
+    .await;
+    let spend = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": spend,
+                "payType": "Checking",
+                "occurredOn": "2026-10-06",
+                "amountMinor": 1500,
+                "scale": 2,
+                "category": "Mom",
+                "bucket": "Mom",
+                "loanName": "",
+                "vendor": "Walmart",
+                "description": "escrow spend before owner balance",
+                "completed": true,
+                "trueUpOn": "2026-10-06"
+            }]
+        }),
+    )
+    .await;
+    let after_spend = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let mom_after_spend = after_spend["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == mom_id)
+        .expect("Mom shopping");
+    assert_eq!(
+        mom_after_spend["currentMinor"].as_i64(),
+        Some(195415),
+        "reconcile applies completed Mom spend once"
+    );
+    // Owner corrects Current (R-24 target shape); completed CCT stays $15.00.
+    must_ok(
+        &platform,
+        "ExternalAccountManagerSave",
+        serde_json::json!({
+            "accounts": [{
+                "accountId": mom_id,
+                "name": "Mom shopping",
+                "accountName": "Mom",
+                "startingMinor": 196915,
+                "currentMinor": 138293,
+                "paymentMinor": null,
+                "reductionMinor": null,
+                "financeMinor": null,
+                "paidThrough": null,
+                "payProcess": "register",
+                "registerKey": "Mom"
+            }]
+        }),
+    )
+    .await;
+    let held = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let mom = held["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == mom_id)
+        .expect("Mom shopping");
+    assert_eq!(
+        mom["currentMinor"].as_i64(),
+        Some(138293),
+        "credit balance edit must survive reconcile"
+    );
+    assert_eq!(mom["startingMinor"].as_i64(), Some(196915));
+    let register = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let line = register["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["lineId"] == spend.to_string())
+        .expect("completed CCT line");
+    assert_eq!(line["amountMinor"].as_i64(), Some(1500));
+    assert_eq!(line["completed"], true);
 }
 
 /// Loan Name links CCT to debts; Bucket funds escrow (Mom). Positive lowers Current; Mom negative is a deposit.

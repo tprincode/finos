@@ -54,6 +54,7 @@ import {
   type HomeOpenGet,
   type DataSnapshotExport,
   ACCOUNT_CASH_SYMBOL,
+  accountCashSymbol,
   CASH_PAR_SYMBOLS,
 } from "@finos/app-contracts";
 import { invoke } from "@tauri-apps/api/core";
@@ -68,7 +69,13 @@ import { weekAheadTaskHandlers } from "./features/cash/weekAheadActions";
 import { CashRegisterPanel } from "./features/cash/CashRegister";
 import { CashElementsCatalog } from "./features/cash/CashElementsCatalog";
 import { PageNavRow } from "./features/navigation/PageNavRow";
-import { peekNav, popNav, pushNav } from "./features/navigation/navStack";
+import {
+  openFromCaller,
+  peekNav,
+  popNav,
+  pushNav,
+  returnToCaller,
+} from "./features/navigation/navStack";
 import {
   applyCashNav,
   fetchCashNav,
@@ -84,6 +91,7 @@ import { useMagiCliffNav } from "./features/task-manager/magiCutNav";
 import { MarketImpactPlanner } from "./features/market-impact/MarketImpactPlanner";
 import { InterestRateCalculator } from "./features/interest-rate/InterestRateCalculator";
 import { AccountManagement } from "./features/accounts/AccountManagement";
+import { CALCULATOR_COLUMN_FORMULAS } from "./features/field-intent/calculatorColumns";
 import { FieldIntentScreen } from "./features/field-intent/FieldIntentScreen";
 import { RoadmapScreen } from "./features/roadmap/RoadmapScreen";
 import { ComponentRegistry } from "./features/components/ComponentRegistry";
@@ -139,7 +147,10 @@ import {
   type LotSortMode,
 } from "./features/shared/pickers";
 import { PageActivityBar } from "./features/shared/PageActivityBar";
-import { saveComponentWorkbook } from "./features/shared/saveWorkbook";
+import {
+  isSaveCancelled,
+  saveComponentWorkbook,
+} from "./features/shared/saveWorkbook";
 import { openImportWizardWindow } from "./openImportWizard";
 import {
   CalculatorReturnSheet,
@@ -1253,6 +1264,7 @@ export default function App() {
     null,
   );
   const [snapshotConfirm, setSnapshotConfirm] = useState(false);
+  const [snapshotFolder, setSnapshotFolder] = useState("");
   const [incomeExportPreview, setIncomeExportPreview] =
     useState<IncomePlanExportGet | null>(null);
   const [incomeExportLoading, setIncomeExportLoading] = useState(false);
@@ -2978,6 +2990,33 @@ export default function App() {
     [withIncomeLoading],
   );
 
+  const confirmIncomeImpliedDecl = useCallback(
+    async (symbol: string) => {
+      const weekEnd = incomeWeek?.end || asOfDate;
+      const result = await client.executeCommand(
+        "IncomeWeekImpliedDeclarationConfirm",
+        { weekEnd, symbol },
+      );
+      if (!result.ok) {
+        setActionMessage(
+          `Confirm Decl from payment failed: ${result.errorCode ?? "error"}`,
+        );
+        return;
+      }
+      const reload = await client.executeQuery("IncomePlanWeekGet", {
+        asOfDate: incomeWeek?.asOfDate || asOfDate,
+      });
+      if (reload.ok && reload.bodyJson) {
+        try {
+          setIncomeWeek(JSON.parse(reload.bodyJson) as IncomePlanWeekGet);
+        } catch {
+          /* keep */
+        }
+      }
+    },
+    [asOfDate, incomeWeek?.asOfDate, incomeWeek?.end],
+  );
+
   const incomeExportQuery = useCallback(
     (format: "html" | "pdf" | "xlsx") =>
       client.executeQuery("IncomePlanExportGet", {
@@ -3046,14 +3085,16 @@ export default function App() {
         }
         const body = JSON.parse(result.bodyJson) as IncomePlanExportGet;
         const bytes = Uint8Array.from(atob(body.bytesBase64), (c) => c.charCodeAt(0));
-        await invoke("save_local_bytes", {
+        const path = await invoke<string>("save_local_bytes", {
           defaultFileName: body.defaultFileName,
           bytes: Array.from(bytes),
         });
         setIncomeExportPreview(null);
-        setActionMessage(`Saved ${body.defaultFileName} on this computer.`);
+        setActionMessage(`Saved ${path}`);
       } catch (err: unknown) {
-        setActionMessage(`Save failed: ${String(err)}`);
+        if (!isSaveCancelled(err)) {
+          setActionMessage(`Save failed: ${String(err)}`);
+        }
       } finally {
         setIncomeExportLoading(false);
         setBusy(false);
@@ -3065,11 +3106,13 @@ export default function App() {
   const requestIncomeExportRef = useRef(requestIncomeExport);
   requestIncomeExportRef.current = requestIncomeExport;
 
-  const runDataSnapshot = useCallback(async () => {
+  const runDataSnapshot = useCallback(async (folder?: string) => {
     setBusy(true);
     setActionMessage(null);
     try {
-      const result = await client.executeCommand("DataSnapshotExport", {});
+      const result = await client.executeCommand("DataSnapshotExport", {
+        ...(folder?.trim() ? { folder: folder.trim() } : {}),
+      });
       if (!result.ok || !result.bodyJson) {
         setActionMessage(`Data snapshot failed: ${result.errorCode ?? "error"}`);
         return;
@@ -3083,7 +3126,16 @@ export default function App() {
     }
   }, []);
   const requestDataSnapshot = useCallback(() => {
-    setSnapshotConfirm(true);
+    const today = new Date();
+    const asOf = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    void invoke<string>("suggested_snapshot_folder", { asOfDate: asOf })
+      .then((folder) => {
+        setSnapshotFolder(folder);
+        setSnapshotConfirm(true);
+      })
+      .catch((err: unknown) => {
+        setActionMessage(`Could not prepare snapshot folder: ${String(err)}`);
+      });
   }, []);
   const requestDataSnapshotRef = useRef(requestDataSnapshot);
   requestDataSnapshotRef.current = requestDataSnapshot;
@@ -3986,9 +4038,14 @@ export default function App() {
     setAddLotTaxDifferent(Boolean(draft.taxCostDifferent));
     setAddLotTaxEquals(Boolean(draft.taxEqualsPerformance));
     setAddLotOrigin(draft.origin || "purchase");
-    setActionMessage(fromCart ? "Purchase cancelled — back to Shopping Cart." : "Edits discarded.");
-    if (fromCart) {
-      setScreen("shopping-cart");
+    setActionMessage(
+      fromCart
+        ? "Purchase cancelled — returned to the calling screen."
+        : "Edits discarded.",
+    );
+    // Restore whoever opened Add Lot (cart, Process A, menu) — never a fixed page.
+    if (!returnToCaller("add-lot")) {
+      setScreen(addLotReturnScreenRef.current || "holdings");
     }
   };
 
@@ -5807,6 +5864,25 @@ export default function App() {
     });
   };
 
+  /** Open Add Lot with a nav frame so Return / Confirm / Cancel restore this caller. */
+  const openAddLotFromCaller = (caller: Screen) => {
+    const place = { screen: caller, cmDesk };
+    addLotReturnScreenRef.current = caller;
+    openFromCaller({
+      id: "add-lot",
+      screen: place.screen,
+      cmDesk: place.cmDesk,
+      restore: () => {
+        setScreen(place.screen);
+        setCmDesk(place.cmDesk);
+        setElementEditorOpen(false);
+        setEditorElement(null);
+        setEditorOccurrenceId(null);
+      },
+    });
+    setScreen("add-lot");
+  };
+
   const runAppRestart = useCallback(async () => {
     if (restartingRef.current) {
       return;
@@ -6756,8 +6832,10 @@ export default function App() {
       );
       await refreshHandoff();
       await refreshData(asOfDate);
-      // Cart buys must return to Shopping Cart (Confirm cash). Do not stay on Add Lot.
-      setScreen(fromCart ? "shopping-cart" : addLotReturnScreenRef.current || "holdings");
+      // Return to the screen that opened Add Lot (cart Confirm cash, Process A, …).
+      if (!returnToCaller("add-lot")) {
+        setScreen(addLotReturnScreenRef.current || "holdings");
+      }
     } catch (err: unknown) {
       setActionMessage(String(err));
     } finally {
@@ -8381,8 +8459,7 @@ export default function App() {
           ? `${row.symbol}${row.name ? ` — ${row.name}` : ""}`
           : wizSymbol.trim().toUpperCase(),
       );
-      addLotReturnScreenRef.current = "new-investment";
-      setScreen("add-lot");
+      openAddLotFromCaller("new-investment");
     }, "add-lot");
   };
 
@@ -8492,14 +8569,20 @@ export default function App() {
         setMenuWorking(label);
         leaveWithoutSaving(
           () => {
+            if (id === "add-lot") {
+              if (screen !== "add-lot") {
+                openAddLotFromCaller(screen);
+              }
+              if (screen === "add-lot") {
+                setMenuWorking(null);
+              }
+              return;
+            }
             if (
               screen !== id ||
               (id === "cash-management" && cmDesk !== "weekly")
             ) {
               rememberMenu();
-            }
-            if (id === "add-lot" && screen !== "add-lot") {
-              addLotReturnScreenRef.current = screen;
             }
             if (id === "cash-management") {
               setCmDesk("weekly");
@@ -8543,12 +8626,14 @@ export default function App() {
     </div>
   );
 
-  const accountCashRows = Object.entries(ACCOUNT_CASH_SYMBOL).map(([account, symbol]) => {
+  const accountCashRows = Object.entries(ACCOUNT_CASH_SYMBOL).map(([account]) => {
+    const stored = accounts.find((a) => a.name === account)?.cashSymbol;
+    const symbol = accountCashSymbol(account, [], stored);
     const cents = (holdings?.lots ?? [])
       .filter(
         (lot) =>
           lot.accountName === account &&
-          lot.symbol.toUpperCase() === symbol &&
+          lot.symbol.toUpperCase() === symbol.toUpperCase() &&
           lot.remainingQuantityMinor > 0,
       )
       .reduce((sum, lot) => {
@@ -8558,7 +8643,7 @@ export default function App() {
     const found = (holdings?.lots ?? []).some(
       (lot) =>
         lot.accountName === account &&
-        lot.symbol.toUpperCase() === symbol &&
+        lot.symbol.toUpperCase() === symbol.toUpperCase() &&
         lot.remainingQuantityMinor > 0,
     );
     return {
@@ -8866,18 +8951,42 @@ export default function App() {
               </button>
             </header>
             <p>
-              Save a data snapshot under raw-data for today? Workbooks and a copy of
-              local.sqlite are written from the live database. Today’s folder is
-              replaced if it already exists.
+              Confirm the folder before writing. Workbooks and a copy of
+              local.sqlite are written from the live database. An existing folder
+              at this path is replaced.
             </p>
+            <label>
+              Folder
+              <input
+                aria-label="Snapshot folder"
+                value={snapshotFolder}
+                disabled={busy}
+                onChange={(e) => setSnapshotFolder(e.target.value)}
+              />
+            </label>
             <div className="buttons">
               <button
                 type="button"
-                aria-label="Confirm save data snapshot"
+                aria-label="Browse snapshot folder"
                 disabled={busy}
                 onClick={() => {
+                  void invoke<string | null>("pick_directory", {
+                    defaultPath: snapshotFolder || null,
+                  }).then((picked) => {
+                    if (picked) setSnapshotFolder(picked);
+                  });
+                }}
+              >
+                Browse…
+              </button>
+              <button
+                type="button"
+                aria-label="Confirm save data snapshot"
+                disabled={busy || !snapshotFolder.trim()}
+                onClick={() => {
+                  const folder = snapshotFolder.trim();
                   setSnapshotConfirm(false);
-                  void runDataSnapshot();
+                  void runDataSnapshot(folder);
                 }}
               >
                 Save snapshot
@@ -8997,6 +9106,9 @@ export default function App() {
               }
             })();
           }}
+          onConfirmImpliedDecl={(symbol) => {
+            void confirmIncomeImpliedDecl(symbol);
+          }}
         />
       ) : null}
 
@@ -9012,6 +9124,7 @@ export default function App() {
           <CalculatorReturnSheet
             rows={positionMaster?.rows ?? null}
             history={declHistory}
+            columnFormulas={CALCULATOR_COLUMN_FORMULAS}
             accountsBySymbol={Object.fromEntries(
               (positionDetails?.positions ?? []).reduce((map, line) => {
                 const prior = map.get(line.symbol);
@@ -9205,6 +9318,8 @@ export default function App() {
             weeks={trends?.weeks}
             points={trends?.points}
             dividendPerf={trendsDividendPerf}
+            holdings={holdings}
+            accounts={accounts}
             onGraphPeriodChange={(period) => {
               trendsGraphPeriodRef.current = period;
               void (async () => {
@@ -9278,7 +9393,6 @@ export default function App() {
                 accountId: prefill.accountId,
                 planId: prefill.planId || prefill.scenarioId,
               });
-              addLotReturnScreenRef.current = "shopping-cart";
               setAddLotAccountId(prefill.accountId);
               setAddLotSecurityId(prefill.securityId);
               const row = securities.find((s) => s.securityId === prefill.securityId);
@@ -9312,7 +9426,8 @@ export default function App() {
                   origin: "purchase",
                 }),
               );
-              setScreen("add-lot");
+              // Caller is whatever screen opened the cart buy (normally shopping-cart).
+              openAddLotFromCaller(screen);
             }, "add-lot");
           }}
         />
@@ -9615,11 +9730,11 @@ export default function App() {
                 drawFilter={magiNav.drawFilter}
                 onBook={setCatalogBook}
                 onAddElement={() => {
-                  if (!catalogBook || catalogBook === "all") return;
                   if (!elementEditorOpen) rememberMenu();
-                  const book = catalogBook;
-                  registerBookRef.current = book;
-                  setRegisterBook(book);
+                  if (catalogBook && catalogBook !== "all") {
+                    registerBookRef.current = catalogBook;
+                    setRegisterBook(catalogBook);
+                  }
                   setEditorElement(null);
                   setEditorOccurrenceId(null);
                   setElementDirty(false);
@@ -9857,10 +9972,14 @@ export default function App() {
                   goCmDesk("elements", "Element Management");
                 }}
                 onAddElement={() => {
+                  const book = registerBookRef.current;
+                  setCatalogBook(book);
+                  setRegisterBook(book);
                   setEditorElement(null);
                   setEditorOccurrenceId(null);
                   setElementDirty(false);
                   setElementEditorOpen(true);
+                  goCmDesk("elements", "Element Management");
                 }}
               />
             }

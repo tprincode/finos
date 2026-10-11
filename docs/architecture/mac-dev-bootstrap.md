@@ -11,15 +11,44 @@ Locked household paths for the MacBook Air cutover:
 
 Never put `local.sqlite` in iCloud Drive, Dropbox, or OneDrive.
 
-## Prerequisites
+## Installer (preferred)
 
-1. Xcode Command Line Tools: `xcode-select --install`
-2. [Tauri 2 macOS prerequisites](https://v2.tauri.app/start/prerequisites/)
-3. Rust via rustup (`stable` — see repo `rust-toolchain.toml`)
-4. Node.js LTS + npm
-5. GitHub CLI for HTTPS push: `brew install gh` then `gh auth login` (GitHub.com, HTTPS, browser)
+After the repo is on the Mac (clone, USB kit, or copy):
 
-## First run
+```bash
+cd ~/Developer/finos   # or wherever the clone landed
+chmod +x install-mac.sh scripts/mac-install.sh
+./install-mac.sh
+```
+
+What it does (idempotent; safe to re-run):
+
+1. Confirms macOS / warns if not arm64
+2. Ensures Xcode Command Line Tools (opens Apple’s installer if missing, then exits for a re-run)
+3. Installs Homebrew when absent, then Node, `gh`, and Rust via `rustup` when missing
+4. Creates `~/Documents/Financial` and Application Support app-data dir
+5. Symlinks `~/Developer/finos` → this clone when the locked path is free
+6. `chmod +x` on `finos.sh` / `app-up.sh` / `golden.sh`
+7. `npm install` + `cargo check`
+
+Flags:
+
+| Flag | Effect |
+|------|--------|
+| `--seed` | `npm run data-seed` into Application Support |
+| `--launch` | start `./finos.sh` when finished |
+| `--skip-brew` | toolchain check only (no Homebrew installs) |
+| `--repo PATH` | use that clone instead of the script’s parent |
+
+Then:
+
+```bash
+./finos.sh
+# other terminal after Home paints:
+./scripts/app-up.sh
+```
+
+## Manual first run (if you skip the installer)
 
 ```bash
 mkdir -p ~/Developer
@@ -32,11 +61,13 @@ cargo check
 ./finos.sh
 ```
 
-In another terminal after Home paints:
+Prerequisites if installing by hand:
 
-```bash
-./scripts/app-up.sh
-```
+1. Xcode Command Line Tools: `xcode-select --install`
+2. [Tauri 2 macOS prerequisites](https://v2.tauri.app/start/prerequisites/)
+3. Rust via rustup (`stable` — see repo `rust-toolchain.toml`)
+4. Node.js LTS + npm
+5. GitHub CLI for HTTPS push: `brew install gh` then `gh auth login` (GitHub.com, HTTPS, browser)
 
 Seed (same app-data root the host opens — host sets `FINOS_APP_DATA` on launch; for seed-before-first-launch):
 
@@ -44,6 +75,8 @@ Seed (same app-data root the host opens — host sets `FINOS_APP_DATA` on launch
 export FINOS_APP_DATA="$HOME/Library/Application Support/com.finos.desktop"
 npm run data-seed
 ```
+
+Or: `./install-mac.sh --seed`
 
 ## Cursor on Mac
 
@@ -62,4 +95,5 @@ Do not copy Windows AgentStores wholesale.
 ## Related
 
 - [m1-macos-gate.md](m1-macos-gate.md) — full handoff matrix (still parked until recorded on Mac)
+- Installer: `install-mac.sh` → `scripts/mac-install.sh`
 - Kit files under `E:\Finos\kit\` when the transfer pack is built

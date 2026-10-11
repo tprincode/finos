@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { CashElementRecord } from "@finos/app-contracts";
 import { LocalTauriFinanceClient } from "../../financeClient";
 import { CashElementExceptions } from "./CashElementExceptions";
 import type { EditorOccurrence } from "./CashElementEditor";
+import { isSaveCancelled } from "../shared/saveWorkbook";
 
 const client = new LocalTauriFinanceClient();
 
@@ -768,6 +770,7 @@ export function ExternalAccountManager({
   const [status, setStatus] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [exceptionsOpen, setExceptionsOpen] = useState(false);
 
   const accounts = body?.accounts ?? [];
@@ -786,6 +789,57 @@ export function ExternalAccountManager({
     const trimmed = bank.trim();
     if (!trimmed) return;
     setExtraBanks((current) => mergeBankOptions([], current, [trimmed]));
+  };
+
+  const exportOurTransactions = async () => {
+    if (!selected || exporting || selected.lines.length === 0) return;
+    setExporting(true);
+    setBusy(true);
+    try {
+      const stamp = todayIso();
+      const result = await client.executeQuery("ExternalRegisterExportGet", {
+        format: "xlsx",
+        printedAt: `${stamp}T00:00Z`,
+        lines: selected.lines.map((line) => ({
+          payType: line.payType,
+          occurredOn: line.occurredOn ?? null,
+          amountMinor: line.amountMinor,
+          scale: 2,
+          category: line.category,
+          bucket: "",
+          vendor: line.vendor,
+          description: line.description,
+          trueUpOn: lineReady(selected, line) ? "Paid" : "Pending",
+        })),
+      });
+      if (!result.ok || !result.bodyJson) {
+        setStatus(`Export failed: ${result.errorCode ?? "error"}`);
+        return;
+      }
+      const body = JSON.parse(result.bodyJson) as {
+        bytesBase64?: string;
+        defaultFileName?: string;
+      };
+      if (!body.bytesBase64) {
+        setStatus("Export failed");
+        return;
+      }
+      const bytes = Uint8Array.from(atob(body.bytesBase64), (c) => c.charCodeAt(0));
+      const title = `Our ${selected.name} transactions`;
+      const safeTitle = title.replace(/[^\w\-]+/g, "_").replace(/^_|_$/g, "") || "Our_transactions";
+      const path = await invoke<string>("save_local_bytes", {
+        defaultFileName: `${safeTitle}-${stamp}.xlsx`,
+        bytes: Array.from(bytes),
+      });
+      setStatus(`Saved ${path}`);
+    } catch (err: unknown) {
+      if (!isSaveCancelled(err)) {
+        setStatus(`Export failed: ${String(err)}`);
+      }
+    } finally {
+      setExporting(false);
+      setBusy(false);
+    }
   };
   const dirty =
     draft != null &&
@@ -2074,12 +2128,22 @@ export function ExternalAccountManager({
             id="managed-register"
             data-section="loan-register"
           >
-            <h3>
-              Our transactions
-              {projected(selected)
-                ? ` · next split ${money(projected(selected)?.principal)} principal, ${money(projected(selected)?.interest)} interest`
-                : ""}
-            </h3>
+            <div className="managed-register-heading">
+              <h3>
+                {`Our ${selected.name} transactions`}
+                {projected(selected)
+                  ? ` · next split ${money(projected(selected)?.principal)} principal, ${money(projected(selected)?.interest)} interest`
+                  : ""}
+              </h3>
+              <button
+                type="button"
+                aria-label="Export to excel"
+                disabled={exporting || busy || selected.lines.length === 0}
+                onClick={() => void exportOurTransactions()}
+              >
+                Export to excel
+              </button>
+            </div>
             <div className="table-wrap managed-lines" data-part="loan-our-transactions">
               <table>
                 <thead>

@@ -1002,6 +1002,12 @@ fn calculator_static_headers() -> &'static [&'static str] {
     ]
 }
 
+/// Authority Calculator TVAL V3 / UI "Calculator blend": `(Gain% × 2 + FWD) / 2` in bps.
+/// Integer truncating divide matches the TypeScript `dividendScore` path.
+pub fn calculator_tval_v3_bps(unrealized_pnl_bps: i64, fwd_yield_bps: i64) -> i64 {
+    (unrealized_pnl_bps * 2 + fwd_yield_bps) / 2
+}
+
 fn calculator_typed_row(
     row: &PositionMasterRowBody,
     hist: Option<&DeclarationHistoryRowBody>,
@@ -1019,12 +1025,13 @@ fn calculator_typed_row(
     let gain = row
         .market_value_minor
         .map(|mv| mv - row.remaining_performance_minor);
+    // Authority TVAL V3 — same shape as UI `dividendScore` Calculator blend / MC TVAL.
     let blend = match (row.unrealized_pnl_bps, row.plan_fwd_yield_bps) {
-        (Some(pnl), Some(fwd)) => Some((pnl * 2 + fwd) / 2),
+        (Some(pnl), Some(fwd)) => Some(calculator_tval_v3_bps(pnl, fwd)),
         _ => None,
     };
     let mc_blend = match (row.unrealized_pnl_bps, row.most_current_fwd_yield_bps) {
-        (Some(pnl), Some(fwd)) => Some((pnl * 2 + fwd) / 2),
+        (Some(pnl), Some(fwd)) => Some(calculator_tval_v3_bps(pnl, fwd)),
         _ => None,
     };
     let tval_delta = match (mc_blend, blend) {
@@ -1940,7 +1947,23 @@ fn catalog_sheet(module_id: &str) -> Sheet {
 
 #[cfg(test)]
 mod tests {
-    use super::{export_covers, field_intent_rows, interest_sheet, money_text, money_unknown};
+    use super::{
+        calculator_tval_v3_bps, export_covers, field_intent_rows, interest_sheet, money_text,
+        money_unknown,
+    };
+
+    #[test]
+    fn calculator_tval_v3_is_twice_pnl_plus_fwd_over_two() {
+        // Gain% 25% (2500 bps), FWD 12% (1200) → (5000 + 1200) / 2 = 3100
+        assert_eq!(calculator_tval_v3_bps(2_500, 1_200), 3_100);
+        // MC FWD 10% (1000) → (5000 + 1000) / 2 = 3000; Δ = 3000 − 3100 = −100
+        let blend = calculator_tval_v3_bps(2_500, 1_200);
+        let mc = calculator_tval_v3_bps(2_500, 1_000);
+        assert_eq!(mc, 3_000);
+        assert_eq!(mc - blend, -100);
+        // Truncating divide (odd sum)
+        assert_eq!(calculator_tval_v3_bps(100, 1), 100); // (200+1)/2 = 100
+    }
 
     #[test]
     fn missing_money_is_unknown_and_zero_stays_zero() {

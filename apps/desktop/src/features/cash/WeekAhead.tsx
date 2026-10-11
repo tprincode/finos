@@ -42,6 +42,7 @@ export function WeekAheadPanel({
     dueOn: string;
     principalMinor: number;
     interestMinor: number;
+    balanceAfterMinor?: number;
   }) => void;
   onResolveTask: (taskId: string) => void;
   onIgnoreTask: (taskId: string) => void;
@@ -107,11 +108,16 @@ export function WeekAheadPanel({
         </button>
       </div>
       <div className="table-wrap" data-part="week-ahead-elements">
+        <p className="cash-coverage-caption">
+          Due and recent past-due (35 days) — not-yet-due stay hidden. Older unconfirmed stay
+          in Element history.
+        </p>
         <table aria-label="Week ahead elements">
           <thead>
             <tr>
               <th>Date</th>
               <th>Account</th>
+              <th>Name</th>
               <th>Transaction</th>
               <th>Amount</th>
               <th>Confirm</th>
@@ -127,6 +133,7 @@ export function WeekAheadPanel({
                 <tr key={row.occurrenceId}>
                   <td>{row.occurredOn}</td>
                   <td>{row.account}</td>
+                  <td>{row.note || "—"}</td>
                   <td>{row.transaction}</td>
                   <td className="numeric">
                     {formatUsd(row.amountMinor, row.scale ?? scale)}
@@ -178,6 +185,10 @@ export function WeekAheadPanel({
       {(week.loans ?? []).length > 0 ? (
         <div className="table-wrap" data-part="week-ahead-loans">
           <h3>Loan payments</h3>
+          <p className="cash-coverage-caption">
+            Due and recent past-due (35 days) — not-yet-due stay hidden. Older unpaid stay
+            off this board until their due window.
+          </p>
           <table aria-label="Week ahead loan payments">
             <thead>
               <tr>
@@ -186,6 +197,7 @@ export function WeekAheadPanel({
                 <th className="numeric">Payment</th>
                 <th className="numeric">Principal</th>
                 <th className="numeric">Interest</th>
+                <th className="numeric">Balance after</th>
                 <th>Confirm</th>
               </tr>
             </thead>
@@ -229,6 +241,7 @@ function LoanPayRow({
     dueOn: string;
     principalMinor: number;
     interestMinor: number;
+    balanceAfterMinor?: number;
   }) => void;
 }) {
   const moneyScale = loan.scale ?? scale;
@@ -236,25 +249,34 @@ function LoanPayRow({
   const projectedInterest = dollarsField(loan.interestMinor, moneyScale);
   const [payment, setPayment] = useState(projectedPayment);
   const [interest, setInterest] = useState(projectedInterest);
+  const [balanceAfter, setBalanceAfter] = useState("");
   const parse = (text: string) => {
-    const value = Number(text.replace(/[$,]/g, ""));
+    const trimmed = text.trim();
+    if (trimmed === "") return null;
+    const value = Number(trimmed.replace(/[$,]/g, ""));
     if (!Number.isFinite(value) || value < 0) return null;
     return Math.round(value * 100);
   };
   const paymentMinor = parse(payment);
   const interestMinor = parse(interest);
+  const balanceAfterMinor = balanceAfter.trim() === "" ? undefined : parse(balanceAfter);
   const principalMinor =
     paymentMinor == null || interestMinor == null ? null : paymentMinor - interestMinor;
   const interestTooHigh =
     paymentMinor != null && interestMinor != null && interestMinor > paymentMinor;
+  const balanceInvalid = balanceAfter.trim() !== "" && balanceAfterMinor == null;
   const ready =
     paymentMinor != null &&
     paymentMinor > 0 &&
     interestMinor != null &&
     principalMinor != null &&
     principalMinor >= 0 &&
-    !interestTooHigh;
-  const dirty = payment !== projectedPayment || interest !== projectedInterest;
+    !interestTooHigh &&
+    !balanceInvalid;
+  const dirty =
+    payment !== projectedPayment ||
+    interest !== projectedInterest ||
+    balanceAfter.trim() !== "";
   return (
     <tr>
       <td>{loan.dueOn}</td>
@@ -286,6 +308,16 @@ function LoanPayRow({
         ) : null}
       </td>
       <td>
+        <input
+          aria-label={`${loan.name} balance after payment`}
+          inputMode="decimal"
+          value={balanceAfter}
+          placeholder="optional"
+          title="Statement ending balance. When set, this becomes the loan current (overrides principal math)."
+          onChange={(event) => setBalanceAfter(event.target.value)}
+        />
+      </td>
+      <td>
         <button
           type="button"
           aria-label={`Confirm ${loan.name} loan payment`}
@@ -297,7 +329,8 @@ function LoanPayRow({
               interestMinor == null ||
               principalMinor == null ||
               principalMinor < 0 ||
-              interestTooHigh
+              interestTooHigh ||
+              balanceInvalid
             ) {
               return;
             }
@@ -306,6 +339,7 @@ function LoanPayRow({
               dueOn: loan.dueOn,
               principalMinor,
               interestMinor,
+              ...(balanceAfterMinor != null ? { balanceAfterMinor } : {}),
             });
           }}
         >

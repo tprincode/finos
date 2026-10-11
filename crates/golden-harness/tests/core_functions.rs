@@ -181,6 +181,7 @@ fn core_functions_catalog_sentinels_still_exist() {
         "DashboardBurndownGet",
         "LastPriceAutoWindowGet",
         "CashPileGet",
+        "CashIntegrityGet",
         "WorkTicketList",
         "DividendPerformanceGet",
     ] {

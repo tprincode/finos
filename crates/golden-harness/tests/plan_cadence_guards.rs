@@ -449,3 +449,58 @@ fn ticket_formatter_sentinel_cannot_be_removed() {
     assert!(queries.contains("fn remediation_lines_for_code"));
     assert!(queries.contains("fn ensure_ticket_reason_diagnostics"));
 }
+
+/// Weekly annualization stays 52 until the owner locks 53. A calendar year may
+/// hold an extra Sat–Fri week; that must not change planningPeriodsPerYear.
+#[test]
+fn weekly_planning_periods_are_fifty_two_not_fifty_three() {
+    assert_eq!(
+        PaymentCadence::parse("Weekly").and_then(PaymentCadence::periods),
+        Some(52)
+    );
+    assert_eq!(
+        PaymentCadence::parse("52").and_then(PaymentCadence::periods),
+        Some(52)
+    );
+    assert_eq!(PaymentCadence::Weekly.periods(), Some(52));
+    assert_ne!(PaymentCadence::Weekly.periods(), Some(53));
+    assert_eq!(PaymentCadence::parse_periods(52), Some(PaymentCadence::Weekly));
+    assert_eq!(
+        PaymentCadence::parse_periods(53),
+        None,
+        "53 is not a Weekly planning cadence"
+    );
+    assert_eq!(
+        financial_domain::lifetime::planning_periods_per_year("Weekly"),
+        52
+    );
+    assert_eq!(
+        financial_domain::lifetime::planning_periods_per_year("52"),
+        52
+    );
+
+    let root = golden_harness::repo_root();
+    let calc = std::fs::read_to_string(root.join("crates/financial-domain/src/calculator.rs"))
+        .unwrap();
+    assert!(
+        calc.contains("Self::Weekly => Some(52)")
+            && calc.contains("52 => Some(Self::Weekly)")
+            && !calc.contains("Self::Weekly => Some(53)")
+            && !calc.contains("53 => Some(Self::Weekly)"),
+        "PaymentCadence Weekly must map only to 52"
+    );
+    let cart = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/shopping-cart/cartPlan.ts"),
+    )
+    .unwrap();
+    assert!(
+        cart.contains("if (key === \"weekly\" || key === \"52\") return 52;")
+            && !cart.contains("return 53"),
+        "periodsForPlan Weekly must return 52, never 53"
+    );
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    assert!(
+        app.contains("if (key === \"weekly\" || key === \"52\") return { label: \"Weekly\", periods: 52 as const };"),
+        "App parseCadence Weekly must be 52"
+    );
+}

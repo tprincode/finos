@@ -9,6 +9,23 @@ export type EditorOccurrence = {
   isCancelled?: boolean;
 };
 
+const MANAGED_ACCOUNTS = [
+  "Income",
+  "FI Roth",
+  "Health",
+  "Car",
+  "Account 9",
+  "SSA_2026",
+  "Loan",
+] as const;
+
+function initialAccount(account: string): string {
+  if (MANAGED_ACCOUNTS.includes(account as (typeof MANAGED_ACCOUNTS)[number])) {
+    return account;
+  }
+  return "";
+}
+
 export function CashElementEditor({
   account,
   defaultKind = "Withdrawal",
@@ -42,6 +59,10 @@ export function CashElementEditor({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const element = focus?.element ?? null;
+  const creating = !element;
+  const [book, setBook] = useState(
+    element?.account ?? initialAccount(account),
+  );
   const [name, setName] = useState(element?.note ?? "");
   const [kind, setKind] = useState(element?.kind ?? defaultKind);
   const [cadence, setCadence] = useState(element?.cadence ?? "monthly");
@@ -56,6 +77,7 @@ export function CashElementEditor({
   const exceptionCount = element?.exceptionCount ?? 0;
 
   useEffect(() => {
+    setBook(element?.account ?? initialAccount(account));
     setName(element?.note ?? "");
     setKind(element?.kind ?? defaultKind);
     setCadence(element?.cadence ?? "monthly");
@@ -66,7 +88,7 @@ export function CashElementEditor({
     setDirty(false);
     onDirtyChange?.(false);
     box.current?.scrollIntoView({ block: "nearest" });
-  }, [element?.elementId, defaultKind]);
+  }, [element?.elementId, defaultKind, account]);
 
   const mark = () => {
     setDirty(true);
@@ -74,6 +96,8 @@ export function CashElementEditor({
   };
 
   const ownerActive = dirty || !!busy;
+  const saveAccount = element?.account ?? book;
+  const canSave = dirty && !busy && Boolean(saveAccount);
 
   return (
     <section
@@ -90,8 +114,30 @@ export function CashElementEditor({
           Working…
         </p>
       ) : null}
-      <p className="element-editor-account">Account {account}</p>
-      <h3>{element ? "Edit element" : "Add Element"}</h3>
+      {creating ? (
+        <label>
+          Account
+          <select
+            aria-label="Element account"
+            value={book}
+            disabled={busy}
+            onChange={(e) => {
+              setBook(e.target.value);
+              mark();
+            }}
+          >
+            <option value="">Select account</option>
+            {MANAGED_ACCOUNTS.map((a) => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p className="element-editor-account">Account {element.account}</p>
+      )}
+      <h3>{element ? "Edit element" : "Create new element"}</h3>
       <label>
         Type
         <select
@@ -203,15 +249,16 @@ export function CashElementEditor({
         <button
           type="button"
           aria-label="Save element"
-          disabled={busy || !dirty}
+          disabled={!canSave}
           className={dirty ? "is-unsaved" : undefined}
           onClick={() => {
+            if (!saveAccount) return;
             const dollars = Number(amount);
             void (async () => {
               const ok = await onSave({
                 elementId: element?.elementId,
                 name,
-                account,
+                account: saveAccount,
                 kind,
                 cadence,
                 weekdayOrMonthDay: day,

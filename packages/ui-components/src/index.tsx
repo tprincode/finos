@@ -13,8 +13,8 @@ import {
   type CheckedFilters,
 } from "./listTable";
 import { formatFridayEnding, formatWeekCaption, formatWeekColumnHeader } from "./week";
-import { weekDeclaredKpi, weekPlanKpi } from "./incomeWeekKpi";
-export { weekDeclaredKpi, weekPlanKpi } from "./incomeWeekKpi";
+import { weekDeclaredKpi, weekPlanKpi, weekReportedKpi } from "./incomeWeekKpi";
+export { weekDeclaredKpi, weekPlanKpi, weekReportedKpi } from "./incomeWeekKpi";
 export type { WeekKpi, WeekMoneyRow } from "./incomeWeekKpi";
 import { AccountTickPicker } from "./AccountTickPicker";
 
@@ -2611,6 +2611,10 @@ export type IncomePlanWeekView = {
       declarationKnown?: boolean;
     }>;
     lastUpdate?: string | null;
+    cashDisposition?: string | null;
+    cashWithoutDeclaration?: boolean;
+    impliedDeclarationPerShareMinor?: number | null;
+    impliedDeclarationPerShareScale?: number;
   }>;
   drilldown: Array<{
     accountName: string;
@@ -2625,6 +2629,7 @@ export type IncomePlanWeekView = {
   missCount?: number;
   amountExceptionCount?: number;
   varianceMinor?: number | null;
+  cashComplete?: boolean;
 };
 
 export function IncomePlanWeekPanel({
@@ -2635,6 +2640,7 @@ export function IncomePlanWeekPanel({
   weekStrip,
   onSelectWeek,
   closedAsOf,
+  onConfirmImpliedDecl,
 }: {
   week: IncomePlanWeekView | null;
   selectedAccounts?: string[];
@@ -2643,6 +2649,7 @@ export function IncomePlanWeekPanel({
   weekStrip?: string[];
   onSelectWeek?: (weekEnd: string) => void;
   closedAsOf?: string;
+  onConfirmImpliedDecl?: (symbol: string) => void;
 }) {
   const weekSort = useListSort("account");
   const positionSort = useListSort("symbol");
@@ -2769,7 +2776,8 @@ export function IncomePlanWeekPanel({
         case "declarationPerShare":
           return row.declarationPerShareMinor ?? null;
         case "actual":
-          return row.declarationKnown ? (row.declarationMinor ?? 0) : null;
+        case "reported":
+          return row.actualKnown ? (row.actualMinor ?? 0) : null;
         case "variance":
           return row.planKnown && row.declarationKnown
             ? (row.declarationMinor ?? 0) - (row.plannedMinor ?? 0)
@@ -2819,6 +2827,10 @@ export function IncomePlanWeekPanel({
   })();
   const planKpi = weekPlanKpi(weekPayers);
   const declKpi = weekDeclaredKpi(weekPayers);
+  const reportedKpi = weekReportedKpi(weekPayers);
+  const cashWithoutDecl = weekPayers
+    .filter((r) => r.cashWithoutDeclaration)
+    .map((r) => r.symbol);
   const declaredRows = positionRows.filter((r) => r.declarationKnown);
   // Current = partial progress among names already declared (not the week decision total).
   const currentPlan = declaredRows.reduce((s, r) => s + planOf(r), 0);
@@ -2900,7 +2912,23 @@ export function IncomePlanWeekPanel({
               <span>Week declared</span>
               <b>{kpiMoney(declKpi, week.scale ?? 2)}</b>
             </div>
-            <div className="ip-kpi-box" title="Declared minus Plan for names reported so far">
+            <div
+              className="ip-kpi-box"
+              title={kpiTitle(
+                reportedKpi.complete,
+                reportedKpi.missingSymbols,
+                "Every in-week payer has Reported broker cash",
+              )}
+              aria-label={
+                reportedKpi.complete
+                  ? "Week reported"
+                  : `Week reported unknown; missing ${reportedKpi.missingSymbols.join(", ")}`
+              }
+            >
+              <span>Week reported</span>
+              <b>{kpiMoney(reportedKpi, week.scale ?? 2)}</b>
+            </div>
+            <div className="ip-kpi-box" title="Declared minus Plan for names declared so far">
               <span>Current variance</span>
               <b className={weekVariance != null && weekVariance < 0 ? "diffneg" : weekVariance != null && weekVariance > 0 ? "diffpos" : undefined}>
                 {weekVariance == null
@@ -2909,6 +2937,12 @@ export function IncomePlanWeekPanel({
               </b>
             </div>
           </div>
+          {cashWithoutDecl.length > 0 ? (
+            <p role="status" aria-label="Cash without declaration">
+              Cash without declaration (collector may have failed silently):{" "}
+              {cashWithoutDecl.join(", ")}. Confirm Decl from payment or re-collect.
+            </p>
+          ) : null}
           <div className="income-week-bar">
             <button type="button" aria-label="Back to Weekly grid" onClick={onBack}>
               ← Back to Weekly grid
@@ -2932,6 +2966,26 @@ export function IncomePlanWeekPanel({
         </>
       ) : (
         <>
+          <div className="ip-kpi" aria-label="Week summary">
+            <div className="ip-kpi-box" aria-label="Week plan">
+              <span>Week plan</span>
+              <b>{kpiMoney(planKpi, week.scale ?? 2)}</b>
+            </div>
+            <div className="ip-kpi-box" aria-label="Week declared">
+              <span>Week declared</span>
+              <b>{kpiMoney(declKpi, week.scale ?? 2)}</b>
+            </div>
+            <div className="ip-kpi-box" aria-label="Week reported">
+              <span>Week reported</span>
+              <b>{kpiMoney(reportedKpi, week.scale ?? 2)}</b>
+            </div>
+          </div>
+          {cashWithoutDecl.length > 0 ? (
+            <p role="status" aria-label="Cash without declaration">
+              Cash without declaration (collector may have failed silently):{" "}
+              {cashWithoutDecl.join(", ")}. Confirm Decl from payment or re-collect.
+            </p>
+          ) : null}
           {weekStrip && weekStrip.length > 0 ? (
             <div className="income-week-bar" aria-label="Week strip">
               {weekStrip.map((end) => (
@@ -3086,7 +3140,9 @@ export function IncomePlanWeekPanel({
               <th>Last Update</th>
               <th>Plan $</th>
               <th>Decl $</th>
+              {sortHead(positionSort, "Reported", "reported", true)}
               <th>Current variance</th>
+              <th>Cash</th>
             </tr>
           </thead>
           <tbody>
@@ -3128,9 +3184,20 @@ export function IncomePlanWeekPanel({
                     >
                       {kpiMoney(gDeclKpi, week.scale ?? 2)}
                     </td>
+                    <td
+                      className="numeric"
+                      title={kpiTitle(
+                        weekReportedKpi(gPayers).complete,
+                        weekReportedKpi(gPayers).missingSymbols,
+                        "Group reported complete",
+                      )}
+                    >
+                      {kpiMoney(weekReportedKpi(gPayers), week.scale ?? 2)}
+                    </td>
                     <td className="numeric">
                       {gVar == null ? "" : formatUsdWhole(gVar, week.scale ?? 2)}
                     </td>
+                    <td />
                   </tr>
                   {group.rows.map((row) => {
                     const planned = planOf(row);
@@ -3204,9 +3271,43 @@ export function IncomePlanWeekPanel({
                             : ""}
                         </td>
                         <td
+                          className="numeric"
+                          aria-label={
+                            row.actualKnown
+                              ? `Reported ${row.symbol}`
+                              : `Reported blank ${row.symbol}`
+                          }
+                        >
+                          {row.actualKnown
+                            ? formatUsd(row.actualMinor ?? 0, row.scale)
+                            : ""}
+                        </td>
+                        <td
                           className={`numeric${varMinor != null && varMinor < 0 ? " diffneg" : ""}${varMinor != null && varMinor > 0 ? " diffpos" : ""}`}
                         >
                           {varMinor == null ? "" : formatUsd(varMinor, row.scale)}
+                        </td>
+                        <td>
+                          {row.actualKnown ? (
+                            <span aria-label={`Received ${row.symbol}`}>Received</span>
+                          ) : null}
+                          {row.cashWithoutDeclaration && onConfirmImpliedDecl ? (
+                            <button
+                              type="button"
+                              aria-label={`Confirm Decl from payment ${row.symbol}`}
+                              title={
+                                row.impliedDeclarationPerShareMinor != null
+                                  ? `Implied ${formatDeclPerShare(
+                                      row.impliedDeclarationPerShareMinor,
+                                      row.impliedDeclarationPerShareScale ?? 4,
+                                    )}/sh from Reported ÷ shares`
+                                  : "Implied Decl from Reported ÷ shares"
+                              }
+                              onClick={() => onConfirmImpliedDecl(row.symbol)}
+                            >
+                              Confirm Decl from payment
+                            </button>
+                          ) : null}
                         </td>
                       </tr>
                     );
@@ -3231,8 +3332,14 @@ export function IncomePlanWeekPanel({
                   : formatUsdWhole(currentDecl, week.scale ?? 2)}
               </td>
               <td className="numeric">
+                {kpiMoney(reportedKpi, week.scale ?? 2) === "—"
+                  ? ""
+                  : kpiMoney(reportedKpi, week.scale ?? 2)}
+              </td>
+              <td className="numeric">
                 {weekVariance == null ? "" : formatUsdWhole(weekVariance, week.scale ?? 2)}
               </td>
+              <td />
             </tr>
             <tr className="ip-grand">
               <td className="ip-sticky">Grand Total · {positionRows.length}</td>
@@ -3260,9 +3367,20 @@ export function IncomePlanWeekPanel({
               >
                 {kpiMoney(declKpi, week.scale ?? 2)}
               </td>
+              <td
+                className="numeric"
+                title={kpiTitle(
+                  reportedKpi.complete,
+                  reportedKpi.missingSymbols,
+                  "Every in-week payer has Reported cash",
+                )}
+              >
+                {kpiMoney(reportedKpi, week.scale ?? 2)}
+              </td>
               <td className="numeric">
                 {weekVariance == null ? "" : formatUsdWhole(weekVariance, week.scale ?? 2)}
               </td>
+              <td />
             </tr>
           </tbody>
         </table>
@@ -3496,7 +3614,8 @@ export function HoldingsPanel({
         Showing {formatCount(shown.length)} of {formatCount(lots.length)} open lots. Click a
         column heading to sort. Footer totals are the shown rows. Dual cost stays separate.
         P&L% and Annual% are on original (performance) cost; unknown when last price, plan,
-        or cost is missing. Dollar market value stays on Calculator and Position Details.
+        or cost is missing. This is not TVAL — Calculator owns the TVAL family (blend /
+        MC TVAL). Dollar market value stays on Calculator and Position Details.
       </p>
       <div className="table-wrap">
         <table aria-label="Holdings lots">
@@ -4630,6 +4749,7 @@ export function CalculatorReturnSheet({
   onOpenSymbol,
   onExport,
   exportBusy,
+  columnFormulas,
 }: {
   rows: PositionMasterRowView[] | null;
   history: DeclarationHistoryView | null;
@@ -4645,11 +4765,17 @@ export function CalculatorReturnSheet({
   onOpenSymbol?: (symbol: string) => void;
   onExport?: () => void;
   exportBusy?: boolean;
+  /** Field Intent formulas keyed by column header label (native title tooltips). */
+  columnFormulas?: Readonly<Record<string, string>>;
 }) {
   const sort = useListSort("mcFwd", "desc");
   const [performance, setPerformance] = useState("pl-green");
   if (!history) return <p>Loading distribution history…</p>;
   if (!rows) return <p>Loading Calculator…</p>;
+  const tip = (label: string) => columnFormulas?.[label];
+  const calcHead = (label: string, columnKey: string, numeric = false) =>
+    sortHead(sort, label, columnKey, numeric, undefined, tip(label));
+  const weekColumnTip = tip("Week columns (dated)");
   const masterBySymbol = new Map(rows.map((row) => [row.symbol, row]));
   const householdExCash = calculatorHouseholdExCashCents(masterBySymbol.values());
   const listed = history.rows.filter((row) =>
@@ -4863,58 +4989,59 @@ export function CalculatorReturnSheet({
         Paid is the sum of the week columns in this window. The default window is a
         trailing year, capped at 52 weeks. Plan check counts every in-force declaration,
         not the weeks on this row. Blank is not $0. Only DIV-1 positions appear here —
-        cash is on Home and Cash Management. Default sort is MC FWD high→low — click any
-        column head to change.
+        cash is on Home and Cash Management. Calculator blend is Authority TVAL V3
+        (2×Gain% + FWD) ÷ 2 — not Holdings P&L%+Annual%. Default sort is MC FWD high→low —
+        click any column head to change.
       </p>
       <div className="table-wrap calculator-sheet-wrap">
         <table aria-label="Distribution history">
           <thead>
             <tr>
-              {sortHead(sort, "Symbol", "symbol")}
-              {sortHead(sort, "Price", "price", true)}
-              {sortHead(sort, "Port %", "alloc", true)}
-              {sortHead(sort, "Risk", "risk")}
-              {sortHead(sort, "Account", "account")}
-              {sortHead(sort, "Shares", "qty", true)}
-              {sortHead(sort, "Cost", "cost", true)}
-              {sortHead(sort, "Avg px", "unit", true)}
-              {sortHead(sort, "Gain $", "pnl$", true)}
-              {sortHead(sort, "Gain %", "pnl", true)}
-              {sortHead(sort, "YOC", "yoc", true)}
-              {sortHead(sort, "FWD", "fwd", true)}
-              {sortHead(sort, "MC FWD", "mcFwd", true)}
-              {sortHead(sort, "Annual", "annual", true)}
-              {sortHead(sort, "Plan", "plan", true)}
-              {sortHead(sort, "Type", "div")}
-              {sortHead(sort, "Sched", "freq")}
-              {sortHead(sort, "Div recv", "dist", true)}
-              {sortHead(sort, "ROC $", "rocComp", true)}
-              {sortHead(sort, "Cost rec", "costRec", true)}
-              {sortHead(sort, "ROC %", "roc", true)}
-              {sortHead(sort, "Declares", "declWd")}
-              {sortHead(sort, "Ex-date", "exWd")}
-              {sortHead(sort, "Payday", "payWd")}
-              {sortHead(sort, "Decl freshness", "fresh")}
-              {sortHead(sort, "Decl count", "decls", true)}
-              {sortHead(sort, "Ann / share", "annShare", true)}
-              {sortHead(sort, "Recent / share", "recentShare", true)}
-              {sortHead(sort, "Recent total", "recentTotal", true)}
-              {sortHead(sort, "Realized %", "costRec", true)}
-              {sortHead(sort, "Calculator blend", "tval", true)}
-              {sortHead(sort, "MC TVAL", "mcTval", true)}
-              {sortHead(sort, "TVAL Δ", "tvalDelta", true)}
-              {sortHead(sort, "3-pay yield", "threeYield", true)}
-              {sortHead(sort, "Plan Δ", "planDelta", true)}
-              {sortHead(sort, "Over/Under", "overUnder", true)}
-              {sortHead(sort, "Plan pay", "planPay", true)}
-              {sortHead(sort, "Current pay", "currentPay", true)}
-              {sortHead(sort, "Most current", "most", true)}
-              {sortHead(sort, "Avg 3", "avg3", true)}
-              {sortHead(sort, "Avg 6", "avg6", true)}
-              {sortHead(sort, "Paid", "paid", true)}
-              {sortHead(sort, "Plan check", "planCheck", true)}
+              {calcHead("Symbol", "symbol")}
+              {calcHead("Price", "price", true)}
+              {calcHead("Port %", "alloc", true)}
+              {calcHead("Risk", "risk")}
+              {calcHead("Account", "account")}
+              {calcHead("Shares", "qty", true)}
+              {calcHead("Cost", "cost", true)}
+              {calcHead("Avg px", "unit", true)}
+              {calcHead("Gain $", "pnl$", true)}
+              {calcHead("Gain %", "pnl", true)}
+              {calcHead("YOC", "yoc", true)}
+              {calcHead("FWD", "fwd", true)}
+              {calcHead("MC FWD", "mcFwd", true)}
+              {calcHead("Annual", "annual", true)}
+              {calcHead("Plan", "plan", true)}
+              {calcHead("Type", "div")}
+              {calcHead("Sched", "freq")}
+              {calcHead("Div recv", "dist", true)}
+              {calcHead("ROC $", "rocComp", true)}
+              {calcHead("Cost rec", "costRec", true)}
+              {calcHead("ROC %", "roc", true)}
+              {calcHead("Declares", "declWd")}
+              {calcHead("Ex-date", "exWd")}
+              {calcHead("Payday", "payWd")}
+              {calcHead("Decl freshness", "fresh")}
+              {calcHead("Decl count", "decls", true)}
+              {calcHead("Ann / share", "annShare", true)}
+              {calcHead("Recent / share", "recentShare", true)}
+              {calcHead("Recent total", "recentTotal", true)}
+              {calcHead("Realized %", "costRec", true)}
+              {calcHead("Calculator blend", "tval", true)}
+              {calcHead("MC TVAL", "mcTval", true)}
+              {calcHead("TVAL Δ", "tvalDelta", true)}
+              {calcHead("3-pay yield", "threeYield", true)}
+              {calcHead("Plan Δ", "planDelta", true)}
+              {calcHead("Over/Under", "overUnder", true)}
+              {calcHead("Plan pay", "planPay", true)}
+              {calcHead("Current pay", "currentPay", true)}
+              {calcHead("Most current", "most", true)}
+              {calcHead("Avg 3", "avg3", true)}
+              {calcHead("Avg 6", "avg6", true)}
+              {calcHead("Paid", "paid", true)}
+              {calcHead("Plan check", "planCheck", true)}
               {history.weekEnds.map((friday, i) => (
-                <th key={friday} className="numeric">
+                <th key={friday} className="numeric" title={weekColumnTip}>
                   {formatWeekColumnHeader(history.weekStarts?.[i] ?? friday)}
                 </th>
               ))}

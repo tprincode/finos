@@ -601,9 +601,12 @@ pub async fn save(
 }
 pub async fn loans_due(
     pool: &SqlitePool,
-    start: &str,
+    _start: &str,
     end: &str,
 ) -> Result<Vec<LoanWeekRow>, PlatformError> {
+    // Unpaid Week Ahead loans stay until Confirm. `end` is the due ceiling (as-of day),
+    // not Friday — not-yet-due stay hidden. Callers also apply the 35-day past-due lookback.
+    let _ = _start;
     let rows = sqlx::query(
         "SELECT account_id, name, charges_interest, current_minor, payment_minor,
                 due_on, apr_ppm, frequency
@@ -612,8 +615,7 @@ pub async fn loans_due(
            AND pay_process = 'week_ahead'
            AND COALESCE(inactive, 0) = 0
            AND due_on IS NOT NULL
-           AND due_on >= ?1
-           AND due_on <= ?2
+           AND due_on <= ?1
            AND frequency IS NOT NULL
            AND payment_minor IS NOT NULL
            AND payment_minor > 0
@@ -624,7 +626,6 @@ pub async fn loans_due(
            )
          ORDER BY due_on, name",
     )
-    .bind(start)
     .bind(end)
     .fetch_all(pool)
     .await
@@ -668,11 +669,18 @@ pub async fn confirm_loan_payment(
     due_on: String,
     principal_minor: i64,
     interest_minor: i64,
+    balance_after_minor: Option<i64>,
 ) -> Result<ExternalManagedGetBody, PlatformError> {
     if principal_minor < 0 || interest_minor < 0 {
         return Err(PlatformError::new(
             "bad_amount",
             "principal and interest stay zero or positive",
+        ));
+    }
+    if balance_after_minor.is_some_and(|balance| balance < 0) {
+        return Err(PlatformError::new(
+            "bad_balance",
+            "statement balance after payment stays zero or positive",
         ));
     }
     let mut tx = pool.begin().await.map_err(map_sql)?;
@@ -704,7 +712,12 @@ pub async fn confirm_loan_payment(
         PlatformError::new("missing_frequency", "the loan needs a frequency before confirm")
     })?;
     let current: Option<i64> = row.try_get("current_minor").map_err(map_sql)?;
-    let reduced = current.map(|balance| (balance - principal_minor).max(0));
+    // Interest is expense, not balance. Default: current − principal. Optional statement
+    // ending balance overrides when the bank split and ours disagree.
+    let reduced = match balance_after_minor {
+        Some(after) => Some(after),
+        None => current.map(|balance| (balance - principal_minor).max(0)),
+    };
     sqlx::query(
         "INSERT INTO external_loan_payment (
             payment_id, account_id, due_on, principal_minor, interest_minor

@@ -66,6 +66,7 @@ pub async fn apply_production_seed(
     let disb_n = disbursement_count(&activities);
 
     if lots.lots.len() >= expected_lots && yield_n >= expected_yield && disb_n >= expected_disb {
+        apply_cash_symbol_defaults(canonical).await?;
         apply_disbursement_withholding_backfill(canonical, &doc).await?;
         apply_calculator_seed(canonical, &doc).await?;
         apply_trends_seed(canonical, &doc).await?;
@@ -98,6 +99,7 @@ pub async fn apply_production_seed(
             .await?;
         account_ids.insert(account.name.clone(), record.account_id);
     }
+    apply_cash_symbol_defaults(canonical).await?;
 
     let mut security_ids: HashMap<String, uuid::Uuid> = HashMap::new();
     for security in canonical.security_list().await? {
@@ -272,6 +274,33 @@ async fn apply_seed_disbursement(
                 posted.activity_id,
                 row.federal_withholding_minor,
                 row.state_withholding_minor,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// Fill blank `account.cash_symbol` from the name→ticker defaults so live DB is
+/// not blank-dependent after migration 0080.
+async fn apply_cash_symbol_defaults(canonical: &dyn Canonical) -> Result<(), PlatformError> {
+    for account in canonical.account_list().await? {
+        if !account.cash_symbol.trim().is_empty() {
+            continue;
+        }
+        let Some(def) =
+            financial_domain::cash_management::default_cash_symbol(&account.name)
+        else {
+            continue;
+        };
+        canonical
+            .account_update(
+                account.account_id,
+                None,
+                None,
+                None,
+                Some(def.to_string()),
+                None,
+                None,
             )
             .await?;
     }

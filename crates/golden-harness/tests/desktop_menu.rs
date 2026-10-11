@@ -718,7 +718,64 @@ fn desktop_host_uses_portable_download_dir_not_owner_path() {
         "finos.sh Mac launcher must exist at repo root"
     );
     assert!(
+        root.join("install-mac.sh").is_file(),
+        "install-mac.sh Mac bootstrap entry must exist at repo root"
+    );
+    assert!(
+        root.join("scripts/mac-install.sh").is_file(),
+        "scripts/mac-install.sh must exist"
+    );
+    let install = std::fs::read_to_string(root.join("scripts/mac-install.sh")).unwrap();
+    assert!(
+        install.contains("npm install")
+            && install.contains("cargo check")
+            && install.contains("--seed")
+            && install.contains("Documents/Financial"),
+        "mac-install.sh must automate bootstrap (npm, cargo check, seed flag, Financial dir)"
+    );
+    assert!(
         root.join("docs/architecture/mac-dev-bootstrap.md").is_file(),
         "mac-dev-bootstrap.md must exist"
+    );
+    let bootstrap = std::fs::read_to_string(root.join("docs/architecture/mac-dev-bootstrap.md")).unwrap();
+    assert!(
+        bootstrap.contains("install-mac.sh") && bootstrap.contains("Installer (preferred)"),
+        "mac-dev-bootstrap.md must point at the installer"
+    );
+}
+
+/// Owner downloads pause so folder + name can be edited before the write.
+#[test]
+fn file_creation_pauses_for_folder_and_name() {
+    let root = repo_root();
+    let lib = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
+    assert!(
+        lib.contains("rfd::FileDialog")
+            && lib.contains(".set_directory(&dir)")
+            && lib.contains(".set_file_name(&default_file_name)")
+            && lib.contains(".save_file()")
+            && lib.contains("ok_or_else(|| \"cancelled\".to_string())"),
+        "save_local_bytes must open a Save dialog with default folder and name"
+    );
+    assert!(
+        lib.contains("fn suggested_snapshot_folder") && lib.contains("fn pick_directory"),
+        "snapshot confirm can show and change the destination folder"
+    );
+    let cargo = std::fs::read_to_string(root.join("apps/desktop/src-tauri/Cargo.toml")).unwrap();
+    assert!(cargo.contains("rfd"), "desktop host depends on rfd for Save dialogs");
+    let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
+    assert!(
+        app.contains("aria-label=\"Snapshot folder\"")
+            && app.contains("suggested_snapshot_folder")
+            && app.contains("pick_directory")
+            && app.contains("void runDataSnapshot(folder)"),
+        "Save data snapshot confirm shows an editable folder before writing"
+    );
+    let helper =
+        std::fs::read_to_string(root.join("apps/desktop/src/features/shared/saveWorkbook.ts"))
+            .unwrap();
+    assert!(
+        helper.contains("isSaveCancelled"),
+        "workbook helper names cancel so UI does not treat it as failure"
     );
 }

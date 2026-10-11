@@ -56,8 +56,19 @@ export const ACCOUNT_CASH_SYMBOL: Readonly<Record<string, string>> = {
   "9": "SWVXX",
 };
 
-/** Account name picks the money-market symbol. A held symbol is only a fallback. */
-export function accountCashSymbol(accountName: string, heldSymbols: string[] = []): string {
+/**
+ * Money-market symbol for an account. Stored `account.cashSymbol` wins; the name map
+ * is only the empty-column default; a held cash lot is last resort.
+ */
+export function accountCashSymbol(
+  accountName: string,
+  heldSymbols: string[] = [],
+  storedCashSymbol?: string | null,
+): string {
+  const stored = (storedCashSymbol ?? "").trim();
+  if (stored) {
+    return stored;
+  }
   const mapped = ACCOUNT_CASH_SYMBOL[accountName.trim()];
   if (mapped) {
     return mapped;
@@ -347,6 +358,10 @@ export type IncomePlanWeekGet = {
       declarationKnown?: boolean;
     }>;
     lastUpdate?: string | null;
+    cashDisposition?: string | null;
+    cashWithoutDeclaration?: boolean;
+    impliedDeclarationPerShareMinor?: number | null;
+    impliedDeclarationPerShareScale?: number;
   }>;
   drilldown: Array<{
     accountName: string;
@@ -361,6 +376,7 @@ export type IncomePlanWeekGet = {
   missCount?: number;
   amountExceptionCount?: number;
   varianceMinor?: number | null;
+  cashComplete?: boolean;
 };
 
 export type IncomePlanMoneyCell = {
@@ -1706,6 +1722,22 @@ export type CashLedgerGet = {
   }>;
 };
 
+export type CashIntegrityRow = {
+  accountId: string;
+  accountName: string;
+  asOfEnd: string;
+  pileMinor?: number | null;
+  snapshotMinor?: number | null;
+  snapshotOn?: string | null;
+  foldMinor?: number | null;
+  gapMinor?: number | null;
+  ok: boolean;
+};
+
+export type CashIntegrityGet = {
+  rows: CashIntegrityRow[];
+};
+
 export type BacktestGet = {
   runs: Array<{
     runId: string;
@@ -1792,6 +1824,9 @@ export type AccountListItem = {
   accountId: string;
   name: string;
   kind: string;
+  cashSymbol?: string;
+  brokerAccountNumber?: string;
+  minBalanceTargetMinor?: number | null;
 };
 
 export type SecurityListItem = {

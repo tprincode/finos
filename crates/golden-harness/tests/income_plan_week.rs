@@ -1,4 +1,4 @@
-﻿use application_core::contracts::{
+use application_core::contracts::{
     AssumedPayDateRecord, CommandRequest, QueryRequest, FINANCE_CLIENT_CONTRACT_VERSION,
 };
 use application_core::ports::canonical::Canonical;
@@ -936,7 +936,7 @@ async fn dividend_performance_keeps_empty_gap_weeks() {
             "2026-08-21",
             "2026-08-28",
         ],
-        "30d must list every Satâ€“Fri week through the week containing asOf, including empty gaps: {perf}"
+        "30d must list every SatÃÂ¢ÃÂÃÂFri week through the week containing asOf, including empty gaps: {perf}"
     );
     let paid = weeks.iter().find(|w| w["end"] == "2026-07-31").unwrap();
     assert_eq!(paid["actualMinor"].as_i64().unwrap(), 12_500);
@@ -1061,7 +1061,7 @@ async fn dividend_performance_week_plan_survives_one_unplanned_name() {
     assert_eq!(vti["planKnown"], false);
 }
 
-/// Plan $ is owner. Declaration $ is the week's money (issuer payable in the Satâ€“Fri week).
+/// Plan $ is owner. Declaration $ is the week's money (issuer payable in the SatÃÂ¢ÃÂÃÂFri week).
 /// Collect does not write plan. Missing declaration stays unknown, never $0.
 #[tokio::test]
 async fn week_carries_plan_declaration_actual_as_three_amounts() {
@@ -1252,6 +1252,174 @@ async fn week_carries_plan_declaration_actual_as_three_amounts() {
     assert_eq!(imported["actualMinor"], 105);
     assert_eq!(imported["declarationKnown"], true);
 }
+#[tokio::test]
+async fn cash_disposition_and_cash_without_declaration_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data")).await.unwrap();
+    let income = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let security = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "PAYZ", "name": "PAYZ"}),
+    )
+    .await;
+    let security_id = security["securityId"].as_str().unwrap();
+    research_template(&platform, security_id, "PAYZ").await;
+    must_ok(
+        &platform,
+        "PositionCharacteristicUpsert",
+        serde_json::json!({
+            "securityId": security_id,
+            "paymentFrequency": "Monthly",
+            "provider": "Issuer",
+            "divType": "DIV-1",
+            "riskTier": "Core"
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        security_id,
+        "PAYZ",
+        "Monthly",
+        false,
+    )
+    .await
+    .expect("complete collector");
+    // Older Decl so Plan confirm is allowed; this week's Decl stays missing.
+    must_ok(
+        &platform,
+        "IssuerDeclarationRecord",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1000,
+            "amountScale": 4,
+            "paymentPeriod": "2026-07-31",
+            "source": "issuer",
+            "enteredAt": "2026-07-28"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "PlanHistoryConfirm",
+        serde_json::json!({
+            "securityId": security_id,
+            "amountPerShareMinor": 1200,
+            "amountScale": 4,
+            "planningPeriodsPerYear": 12,
+            "effectiveFrom": "2026-08-01",
+            "decisionReason": "owner",
+            "incompleteAnalysisReason": "Fewer than 6 observations"
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "openedOn": "2026-01-02",
+            "origin": "purchase",
+            "quantityMinor": 10,
+            "quantityScale": 0,
+            "performanceBasisMinor": 10_000,
+            "taxBasisMinor": 10_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "IssuerPayDateReplace",
+        serde_json::json!({
+            "securityId": security_id,
+            "asOfDate": "2026-08-29",
+            "dates": [{"payOn": "2026-08-31", "source": "issuer"}]
+        }),
+    )
+    .await;
+    // Broker cash for this week without a Decl for 2026-08-31.
+    must_ok(
+        &platform,
+        "DividendActualRecord",
+        serde_json::json!({
+            "accountId": income["accountId"],
+            "securityId": security_id,
+            "occurredOn": "2026-08-31",
+            "amountMinor": 105,
+            "scale": 2,
+            "idempotencyKey": "payz-cash-no-decl"
+        }),
+    )
+    .await;
+    let week = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-08-30" }),
+    )
+    .await;
+    let row = week["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "PAYZ")
+        .unwrap_or_else(|| panic!("PAYZ missing: {week}"));
+    assert_eq!(row["actualKnown"], true);
+    assert_eq!(row["actualMinor"], 105);
+    assert_eq!(row["declarationKnown"], false, "{row}");
+    assert_eq!(row["cashWithoutDeclaration"], true, "{row}");
+    assert_eq!(row["impliedDeclarationPerShareMinor"], 1050);
+    assert_eq!(row["impliedDeclarationPerShareScale"], 4);
+    // Broker cash auto-reconciles Ã¢ÂÂ no Deposit received click.
+    assert_eq!(row["cashDisposition"], "deposit_received", "{row}");
+    assert_eq!(week["cashComplete"], true, "{week}");
+    let exceptions = query_json(&platform, "ExceptionList", serde_json::json!({})).await;
+    let items = exceptions
+        .as_array()
+        .cloned()
+        .or_else(|| exceptions["exceptions"].as_array().cloned())
+        .unwrap_or_default();
+    assert!(
+        items.iter().any(|e| e["code"] == "cash_without_declaration"),
+        "cash without Decl must raise an exception: {exceptions}"
+    );
+
+    must_ok(
+        &platform,
+        "IncomeWeekImpliedDeclarationConfirm",
+        serde_json::json!({
+            "weekEnd": week["end"],
+            "symbol": "PAYZ"
+        }),
+    )
+    .await;
+    let after_decl = query_json(
+        &platform,
+        "IncomePlanWeekGet",
+        serde_json::json!({ "asOfDate": "2026-08-30" }),
+    )
+    .await;
+    let filled = after_decl["positions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["symbol"] == "PAYZ")
+        .unwrap();
+    assert_eq!(filled["declarationKnown"], true);
+    assert_eq!(filled["declarationPerShareMinor"], 1050);
+    assert_ne!(filled.get("cashWithoutDeclaration"), Some(&serde_json::json!(true)));
+    assert_eq!(filled["cashDisposition"], "deposit_received");
+    assert_eq!(after_decl["cashComplete"], true);
+}
+
 
 #[test]
 fn weekly_grid_week_window_applies_on_select() {
@@ -1279,7 +1447,7 @@ fn weekly_grid_week_window_applies_on_select() {
     );
     assert!(
         !ui.contains("Apply week window") && !ui.contains("Go weeks"),
-        "week window is a view filter — no second commit button"
+        "week window is a view filter ÃÂ¢ÃÂÃÂ no second commit button"
     );
     assert!(
         (app.contains("onHistoricalWeeks") || income_plan.contains("onHistoricalWeeks"))
@@ -1311,8 +1479,8 @@ fn week_plan_and_declared_kpis_stay_unknown_until_every_payer_is_known() {
             && ui.contains("weekDeclaredKpi(weekPayers)")
             && ui.contains("kpiMoney(planKpi")
             && ui.contains("kpiMoney(declKpi")
-            && ui.contains("kpi.complete ? formatUsdWhole(kpi.minor, scale) : \"—\""),
-        "Week plan / Week declared must show — until every non-cash payer is known"
+            && ui.contains("kpi.complete ? formatUsdWhole(kpi.minor, scale)"),
+        "Week plan / Week declared must stay unknown until every non-cash payer is known"
     );
     assert!(
         ui.contains("Week plan unknown; missing")
@@ -1883,7 +2051,7 @@ async fn week_plan_excludes_lot_opened_after_pay_on() {
         }),
     )
     .await;
-    // First lot opened the day after pay — must not appear on the 10/1 week Plan.
+    // First lot opened the day after pay ÃÂ¢ÃÂÃÂ must not appear on the 10/1 week Plan.
     must_ok(
         &platform,
         "LotOpen",
@@ -1949,7 +2117,7 @@ async fn week_plan_excludes_lot_opened_after_pay_on() {
     assert_eq!(
         row["plannedMinor"].as_i64().unwrap(),
         500,
-        "Plan $ = 50 shares × $0.10 only (not 150): {row}"
+        "Plan $ = 50 shares ÃÂÃÂ $0.10 only (not 150): {row}"
     );
     let pos_plan: i64 = with_old["positions"]
         .as_array()
@@ -2529,8 +2697,29 @@ fn assumed_mark_is_on_the_pay_date_and_collectors_do_not_write_it() {
         "Pay date shows the word assumed only when the week flag is set"
     );
     assert!(
-        !ui.contains("<th>Reported") && !ui.contains("<th>Actual $</th>"),
-        "the position table does not gain a Reported or Actual $ column"
+        ui.contains("Reported") && ui.contains("Week reported"),
+        "the position table shows Reported and a Week reported KPI"
+    );
+    assert!(
+        !ui.contains("<th>Actual $</th>"),
+        "Reported is the cash column name; Actual $ stays off the position table"
+    );
+    assert!(
+        !ui.contains("Deposit received") && !ui.contains("Skipped no payout"),
+        "broker cash reconciles automatically — no Deposit/Skipped owner buttons"
+    );
+    assert!(
+        ui.contains("Confirm Decl from payment"),
+        "cash-without-Decl still offers Confirm Decl from payment"
+    );
+    let queries = std::fs::read_to_string(
+        root.join("crates/application-core/src/queries.rs"),
+    )
+    .expect("queries.rs");
+    assert!(
+        queries.contains("auto_reconcile_deposit_from_actual")
+            && queries.contains("auto_from_broker_cash"),
+        "DividendActualRecord must auto-stamp deposit_received"
     );
     let mut callers = Vec::new();
     let mut stack = vec![

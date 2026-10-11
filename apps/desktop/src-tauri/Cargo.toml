@@ -26,3 +26,4 @@ import-engine = { path = "../../../crates/import-engine" }
 storage-sqlite = { path = "../../../crates/storage-sqlite" }
 ai-gateway = { path = "../../../crates/ai-gateway" }
 dotenvy = "0.15"
+rfd = "0.15"

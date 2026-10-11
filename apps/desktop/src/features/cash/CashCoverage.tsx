@@ -62,7 +62,7 @@ function IncomeMath({
       data-part="coverage-income"
     >
       <p className="cash-coverage-caption">
-        Amount per payment × periods for the next 12 months. Week above = year ÷ 52; Month = year ÷ 12.
+        Symbol detail for Dividend Plan annual (qty × plan $/sh × periods). Week / Month / Year income above come from Home Dividend Plan — not re-derived here.
       </p>
       <table aria-label="Coverage income math">
         <thead>
@@ -166,7 +166,11 @@ export function CashCoveragePanel({
     ? `Loading ${periodChip}…`
     : `next 12 months · ${coverage?.periodStart ?? ""} – ${coverage?.periodEnd ?? ""}`;
   const divisor =
-    period === "month" ? "Month = year ÷ 12." : period === "year" ? "Year total." : "Week = year ÷ 52.";
+    period === "month"
+      ? "Income = Dividend Plan Monthly Income / Monthly Medical."
+      : period === "year"
+        ? "Income = Dividend Plan Annual dividend."
+        : "Income = Dividend Plan weekly Plan column.";
 
   return (
     <section
@@ -213,7 +217,7 @@ export function CashCoveragePanel({
       <>
       <div className="table-wrap cash-coverage-table-wrap" data-part="coverage-plan">
         <p className="cash-coverage-caption">
-          {title} · planned income vs planned withdrawals · {divisor}
+          {title} · planned income from Home Dividend Plan vs planned withdrawals · {divisor}
         </p>
         <table aria-label="Coverage plan">
           <thead>

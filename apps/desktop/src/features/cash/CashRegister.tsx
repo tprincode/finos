@@ -180,6 +180,15 @@ export function CashRegisterPanel({
             Manage Elements
           </button>
         ) : null}
+        {onAddElement ? (
+          <button
+            type="button"
+            aria-label="Create new element"
+            onClick={onAddElement}
+          >
+            Create new element
+          </button>
+        ) : null}
         <button
           type="button"
           aria-label="Current year totals"

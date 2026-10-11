@@ -161,6 +161,7 @@ async fn contribution_deposit_and_withdrawal_move_the_lot_once() {
             "monthlyDivsMinor": 0,
             "fidelityTotalMinor": start,
             "schwabTotalMinor": 0,
+            "incomeBalanceMinor": start,
             "incomeCashMinor": saved_cash,
             "acct9CashMinor": 0,
             "acct9EtfValueMinor": 0,
@@ -357,6 +358,28 @@ async fn contribution_deposit_and_withdrawal_move_the_lot_once() {
         expected,
         "open-week prefill is the live pile"
     );
+    assert_eq!(
+        income_ref["referenceMinor"].as_i64().unwrap(),
+        expected,
+        "week reference fold includes ira-contribution and deposit (forensic $2500 gap)"
+    );
+
+    let integrity = query_body(
+        &platform,
+        "CashIntegrityGet",
+        serde_json::json!({ "accountId": income, "asOfDate": "2026-10-05" }),
+    )
+    .await;
+    let row = integrity["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["accountId"] == income)
+        .expect("integrity row");
+    assert_eq!(row["ok"], true);
+    assert_eq!(row["pileMinor"].as_i64().unwrap(), expected);
+    assert_eq!(row["foldMinor"].as_i64().unwrap(), expected);
+    assert_eq!(row["gapMinor"].as_i64().unwrap(), 0);
 
     let carts = query_body(
         &platform,

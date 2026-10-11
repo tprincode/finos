@@ -799,4 +799,20 @@ async fn holdings_pnl_and_annual_on_original_cost_unknown_when_inputs_missing() 
             && ui.contains("formatBps(lot.planYocBps)"),
         "HoldingsPanel shows P&L% and Annual% via formatBps (unknown when null)"
     );
+    let holdings = ui
+        .split("export function HoldingsPanel(")
+        .nth(1)
+        .expect("HoldingsPanel")
+        .split("export function")
+        .next()
+        .expect("HoldingsPanel body");
+    assert!(
+        holdings.contains("This is not TVAL")
+            && holdings.contains("sortHead(sort, \"P&L%\", \"pnl\", true)")
+            && holdings.contains("sortHead(sort, \"Annual%\", \"annual\", true)")
+            && !holdings.contains("sortHead(sort, \"TVAL\"")
+            && !holdings.contains("sortHead(sort, \"Calculator blend\"")
+            && !holdings.contains("sortHead(sort, \"MC TVAL\""),
+        "Holdings has no TVAL-family column — Calculator owns that family"
+    );
 }

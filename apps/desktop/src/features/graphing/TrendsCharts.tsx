@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import ReactECharts from "echarts-for-react";
-import { ACCOUNT_CASH_SYMBOL } from "@finos/app-contracts";
+import { ACCOUNT_CASH_SYMBOL, accountCashSymbol } from "@finos/app-contracts";
 import type {
+  AccountListItem,
   AccountValueHomeGet,
   DividendPerformanceGet,
   DividendPlanHomeGet,
@@ -220,6 +221,7 @@ export function trendsWeeksWithOpenWeek(
   holdings: HoldingsGet | null | undefined,
   accountValues: AccountValueHomeGet | null | undefined,
   points: TrendIncomePoint[] | undefined,
+  accounts?: Array<Pick<AccountListItem, "name" | "cashSymbol">> | null,
 ): TrendsWeekPoint[] {
   const today = todayIso.slice(0, 10);
   if (today.length < 10) return weeks;
@@ -236,9 +238,11 @@ export function trendsWeeksWithOpenWeek(
     .find((week) => week.periodEnd.slice(0, 10) < id.end);
   const scale = existing?.scale ?? prior?.scale ?? 2;
   const liveCash = holdings
-    ? OPEN_WEEK_CASH_LOTS.map(([account, symbol]) =>
-        cashLotCents(holdings.lots, account, symbol),
-      )
+    ? OPEN_WEEK_CASH_LOTS.map(([account]) => {
+        const stored = accounts?.find((row) => row.name === account)?.cashSymbol;
+        const symbol = accountCashSymbol(account, [], stored);
+        return cashLotCents(holdings.lots, account, symbol);
+      })
     : null;
   const totalCash = liveCash
     ? liveCash.reduce((sum, cents) => sum + cents, 0)
@@ -530,6 +534,7 @@ export function TrendsChartsPanel({
   missingRequired,
   accountValues,
   holdings,
+  accounts,
   dividendPlan,
   risk,
   asOf,
@@ -543,6 +548,7 @@ export function TrendsChartsPanel({
   missingRequired?: string[];
   accountValues?: AccountValueHomeGet | null;
   holdings?: HoldingsGet | null;
+  accounts?: Array<Pick<AccountListItem, "name" | "cashSymbol">> | null;
   dividendPlan?: DividendPlanHomeGet | null;
   risk?: RiskValueHome | null;
   asOf?: string;
@@ -564,9 +570,16 @@ export function TrendsChartsPanel({
   const chartWeeks = useMemo(
     () =>
       weeks
-        ? trendsWeeksWithOpenWeek(weeks, todayIso, holdings, accountValues, points)
+        ? trendsWeeksWithOpenWeek(
+            weeks,
+            todayIso,
+            holdings,
+            accountValues,
+            points,
+            accounts,
+          )
         : [],
-    [weeks, todayIso, holdings, accountValues, points],
+    [weeks, todayIso, holdings, accountValues, points, accounts],
   );
   const visible = useMemo(
     () =>

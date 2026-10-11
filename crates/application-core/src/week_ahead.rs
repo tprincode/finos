@@ -1,4 +1,5 @@
-//! Slice 2 Week Ahead: unconfirmed planned Element occurrences for this Sat–Fri week.
+//! Slice 2 Week Ahead: unconfirmed planned Element occurrences and loan payments.
+//! Hide not-yet-due (after as-of). Recent past-due (35 days) stays until Confirm.
 
 use crate::cash_management::{cash_distribution_post, ssa_confirm};
 use crate::contracts::{
@@ -155,13 +156,12 @@ pub(crate) async fn prune_off_schedule_occurrences(
             let past = row.occurred_on.as_str() <= as_of;
             let leftover_saturday_dump =
                 is_saturday(&row.occurred_on) && element.cadence != "weekly";
+            // Keep snoozed weekly moves inside this Sat–Fri week even when not yet due
+            // (list filter still hides them until as-of). Do not use as-of here or
+            // WeekAheadDefer → tomorrow is deleted on the next Get.
             let same_week_weekly_move = element.cadence == "weekly"
-                && week_ahead_in_window(
-                    &element.account,
-                    &row.occurred_on,
-                    &week_start,
-                    &week_end,
-                );
+                && row.occurred_on.as_str() >= week_start.as_str()
+                && row.occurred_on.as_str() <= week_end.as_str();
             if (past && !leftover_saturday_dump) || same_week_weekly_move {
                 continue;
             }
@@ -374,7 +374,7 @@ pub async fn week_ahead_get(
         .await?
         .into_iter()
         .filter(|o| o.confirmed_at.is_none() && !o.is_cancelled)
-        .filter(|o| week_ahead_in_window(&o.account, &o.occurred_on, &start, &end))
+        .filter(|o| week_ahead_in_window(&o.account, &o.occurred_on, &start, as_of))
         .filter(|o| !week_ahead_loan_element_ids.contains(&o.element_id))
         .filter_map(|o| {
             let element = elements.iter().find(|e| e.element_id == o.element_id)?;
@@ -403,7 +403,14 @@ pub async fn week_ahead_get(
             .then(a.account.cmp(&b.account))
             .then(a.note.cmp(&b.note))
     });
-    let loans = canonical.external_loans_due(start.clone(), end.clone()).await?;
+    // Loans use the same due ceiling and 35-day past-due lookback as elements.
+    let as_of_day = as_of[..as_of.len().min(10)].to_string();
+    let loans = canonical
+        .external_loans_due(start.clone(), as_of_day.clone())
+        .await?
+        .into_iter()
+        .filter(|loan| week_ahead_in_window("Loan", &loan.due_on, &start, &as_of_day))
+        .collect();
     let tasks = week_ahead_tasks(canonical, as_of, &start, &end).await?;
     Ok(WeekAheadBody {
         period_start: start,
@@ -531,6 +538,27 @@ async fn account_id_named(
         .ok_or_else(|| PlatformError::new("missing_account", format!("account {name} is required")))
 }
 
+async fn retire_one_time_element_if_needed(
+    canonical: &dyn Canonical,
+    element: Option<&CashElementRecord>,
+    occurred_on: &str,
+) -> Result<(), PlatformError> {
+    let Some(el) = element else {
+        return Ok(());
+    };
+    if el.cadence != "one-time" {
+        return Ok(());
+    }
+    let stop = el.stop_on.trim();
+    if !stop.is_empty() && stop <= occurred_on {
+        return Ok(());
+    }
+    let mut next = el.clone();
+    next.stop_on = occurred_on.to_string();
+    canonical.cash_element_upsert(next).await?;
+    Ok(())
+}
+
 pub async fn week_ahead_confirm(
     canonical: &dyn Canonical,
     occurrence_id: Uuid,
@@ -565,6 +593,7 @@ pub async fn week_ahead_confirm(
             .await?;
         row.confirmed_at = Some(chrono::Utc::now().to_rfc3339());
         canonical.planned_occurrence_upsert(row.clone()).await?;
+        retire_one_time_element_if_needed(canonical, element, &row.occurred_on).await?;
         return Ok(ActivityRecord {
             activity_id: Uuid::new_v4(),
             account_id: Uuid::nil(),
@@ -661,6 +690,7 @@ pub async fn week_ahead_confirm(
     };
     row.confirmed_at = Some(chrono::Utc::now().to_rfc3339());
     canonical.planned_occurrence_upsert(row.clone()).await?;
+    retire_one_time_element_if_needed(canonical, element, &row.occurred_on).await?;
     // Loan balance is no longer applied on distribution/withdrawal confirm.
     Ok(posted)
 }

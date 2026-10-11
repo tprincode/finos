@@ -82,7 +82,7 @@ fn coverage_menu_is_fourth_cash_management_child() {
             && ui.contains("cash-coverage-head")
             && ui.contains("Weekly comparison")
             && ui.contains("next 12 months")
-            && ui.contains("Amount per payment × periods")
+            && ui.contains("Home Dividend Plan")
             && ui.contains("<th>Account</th>")
             && ui.contains("<th>Symbol</th>")
             && ui.contains("<th>Name</th>")
@@ -90,7 +90,17 @@ fn coverage_menu_is_fourth_cash_management_child() {
             && ui.contains("cash-coverage-loading")
             && ui.contains("Loading {periodChip}")
             && ui.contains("minor == null ? \"—\""),
-        "Coverage prints — for unknown; comparison is the forward plan; math tables list account lines"
+        "Coverage prints — for unknown; income is Home Dividend Plan; math tables list account lines"
+    );
+    let rust = std::fs::read_to_string(
+        root.join("crates/application-core/src/cash_coverage.rs"),
+    )
+    .unwrap();
+    assert!(
+        rust.contains("dividend_plan_home_view")
+            && rust.contains("dividend_plan_income")
+            && rust.contains("weekly_minor"),
+        "Coverage income must read Dividend Plan annual/month/week fields"
     );
 }
 
@@ -319,23 +329,6 @@ async fn income_week_plan_minus_unpaid_element_is_known_plan_unknown_actual() {
         "Health $200/mo × 12 / 52: {cover}"
     );
 
-    let cover_month = query_json(
-        &platform,
-        "CashCoverageGet",
-        serde_json::json!({"asOfDate": "2026-09-18", "period": "month"}),
-    )
-    .await;
-    let income_month = cover_month["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["account"] == "Income")
-        .unwrap();
-    assert_eq!(
-        income_month["planIncomeMinor"].as_i64(),
-        Some(520_000 / 12),
-        "Coverage Income month = year/12 from characteristic cadence: {cover_month}"
-    );
     let dividend = query_json(
         &platform,
         "DividendPlanHomeGet",
@@ -349,13 +342,58 @@ async fn income_week_plan_minus_unpaid_element_is_known_plan_unknown_actual() {
         .find(|r| r["accountName"] == "Income")
         .unwrap();
     assert_eq!(
-        div_income["monthlyIncomeMinor"].as_i64(),
-        income_month["planIncomeMinor"].as_i64(),
-        "Coverage Income month matches Dividend Plan Monthly Income: cover={cover_month} plan={dividend}"
-    );
-    assert_eq!(
         div_income["annualDividendMinor"].as_i64(),
         Some(520_000),
-        "Dividend Plan annual uses same DIV-1 × cadence machine: {dividend}"
+        "Dividend Plan annual: {dividend}"
     );
+    assert_eq!(div_income["monthlyIncomeMinor"].as_i64(), Some(520_000 / 12));
+    assert_eq!(div_income["weeklyMinor"].as_i64(), Some(520_000 / 52));
+
+    for (period, plan_field) in [
+        ("year", "annualDividendMinor"),
+        ("month", "monthlyIncomeMinor"),
+        ("week", "weeklyMinor"),
+    ] {
+        let cover = query_json(
+            &platform,
+            "CashCoverageGet",
+            serde_json::json!({"asOfDate": "2026-09-18", "period": period}),
+        )
+        .await;
+        let cover_rows = cover["rows"].as_array().unwrap();
+        let mut sum_income = 0i64;
+        let mut any = false;
+        for book in ["Income", "FI Roth", "Car", "Health", "Account 9"] {
+            let plan_row = dividend["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["accountName"] == book)
+                .unwrap_or_else(|| panic!("Dividend Plan missing {book}: {dividend}"));
+            let expected = if book == "Health" && period == "month" {
+                plan_row["monthlyMedicalMinor"].as_i64()
+            } else {
+                plan_row[plan_field].as_i64()
+            };
+            let cover_row = cover_rows
+                .iter()
+                .find(|r| r["account"] == book)
+                .unwrap_or_else(|| panic!("Coverage missing {book}: {cover}"));
+            assert_eq!(
+                cover_row["planIncomeMinor"].as_i64(),
+                expected,
+                "Coverage {period} income for {book} must equal Dividend Plan: cover={cover} plan={dividend}"
+            );
+            if let Some(v) = expected {
+                sum_income += v;
+                any = true;
+            }
+        }
+        let total = cover_rows.iter().find(|r| r["account"] == "Total").unwrap();
+        assert_eq!(
+            total["planIncomeMinor"].as_i64(),
+            any.then_some(sum_income),
+            "Coverage {period} Total income is sum of Dividend Plan books: {cover}"
+        );
+    }
 }

@@ -10,7 +10,7 @@ import {
 import { ScreenAtlasScreen } from "../screen-atlas/ScreenAtlasScreen";
 import { groupByScreen, ownerPageGroups } from "./screenGroups";
 import { fieldNamesFor } from "../field-intent/fieldIndex";
-import { savePageWorkbook } from "../shared/saveWorkbook";
+import { isSaveCancelled, savePageWorkbook } from "../shared/saveWorkbook";
 
 export type CatalogModule = NonNullable<CoreFunctionsGet["modules"]>[number];
 
@@ -271,7 +271,9 @@ export function ComponentRegistry({
       const path = await savePageWorkbook({ pageLabel: label, asOfDate, lines });
       setExportNote(`Saved ${path}`);
     } catch (err: unknown) {
-      setExportNote(err instanceof Error ? err.message : String(err));
+      if (!isSaveCancelled(err)) {
+        setExportNote(err instanceof Error ? err.message : String(err));
+      }
     }
   };
 

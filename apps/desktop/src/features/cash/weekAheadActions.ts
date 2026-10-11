@@ -7,6 +7,7 @@ type LoanConfirm = {
   dueOn: string;
   principalMinor: number;
   interestMinor: number;
+  balanceAfterMinor?: number;
 };
 
 /**
@@ -85,6 +86,9 @@ export function weekAheadTaskHandlers(deps: {
             dueOn: loan.dueOn,
             principalMinor: loan.principalMinor,
             interestMinor: loan.interestMinor,
+            ...(loan.balanceAfterMinor != null
+              ? { balanceAfterMinor: loan.balanceAfterMinor }
+              : {}),
           });
           if (!r.ok) {
             deps.setMessage(`Loan payment confirm failed: ${r.errorCode ?? "error"}`);

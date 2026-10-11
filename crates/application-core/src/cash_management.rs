@@ -476,31 +476,8 @@ pub async fn cash_management_month(
     })
 }
 
-fn week_start_on(period_end: &str) -> String {
-    let day = if period_end.len() >= 10 {
-        &period_end[..10]
-    } else {
-        period_end
-    };
-    let Ok(end) = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
-        return day.to_string();
-    };
-    (end - chrono::Duration::days(6))
-        .format("%Y-%m-%d")
-        .to_string()
-}
-
-fn cash_leaving_type(activity_type: &str) -> bool {
-    activity_type.eq_ignore_ascii_case("Withdrawal")
-        || financial_domain::cash_management::is_etf_purchase(activity_type)
-        || matches!(
-            activity_type,
-            "IRA_Distribution" | "Roth_Distribution" | "HSA_Withdrawal"
-        )
-}
-
-/// Expected cash for the week: last saved cash + this week's dividends − withdrawals.
-/// No prior cash means there is no expected balance yet.
+/// Expected cash through period_end: last Friday cash + journal fold (includes deposit,
+/// ira-contribution, ETF Sale/Purchase). Same machine as CashIntegrityGet.
 pub async fn reference_cash_minor(
     canonical: &dyn Canonical,
     account_id: uuid::Uuid,
@@ -508,55 +485,11 @@ pub async fn reference_cash_minor(
     _cash_symbol_column: Option<&str>,
     period_end: &str,
 ) -> Result<Option<i64>, PlatformError> {
-    let end = if period_end.len() >= 10 {
-        &period_end[..10]
-    } else {
-        period_end
-    };
-    let snaps = canonical.account_balance_snapshot_list().await?;
-    let mut prior: Option<(String, i64)> = None;
-    for snap in &snaps {
-        if snap.account_id != account_id || snap.period_end.as_str() >= end {
-            continue;
-        }
-        let Some(cash) = snap.cash_minor else {
-            continue;
-        };
-        let take = prior
-            .as_ref()
-            .map(|(pe, _)| snap.period_end.as_str() > pe.as_str())
-            .unwrap_or(true);
-        if take {
-            prior = Some((snap.period_end.clone(), cash));
-        }
-    }
-    let Some((_, prior_cash)) = prior else {
-        return Ok(None);
-    };
-    let start = week_start_on(end);
-    let dividends = canonical
-        .dividend_list_in_range(Some(account_id), &start, end)
-        .await
-        .unwrap_or_default();
-    let dividend_minor: i64 = dividends
-        .iter()
-        .map(|row| financial_domain::money::to_usd_cents(row.amount_minor, row.scale))
-        .sum();
-    let activity = canonical
-        .activity_list_in_range(Some(account_id), &start, end)
-        .await
-        .unwrap_or_default();
-    let mut leaving_minor = 0_i64;
-    let mut etf_sale_minor = 0_i64;
-    for row in &activity {
-        let cents = financial_domain::money::to_usd_cents(row.amount_minor, row.scale);
-        if cash_leaving_type(&row.activity_type) {
-            leaving_minor += cents;
-        } else if financial_domain::cash_management::is_etf_sale(&row.activity_type) {
-            etf_sale_minor += cents;
-        }
-    }
-    Ok(Some(prior_cash + dividend_minor + etf_sale_minor - leaving_minor))
+    Ok(
+        crate::cash_integrity::cash_fold_through(canonical, account_id, period_end)
+            .await?
+            .map(|(_, _, fold)| fold),
+    )
 }
 
 pub async fn cash_references_for_week(

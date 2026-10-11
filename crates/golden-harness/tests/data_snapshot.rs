@@ -105,6 +105,35 @@ async fn data_snapshot_writes_importable_individual_workbooks() {
     );
 }
 
+#[tokio::test]
+async fn data_snapshot_honors_folder_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let app_dir = dir.path().join("app-data");
+    let platform = LocalPlatform::open(&app_dir).await.expect("open sqlite");
+    must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let custom = dir.path().join("chosen-snapshot");
+    let snap = must_ok(
+        &platform,
+        "DataSnapshotExport",
+        serde_json::json!({
+            "asOfDate": "2026-09-09",
+            "folder": custom.to_string_lossy(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        std::path::Path::new(snap["folder"].as_str().unwrap()),
+        custom.as_path()
+    );
+    assert!(custom.join("MANIFEST.md").is_file());
+    assert!(custom.join("local.sqlite").is_file());
+}
+
 /// The stamp on a new snapshot is the highest SQLite migration number, not the August "28".
 #[tokio::test]
 async fn snapshot_stamp_matches_the_latest_sqlite_migration() {

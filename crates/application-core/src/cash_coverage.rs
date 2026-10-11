@@ -1,12 +1,12 @@
 //! Coverage: forward plan income versus forward planned withdrawals.
-//! Year = amount per period × periods still ahead in the next 12 months.
-//! Week = that year / 52. Month = that year / 12.
+//! Plan income is the Home Dividend Plan master (annual / monthly / weekly fields).
+//! Expenses stay occurrence × remaining periods in the next 12 months.
 
 use std::collections::HashMap;
 
 use crate::contracts::{
     CashCoverageBody, CashCoverageExpenseLine, CashCoverageIncomeLine, CashCoverageRow,
-    PlanHistoryRecord,
+    DividendPlanRowBody, PlanHistoryRecord,
 };
 use crate::ports::canonical::Canonical;
 use crate::ports::platform::PlatformError;
@@ -52,6 +52,17 @@ fn scale_year(year: i64, kind: PeriodKind) -> i64 {
         PeriodKind::Week => year / 52,
         PeriodKind::Month => year / 12,
         PeriodKind::Year => year,
+    }
+}
+
+/// Dividend Plan already carries annual / month / week — use those, do not re-divide a sum.
+fn dividend_plan_income(row: &DividendPlanRowBody, kind: PeriodKind) -> Option<i64> {
+    match kind {
+        PeriodKind::Week => row.weekly_minor,
+        PeriodKind::Month => row
+            .monthly_income_minor
+            .or(row.monthly_medical_minor),
+        PeriodKind::Year => row.annual_dividend_minor,
     }
 }
 
@@ -120,24 +131,7 @@ fn month_steps(start: NaiveDate, end: NaiveDate) -> i64 {
     n
 }
 
-fn current_plan<'a>(
-    plans: &'a [PlanHistoryRecord],
-    security_id: Uuid,
-    as_of: &str,
-) -> Option<&'a PlanHistoryRecord> {
-    plans
-        .iter()
-        .filter(|p| {
-            p.security_id == security_id
-                && p.effective_from.as_str() <= as_of
-                && (p.effective_to.is_empty() || p.effective_to.as_str() >= as_of)
-        })
-        .max_by(|a, b| a.effective_from.cmp(&b.effective_from))
-}
-
 struct YearBucket {
-    income: i64,
-    income_known: bool,
     expense: i64,
 }
 
@@ -170,12 +164,22 @@ pub async fn cash_coverage_get(
 
     let mut buckets: HashMap<&str, YearBucket> = HashMap::new();
     for book in COVERAGE_BOOKS {
-        buckets.insert(book, YearBucket { income: 0, income_known: false, expense: 0 });
+        buckets.insert(book, YearBucket { expense: 0 });
     }
     let mut income_lines: Vec<CashCoverageIncomeLine> = Vec::new();
     let mut expense_lines: Vec<CashCoverageExpenseLine> = Vec::new();
 
-    // Same annual machine as Dividend Plan: DIV-1 + characteristic cadence periods.
+    // Master: Home Dividend Plan. Coverage does not invent a second annual machine.
+    let dividend = crate::dividend_plan::dividend_plan_home_view(canonical, as_of).await?;
+    let plan_by_account: HashMap<&str, &DividendPlanRowBody> = dividend
+        .rows
+        .iter()
+        .map(|r| (r.account_name.as_str(), r))
+        .collect();
+
+    // Symbol math table — same DIV-1 × cadence periods as Dividend Plan (plan_history map).
+    let plan_by_sec: HashMap<Uuid, &PlanHistoryRecord> =
+        plans.iter().map(|p| (p.security_id, p)).collect();
     let mut grouped: HashMap<(String, String), (i64, i64)> = HashMap::new();
     for lot in &basis.lots {
         if lot.remaining_quantity_minor <= 0 {
@@ -209,7 +213,7 @@ pub async fn cash_coverage_get(
         ) {
             continue;
         }
-        let Some(plan) = current_plan(&plans, lot.security_id, as_of) else {
+        let Some(plan) = plan_by_sec.get(&lot.security_id).copied() else {
             income_lines.push(CashCoverageIncomeLine {
                 account: book.into(),
                 symbol,
@@ -246,10 +250,6 @@ pub async fn cash_coverage_get(
     }
     for ((book, symbol), (per, periods)) in grouped {
         let year = per.saturating_mul(periods);
-        if let Some(bucket) = buckets.get_mut(book.as_str()) {
-            bucket.income += year;
-            bucket.income_known = true;
-        }
         income_lines.push(CashCoverageIncomeLine {
             account: book,
             symbol,
@@ -347,12 +347,13 @@ pub async fn cash_coverage_get(
     let mut tot_expense = 0i64;
     for book in COVERAGE_BOOKS {
         let bucket = buckets.get(book).expect("book");
-        let income = bucket.income_known.then_some(bucket.income);
         let expense = bucket.expense;
-        let income_shown = income.map(|v| scale_year(v, kind));
         let expense_shown = scale_year(expense, kind);
+        let income_shown = plan_by_account
+            .get(*book)
+            .and_then(|row| dividend_plan_income(row, kind));
         let margin = income_shown.map(|inc| inc - expense_shown);
-        if let Some(v) = income {
+        if let Some(v) = income_shown {
             tot_income += v;
             any_income = true;
         }
@@ -372,7 +373,8 @@ pub async fn cash_coverage_get(
             variance_bps: None,
         });
     }
-    let tot_income = any_income.then_some(scale_year(tot_income, kind));
+    // Sum period incomes (same as Dividend Plan Grand total), not (sum annual) ÷ N.
+    let tot_income = any_income.then_some(tot_income);
     let tot_expense = scale_year(tot_expense, kind);
     rows.push(CashCoverageRow {
         account: "Total".into(),

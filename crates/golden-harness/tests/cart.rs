@@ -659,12 +659,17 @@ fn shopping_cart_feature_folder_not_app_or_queries_math() {
         );
     }
     let app = std::fs::read_to_string(root.join("apps/desktop/src/App.tsx")).unwrap();
-    assert!(app.contains("setScreen(\"shopping-cart\")") || app.contains("\"shopping-cart\""));
+    assert!(app.contains("\"shopping-cart\""));
     assert!(
-        app.contains("setScreen(fromCart ? \"shopping-cart\"")
+        app.contains("openAddLotFromCaller(screen)")
+            && app.contains("returnToCaller(\"add-lot\")")
             && app.contains("resumeScenarioId={cartResumeScenarioId}")
             && app.contains("writeCartResume("),
-        "LotOpen from cart must return to Shopping Cart and pass resumeScenarioId + writeCartResume"
+        "LotOpen from cart must returnToCaller(add-lot) with resumeScenarioId + writeCartResume"
+    );
+    assert!(
+        !app.contains("setScreen(fromCart ? \"shopping-cart\""),
+        "cart Confirm must not hardcode shopping-cart; caller restore is the authority"
     );
     let cart_screen = std::fs::read_to_string(
         root.join("apps/desktop/src/features/shopping-cart/ShoppingCartScreen.tsx"),
@@ -2584,6 +2589,324 @@ async fn scale4_fill_spends_cents_not_the_raw_minor() {
     .await;
     assert!(!blank.ok);
     assert_eq!(blank.error_code.as_deref(), Some("last_unknown"));
+}
+
+/// After sell + buy + Confirm cash, pile equals journal fold and cash_align links the activity.
+#[tokio::test]
+async fn cart_purchase_then_align_pile_equals_fold() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = account["accountId"].as_str().unwrap();
+    let (spaxx_id, cash_lot) =
+        research_and_open(&platform, account_id, "SPAXX", 500_000, 2, 500_000).await;
+    let _ = spaxx_id;
+    // Friday lock so integrity can verify fold after cart.
+    must_ok(
+        &platform,
+        "TrendsWeekSave",
+        serde_json::json!({
+            "periodStart": "2026-09-19",
+            "periodEnd": "2026-09-25",
+            "capturedAt": "2026-09-25T18:00:00Z",
+            "profitMinor": 0,
+            "monthlyDivsMinor": 0,
+            "fidelityTotalMinor": 500_000,
+            "schwabTotalMinor": 0,
+            "incomeBalanceMinor": 500_000,
+            "incomeCashMinor": 500_000,
+            "acct9CashMinor": 0,
+            "acct9EtfValueMinor": 0,
+            "scale": 2
+        }),
+    )
+    .await;
+    let haky = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "HAKY", "name": "HAKY"}),
+    )
+    .await;
+    let haky_id = haky["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": haky_id,
+            "priceSource": "public",
+            "sourceSymbol": "HAKY",
+            "declarationSource": "issuer",
+            "sourceUrl": "https://example.test/haky",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot(&platform, haky_id, "HAKY")
+        .await
+        .expect("complete");
+    let haky_lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": haky_id,
+            "openedOn": "2026-01-01",
+            "origin": "purchase",
+            "quantityMinor": 100,
+            "quantityScale": 0,
+            "performanceBasisMinor": 300_000,
+            "taxBasisMinor": 300_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    let muib = must_ok(
+        &platform,
+        "SecurityRegister",
+        serde_json::json!({"symbol": "MUIB", "name": "MUIB"}),
+    )
+    .await;
+    let muib_id = muib["securityId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "RetrievalTemplateSet",
+        serde_json::json!({
+            "securityId": muib_id,
+            "priceSource": "public",
+            "sourceSymbol": "MUIB",
+            "declarationSource": "issuer",
+            "sourceUrl": "https://example.test/muib",
+            "calendarPolicy": "derived_walk",
+            "collectorEnabled": true,
+            "lookbackCount": 12
+        }),
+    )
+    .await;
+    golden_harness::complete_collector_for_first_lot_as(
+        &platform,
+        muib_id,
+        "MUIB",
+        "Twice monthly",
+        true,
+    )
+    .await
+    .expect("complete muib");
+    let scene = must_ok(
+        &platform,
+        "CartScenarioCreate",
+        serde_json::json!({
+            "accountId": account_id,
+            "asOf": "2026-09-26",
+            "name": "Integrity cart"
+        }),
+    )
+    .await;
+    let scenario_id = scene["scenarioId"].as_str().unwrap();
+    must_ok(
+        &platform,
+        "CartSellLineAdd",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "lotId": haky_lot["lotId"],
+            "qtyMinor": 100,
+            "qtyScale": 0,
+            "unitMinor": 3_200
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartBuyLineAdd",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "securityId": muib_id,
+            "qtyWhole": 20,
+            "lastMinor": 3_272,
+            "priceScale": 2,
+            "planAnnualMinor": 11_040
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartScenarioAgree",
+        serde_json::json!({ "scenarioId": scenario_id }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartExecuteSell",
+        serde_json::json!({ "scenarioId": scenario_id, "occurredOn": "2026-09-26" }),
+    )
+    .await;
+    let buy_lot = must_ok(
+        &platform,
+        "LotOpen",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": muib_id,
+            "openedOn": "2026-09-26",
+            "origin": "purchase",
+            "quantityMinor": 20,
+            "quantityScale": 0,
+            "performanceBasisMinor": 66_000,
+            "taxBasisMinor": 66_000,
+            "scale": 2,
+            "isOpen": true
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "CartExecuteBuyStep",
+        serde_json::json!({
+            "scenarioId": scenario_id,
+            "lotId": buy_lot["lotId"]
+        }),
+    )
+    .await;
+    let closed = must_ok(
+        &platform,
+        "CartExecuteCashAlign",
+        serde_json::json!({ "scenarioId": scenario_id, "occurredOn": "2026-09-26" }),
+    )
+    .await;
+    assert_eq!(closed["status"], "complete");
+    let steps = closed["executeSteps"]
+        .as_array()
+        .cloned()
+        .or_else(|| {
+            // some bodies nest steps differently — fall back to scenario get
+            None
+        });
+    let scene_after = query_body(
+        &platform,
+        "CartScenarioGet",
+        serde_json::json!({ "scenarioId": scenario_id }),
+    )
+    .await;
+    let align = scene_after["executeSteps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(steps.iter().flatten())
+        .find(|s| s["kind"] == "cash_align")
+        .expect("cash_align step");
+    assert!(
+        align["activityId"].as_str().is_some(),
+        "cash_align must link the ETF Purchase/deposit activity: {align}"
+    );
+    let _ = cash_lot;
+    let pile = query_body(
+        &platform,
+        "CashPileGet",
+        serde_json::json!({ "accountId": account_id }),
+    )
+    .await;
+    let integrity = query_body(
+        &platform,
+        "CashIntegrityGet",
+        serde_json::json!({ "accountId": account_id, "asOfDate": "2026-09-26" }),
+    )
+    .await;
+    let row = &integrity["rows"].as_array().unwrap()[0];
+    assert_eq!(row["ok"], true, "integrity: {integrity}");
+    assert_eq!(
+        row["pileMinor"].as_i64(),
+        pile["dollarsMinor"].as_i64(),
+        "pile matches integrity pile"
+    );
+    assert_eq!(
+        row["foldMinor"].as_i64().unwrap(),
+        row["pileMinor"].as_i64().unwrap(),
+        "pile equals journal fold after cart"
+    );
+    let register = query_body(
+        &platform,
+        "CashRegisterGet",
+        serde_json::json!({
+            "account": "Income",
+            "asOfDate": "2026-09-26",
+            "period": "1M"
+        }),
+    )
+    .await;
+    let rows = register["rows"].as_array().cloned().unwrap_or_default();
+    assert!(
+        rows.iter().any(|r| {
+            r["label"] == "ETF Purchase" || r["transaction"] == "Withdrawal"
+        }),
+        "Register shows cart cash debit: {register}"
+    );
+}
+
+/// Journal-only deposit (no lot bump) makes CashIntegrityGet report a gap.
+#[tokio::test]
+async fn cash_integrity_get_flags_gap() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let account = must_ok(
+        &platform,
+        "AccountRegister",
+        serde_json::json!({"name": "Income", "kind": "taxable"}),
+    )
+    .await;
+    let account_id = account["accountId"].as_str().unwrap();
+    let (spaxx_id, _lot) =
+        research_and_open(&platform, account_id, "SPAXX", 100_000, 2, 100_000).await;
+    must_ok(
+        &platform,
+        "TrendsWeekSave",
+        serde_json::json!({
+            "periodStart": "2026-09-26",
+            "periodEnd": "2026-10-02",
+            "capturedAt": "2026-10-02T18:00:00Z",
+            "profitMinor": 0,
+            "monthlyDivsMinor": 0,
+            "fidelityTotalMinor": 100_000,
+            "schwabTotalMinor": 0,
+            "incomeBalanceMinor": 100_000,
+            "incomeCashMinor": 100_000,
+            "acct9CashMinor": 0,
+            "acct9EtfValueMinor": 0,
+            "scale": 2
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ActivityPost",
+        serde_json::json!({
+            "accountId": account_id,
+            "securityId": spaxx_id,
+            "activityType": "deposit",
+            "amountMinor": 5_000,
+            "scale": 2,
+            "occurredOn": "2026-10-03"
+        }),
+    )
+    .await;
+    let integrity = query_body(
+        &platform,
+        "CashIntegrityGet",
+        serde_json::json!({ "accountId": account_id, "asOfDate": "2026-10-03" }),
+    )
+    .await;
+    let row = &integrity["rows"].as_array().unwrap()[0];
+    assert_eq!(row["ok"], false, "orphan deposit journal must fail integrity: {integrity}");
+    assert_eq!(row["gapMinor"].as_i64().unwrap(), -5_000);
 }
 
 /// A missing add-lot scale stays blank. Scale 2 of minor 3272 is $32.72, not $0.3272.

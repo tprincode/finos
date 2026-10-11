@@ -851,7 +851,16 @@ async fn g_ip_p09_pdf_write_local_first() {
     assert_eq!(exp["destinationKind"], "local");
     let lib = std::fs::read_to_string(repo_root().join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
     assert!(lib.contains("save_local_bytes"));
-    assert!(lib.contains(r"C:\Users\EVTom\Documents\Financial"));
+    assert!(
+        lib.contains("rfd::FileDialog")
+            && lib.contains(".save_file()")
+            && lib.contains("cancelled"),
+        "Excel/PDF export must pause on an OS Save dialog (folder + name) before writing"
+    );
+    assert!(
+        !lib.contains(r"C:\Users\EVTom\Documents\Financial"),
+        "download path stays portable via paths::download_dir"
+    );
     assert!(!lib.to_ascii_lowercase().contains("drive.google"));
 }
 

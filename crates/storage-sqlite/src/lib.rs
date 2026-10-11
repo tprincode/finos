@@ -16,6 +16,7 @@ mod wizard;
 mod work_ticket;
 mod field_decision;
 mod assumed_pay;
+mod income_week_cash;
 mod issuer_pay;
 mod magi;
 mod plan;

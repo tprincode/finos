@@ -327,11 +327,14 @@ impl Canonical for PostgresPlatform {
         name: String,
         kind: String,
     ) -> Result<AccountRecord, PlatformError> {
+        let cash_symbol = financial_domain::cash_management::default_cash_symbol(&name)
+            .unwrap_or("")
+            .to_string();
         let record = AccountRecord {
             account_id: Uuid::new_v4(),
             name,
             kind,
-            cash_symbol: String::new(),
+            cash_symbol,
             broker_account_number: String::new(),
             min_balance_target_minor: None,
             row_version: 1,

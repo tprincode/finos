@@ -92,7 +92,10 @@ export function WeekReportTable({
       });
       setExportNote(`Saved ${path}`);
     } catch (err: unknown) {
-      setExportNote(String(err));
+      const text = String(err).toLowerCase();
+      if (!text.includes("cancelled") && !text.includes("canceled")) {
+        setExportNote(String(err));
+      }
     } finally {
       setExporting(false);
     }

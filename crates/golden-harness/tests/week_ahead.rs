@@ -117,9 +117,10 @@ async fn w1_unconfirmed_income_triple_and_car_no_dividends() {
         rows_for(&ahead, "Health").is_empty(),
         "Health monthly is not dumped onto Saturday: {ahead}"
     );
+    // Fresh horizon for 9/12 starts at Sat−4; Sept 1 SSA is not seeded yet, so still empty here.
     assert!(
         rows_for(&ahead, "SSA_2026").is_empty(),
-        "SSA monthly on the 1st is outside 9/12 lookback: {ahead}"
+        "SSA monthly on the 1st is not on this fresh horizon seed: {ahead}"
     );
     assert!(
         ahead["rows"]
@@ -203,12 +204,14 @@ fn elements_grid_is_date_account_transaction_amount() {
     assert!(
         ahead.contains("<th>Date</th>")
             && ahead.contains("<th>Account</th>")
+            && ahead.contains("<th>Name</th>")
+            && ahead.contains("{row.note || \"—\"}")
             && ahead.contains("<th>Transaction</th>")
             && ahead.contains("<th>Amount</th>")
             && ahead.contains("<th>Snooze</th>")
             && ahead.contains("Snooze till tomorrow")
             && !ahead.contains("Check tomorrow"),
-        "Elements columns are Date, Account, Transaction, Amount, and Snooze stands in for Check tomorrow"
+        "Elements columns are Date, Account, Name, Transaction, Amount; Snooze stands in for Check tomorrow"
     );
     let query = std::fs::read_to_string(
         repo_root().join("crates/application-core/src/week_ahead.rs"),
@@ -225,10 +228,16 @@ fn elements_grid_is_date_account_transaction_amount() {
 #[tokio::test]
 async fn w2_confirm_car_posts_withdrawal_and_leaves_list() {
     let (_dir, platform) = seeded_platform().await;
-    let ahead = query_json(
+    let _ = query_json(
         &platform,
         "WeekAheadGet",
         serde_json::json!({"asOfDate": "2026-08-29"}),
+    )
+    .await;
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-01"}),
     )
     .await;
     let car = find_row(&ahead, "Car", "car");
@@ -244,7 +253,7 @@ async fn w2_confirm_car_posts_withdrawal_and_leaves_list() {
     let after = query_json(
         &platform,
         "WeekAheadGet",
-        serde_json::json!({"asOfDate": "2026-08-29"}),
+        serde_json::json!({"asOfDate": "2026-09-01"}),
     )
     .await;
     assert!(
@@ -254,7 +263,7 @@ async fn w2_confirm_car_posts_withdrawal_and_leaves_list() {
     let week = query_json(
         &platform,
         "CashManagementWeekGet",
-        serde_json::json!({"asOfDate": "2026-08-29"}),
+        serde_json::json!({"asOfDate": "2026-09-01"}),
     )
     .await;
     assert!(
@@ -283,28 +292,59 @@ async fn w3_check_tomorrow_saturday_income_net_stays_listed() {
         serde_json::json!({"occurrenceId": net["occurrenceId"]}),
     )
     .await;
-    let after = query_json(
+    let same_day = query_json(
         &platform,
         "WeekAheadGet",
         serde_json::json!({"asOfDate": "2026-09-12"}),
     )
     .await;
-    let moved = find_row(&after, "Income", "net");
+    assert!(
+        same_day["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["occurrenceId"] != net["occurrenceId"]),
+        "deferred to tomorrow is not yet due on Saturday: {same_day}"
+    );
+    let after = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-13"}),
+    )
+    .await;
+    let moved = after["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["occurrenceId"] == net["occurrenceId"])
+        .expect("deferred Income net returns on its new due day");
     assert_eq!(moved["occurredOn"], "2026-09-13");
-    assert!(moved["occurrenceId"] == net["occurrenceId"]);
+    assert_eq!(moved["note"], "net");
 }
 
 #[tokio::test]
-async fn w4_ssa_saturday_minus_4_listed_minus_5_not() {
+async fn w4_unconfirmed_elements_stay_past_due_until_confirm() {
     let (_dir, platform) = seeded_platform().await;
-    let ahead = query_json(
+    // Before the 1st: SSA is seeded on the horizon but not yet due — hidden.
+    let before_due = query_json(
         &platform,
         "WeekAheadGet",
         serde_json::json!({"asOfDate": "2026-08-29"}),
     )
     .await;
-    let tom = find_row(&ahead, "SSA_2026", "tom");
-    let barbara = find_row(&ahead, "SSA_2026", "barbara");
+    assert!(
+        rows_for(&before_due, "SSA_2026").is_empty(),
+        "not-yet-due SSA (9/1) must stay hidden on 8/29: {before_due}"
+    );
+    // On the due day it appears.
+    let on_due = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-01"}),
+    )
+    .await;
+    let tom = find_row(&on_due, "SSA_2026", "tom");
+    let barbara = find_row(&on_due, "SSA_2026", "barbara");
     assert_eq!(tom["occurredOn"], "2026-09-01");
     assert_eq!(barbara["occurredOn"], "2026-09-01");
     must_ok(
@@ -334,21 +374,90 @@ async fn w4_ssa_saturday_minus_4_listed_minus_5_not() {
     let ssa = rows_for(&after, "SSA_2026");
     assert!(
         ssa.iter().any(|r| r["note"] == "tom" && r["occurredOn"] == "2026-09-08"),
-        "SSA dated Saturday-4 listed: {after}"
+        "SSA past due stays until Confirm: {after}"
     );
     assert!(
-        ssa.iter().all(|r| r["note"] != "barbara"),
-        "SSA dated Saturday-5 is not listed: {after}"
+        ssa.iter()
+            .any(|r| r["note"] == "barbara" && r["occurredOn"] == "2026-09-07"),
+        "unconfirmed element past the old 4-day lookback still stays: {after}"
+    );
+    // Last week's Income Saturday must still list when the next week opens.
+    let prior = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-12"}),
+    )
+    .await;
+    let income_prior_sat = rows_for(&prior, "Income");
+    assert!(
+        income_prior_sat
+            .iter()
+            .any(|r| r["occurredOn"] == "2026-09-12" && r["note"] == "net"),
+        "this week's Income still listed: {prior}"
+    );
+    let next = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-19"}),
+    )
+    .await;
+    assert_eq!(next["periodStart"], "2026-09-19");
+    let income_next = rows_for(&next, "Income");
+    assert!(
+        income_next
+            .iter()
+            .any(|r| r["occurredOn"] == "2026-09-12" && r["note"] == "net"),
+        "unconfirmed Income from last Saturday stays on Week Ahead: {next}"
+    );
+}
+
+/// Later this week is not due yet on Saturday — must not list until as-of reaches that day.
+#[tokio::test]
+async fn w4b_not_yet_due_this_week_stays_hidden() {
+    let (_dir, platform) = seeded_platform().await;
+    // Seed monthly Health on the 1st into the horizon, then view from prior Saturday.
+    let sat = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-08-29"}),
+    )
+    .await;
+    assert_eq!(sat["periodStart"], "2026-08-29");
+    assert_eq!(sat["periodEnd"], "2026-09-04");
+    assert!(
+        rows_for(&sat, "Health").is_empty(),
+        "Health 9/1 is inside Sat–Fri week but not yet due on 8/29: {sat}"
+    );
+    assert!(
+        rows_for(&sat, "Car").is_empty(),
+        "Car 9/1 is inside Sat–Fri week but not yet due on 8/29: {sat}"
+    );
+    let loans = sat["loans"].as_array().cloned().unwrap_or_default();
+    assert!(
+        loans.iter().all(|l| {
+            l["dueOn"]
+                .as_str()
+                .map(|d| d <= "2026-08-29")
+                .unwrap_or(false)
+        }),
+        "loan due after as-of must stay hidden: {sat}"
     );
 }
 
 #[tokio::test]
 async fn w5_edit_health_amount_then_confirm_hsa_withdrawal() {
     let (_dir, platform) = seeded_platform().await;
-    let ahead = query_json(
+    // Warm horizon, then open on the due day (not-yet-due stays hidden before 9/1).
+    let _ = query_json(
         &platform,
         "WeekAheadGet",
         serde_json::json!({"asOfDate": "2026-08-29"}),
+    )
+    .await;
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-01"}),
     )
     .await;
     let health = find_row(&ahead, "Health", "hsa1");
@@ -374,7 +483,7 @@ async fn w5_edit_health_amount_then_confirm_hsa_withdrawal() {
     let after = query_json(
         &platform,
         "WeekAheadGet",
-        serde_json::json!({"asOfDate": "2026-08-29"}),
+        serde_json::json!({"asOfDate": "2026-09-01"}),
     )
     .await;
     assert!(
@@ -426,10 +535,22 @@ async fn week_ahead_follows_element_series() {
         }),
     )
     .await;
-    let mid = query_json(
+    let before_due = query_json(
         &platform,
         "WeekAheadGet",
         serde_json::json!({"asOfDate": "2026-09-12"}),
+    )
+    .await;
+    assert!(
+        rows_for(&before_due, "Health")
+            .iter()
+            .all(|r| r["occurredOn"].as_str().unwrap_or("") <= "2026-09-12"),
+        "Health 9/15 is not yet due on 9/12: {before_due}"
+    );
+    let mid = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-09-15"}),
     )
     .await;
     let mid_health = find_row(&mid, "Health", "MyClearbalance");
@@ -463,9 +584,37 @@ async fn week_ahead_follows_element_series() {
         serde_json::json!({"asOfDate": "2026-10-10"}),
     )
     .await;
-    let health = find_row(&oct, "Health", "MyClearbalance");
-    assert_eq!(health["occurredOn"], "2026-10-15");
-    assert_eq!(health["amountMinor"], 20_300);
+    let health: Vec<_> = oct["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["account"] == "Health" && r["note"] == "MyClearbalance")
+        .collect();
+    assert!(
+        health.iter().any(|r| r["occurredOn"] == "2026-09-15"),
+        "unconfirmed Sept 15 stays past due: {oct}"
+    );
+    assert!(
+        health
+            .iter()
+            .all(|r| r["occurredOn"].as_str().unwrap_or("") <= "2026-10-10"),
+        "Oct 15 is not yet due on Oct 10: {oct}"
+    );
+    let on_oct_due = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-10-15"}),
+    )
+    .await;
+    assert!(
+        on_oct_due["rows"].as_array().unwrap().iter().any(|r| {
+            r["account"] == "Health"
+                && r["note"] == "MyClearbalance"
+                && r["occurredOn"] == "2026-10-15"
+                && r["amountMinor"] == 20_300
+        }),
+        "October series date lists on its due day: {on_oct_due}"
+    );
     let today = query_json(
         &platform,
         "WeekAheadGet",
@@ -495,6 +644,84 @@ async fn week_ahead_follows_element_series() {
                 && r["amountMinor"] == net["nextAmountMinor"]
         }),
         "Week Ahead net is the catalog Next: {today} vs {net}"
+    );
+}
+
+#[tokio::test]
+async fn w4c_ancient_past_due_leaves_week_ahead_board() {
+    let (_dir, platform) = seeded_platform().await;
+    must_ok(
+        &platform,
+        "CashElementSave",
+        serde_json::json!({
+            "account": "Health",
+            "name": "old-hsa",
+            "kind": "Withdrawal",
+            "cadence": "one-time",
+            "weekdayOrMonthDay": "",
+            "startOn": "2025-01-01",
+            "amountMinor": 20_300,
+            "asOfDate": "2025-01-01",
+            "occurrences": [{
+                "occurredOn": "2025-01-15",
+                "amountMinor": 20_300
+            }]
+        }),
+    )
+    .await;
+    let ahead = query_json(
+        &platform,
+        "WeekAheadGet",
+        serde_json::json!({"asOfDate": "2026-10-10"}),
+    )
+    .await;
+    let rows = ahead["rows"].as_array().expect("rows");
+    assert!(
+        rows.iter().all(|r| {
+            r["occurredOn"]
+                .as_str()
+                .map(|d| d >= "2026-09-05" && d <= "2026-10-10")
+                .unwrap_or(false)
+        }),
+        "Week Ahead is due/recent past-due only (as_of−35d .. as_of): {ahead}"
+    );
+    assert!(
+        !rows.iter().any(|r| r["note"] == "old-hsa" || r["occurredOn"] == "2025-01-15"),
+        "2025 Health backlog must leave the board: {ahead}"
+    );
+    let catalog = query_json(
+        &platform,
+        "CashElementListGet",
+        serde_json::json!({"account": "Health", "asOfDate": "2026-10-10"}),
+    )
+    .await;
+    assert!(
+        catalog["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["note"] == "old-hsa"),
+        "series remains available outside Week Ahead (catalog/history): {catalog}"
+    );
+    let loans = ahead["loans"].as_array().cloned().unwrap_or_default();
+    assert!(
+        loans.iter().all(|l| {
+            l["dueOn"]
+                .as_str()
+                .map(|d| d >= "2026-09-05" && d <= "2026-10-10")
+                .unwrap_or(false)
+        }),
+        "loan due outside 35-day lookback must stay off the board: {ahead}"
+    );
+    let ui = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/cash/WeekAhead.tsx"),
+    )
+    .unwrap();
+    assert!(
+        ui.contains("recent past-due (35 days)")
+            && ui.contains("Element history")
+            && !ui.contains("Due and past-due only"),
+        "caption matches the 35-day board"
     );
 }
 

@@ -556,7 +556,8 @@ export function ShoppingCartScreen({
   const [executeStatusMessage, setExecuteStatusMessage] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
-  const accountName = accounts.find((account) => account.accountId === accountId)?.name ?? "";
+  const selectedAccount = accounts.find((account) => account.accountId === accountId);
+  const accountName = selectedAccount?.name ?? "";
   const lots = useMemo(() => holdings?.lots ?? [], [holdings]);
   const accountLots = useMemo(
     () => (accountName ? lots.filter((lot) => lot.accountName === accountName) : lots),
@@ -565,6 +566,7 @@ export function ShoppingCartScreen({
   const cashSymbol = accountCashSymbol(
     accountName,
     accountLots.map((lot) => lot.symbol),
+    selectedAccount?.cashSymbol,
   );
   const heldSymbols = [
     ...new Set(
@@ -1817,25 +1819,20 @@ export function ShoppingCartScreen({
     }
   };
 
-  const autoAlignKey = useRef<string | null>(null);
-  useEffect(() => {
-    if (!canAlignCash || !scenarioA || busy || writesBlocked) return;
+  const confirmCash = () => {
+    if (!scenarioA || !canAlignCash || busy || writesBlocked) return;
     if (scenarioA.fundingSource === "accountCash") return;
-    const key = scenarioA.scenarioId;
-    if (autoAlignKey.current === key) return;
     if (cashPreview && cashPreview.targetMinor < 0) {
-      autoAlignKey.current = key;
       setExecuteStatusMessage("Leftover cash is negative — purchases exceed sale proceeds.");
       return;
     }
-    autoAlignKey.current = key;
-    // align leftover cash after the last purchase — computed SPAXX target, no owner click
-    void alignCash(scenarioA, null).then((ok) => {
+    // Owner OK on the calculated ending balance before status complete.
+    void alignCash(scenarioA, cashPreview?.targetMinor ?? null).then((ok) => {
       if (!ok) {
         setExecuteStatusMessage("Leftover cash did not align.");
       }
     });
-  }, [canAlignCash, scenarioA, busy, writesBlocked, cashPreview]);
+  };
 
   const step = !scenarioA
     ? wizardRailStep(wizardPrompt)
@@ -2007,6 +2004,7 @@ export function ShoppingCartScreen({
               accountName={accountName || "Account"}
               purchaseCostMinor={purchaseCostMinor}
               netDividendMinor={netDividendMinor}
+              onConfirmCash={confirmCash}
             />
             </div>
             {/*

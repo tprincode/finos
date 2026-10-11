@@ -12,7 +12,8 @@ use crate::contracts::{
     CollectorFieldDecisionRecord, CollectorSetBody, CollectorStatsBody, CurrentPriceBody,
     DistributionGetBody, DividendActual, DividendDeclaration, DividendGetBody, EvidenceRecord,
     ExceptionRecord, ExpectedPaymentPattern, ImportBatchRecord, ImportCandidate, IncomePlanBody,
-    AssumedPayDateRecord, HoldingQtyEventRecord, IssuerDeclarationRecord, IssuerPayDateRecord,
+    AssumedPayDateRecord, HoldingQtyEventRecord, IncomeWeekCashDispositionRecord,
+    IssuerDeclarationRecord, IssuerPayDateRecord,
     LotAssignmentRecord,
     LotRecommendBody, LotRecord,
     MagiProjection, MagiTaxPaymentBody, PlanHistoryRecord, PositionBacktestResultBody,
@@ -620,6 +621,25 @@ pub trait Canonical: Send + Sync {
         &self,
         _security_id: Uuid,
         _vendor_pay_on: String,
+    ) -> Result<u64, PlatformError> {
+        Ok(0)
+    }
+    async fn income_week_cash_disposition_list(
+        &self,
+        _week_end: String,
+    ) -> Result<Vec<IncomeWeekCashDispositionRecord>, PlatformError> {
+        Ok(Vec::new())
+    }
+    async fn income_week_cash_disposition_upsert(
+        &self,
+        record: IncomeWeekCashDispositionRecord,
+    ) -> Result<IncomeWeekCashDispositionRecord, PlatformError> {
+        Ok(record)
+    }
+    async fn income_week_cash_disposition_clear(
+        &self,
+        _week_end: String,
+        _security_id: Uuid,
     ) -> Result<u64, PlatformError> {
         Ok(0)
     }
@@ -1257,8 +1277,15 @@ pub trait Canonical: Send + Sync {
         due_on: String,
         principal_minor: i64,
         interest_minor: i64,
+        balance_after_minor: Option<i64>,
     ) -> Result<crate::contracts::ExternalManagedGetBody, PlatformError> {
-        let _ = (account_id, due_on, principal_minor, interest_minor);
+        let _ = (
+            account_id,
+            due_on,
+            principal_minor,
+            interest_minor,
+            balance_after_minor,
+        );
         ni()
     }
     async fn external_loan_apply_element(

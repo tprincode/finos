@@ -24,8 +24,12 @@ pub async fn export_data_snapshot(
     platform: &dyn Platform,
     canonical: &dyn Canonical,
     as_of: &str,
+    folder_override: Option<&str>,
 ) -> Result<DataSnapshotExportBody, PlatformError> {
-    let folder = raw_data_dir(&platform.app_data_dir(), as_of);
+    let folder = match folder_override.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => raw_data_dir(&platform.app_data_dir(), as_of),
+    };
     std::fs::create_dir_all(&folder).map_err(|e| {
         PlatformError::new(
             "snapshot_write_failed",

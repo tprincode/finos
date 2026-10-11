@@ -111,6 +111,8 @@ const ORDINARY_WRITES: &[&str] = &[
     "DistributionCharacterize",
     "PlanHistoryConfirm",
     "IssuerDeclarationRecord",
+    "IncomeWeekCashDispositionConfirm",
+    "IncomeWeekImpliedDeclarationConfirm",
     "PriceQuoteRecord",
     "ManualPriceOverride",
     "RetrievalTemplateSet",
@@ -2063,6 +2065,10 @@ async fn income_plan_week_with(
             scale: 2,
             accounts: account_slices,
             last_update: last_update_by_sec.get(security_id).cloned().flatten(),
+            cash_disposition: None,
+            cash_without_declaration: false,
+            implied_declaration_per_share_minor: None,
+            implied_declaration_per_share_scale: 0,
         });
     }
     for (symbol, actual) in &position_actuals {
@@ -2131,9 +2137,68 @@ async fn income_plan_week_with(
             scale: 2,
             accounts: account_slices,
             last_update: None,
+            cash_disposition: None,
+            cash_without_declaration: false,
+            implied_declaration_per_share_minor: None,
+            implied_declaration_per_share_scale: 0,
         });
     }
     positions.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    let dispositions = canonical
+        .income_week_cash_disposition_list(week.end.clone())
+        .await
+        .unwrap_or_default();
+    let disp_by_sec: std::collections::HashMap<uuid::Uuid, String> = dispositions
+        .into_iter()
+        .map(|d| (d.security_id, d.disposition))
+        .collect();
+    for pos in &mut positions {
+        let Some(sec) = securities.iter().find(|s| s.symbol == pos.symbol) else {
+            continue;
+        };
+        pos.cash_disposition = disp_by_sec.get(&sec.security_id).cloned();
+        // Reported broker cash reconciles itself — no owner Deposit button.
+        if pos.actual_known {
+            if pos.cash_disposition.as_deref() != Some("deposit_received") {
+                let _ = canonical
+                    .income_week_cash_disposition_upsert(
+                        crate::contracts::IncomeWeekCashDispositionRecord {
+                            week_end: week.end.clone(),
+                            security_id: sec.security_id,
+                            disposition: "deposit_received".into(),
+                            confirmed_at: today_iso(),
+                            note: "auto_from_broker_cash".into(),
+                        },
+                    )
+                    .await;
+                pos.cash_disposition = Some("deposit_received".into());
+            }
+        }
+        pos.cash_without_declaration = pos.actual_known && !pos.declaration_known;
+        if pos.cash_without_declaration {
+            if let Some((qty, qscale)) = open_share_quantity(&basis.lots, sec.security_id) {
+                if let Some(imp) = financial_domain::calculator::implied_per_share_from_cash(
+                    pos.actual_minor,
+                    pos.scale,
+                    qty,
+                    qscale,
+                    4,
+                ) {
+                    pos.implied_declaration_per_share_minor = Some(imp);
+                    pos.implied_declaration_per_share_scale = 4;
+                }
+            }
+            let _ = ensure_cash_without_declaration_loud(
+                canonical,
+                sec.security_id,
+                &pos.symbol,
+                &week.end,
+                pos.actual_minor,
+            )
+            .await;
+        }
+    }
+    let cash_complete = positions.iter().all(|p| p.actual_known);
     let mut line_names: Vec<String> = financial_domain::income_plan::CONTROL_ACCOUNTS
         .iter()
         .map(|name| financial_domain::income_plan::display_account_label(name))
@@ -2208,7 +2273,222 @@ async fn income_plan_week_with(
         miss_count,
         amount_exception_count,
         variance_minor,
+        cash_complete,
     })
+}
+
+/// When broker cash is posted, mark that Sat–Fri week payer as deposit_received.
+async fn auto_reconcile_deposit_from_actual(
+    canonical: &dyn Canonical,
+    security_id: uuid::Uuid,
+    occurred_on: &str,
+) -> Result<(), PlatformError> {
+    let Some(day) = parse_iso_date(occurred_on) else {
+        return Ok(());
+    };
+    let week_end = financial_domain::week::week_containing(day).end.to_string();
+    canonical
+        .income_week_cash_disposition_upsert(crate::contracts::IncomeWeekCashDispositionRecord {
+            week_end,
+            security_id,
+            disposition: "deposit_received".into(),
+            confirmed_at: today_iso(),
+            note: "auto_from_broker_cash".into(),
+        })
+        .await?;
+    Ok(())
+}
+
+async fn income_week_cash_disposition_confirm(
+    canonical: &dyn Canonical,
+    json: &serde_json::Value,
+) -> Result<crate::contracts::IncomeWeekCashDispositionBody, PlatformError> {
+    let week_end = jstr(json, "weekEnd").unwrap_or_default();
+    let disposition = jstr(json, "disposition").unwrap_or_default();
+    let symbol = jstr(json, "symbol").unwrap_or_default();
+    if week_end.is_empty() || symbol.is_empty() {
+        return Err(PlatformError::new(
+            "missing_fields",
+            "weekEnd and symbol are required",
+        ));
+    }
+    if disposition != "deposit_received" && disposition != "skipped" {
+        return Err(PlatformError::new(
+            "invalid_disposition",
+            "disposition must be deposit_received or skipped",
+        ));
+    }
+    let securities = canonical.security_list().await?;
+    let Some(sec) = securities.iter().find(|s| s.symbol == symbol) else {
+        return Err(PlatformError::new("not_found", format!("unknown symbol {symbol}")));
+    };
+    let week = income_plan_week_view(canonical, week_end.clone(), String::new()).await?;
+    let Some(row) = week.positions.iter().find(|p| p.symbol == symbol) else {
+        return Err(PlatformError::new(
+            "not_in_week",
+            format!("{symbol} is not an in-week payer for {week_end}"),
+        ));
+    };
+    if disposition == "deposit_received" && !row.actual_known {
+        return Err(PlatformError::new(
+            "actual_unknown",
+            "Deposit received requires imported broker cash (Reported known)",
+        ));
+    }
+    if disposition == "skipped" && row.actual_known && row.actual_minor > 0 {
+        return Err(PlatformError::new(
+            "actual_present",
+            "Cannot skip when broker cash is already Reported for this week",
+        ));
+    }
+    let confirmed_at = today_iso();
+    let rec = canonical
+        .income_week_cash_disposition_upsert(crate::contracts::IncomeWeekCashDispositionRecord {
+            week_end: week.end.clone(),
+            security_id: sec.security_id,
+            disposition: disposition.clone(),
+            confirmed_at: confirmed_at.clone(),
+            note: jstr(json, "note").unwrap_or_default(),
+        })
+        .await?;
+    Ok(crate::contracts::IncomeWeekCashDispositionBody {
+        week_end: rec.week_end,
+        security_id: rec.security_id,
+        symbol,
+        disposition: rec.disposition,
+        confirmed_at: rec.confirmed_at,
+    })
+}
+
+async fn income_week_implied_declaration_confirm(
+    canonical: &dyn Canonical,
+    json: &serde_json::Value,
+) -> Result<IssuerDeclarationRecord, PlatformError> {
+    let week_end = jstr(json, "weekEnd").unwrap_or_default();
+    let symbol = jstr(json, "symbol").unwrap_or_default();
+    if week_end.is_empty() || symbol.is_empty() {
+        return Err(PlatformError::new(
+            "missing_fields",
+            "weekEnd and symbol are required",
+        ));
+    }
+    let securities = canonical.security_list().await?;
+    let Some(sec) = securities.iter().find(|s| s.symbol == symbol) else {
+        return Err(PlatformError::new("not_found", format!("unknown symbol {symbol}")));
+    };
+    let week = income_plan_week_view(canonical, week_end.clone(), String::new()).await?;
+    let Some(row) = week.positions.iter().find(|p| p.symbol == symbol) else {
+        return Err(PlatformError::new(
+            "not_in_week",
+            format!("{symbol} is not an in-week payer for {week_end}"),
+        ));
+    };
+    if !row.actual_known {
+        return Err(PlatformError::new(
+            "actual_unknown",
+            "Confirm Decl from payment requires imported broker cash",
+        ));
+    }
+    if row.declaration_known {
+        return Err(PlatformError::new(
+            "declaration_present",
+            "Issuer declaration already known for this week",
+        ));
+    }
+    let Some(amount) = row.implied_declaration_per_share_minor.filter(|a| *a > 0) else {
+        return Err(PlatformError::new(
+            "implied_unknown",
+            "Cannot imply Decl $/sh without open shares and Reported cash",
+        ));
+    };
+    let scale = if row.implied_declaration_per_share_scale == 0 {
+        4
+    } else {
+        row.implied_declaration_per_share_scale
+    };
+    let pay_on = if row.pay_on.trim().is_empty() {
+        week.end.clone()
+    } else {
+        row.pay_on.clone()
+    };
+    let recorded = canonical
+        .issuer_declaration_record(
+            sec.security_id,
+            Some(amount),
+            scale,
+            pay_on,
+            "implied_from_broker_cash".into(),
+            today_iso(),
+        )
+        .await?;
+    if let Ok(tickets) = canonical
+        .work_ticket_list(Some(sec.security_id), Some("open".into()))
+        .await
+    {
+        for mut t in tickets
+            .into_iter()
+            .filter(|t| t.code == "cash_without_declaration")
+        {
+            t.status = "closed".into();
+            t.completed_how = "implied_from_broker_cash".into();
+            t.last_seen_on = today_iso();
+            let _ = canonical.work_ticket_update(t).await;
+        }
+    }
+    Ok(recorded)
+}
+
+async fn ensure_cash_without_declaration_loud(
+    canonical: &dyn Canonical,
+    security_id: Uuid,
+    symbol: &str,
+    week_end: &str,
+    actual_minor: i64,
+) -> Result<(), PlatformError> {
+    let message = format!(
+        "Cash received without issuer declaration for {symbol} week ending {week_end} (Reported ${:.2}). Collector may have failed silently. Re-collect, or Confirm Decl from payment.",
+        actual_minor as f64 / 100.0
+    );
+    let exceptions = canonical.exception_list().await.unwrap_or_default();
+    let already = exceptions.iter().any(|e| {
+        !e.acknowledged && e.code == "cash_without_declaration" && e.message == message
+    });
+    if !already {
+        let _ = canonical
+            .exception_raise("cash_without_declaration".into(), message.clone())
+            .await;
+    }
+    let open = canonical
+        .work_ticket_list(Some(security_id), Some("open".into()))
+        .await
+        .unwrap_or_default();
+    if open.iter().any(|t| t.code == "cash_without_declaration") {
+        return Ok(());
+    }
+    let today = today_iso();
+    let reason = format!(
+        "Steps\n1. Open Income Plan week ending {week_end} for {symbol}.\n2. Re-run the declaration collector, or Confirm Decl from payment (Reported ÷ open shares).\nRemediation\nBroker cash is present; Decl stayed blank — typical YieldMax partial-parse silent miss. Plan is unchanged."
+    );
+    let _ = canonical
+        .work_ticket_raise(crate::contracts::WorkTicketRecord {
+            ticket_id: Uuid::new_v4(),
+            security_id,
+            symbol: symbol.to_string(),
+            field: "declaration".into(),
+            code: "cash_without_declaration".into(),
+            tool: "income-plan".into(),
+            reason,
+            urls_tried: "[]".into(),
+            opened_on: today.clone(),
+            last_seen_on: today,
+            status: "open".into(),
+            filed_on: String::new(),
+            completed_how: String::new(),
+            owner_note: String::new(),
+            retrieve_run_id: String::new(),
+        })
+        .await;
+    Ok(())
 }
 
 fn parse_iso_date(s: &str) -> Option<chrono::NaiveDate> {
@@ -10965,6 +11245,18 @@ pub async fn execute_query_on(
             Some(id) => map_q(&request, crate::cash_pile::ledger_get(canonical, id).await),
             None => query_err(&request, "missing_account_id"),
         },
+        "CashIntegrityGet" => {
+            let as_of = jstr(&json, "asOfDate")
+                .or_else(|| jstr(&json, "asOfEnd"))
+                .unwrap_or_else(|| chrono::Local::now().date_naive().format("%Y-%m-%d").to_string());
+            let account_id = juuid(&json, "accountId");
+            map_q(
+                &request,
+                crate::cash_integrity::integrity_get(canonical, account_id, as_of)
+                    .await
+                    .map(|rows| crate::contracts::CashIntegrityGetBody { rows }),
+            )
+        },
         "BacktestGet" => map_q(&request, canonical.backtest_get().await),
         "ClassificationReviewGet" => map_q(&request, canonical.classification_review_get().await),
         "DistributionGet" => map_q(&request, canonical.distribution_get().await),
@@ -11936,6 +12228,14 @@ pub async fn execute_command_on(
                             actual.occurred_on.clone()
                         };
                         let _ = cash_dividend_coverage_refresh(canonical, &as_of).await;
+                        if let Some(security_id) = actual.security_id {
+                            let _ = auto_reconcile_deposit_from_actual(
+                                canonical,
+                                security_id,
+                                &actual.occurred_on,
+                            )
+                            .await;
+                        }
                         map_c(&request, Ok(actual))
                     }
                     Err(err) => command_err(&request, &err.code),
@@ -12730,6 +13030,18 @@ pub async fn execute_command_on(
             ),
             None => command_err(&request, "missing_security_id"),
         },
+        "IncomeWeekCashDispositionConfirm" => {
+            map_c(
+                &request,
+                income_week_cash_disposition_confirm(canonical, &json).await,
+            )
+        }
+        "IncomeWeekImpliedDeclarationConfirm" => {
+            map_c(
+                &request,
+                income_week_implied_declaration_confirm(canonical, &json).await,
+            )
+        }
         "PriceQuoteRecord" => match juuid(&json, "securityId") {
             Some(security_id) => map_c(
                 &request,
@@ -13262,9 +13574,16 @@ pub async fn execute_command_on(
         }
         "DataSnapshotExport" => {
             let as_of = jstr(&json, "asOfDate").unwrap_or_else(today_local_iso);
+            let folder = jstr(&json, "folder");
             map_c(
                 &request,
-                crate::data_snapshot::export_data_snapshot(platform, canonical, &as_of).await,
+                crate::data_snapshot::export_data_snapshot(
+                    platform,
+                    canonical,
+                    &as_of,
+                    folder.as_deref(),
+                )
+                .await,
             )
         }
         "MobilePublish" => {
@@ -14852,11 +15171,20 @@ pub async fn execute_command_on(
             }
             let principal = json.get("principalMinor").and_then(|value| value.as_i64());
             let interest = json.get("interestMinor").and_then(|value| value.as_i64());
+            let balance_after = json
+                .get("balanceAfterMinor")
+                .and_then(|value| value.as_i64());
             match (principal, interest) {
                 (Some(principal_minor), Some(interest_minor)) => map_c(
                     &request,
                     canonical
-                        .external_loan_confirm(account_id, due_on, principal_minor, interest_minor)
+                        .external_loan_confirm(
+                            account_id,
+                            due_on,
+                            principal_minor,
+                            interest_minor,
+                            balance_after,
+                        )
                         .await,
                 ),
                 _ => command_err(&request, "bad_amount"),

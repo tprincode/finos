@@ -3,6 +3,7 @@ import { BusySurface } from "../shared/BusySurface";
 import ReactECharts from "echarts-for-react";
 import {
   ACCOUNT_CASH_SYMBOL,
+  accountCashSymbol,
   type CashRegisterGet,
   type HoldingsGet,
   type TrendsWeekPoint,
@@ -154,7 +155,8 @@ if (
 /**
  * Cash symbol whose open lot is the current total for that Register book, keyed by the
  * Register's display name. Only the display name differs from the book account ("Account 9"
- * is booked as "9"); the symbols come from the one shared map.
+ * is booked as "9"); map symbols are empty-column defaults — pass stored `cashSymbol` into
+ * `cashLotCents` so Account Management wins.
  */
 const REGISTER_DISPLAY_NAME: Record<string, string> = { "9": "Account 9" };
 
@@ -174,13 +176,15 @@ export function cashLotCents(
     quantityScale: number;
   }>,
   book: string,
+  storedCashSymbol?: string | null,
 ): number | null {
   const spec = CASH_FLOW_LOT[book];
   if (!spec) return null;
+  const symbol = accountCashSymbol(spec.account, [], storedCashSymbol);
   const rows = lots.filter(
     (lot) =>
       lot.accountName === spec.account &&
-      lot.symbol.toUpperCase() === spec.symbol &&
+      lot.symbol.toUpperCase() === symbol.toUpperCase() &&
       lot.remainingQuantityMinor > 0,
   );
   if (rows.length === 0) return null;
@@ -1122,16 +1126,35 @@ export function AccountCashFlow({
 
   useEffect(() => {
     let cancelled = false;
-    void client.executeQuery("HoldingsGet").then((result) => {
+    void Promise.all([
+      client.executeQuery("HoldingsGet"),
+      client.executeQuery("AccountList"),
+    ]).then(([holdingsResult, accountResult]) => {
       if (cancelled) return;
-      if (!result.ok || !result.bodyJson) {
+      if (!holdingsResult.ok || !holdingsResult.bodyJson) {
         setLotByBook({});
         return;
       }
-      const body = JSON.parse(result.bodyJson) as HoldingsGet;
+      const body = JSON.parse(holdingsResult.bodyJson) as HoldingsGet;
+      const listed =
+        accountResult.ok && accountResult.bodyJson
+          ? (JSON.parse(accountResult.bodyJson) as Array<{
+              name?: string;
+              cashSymbol?: string | null;
+            }>)
+          : [];
+      const storedByName = new Map(
+        (Array.isArray(listed) ? listed : [])
+          .filter((row) => typeof row.name === "string" && row.name.length > 0)
+          .map((row) => [row.name as string, row.cashSymbol ?? null]),
+      );
       const next: Record<string, number | null> = {};
-      for (const name of Object.keys(CASH_FLOW_LOT)) {
-        next[name] = cashLotCents(body.lots ?? [], name);
+      for (const [name, spec] of Object.entries(CASH_FLOW_LOT)) {
+        next[name] = cashLotCents(
+          body.lots ?? [],
+          name,
+          storedByName.get(spec.account),
+        );
       }
       setLotByBook(next);
     }).catch(() => {

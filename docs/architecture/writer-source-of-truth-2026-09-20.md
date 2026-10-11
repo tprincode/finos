@@ -59,13 +59,18 @@ Fidelity book totals also sum into `trends_week_source.fidelity_total_minor` whe
 | Schedule day (weekday or month-day) | `cash_element.weekday_or_month_day` | same |
 | Start / stop | `cash_element.start_on` / `stop_on` | same; empty stop = never |
 | Series amount | `cash_element.amount_minor` | same. Off-schedule editor dates are not SOT. |
-| Confirm this week | `activity_event` | `WeekAheadConfirm` → IRA_Distribution / `SsaConfirm` / Withdrawal / HSA_Withdrawal |
+| Confirm this week | `activity_event` | `WeekAheadConfirm` → IRA_Distribution / `SsaConfirm` / Withdrawal / HSA_Withdrawal / Roth; loan element → CCT draft |
+| One-time Confirm | `cash_element.stop_on` | Same Confirm sets `stop_on = occurred_on` (idempotent) so the series retires |
 | Edit occurrence (opens editor) | series, not leftover date | `WeekAheadEdit` → `CashElementSave` |
 | Defer | occurrence stays unconfirmed | `WeekAheadDefer` |
 | Delete one future hit | `planned_occurrence` | `PlannedOccurrenceDelete` |
 | Delete series | `cash_element` | `CashElementDelete` |
 
 Unconfirmed `planned_occurrence` is generated from the series. Leftover off-schedule dates are not authority.
+
+**Element Management catalog** shows active series only (`nextOccurredOn` present). Completed one-times and exhausted series stay in the Transaction register (`CashElementHistoryGet`); Actual rows remain after Confirm. Create new deposit/withdrawal opens `CashElementSave` (no `elementId`); All accounts requires picking a book in the editor.
+
+**Week Ahead board** lists unconfirmed elements/loans with `occurred_on`/`due_on` ≤ as-of and ≥ as-of − 35 days. Not-yet-due stay hidden. Older unconfirmed stay in Element history (not on the week board).
 
 ---
 
@@ -94,11 +99,23 @@ Collect writes `issuer_declaration`, `issuer_pay_date`, `retrieve_run`, and tick
 
 ---
 
+## Cash integrity (locked 2026-10-10)
+
+| Layer | Store | Role |
+| --- | --- | --- |
+| Live SOT | Open lot for `account.cash_symbol` via `cash_pile` (fallback: largest par lot SPAXX/FDRXX/SWVXX/`CASH`) | Current cash dollars |
+| Friday lock | `account_balance_snapshot.cash_minor` | Owner-confirmed week-end cash |
+| Journal | `activity_event` (`deposit`, `ira-contribution`, `ETF Sale` / `ETF Purchase`, withdrawals, `Cash_Adjust`) | Why cash moved |
+| Invariant | `pile == fold(last Friday cash, journal after that Friday)` | `CashIntegrityGet` / week `reference_minor` |
+
+Cart Confirm cash and IRA contribution must move lot **and** journal together. Mid-week cart does not rewrite the Friday snapshot until Saturday Accept. See [cash-integrity-forensic-2026-10-10.md](cash-integrity-forensic-2026-10-10.md).
+
 ## Watch — do not treat the right column as SOT
 
 | Use this | Do not treat as SOT |
 | --- | --- |
-| Per-book Total / Cash on `account_balance_snapshot` | Leftover SPAXX / FDRXX qty; blank cash ≠ $0 |
+| Per-book Total / Cash on `account_balance_snapshot` (Friday lock) | Invented cash without a journal row; blank cash ≠ $0 |
+| Live pile for cart / CashPileGet | Past Home Fridays that are still snapshot-only until Accept |
 | `trends_week_source` FID/SCH cards + ETF total | Account 9 70% (derived); week-to-week Δ |
 | Income Plan Plan $ for week income | `monthly_divs_minor` leftover; seed Profit; Decl $ |
 | `cash_element` series | Leftover `planned_occurrence` dates |

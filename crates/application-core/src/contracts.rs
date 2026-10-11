@@ -348,6 +348,27 @@ pub struct CashLedgerBody {
     pub entries: Vec<CashLedgerEntryBody>,
 }
 
+/// Pile vs journal fold from the last Friday cash snapshot through asOfEnd.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashIntegrityBody {
+    pub account_id: Uuid,
+    pub account_name: String,
+    pub as_of_end: String,
+    pub pile_minor: Option<i64>,
+    pub snapshot_minor: Option<i64>,
+    pub snapshot_on: Option<String>,
+    pub fold_minor: Option<i64>,
+    pub gap_minor: Option<i64>,
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CashIntegrityGetBody {
+    pub rows: Vec<CashIntegrityBody>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CartScenarioListBody {
@@ -2052,6 +2073,21 @@ pub struct IncomePlanPositionBody {
     /// Last successful declaration-collector run date. Failed or never-run is null.
     #[serde(default)]
     pub last_update: Option<String>,
+    /// Owner cash disposition for this week: `deposit_received`, `skipped`, or unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cash_disposition: Option<String>,
+    /// Broker cash known this week but issuer Decl missing (collector silent miss class).
+    #[serde(default, skip_serializing_if = "omit_false")]
+    pub cash_without_declaration: bool,
+    /// Suggested Decl $/sh from Reported ÷ open shares when cash_without_declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implied_declaration_per_share_minor: Option<i64>,
+    #[serde(default, skip_serializing_if = "omit_zero_u8")]
+    pub implied_declaration_per_share_scale: u8,
+}
+
+fn omit_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 fn omit_false(flag: &bool) -> bool {
@@ -2081,6 +2117,30 @@ pub struct IncomePlanWeekBody {
     pub amount_exception_count: u64,
     #[serde(default)]
     pub variance_minor: Option<i64>,
+    /// Every in-week payer has Reported broker cash (auto-reconciled).
+    #[serde(default)]
+    pub cash_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IncomeWeekCashDispositionBody {
+    pub week_end: String,
+    pub security_id: Uuid,
+    pub symbol: String,
+    pub disposition: String,
+    pub confirmed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IncomeWeekCashDispositionRecord {
+    pub week_end: String,
+    pub security_id: Uuid,
+    pub disposition: String,
+    pub confirmed_at: String,
+    #[serde(default)]
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

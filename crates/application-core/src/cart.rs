@@ -683,21 +683,54 @@ pub async fn execute_cash_align(
     };
     let current_minor = pile.dollars_minor;
     let delta = target_minor - current_minor;
+    let mut align_activity_id: Option<Uuid> = None;
     if delta > 0 {
-        crate::cash_pile::deposit(canonical, scene.account_id, delta, occurred_on.clone()).await?;
+        let (_body, activity_id) = crate::cash_pile::deposit_with_activity(
+            canonical,
+            scene.account_id,
+            delta,
+            occurred_on.clone(),
+        )
+        .await?;
+        align_activity_id = Some(activity_id);
     } else if delta < 0 {
-        crate::cash_pile::withdraw_labeled(
+        let (_body, activity_id) = crate::cash_pile::withdraw_labeled_with_activity(
             canonical,
             scene.account_id,
             -delta,
-            occurred_on,
+            occurred_on.clone(),
             "ETF Purchase",
         )
         .await?;
+        align_activity_id = Some(activity_id);
     }
     canonical
-        .cart_execute_step_add(scenario_id, "cash_align".into(), None, None, Some(pile.lot_id))
+        .cart_execute_step_add(
+            scenario_id,
+            "cash_align".into(),
+            align_activity_id,
+            None,
+            Some(pile.lot_id),
+        )
         .await?;
+    // Guardrail: after cart cash moves, pile must match journal fold from last Friday snap.
+    let integrity = crate::cash_integrity::integrity_for_account(
+        canonical,
+        scene.account_id,
+        &occurred_on,
+    )
+    .await?;
+    if !integrity.ok {
+        return Err(PlatformError::new(
+            "cash_integrity_gap",
+            format!(
+                "cash pile {} does not match journal fold {} (gap {}) — transactions must match current cash",
+                integrity.pile_minor.unwrap_or(0),
+                integrity.fold_minor.unwrap_or(0),
+                integrity.gap_minor.unwrap_or(0)
+            ),
+        ));
+    }
     canonical
         .cart_scenario_status_set(scenario_id, "complete".into())
         .await?;

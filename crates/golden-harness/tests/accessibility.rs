@@ -432,6 +432,10 @@ fn accessibility_primary_actions_have_accessible_names() {
 #[test]
 fn cart_confirm_returns_to_cart_then_confirm_cash() {
     let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let nav = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/navigation/navStack.ts"),
+    )
+    .unwrap();
     let cart = std::fs::read_to_string(
         repo_root().join("apps/desktop/src/features/shopping-cart/ShoppingCartScreen.tsx"),
     )
@@ -444,13 +448,22 @@ fn cart_confirm_returns_to_cart_then_confirm_cash() {
         repo_root().join("apps/desktop/src/features/shopping-cart/StepRail.tsx"),
     )
     .unwrap();
-    // Hard lock: after LotOpen from a cart buy, screen must return to shopping-cart.
-    // A weak "opens Add Lot" OR previously let this regress four times.
+    // Hard lock: Add Lot exit restores the caller via returnToCaller — never a
+    // hardcoded shopping-cart setScreen. Cart still lands on cart because open
+    // records the live caller (openAddLotFromCaller(screen)).
     assert!(
-        app.contains("setScreen(fromCart ? \"shopping-cart\"")
+        nav.contains("export function openFromCaller")
+            && nav.contains("export function returnToCaller")
+            && app.contains("openAddLotFromCaller(screen)")
+            && app.contains("returnToCaller(\"add-lot\")")
             && app.contains("resumeScenarioId={cartResumeScenarioId}")
             && app.contains("writeCartResume("),
-        "LotOpen from cart must setScreen shopping-cart and keep resumeScenarioId — opening wizard is a defect"
+        "LotOpen from cart must returnToCaller(add-lot) with resume — opening wizard is a defect"
+    );
+    assert!(
+        !app.contains("setScreen(fromCart ? \"shopping-cart\"")
+            && !app.contains("addLotReturnScreenRef.current = \"shopping-cart\""),
+        "Add Lot Confirm/Cancel must not hardcode shopping-cart as the exit screen"
     );
     assert!(
         app.contains("let fromCart = false")
@@ -460,9 +473,8 @@ fn cart_confirm_returns_to_cart_then_confirm_cash() {
         "cart buy path must mark fromCart and record CartExecuteBuyStep"
     );
     assert!(
-        app.contains("addLotReturnScreenRef.current = \"shopping-cart\"")
-            && app.contains("cartRefreshKey={cartRefreshKey}"),
-        "Confirm purchase must set return screen + refresh cart on return"
+        app.contains("cartRefreshKey={cartRefreshKey}"),
+        "Confirm purchase must refresh cart on return"
     );
     assert!(
         cart.contains("CartScenarioGet")
@@ -495,11 +507,12 @@ fn cart_confirm_returns_to_cart_then_confirm_cash() {
         "Confirm cash must show leftover dollars, not only a button"
     );
     assert!(
-        cart.contains("align leftover cash after the last purchase")
+        cart.contains("Owner OK on the calculated ending balance before status complete")
+            && execute.contains("Confirm cash")
             && execute.contains("Completed register summary")
             && execute.contains("Net dividend change")
             && !execute.contains("Ending {cashSymbol} $"),
-        "last purchase aligns leftover cash and shows one completion row"
+        "Confirm cash shows calculated ending balance for owner OK before complete"
     );
     // periodsForPlan lives in cartPlan.ts; the screen must still route through it.
     let cart_plan = std::fs::read_to_string(
@@ -516,6 +529,33 @@ fn cart_confirm_returns_to_cart_then_confirm_cash() {
     assert!(
         cart.contains("agreedScene ? (") && cart.contains("<ExecutePlanPanel"),
         "after Agree the cart is the execute panel only"
+    );
+}
+
+#[test]
+fn add_lot_return_restores_process_a_caller_not_a_fixed_page() {
+    let app = std::fs::read_to_string(repo_root().join("apps/desktop/src/App.tsx")).unwrap();
+    let row = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/navigation/PageNavRow.tsx"),
+    )
+    .unwrap();
+    let previous = std::fs::read_to_string(
+        repo_root().join("apps/desktop/src/features/navigation/ReturnToPrevious.tsx"),
+    )
+    .unwrap();
+    assert!(
+        app.contains("openAddLotFromCaller(\"new-investment\")")
+            && app.contains("const openAddLotFromCaller")
+            && app.contains("id: \"add-lot\"")
+            && app.contains("returnToCaller(\"add-lot\")"),
+        "Process A → Add Lot must push caller new-investment; Confirm/Cancel returnToCaller"
+    );
+    assert!(
+        app.contains("<PageNavRow")
+            && app.contains("() => popNav()")
+            && row.contains("<ReturnToPrevious")
+            && previous.contains("Return to previous menu"),
+        "shell Return still pops the nav stack for the calling screen"
     );
 }
 

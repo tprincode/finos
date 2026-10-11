@@ -6,6 +6,7 @@
 pub mod account_value;
 pub mod cart;
 pub mod cash_coverage;
+pub mod cash_integrity;
 pub mod cash_management;
 pub mod cash_pile;
 pub mod cash_register;

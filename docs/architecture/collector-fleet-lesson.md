@@ -14,6 +14,20 @@ Fill a short entry below (newest first) after any collector / pay-date / ticket 
 4. **Fixture per family** — at least one Weekly YieldMax-shaped, one Monthly, one Quarterly HTML, one ET 8-K when the class touches pay dates
 5. **Owner DB sample** — symbols touched after heal (prove live book, not only goldens)
 
+## 2026-10-09 — Cash received, Decl blank (YieldMax partial parse)
+
+1. **Failure class:** Silent miss — DIV-1 / YieldMax-style retrieve returns older pays so
+   `last_run_ok=true`, while the newest pay never stores. Broker cash imports; Income Plan Decl
+   stays blank; no retrieve miss / ticket until the week couples Reported to Decl.
+2. **Cadences in scope:** All paying cadences (Weekly YieldMax first).
+3. **Shared layer:** Income Plan week detects `actualKnown && !declarationKnown`, raises
+   `cash_without_declaration` exception + work ticket, suggests implied Decl =
+   Reported ÷ open shares, owner confirms via `IncomeWeekImpliedDeclarationConfirm`
+   (`source=implied_from_broker_cash`). Never silent auto-post; Plan unchanged. Cash disposition
+   (auto-reconcile when broker cash posts) is separate.
+4. **Fixtures:** `cash_disposition_and_cash_without_declaration_recovery` in `income_plan_week`.
+5. **Owner DB sample:** YieldMax names with cash this week and blank Decl after fleet collect.
+
 ## 2026-10-03 — Vendor date replaced the guess only after it paid
 
 1. **Failure class:** Pay-date attach — the derived walk fills future pay dates, and the

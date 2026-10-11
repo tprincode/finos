@@ -68,6 +68,7 @@ export function ExecutePlanPanel({
   accountName,
   purchaseCostMinor,
   netDividendMinor,
+  onConfirmCash,
 }: {
   scenarioLabel: string;
   scenarioStatus: string;
@@ -98,6 +99,7 @@ export function ExecutePlanPanel({
   accountName: string;
   purchaseCostMinor: number | null;
   netDividendMinor: number | null;
+  onConfirmCash: () => void;
 }) {
   /** A completed cart stays on screen for the close summary, but nothing is editable. */
   const readOnly = scenarioStatus === "complete" || scenarioStatus === "discarded";
@@ -161,8 +163,9 @@ export function ExecutePlanPanel({
       ) : cashReady ? (
         <div className="cart-confirm-cash" aria-label="Confirm cash preview">
           <p role="status">
-            Aligning leftover {cashSymbol}
-            {cashPreview ? ` to ${money(cashPreview.targetMinor)}` : ""}.
+            Calculated ending {cashSymbol}
+            {cashPreview ? ` is ${money(cashPreview.targetMinor)}` : ""}. Confirm to apply
+            that balance (sale proceeds minus purchases).
           </p>
           {cashMath}
           {alignBlockReason ? (
@@ -170,6 +173,17 @@ export function ExecutePlanPanel({
               {alignBlockReason}
             </p>
           ) : null}
+          <div className="buttons">
+            <button
+              type="button"
+              aria-label={`Confirm cash ${cashPreview ? money(cashPreview.targetMinor) : ""}`.trim()}
+              disabled={disabled || !!alignBlockReason || (cashPreview != null && cashPreview.targetMinor < 0)}
+              onClick={onConfirmCash}
+            >
+              Confirm cash
+              {cashPreview ? ` — ${money(cashPreview.targetMinor)}` : ""}
+            </button>
+          </div>
         </div>
       ) : (
         <p role="status">

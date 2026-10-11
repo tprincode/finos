@@ -219,6 +219,35 @@ pub fn plan_payment_cents(
     rounded as i64
 }
 
+/// Broker cash → implied Decl per share at `out_scale` (typically 4). Inverse of plan_payment_cents.
+pub fn implied_per_share_from_cash(
+    cash_minor: i64,
+    cash_scale: u8,
+    quantity_minor: i64,
+    quantity_scale: u8,
+    out_scale: u8,
+) -> Option<i64> {
+    if cash_minor <= 0 || quantity_minor <= 0 {
+        return None;
+    }
+    let num = (cash_minor as i128) * 10i128.pow((out_scale as u32) + (quantity_scale as u32));
+    let den = (quantity_minor as i128) * 10i128.pow(cash_scale as u32);
+    if den == 0 {
+        return None;
+    }
+    let q = num / den;
+    let r = (num % den).abs();
+    let rounded = if r * 2 >= den {
+        q + if num >= 0 { 1 } else { -1 }
+    } else {
+        q
+    };
+    if rounded <= 0 {
+        return None;
+    }
+    Some(rounded as i64)
+}
+
 /// Annual plan cents for whole shares. HAKY 3800 at scale 4 is $0.38/sh/mo → $4.56/sh/yr.
 pub fn plan_annual_cents(
     plan_per_share_minor: i64,
@@ -364,6 +393,9 @@ mod tests {
         assert_eq!(plan_payment_cents(10_452, 1, 1_168, 4), 12_208);
         // 2 HAKY × $0.38/mo × 12 = $9.12 — not 3800 × 12 × 2 cents
         assert_eq!(plan_annual_cents(3_800, 4, 12, 2), Some(912));
+        // $1.05 cash on 10 shares → $0.1050/sh at scale 4
+        assert_eq!(implied_per_share_from_cash(105, 2, 10, 0, 4), Some(1_050));
+        assert_eq!(plan_payment_cents(10, 0, 1_050, 4), 105);
     }
 
     #[test]

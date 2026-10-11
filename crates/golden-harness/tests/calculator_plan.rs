@@ -1421,16 +1421,66 @@ async fn short_period_keeps_the_last_six_stored_pays() {
         "TVAL and the other scores do not walk the older end of the week grid"
     );
     assert!(
-        sheet.contains("sortHead(sort, \"Calculator blend\", \"tval\", true)"),
-        "the plan-yield blend is not labeled TVAL"
+        sheet.contains("calcHead(\"Calculator blend\", \"tval\", true)"),
+        "the plan-yield blend is labeled Calculator blend (Authority TVAL V3)"
     );
     assert!(
-        !sheet.contains("sortHead(sort, \"TVAL\", \"tval\", true)"),
+        !sheet.contains("calcHead(\"TVAL\", \"tval\", true)")
+            && !sheet.contains("sortHead(sort, \"TVAL\", \"tval\", true)"),
         "the old TVAL header is gone"
     );
     assert!(
-        score.contains("Math.round((pnl * 2 + master.planFwdYieldBps) / 2)"),
-        "Calculator blend stays Gain% × 2 plus plan FWD, divided by 2"
+        sheet.contains("columnFormulas")
+            && sheet.contains("const tip = (label: string)")
+            && sheet.contains("title={weekColumnTip}"),
+        "Calculator heads take Field Intent formulas as native title tooltips"
+    );
+    let app_calc = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/App.tsx"),
+    )
+    .unwrap();
+    assert!(
+        app_calc.contains("columnFormulas={CALCULATOR_COLUMN_FORMULAS}"),
+        "App wires CALCULATOR_COLUMN_FORMULAS into CalculatorReturnSheet"
+    );
+    let list_table = std::fs::read_to_string(
+        golden_harness::repo_root().join("packages/ui-components/src/listTable.tsx"),
+    )
+    .unwrap();
+    assert!(
+        list_table.contains("title?: string") && list_table.contains("title={title}"),
+        "sortHead / SortTh expose a native title tooltip"
+    );
+    assert!(
+        score.contains("Math.round((pnl * 2 + master.planFwdYieldBps) / 2)")
+            && score.contains("Math.round((pnl * 2 + master.mostCurrentFwdYieldBps) / 2)")
+            && score.contains("tvalDelta: tval != null && mcTval != null ? mcTval - tval : null"),
+        "Calculator blend / MC TVAL / Δ stay Gain% × 2 plus FWD (or MC FWD), divided by 2"
+    );
+    assert!(
+        sheet.contains("Calculator blend is Authority TVAL V3")
+            && sheet.contains("not Holdings P&L%+Annual%"),
+        "Calculator caption names TVAL V3 and rejects Holdings sum"
+    );
+    let inventory = std::fs::read_to_string(
+        golden_harness::repo_root().join("docs/architecture/tval-inventory.md"),
+    )
+    .unwrap();
+    assert!(
+        inventory.contains("Calculator TVAL V3")
+            && inventory.contains("(Gain% × 2 + FWD) / 2")
+            && inventory.contains("**No TVAL**")
+            && inventory.contains("Do **not** add a Holdings TVAL column"),
+        "tval-inventory.md locks Calculator V3 and no Holdings TVAL"
+    );
+    assert_eq!(
+        application_core::component_export::calculator_tval_v3_bps(2_500, 1_200),
+        3_100,
+        "export helper matches UI blend integer math"
+    );
+    assert_eq!(
+        application_core::component_export::calculator_tval_v3_bps(2_500, 1_000),
+        3_000
     );
     assert!(
         !financial_domain::collector::calculator_view_includes("CASH", "SPAXX", "Monthly"),
@@ -1620,7 +1670,7 @@ fn field_intent_stores_the_calculator_column_contract() {
         let at = columns
             .find(&marker)
             .unwrap_or_else(|| panic!("missing {name}"));
-        let slice = &columns[at..columns.len().min(at + 280)];
+        let slice = &columns[at..columns.len().min(at + 520)];
         assert!(
             slice.contains("status: \"still wrong\""),
             "{name} stays still wrong (parked TVAL / Type): {slice}"
@@ -1630,6 +1680,12 @@ fn field_intent_stores_the_calculator_column_contract() {
     assert!(
         columns.contains("kind: \"cash\"") && columns.contains("kind: \"percent\""),
         "field-intent names cash and percent kinds for Excel"
+    );
+    assert!(
+        columns.contains("export const CALCULATOR_COLUMN_FORMULAS")
+            && columns.contains("CALCULATOR_COLUMN_INTENT.map((col) => [col.name, col.formula])")
+            && columns.contains("formula: \"(Gain% × 2 + FWD) / 2\""),
+        "Field Intent exports header formulas for Calculator tooltips"
     );
     let contract_fields = std::fs::read_to_string(
         root.join("apps/desktop/src/features/field-intent/contractFields.ts"),
@@ -1988,8 +2044,9 @@ async fn calculator_export_uses_excel_cash_and_percent_types() {
             && core.contains("Cell::Blank")
             && core.contains("write_number_with_format")
             && core.contains("$#,##0.00")
-            && core.contains("0.00%"),
-        "one typed Calculator arm writes cash/percent cells"
+            && core.contains("0.00%")
+            && core.contains("calculator_tval_v3_bps"),
+        "one typed Calculator arm writes cash/percent cells and uses shared TVAL V3 helper"
     );
     let typed = core
         .split("async fn calculator_typed_sheet(")

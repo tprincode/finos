@@ -42,6 +42,37 @@ fn desktop_stays_on_local_tauri_and_exposes_remote_http_client() {
     );
 }
 
+/// sqlx checksums applied migrations by bytes. A CRLF rewrite after apply crashes startup
+/// (`migration N was previously applied but has been modified`). Keep LF only.
+#[test]
+fn sqlite_migrations_are_lf_only() {
+    let dir = repo_root().join("crates/storage-sqlite/migrations");
+    let mut checked = 0usize;
+    let mut crlf = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("migrations dir") {
+        let entry = entry.expect("migration entry");
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sql") {
+            continue;
+        }
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        checked += 1;
+        if bytes.contains(&b'\r') {
+            crlf.push(
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string()),
+            );
+        }
+    }
+    assert!(checked > 0, "no .sql migrations under {}", dir.display());
+    assert!(
+        crlf.is_empty(),
+        "sqlite migrations must be LF-only (CRLF breaks sqlx checksums after apply): {}",
+        crlf.join(", ")
+    );
+}
+
 #[test]
 fn financial_pr_workflow_runs_magi_gate_and_does_not_write_oracles() {
     let wf = std::fs::read_to_string(

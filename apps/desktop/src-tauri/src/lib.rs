@@ -1726,13 +1726,67 @@ fn open_external_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Pause on folder + file name (OS Save dialog) before writing owner downloads.
 #[tauri::command]
 fn save_local_bytes(default_file_name: String, bytes: Vec<u8>) -> Result<String, String> {
     let dir = download_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(default_file_name);
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("Save file")
+        .set_directory(&dir)
+        .set_file_name(&default_file_name);
+    let lower = default_file_name.to_ascii_lowercase();
+    if lower.ends_with(".xlsx") {
+        dialog = dialog.add_filter("Excel workbook", &["xlsx"]);
+    } else if lower.ends_with(".pdf") {
+        dialog = dialog.add_filter("PDF", &["pdf"]);
+    } else if lower.ends_with(".csv") {
+        dialog = dialog.add_filter("CSV", &["csv"]);
+    }
+    dialog = dialog.add_filter("All files", &["*"]);
+    let path = dialog
+        .save_file()
+        .ok_or_else(|| "cancelled".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Default raw-data/<asOf> folder for the Save data snapshot confirm step.
+#[tauri::command]
+fn suggested_snapshot_folder(as_of_date: String) -> Result<String, String> {
+    let as_of = as_of_date.trim();
+    if as_of.is_empty() {
+        return Err("asOfDate is required".into());
+    }
+    Ok(
+        application_core::data_snapshot::raw_data_dir(&app_data_dir_fs(), as_of)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// Folder picker so the owner can change the snapshot destination before confirm.
+#[tauri::command]
+fn pick_directory(default_path: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new().set_title("Choose folder");
+    if let Some(raw) = default_path {
+        let path = PathBuf::from(raw.trim());
+        if path.is_dir() {
+            dialog = dialog.set_directory(&path);
+        } else if let Some(parent) = path.parent().filter(|p| p.is_dir()) {
+            dialog = dialog.set_directory(parent);
+        }
+    } else {
+        let dir = download_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        dialog = dialog.set_directory(&dir);
+    }
+    Ok(dialog
+        .pick_folder()
+        .map(|p| p.to_string_lossy().into_owned()))
 }
 
 fn screen_atlas_root_dir() -> Result<PathBuf, String> {
@@ -2278,6 +2332,8 @@ pub fn run() {
             open_exception_log,
             open_external_url,
             save_local_bytes,
+            suggested_snapshot_folder,
+            pick_directory,
             component_metadata_get,
             component_metadata_put,
             screen_atlas_save,

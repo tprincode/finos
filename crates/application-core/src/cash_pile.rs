@@ -16,6 +16,7 @@ const LEDGER_TYPES: &[&str] = &[
     "ETF Sale",
 ];
 
+#[derive(Clone)]
 pub struct CashPile {
     pub lot_id: Uuid,
     pub security_id: Uuid,
@@ -33,9 +34,14 @@ pub async fn pile_for_account(
     if no_cash_account(&account.name) {
         return Ok(None);
     }
+    let preferred = financial_domain::cash_management::resolve_cash_symbol(
+        &account.name,
+        Some(account.cash_symbol.as_str()).filter(|s| !s.is_empty()),
+    );
     let basis = canonical.basis_get().await?;
     let securities = canonical.security_list().await?;
-    let mut best: Option<CashPile> = None;
+    let mut preferred_lot: Option<CashPile> = None;
+    let mut best_par: Option<CashPile> = None;
     for lot in &basis.lots {
         if lot.account_id != account_id || lot.remaining_quantity_minor <= 0 {
             continue;
@@ -47,21 +53,33 @@ pub async fn pile_for_account(
             continue;
         }
         let dollars = cash_dollars_minor(lot.remaining_quantity_minor, lot.quantity_scale);
-        let take = best
+        let row = CashPile {
+            lot_id: lot.lot_id,
+            security_id: lot.security_id,
+            symbol: security.symbol.clone(),
+            remaining_qty_minor: lot.remaining_quantity_minor,
+            quantity_scale: lot.quantity_scale,
+            dollars_minor: dollars,
+        };
+        if preferred
+            .as_ref()
+            .is_some_and(|want| security.symbol.eq_ignore_ascii_case(want))
+        {
+            let take = preferred_lot
+                .as_ref()
+                .is_none_or(|prev| dollars > prev.dollars_minor);
+            if take {
+                preferred_lot = Some(row.clone());
+            }
+        }
+        let take_par = best_par
             .as_ref()
             .is_none_or(|prev| dollars > prev.dollars_minor);
-        if take {
-            best = Some(CashPile {
-                lot_id: lot.lot_id,
-                security_id: lot.security_id,
-                symbol: security.symbol.clone(),
-                remaining_qty_minor: lot.remaining_quantity_minor,
-                quantity_scale: lot.quantity_scale,
-                dollars_minor: dollars,
-            });
+        if take_par {
+            best_par = Some(row);
         }
     }
-    Ok(best)
+    Ok(preferred_lot.or(best_par))
 }
 
 fn basis_for_dollars(dollars_minor: i64, scale: u8) -> i64 {
@@ -255,6 +273,112 @@ pub async fn deposit_labeled_keyed(
         .lot_qty_add(pile.lot_id, qty, amount_minor)
         .await?;
     pile_get(canonical, account_id).await
+}
+
+/// Deposit and return the posted activity id (for cart cash_align linkage).
+pub async fn deposit_with_activity(
+    canonical: &dyn Canonical,
+    account_id: Uuid,
+    amount_minor: i64,
+    occurred_on: String,
+) -> Result<(CashPileBody, Uuid), PlatformError> {
+    if amount_minor <= 0 {
+        return Err(PlatformError::new(
+            "invalid_qty",
+            "deposit must be positive",
+        ));
+    }
+    let account = canonical.account_get(account_id).await?;
+    if no_cash_account(&account.name) {
+        return Err(PlatformError::new(
+            "account_cash_not_offered",
+            "Energy and Robinhood do not have a cash pile",
+        ));
+    }
+    let Some(pile) = pile_for_account(canonical, account_id).await? else {
+        return Err(PlatformError::new(
+            "missing_cash_pile",
+            "this account has no money-market position",
+        ));
+    };
+    let qty = cash_qty_for_dollars(amount_minor, pile.quantity_scale);
+    if qty <= 0 {
+        return Err(PlatformError::new(
+            "invalid_qty",
+            "deposit is smaller than the pile step",
+        ));
+    }
+    let posted = canonical
+        .activity_post(
+            account_id,
+            Some(pile.security_id),
+            "deposit".into(),
+            Some(amount_minor),
+            2,
+            occurred_on,
+            None,
+            None,
+            None,
+        )
+        .await?;
+    canonical
+        .lot_qty_add(pile.lot_id, qty, amount_minor)
+        .await?;
+    let body = pile_get(canonical, account_id).await?;
+    Ok((body, posted.activity_id))
+}
+
+/// Withdraw labeled and return the posted activity id.
+pub async fn withdraw_labeled_with_activity(
+    canonical: &dyn Canonical,
+    account_id: Uuid,
+    amount_minor: i64,
+    occurred_on: String,
+    activity_type: &str,
+) -> Result<(CashPileBody, Uuid), PlatformError> {
+    if amount_minor <= 0 {
+        return Err(PlatformError::new(
+            "invalid_qty",
+            "withdrawal must be positive",
+        ));
+    }
+    let Some(pile) = pile_for_account(canonical, account_id).await? else {
+        return Err(PlatformError::new(
+            "missing_cash_pile",
+            "this account has no money-market position",
+        ));
+    };
+    if amount_minor > pile.dollars_minor {
+        return Err(PlatformError::new(
+            "insufficient_account_cash",
+            "live cash does not cover the withdrawal",
+        ));
+    }
+    let qty = cash_qty_for_dollars(amount_minor, pile.quantity_scale);
+    if qty <= 0 || qty > pile.remaining_qty_minor {
+        return Err(PlatformError::new(
+            "insufficient_account_cash",
+            "live cash qty does not cover the withdrawal",
+        ));
+    }
+    let posted = canonical
+        .activity_post(
+            account_id,
+            Some(pile.security_id),
+            activity_type.into(),
+            Some(amount_minor),
+            2,
+            occurred_on,
+            None,
+            None,
+            None,
+        )
+        .await?;
+    canonical
+        .lot_assign(pile.lot_id, posted.activity_id, qty, pile.quantity_scale)
+        .await?;
+    let body = pile_get(canonical, account_id).await?;
+    Ok((body, posted.activity_id))
 }
 
 pub async fn withdraw(

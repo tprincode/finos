@@ -14,7 +14,8 @@ use application_core::contracts::{
     PlanHistoryRecord, PositionCharacteristicRecord, PositionDetailsBody, PositionLineBody,
     TaxProjectionBody, BacktestPeriodRecord, PositionBacktestResultBody,
     RocResearchObservation, RemainingPaymentDateOverride, ExpectedPaymentPattern,
-    PositionTaxProfile, AssumedPayDateRecord, IssuerPayDateRecord, AccountBalanceSnapshotRecord,
+    PositionTaxProfile, AssumedPayDateRecord, IncomeWeekCashDispositionRecord, IssuerPayDateRecord,
+    AccountBalanceSnapshotRecord,
     TrendsWeekSourceRecord,
     AccountMarketValueDailyRecord, WorkTicketRecord, CollectorFieldDecisionRecord,
 };
@@ -590,11 +591,14 @@ impl Canonical for LocalPlatform {
         kind: String,
     ) -> Result<AccountRecord, PlatformError> {
         let pool = self.pool.read().await;
+        let cash_symbol = financial_domain::cash_management::default_cash_symbol(&name)
+            .unwrap_or("")
+            .to_string();
         let record = AccountRecord {
             account_id: Uuid::new_v4(),
             name,
             kind,
-            cash_symbol: String::new(),
+            cash_symbol,
             broker_account_number: String::new(),
             min_balance_target_minor: None,
             row_version: 1,
@@ -2843,6 +2847,31 @@ impl Canonical for LocalPlatform {
         crate::assumed_pay::prune_for_vendor(&*pool, security_id, &vendor_pay_on).await
     }
 
+    async fn income_week_cash_disposition_list(
+        &self,
+        week_end: String,
+    ) -> Result<Vec<IncomeWeekCashDispositionRecord>, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::income_week_cash::list_for_week(&*pool, &week_end).await
+    }
+
+    async fn income_week_cash_disposition_upsert(
+        &self,
+        record: IncomeWeekCashDispositionRecord,
+    ) -> Result<IncomeWeekCashDispositionRecord, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::income_week_cash::upsert(&*pool, record).await
+    }
+
+    async fn income_week_cash_disposition_clear(
+        &self,
+        week_end: String,
+        security_id: Uuid,
+    ) -> Result<u64, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::income_week_cash::clear(&*pool, &week_end, security_id).await
+    }
+
     async fn price_quote_record(
         &self,
         security_id: Uuid,
@@ -3791,6 +3820,7 @@ impl Canonical for LocalPlatform {
         due_on: String,
         principal_minor: i64,
         interest_minor: i64,
+        balance_after_minor: Option<i64>,
     ) -> Result<application_core::contracts::ExternalManagedGetBody, PlatformError> {
         let pool = self.pool.read().await;
         crate::external_account::confirm_loan_payment(
@@ -3799,6 +3829,7 @@ impl Canonical for LocalPlatform {
             due_on,
             principal_minor,
             interest_minor,
+            balance_after_minor,
         )
         .await
     }

@@ -50,6 +50,7 @@ export type IncomePlanScreenProps = {
   dividendPerf: DividendPerformanceGet | null;
   perfRange: DividendPerformanceRange;
   onPerfRangeChange: (next: DividendPerformanceRange) => void;
+  onConfirmImpliedDecl?: (symbol: string) => void;
 };
 
 export function IncomePlanScreen({
@@ -76,6 +77,7 @@ export function IncomePlanScreen({
   dividendPerf,
   perfRange,
   onPerfRangeChange,
+  onConfirmImpliedDecl,
 }: IncomePlanScreenProps) {
   return (
     <section
@@ -320,6 +322,7 @@ export function IncomePlanScreen({
               week={incomeWeek}
               selectedAccounts={drillAccounts}
               onOpenSymbol={(symbol) => openPositionHub(symbol, "income")}
+              onConfirmImpliedDecl={onConfirmImpliedDecl}
             />
           </div>
         </>

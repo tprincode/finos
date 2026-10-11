@@ -264,6 +264,7 @@ export function SortTh({
   onSort,
   numeric = false,
   filter,
+  title,
 }: {
   label: string;
   columnKey: string;
@@ -272,6 +273,8 @@ export function SortTh({
   onSort: (key: string) => void;
   numeric?: boolean;
   filter?: ColFilterControl;
+  /** Native hover tooltip (e.g. Field Intent formula). */
+  title?: string;
 }) {
   const active = sortKey === columnKey;
   return (
@@ -279,9 +282,15 @@ export function SortTh({
       scope="col"
       className={numeric ? "numeric sortable" : "sortable"}
       aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
+      title={title}
     >
       <div className="sort-th">
-        <button type="button" aria-label={`Sort by ${label}`} onClick={() => onSort(columnKey)}>
+        <button
+          type="button"
+          aria-label={`Sort by ${label}`}
+          title={title}
+          onClick={() => onSort(columnKey)}
+        >
           {label}
           {active ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
         </button>
@@ -304,6 +313,7 @@ export function sortHead(
   columnKey: string,
   numeric = false,
   filter?: ColFilterControl,
+  title?: string,
 ) {
   return (
     <SortTh
@@ -314,6 +324,7 @@ export function sortHead(
       onSort={sort.toggleSort}
       numeric={numeric}
       filter={filter}
+      title={title}
     />
   );
 }

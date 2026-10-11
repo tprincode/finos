@@ -1,5 +1,7 @@
 * text=auto eol=lf
 *.sql text eol=lf
+# Applied sqlx migrations are checksummed by bytes — never re-save these as CRLF on Windows.
+crates/storage-sqlite/migrations/*.sql text eol=lf
 *.rs text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
