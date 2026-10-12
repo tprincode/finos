@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ai_gateway::GrokAdvisory;
@@ -2110,6 +2110,165 @@ fn write_restart_token() -> Result<(), String> {
     Ok(())
 }
 
+fn find_repo_root() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("FINOS_REPO") {
+        let p = PathBuf::from(explicit);
+        if p.join("scripts").join("golden.sh").is_file()
+            && p.join("crates").join("golden-harness").is_dir()
+        {
+            return Some(p);
+        }
+    }
+    let mut cur = std::env::current_dir().ok()?;
+    for _ in 0..8 {
+        if cur.join("scripts").join("golden.sh").is_file()
+            && cur.join("crates").join("golden-harness").is_dir()
+        {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn cargo_on_path() -> bool {
+    std::process::Command::new("cargo")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn catalog_golden_suites(repo: &Path) -> Result<std::collections::HashSet<String>, String> {
+    let path = repo.join("docs/architecture/ui-modules.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("ui-modules.json: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| e.to_string())?;
+    let mut set = std::collections::HashSet::new();
+    if let Some(modules) = v.get("modules").and_then(|m| m.as_array()) {
+        for module in modules {
+            if let Some(s) = module
+                .get("goldenSuite")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                set.insert(s.to_string());
+            }
+        }
+    }
+    Ok(set)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GoldenSuiteCapabilities {
+    repo_root: Option<String>,
+    cargo_ok: bool,
+    runnable: bool,
+    reason: String,
+}
+
+#[tauri::command]
+fn golden_suite_capabilities() -> GoldenSuiteCapabilities {
+    let repo = find_repo_root();
+    let cargo_ok = cargo_on_path();
+    match (&repo, cargo_ok) {
+        (Some(root), true) => GoldenSuiteCapabilities {
+            repo_root: Some(root.display().to_string()),
+            cargo_ok: true,
+            runnable: true,
+            reason: String::new(),
+        },
+        (None, true) => GoldenSuiteCapabilities {
+            repo_root: None,
+            cargo_ok: true,
+            runnable: false,
+            reason: "Needs coding checkout with FinOS source (USB Start here → ~/Developer/finos)."
+                .into(),
+        },
+        (Some(root), false) => GoldenSuiteCapabilities {
+            repo_root: Some(root.display().to_string()),
+            cargo_ok: false,
+            runnable: false,
+            reason: "Rust cargo not on PATH — run ./install-mac.sh (or install rustup).".into(),
+        },
+        (None, false) => GoldenSuiteCapabilities {
+            repo_root: None,
+            cargo_ok: false,
+            runnable: false,
+            reason: "Needs coding checkout and Rust (USB Start here, then ./install-mac.sh)."
+                .into(),
+        },
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GoldenSuiteRunResult {
+    ok: bool,
+    code: i32,
+    log: String,
+}
+
+#[tauri::command]
+fn golden_suite_run(suite: String) -> Result<GoldenSuiteRunResult, String> {
+    let suite = suite.trim().to_string();
+    if suite.is_empty()
+        || !suite
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err("invalid suite name".into());
+    }
+    let caps = golden_suite_capabilities();
+    if !caps.runnable {
+        return Err(caps.reason);
+    }
+    let repo = PathBuf::from(caps.repo_root.ok_or_else(|| caps.reason.clone())?);
+    let allowed = catalog_golden_suites(&repo)?;
+    if !allowed.contains(&suite) && suite != "ui_modules" {
+        return Err(format!(
+            "suite {suite} is not listed on any catalog goldenSuite (ui_modules always allowed)"
+        ));
+    }
+
+    let output = if cfg!(windows) {
+        std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "scripts\\golden.ps1",
+                &suite,
+            ])
+            .current_dir(&repo)
+            .output()
+    } else {
+        std::process::Command::new("bash")
+            .args(["scripts/golden.sh", &suite])
+            .current_dir(&repo)
+            .output()
+    }
+    .map_err(|e| format!("spawn golden: {e}"))?;
+
+    let mut log = String::new();
+    log.push_str(&String::from_utf8_lossy(&output.stdout));
+    if !output.stderr.is_empty() {
+        log.push_str("\n--- stderr ---\n");
+        log.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    let code = output.status.code().unwrap_or(-1);
+    Ok(GoldenSuiteRunResult {
+        ok: output.status.success(),
+        code,
+        log,
+    })
+}
+
 #[tauri::command]
 async fn app_restart(
     app: AppHandle,
@@ -2372,7 +2531,9 @@ pub fn run() {
             app_exit,
             app_restart,
             page_loaded,
-            ui_error_log
+            ui_error_log,
+            golden_suite_capabilities,
+            golden_suite_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

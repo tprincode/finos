@@ -11,14 +11,23 @@ Locked household paths for the MacBook Air cutover:
 
 Never put `local.sqlite` in iCloud Drive, Dropbox, or OneDrive.
 
-## Installer (preferred)
+## USB Start here (preferred — almost no git)
 
-After the repo is on the Mac (clone, USB kit, or copy):
+Plug in the FinOS USB stick, open Terminal, paste (replace the drive name if Finder shows another):
 
 ```bash
-cd ~/Developer/finos   # or wherever the clone landed
+bash /Volumes/<VolumeName>/Finos/load-from-usb.sh
+```
+
+Optional: `--seed` or `--launch`. That script copies the kit into `~/Developer/finos` and runs the installer.
+
+## Installer (after the repo is on the Mac)
+
+```bash
+cd ~/Developer/finos
 chmod +x install-mac.sh scripts/mac-install.sh
 ./install-mac.sh
+# later: ./install-mac.sh --check   # Ready report (dirs + toolchain)
 ```
 
 What it does (idempotent; safe to re-run):
@@ -87,6 +96,15 @@ Or: `./install-mac.sh --seed`
 5. Agent restart: write restart token under Application Support, stop `finos-desktop`, run `./finos.sh`, then `./scripts/app-up.sh`. Do **not** use `finos.bat` / `app-up.ps1` on Mac.
 
 Do not copy Windows AgentStores wholesale.
+
+## Goldens (coding)
+
+```bash
+./scripts/golden.sh ui_modules
+./scripts/golden.sh cart
+```
+
+Or Tools → Component Registry → **Run golden** (coding checkout with cargo only; household installs stay disabled with a reason).
 
 ## Soft dual-run
 

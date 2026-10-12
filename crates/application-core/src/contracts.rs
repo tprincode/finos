@@ -4059,6 +4059,15 @@ pub struct UiModuleItem {
     /// Export arm that fills this module's sheet. Filled when the catalog is served.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub export_kind: String,
+    /// Cargo `--test` suite name when this module has a domain golden (e.g. `cart`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub golden_suite: String,
+    /// Must appear in `crates/golden-harness/tests/{goldenSuite}.rs` when set.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pass_needle: String,
+    /// Extra integrity needle (optional) for data-path citations.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub integrity_needle: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

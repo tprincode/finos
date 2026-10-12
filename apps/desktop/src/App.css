@@ -4852,6 +4852,41 @@ section.calculator-page > .calculator-page {
   flex: 0 0 auto;
 }
 
+.registry-golden-panel {
+  margin: 0.75rem 0 1rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #9bb3c9;
+  background: #f4f8fb;
+}
+
+.registry-golden-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.registry-golden-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.registry-golden-log {
+  margin: 0.5rem 0 0;
+  max-height: 14rem;
+  overflow: auto;
+  padding: 0.4rem 0.5rem;
+  background: #1b2430;
+  color: #e8eef5;
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+}
+
 .external-open-head {
   display: flex;
   flex-wrap: wrap;

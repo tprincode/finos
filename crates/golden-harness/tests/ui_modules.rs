@@ -186,7 +186,7 @@ fn owner_facing_calculated_fields_still_on_the_screens() {
         ("MAGI forecast suggestions", "aria-label=\"MAGI suggestions\""),
         ("Coverage desk", "aria-label=\"Income vs Expense planner\""),
         ("Coverage plan table", "aria-label=\"Coverage plan\""),
-        ("Coverage plan vs withdrawals", "planned income vs planned withdrawals"),
+        ("Coverage plan vs withdrawals", "planned income from Home Dividend Plan vs planned withdrawals"),
         ("Coverage period caption", "cash-coverage-caption"),
         ("Coverage period loading", "cash-coverage-loading"),
         ("Weekly comparison title", "Weekly comparison"),
@@ -683,6 +683,82 @@ async fn income_plan_week_declared_positions_have_account_slices() {
         accts.iter().any(|a| a["declarationKnown"] == true && a["planKnown"] == true),
         "declared {} slices need declaration+plan: {accts:?}",
         sample["symbol"]
+    );
+}
+
+/// Catalog `goldenSuite` rows must point at a real harness file (and optional passNeedle).
+#[test]
+fn catalog_golden_suite_links_point_at_real_suites() {
+    let root = repo_root();
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("docs/architecture/ui-modules.json")).unwrap(),
+    )
+    .unwrap();
+    let modules = catalog["modules"].as_array().expect("modules");
+    let mut linked = 0usize;
+    for module in modules {
+        let suite = module
+            .get("goldenSuite")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if suite.is_empty() {
+            continue;
+        }
+        linked += 1;
+        let path = root
+            .join("crates/golden-harness/tests")
+            .join(format!("{suite}.rs"));
+        assert!(
+            path.is_file(),
+            "module {} goldenSuite={suite} missing {}",
+            module["id"],
+            path.display()
+        );
+        let needle = module
+            .get("passNeedle")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if !needle.is_empty() {
+            let body = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                body.contains(needle),
+                "module {} passNeedle not found in {suite}.rs",
+                module["id"]
+            );
+        }
+    }
+    assert!(
+        linked >= 20,
+        "expected a backfill of goldenSuite links, found {linked}"
+    );
+    let registry = std::fs::read_to_string(
+        root.join("apps/desktop/src/features/components/ComponentRegistry.tsx"),
+    )
+    .unwrap();
+    let host = std::fs::read_to_string(root.join("apps/desktop/src-tauri/src/lib.rs")).unwrap();
+    assert!(
+        registry.contains("Run golden")
+            && registry.contains("golden_suite_run")
+            && registry.contains("data-part=\"registry-golden-suites\""),
+        "Tools → Component Registry must offer Run golden"
+    );
+    assert!(
+        host.contains("fn golden_suite_capabilities")
+            && host.contains("fn golden_suite_run")
+            && host.contains("golden_suite_capabilities,"),
+        "Tauri must expose GoldenSuiteCapabilities / GoldenSuiteRun"
+    );
+    let install = std::fs::read_to_string(root.join("scripts/mac-install.sh")).unwrap();
+    let load = std::fs::read_to_string(root.join("scripts/load-from-usb.sh")).unwrap();
+    assert!(
+        install.contains("--check") && install.contains("Ready report"),
+        "mac-install must print a Ready report and support --check"
+    );
+    assert!(
+        load.contains("finos.bundle") && load.contains("install-mac.sh"),
+        "load-from-usb.sh must find the kit bundle and run the installer"
     );
 }
 

@@ -251,6 +251,13 @@ export function ComponentRegistry({
   const [editor, setEditor] = useState<
     (OwnerMeta & { key: string; name: string; moduleId: string; partId: string }) | null
   >(null);
+  const [goldenCaps, setGoldenCaps] = useState<{
+    runnable: boolean;
+    reason: string;
+    repoRoot?: string | null;
+  } | null>(null);
+  const [goldenBusy, setGoldenBusy] = useState(false);
+  const [goldenLog, setGoldenLog] = useState<string | null>(null);
 
   useEffect(() => {
     void invoke<string>("component_metadata_get")
@@ -260,6 +267,51 @@ export function ComponentRegistry({
       })
       .catch(() => setMeta({}));
   }, []);
+
+  useEffect(() => {
+    void invoke<{
+      runnable: boolean;
+      reason: string;
+      repoRoot?: string | null;
+    }>("golden_suite_capabilities")
+      .then(setGoldenCaps)
+      .catch(() =>
+        setGoldenCaps({
+          runnable: false,
+          reason: "Golden runner unavailable in this build.",
+        }),
+      );
+  }, []);
+
+  const goldenRows = (() => {
+    const map = new Map<string, string[]>();
+    for (const row of modules ?? []) {
+      const suite = (row.goldenSuite ?? "").trim();
+      if (!suite) continue;
+      const list = map.get(suite) ?? [];
+      list.push(row.title);
+      map.set(suite, list);
+    }
+    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+  })();
+
+  const runGolden = async (suite: string) => {
+    setGoldenLog(null);
+    setGoldenBusy(true);
+    try {
+      const result = await invoke<{ ok: boolean; code: number; log: string }>(
+        "golden_suite_run",
+        { suite },
+      );
+      setGoldenLog(
+        `${result.ok ? "PASS" : "FAIL"} ${suite} (exit ${result.code})\n${result.log}`,
+      );
+    } catch (err: unknown) {
+      setGoldenLog(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGoldenBusy(false);
+    }
+  };
 
   const exportPage = async (label: string, rows: CatalogModule[]) => {
     setExportNote(null);
@@ -323,6 +375,54 @@ export function ComponentRegistry({
         domain-completeness index and not a plugin host. Core functions stay in
         Settings. Capture is part of this page.
       </p>
+      <section
+        id="registry-goldens"
+        className="registry-golden-panel"
+        aria-label="Component golden suites"
+        data-part="registry-golden-suites"
+        data-section="registry-goldens"
+      >
+        <h3>Golden suites</h3>
+        <p className="registry-note">
+          Coding builds only: runs the linked cargo golden from this checkout.
+          Household installs stay disabled (no Rust source tree).
+        </p>
+        {goldenCaps && !goldenCaps.runnable ? (
+          <p role="status">{goldenCaps.reason}</p>
+        ) : null}
+        {goldenRows.length === 0 ? (
+          <p>No catalog goldenSuite links yet.</p>
+        ) : (
+          <ul className="registry-golden-list">
+            {goldenRows.map(([suite, titles]) => (
+              <li key={suite}>
+                <span>
+                  <strong>{suite}</strong> — {titles.join(", ")}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Run golden ${suite}`}
+                  className={goldenBusy ? "is-unsaved" : undefined}
+                  disabled={goldenBusy || !goldenCaps?.runnable || isBusy}
+                  title={
+                    goldenCaps?.runnable
+                      ? `Run ./scripts/golden.sh ${suite}`
+                      : goldenCaps?.reason
+                  }
+                  onClick={() => void runGolden(suite)}
+                >
+                  Run golden
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {goldenLog ? (
+          <pre className="registry-golden-log" aria-label="Golden run log">
+            {goldenLog}
+          </pre>
+        ) : null}
+      </section>
       <ScreenAtlasScreen
         asOfDate={asOfDate}
         isBusy={isBusy}

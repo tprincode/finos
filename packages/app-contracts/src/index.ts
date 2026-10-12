@@ -187,6 +187,11 @@ export type CoreFunctionsGet = {
     }>;
     sections?: Array<{ id: string; title: string; anchor: string }>;
     sqliteTables?: Array<{ name: string; path: string; needle: string }>;
+    /** Cargo --test suite when this module has a domain golden. */
+    goldenSuite?: string;
+    /** Must appear in crates/golden-harness/tests/{goldenSuite}.rs when set. */
+    passNeedle?: string;
+    integrityNeedle?: string;
   }>;
 };
 

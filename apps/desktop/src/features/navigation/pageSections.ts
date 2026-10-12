@@ -190,6 +190,7 @@ export const SCREEN_SECTIONS: Record<string, readonly NavSection[]> = {
     { id: "settings-actions", label: "Actions", anchor: "settings-actions" },
   ],
   "components": [
+    { id: "registry-goldens", label: "Golden suites", anchor: "registry-goldens" },
     { id: "registry-pages", label: "Pages", anchor: "registry-pages" },
     { id: "registry-also", label: "Also registered", anchor: "registry-also" },
   ],
