@@ -40,13 +40,12 @@ if (Test-Path $bundle) { Remove-Item $bundle -Force }
 git bundle create $bundle $branch
 if (-not (Test-Path $bundle)) { throw "git bundle create failed" }
 
-$tmp = Join-Path $env:TEMP "finos-usb-$short"
-if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
-git clone --branch $branch --single-branch $bundle $tmp
-
 $repoDir = Join-Path $KitRoot "repo"
-if (Test-Path $repoDir) { Remove-Item $repoDir -Recurse -Force }
-Move-Item $tmp $repoDir
+if (Test-Path $repoDir) {
+  # Windows often locks .git during Move-Item; wipe in place then clone into kit.
+  Remove-Item $repoDir -Recurse -Force
+}
+git clone --branch $branch --single-branch $bundle $repoDir
 
 Copy-Item (Join-Path $Root "scripts\load-from-usb.sh") (Join-Path $KitRoot "load-from-usb.sh") -Force
 Copy-Item (Join-Path $Root "GO.command") (Join-Path $KitRoot "GO.command") -Force
