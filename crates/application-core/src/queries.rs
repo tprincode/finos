@@ -149,6 +149,7 @@ const ORDINARY_WRITES: &[&str] = &[
     "ExternalRegisterSave",
     "ExternalRegisterTrueUp",
     "ExternalRegisterMarkStep",
+    "ExternalRegisterUnmarkStep",
     "ExternalRegisterDelete",
     "ExternalRegisterImport",
     "ExternalAccountManagerSave",
@@ -15235,6 +15236,16 @@ pub async fn execute_command_on(
                 &request,
                 canonical
                     .external_register_mark_step(line_ids, step, ticked_on)
+                    .await,
+            ),
+            Err(err) => command_err(&request, &err.code),
+        },
+        "ExternalRegisterUnmarkStep" => match crate::external_register::unmark_step_from_json(&json)
+        {
+            Ok((line_ids, step)) => map_c(
+                &request,
+                canonical
+                    .external_register_unmark_step(line_ids, step)
                     .await,
             ),
             Err(err) => command_err(&request, &err.code),

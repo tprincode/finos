@@ -6,12 +6,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
+# Same PATH as install (brew + cargo + rustup keg).
+# shellcheck source=scripts/mac-env.sh
+source "$ROOT/scripts/mac-env.sh"
+
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js is required (install an LTS release)." >&2
+  echo "Node.js is required. Run: ./install-mac.sh   (or ./install-mac.sh --check)" >&2
   exit 1
 fi
 if ! command -v cargo >/dev/null 2>&1; then
-  echo "Rust/cargo is required (install via rustup)." >&2
+  echo "Rust/cargo is required. Run: ./install-mac.sh   (or ./install-mac.sh --check)" >&2
   exit 1
 fi
 

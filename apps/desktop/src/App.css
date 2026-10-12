@@ -4923,6 +4923,14 @@ section.calculator-page > .calculator-page {
   box-sizing: border-box;
 }
 
+.external-open-paytype-heading {
+  color: #1b365d;
+  font-weight: 800;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+}
+
 .external-open-paytype-total {
   display: flex;
   align-items: baseline;

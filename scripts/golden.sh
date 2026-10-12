@@ -7,6 +7,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=scripts/mac-env.sh
+source "$ROOT/scripts/mac-env.sh"
 RECORD="$ROOT/docs/architecture/golden-durations.json"
 
 if [[ $# -lt 1 ]]; then

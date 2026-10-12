@@ -74,11 +74,16 @@ fi
 
 cd "$TARGET"
 git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
-chmod +x install-mac.sh scripts/mac-install.sh scripts/load-from-usb.sh scripts/golden.sh finos.sh scripts/app-up.sh 2>/dev/null || true
-
-INSTALL_ARGS=()
-if [[ "$SEED" -eq 1 ]]; then INSTALL_ARGS+=(--seed); fi
-if [[ "$LAUNCH" -eq 1 ]]; then INSTALL_ARGS+=(--launch); fi
+chmod +x install-mac.sh scripts/mac-install.sh scripts/mac-env.sh scripts/load-from-usb.sh scripts/golden.sh finos.sh scripts/app-up.sh 2>/dev/null || true
 
 say "Running installer"
-exec ./install-mac.sh "${INSTALL_ARGS[@]}"
+# Avoid "${arr[@]}" under `set -u` when empty (bash nounset unbound error).
+if [[ "$SEED" -eq 1 && "$LAUNCH" -eq 1 ]]; then
+  exec ./install-mac.sh --seed --launch
+elif [[ "$SEED" -eq 1 ]]; then
+  exec ./install-mac.sh --seed
+elif [[ "$LAUNCH" -eq 1 ]]; then
+  exec ./install-mac.sh --launch
+else
+  exec ./install-mac.sh
+fi

@@ -92,6 +92,96 @@ function todayIso(): string {
   return `${now.getFullYear()}-${month}-${day}`;
 }
 
+type StepConfirm = {
+  action: "unmark";
+  step: string;
+  label: string;
+  lineIds: string[];
+};
+
+type StepLinkage = "simple" | "momEscrow" | "debtLinked";
+
+/** Mom escrow = Bucket/category Mom. Loan = Loan Name set. Else simple (e.g. CAP Pets). */
+function stepLinkageOf(lines: RegisterLine[]): StepLinkage {
+  if (
+    lines.some((line) => {
+      const bucket = (line.bucket ?? "").trim().toLowerCase();
+      const category = (line.category ?? "").trim().toLowerCase();
+      return bucket === "mom" || category === "mom";
+    })
+  ) {
+    return "momEscrow";
+  }
+  if (lines.some((line) => (line.loanName ?? "").trim().length > 0)) {
+    return "debtLinked";
+  }
+  return "simple";
+}
+
+/**
+ * Owner-facing Mark / Unmark effects.
+ * Simple CAP/UCARD rows: Estimated account Balances only (never Debt planner).
+ * Mom / loan: Estimated box rules plus Debt planner ledger notes.
+ */
+function stepImpactLines(
+  action: "mark" | "unmark",
+  step: string,
+  lines: RegisterLine[],
+): string[] {
+  const linkage = stepLinkageOf(lines);
+  const totalMinor = lines.reduce((sum, line) => sum + line.amountMinor, 0);
+  const scale = lines.reduce((max, line) => Math.max(max, line.scale || 2), 2);
+  const payType = (lines[0]?.payType ?? "").trim() || "(no pay type)";
+  const amt = amountText(totalMinor, scale);
+  const bullets: string[] = [];
+  const progressOnly =
+    "Progress only. Does not change Estimated account Balances.";
+
+  if (step === "pay") {
+    if (action === "mark") {
+      bullets.push(`Reduces Estimated account Balances for ${payType} by ${amt}.`);
+    } else {
+      bullets.push(`Increases Estimated account Balances for ${payType} by ${amt}.`);
+    }
+  } else {
+    bullets.push(progressOnly);
+  }
+
+  if (linkage === "simple") {
+    bullets.push(
+      "Simple CCT charge (no Loan Name, not Mom escrow). Does not change Debt planner.",
+    );
+  } else if (linkage === "momEscrow") {
+    if (step === "transfer") {
+      bullets.push(
+        action === "mark"
+          ? "Mom escrow (Debt planner): lowers Mom Current by this amount."
+          : "Mom escrow (Debt planner): restores Mom Current if this line had been applied.",
+      );
+    } else {
+      bullets.push("Mom escrow (Debt planner): this step does not move Mom Current.");
+    }
+  } else {
+    if (action === "mark") {
+      bullets.push(
+        "Linked loan (Debt planner): loan Current drops only when Transfer, Bill Pay Deposit, Pay Bill, and Withdrawal are all marked.",
+      );
+    } else {
+      bullets.push(
+        "Linked loan (Debt planner): if the loan was fully settled, clearing this step restores loan Current.",
+      );
+    }
+  }
+
+  if (action === "unmark") {
+    bullets.push(
+      "If this charge was Completed, it returns to Open and the completed date is cleared.",
+    );
+  }
+  bullets.push("Save the row to commit. Cancel discards. Delete removes the open charge.");
+  return bullets;
+}
+
 function shiftIsoDay(iso: string, days: number): string {
   const source = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : todayIso();
   const [year, month, day] = source.split("-").map(Number);
@@ -594,7 +684,7 @@ function lineMatches(line: RegisterLine, query: string): boolean {
   return fields.some((field) => field.toLowerCase().includes(q));
 }
 
-function lineChanged(original: RegisterLine, draft: RegisterLine): boolean {
+function fieldsChanged(original: RegisterLine, draft: RegisterLine): boolean {
   return (
     original.payType !== draft.payType ||
     (original.occurredOn ?? "") !== (draft.occurredOn ?? "") ||
@@ -606,6 +696,112 @@ function lineChanged(original: RegisterLine, draft: RegisterLine): boolean {
     original.description !== draft.description ||
     (original.trueUpOn ?? "") !== (draft.trueUpOn ?? "")
   );
+}
+
+function stepFlag(
+  line: RegisterLine,
+  step: "transfer" | "billpay_deposit" | "pay" | "withdrawal",
+): boolean {
+  switch (step) {
+    case "transfer":
+      return Boolean(line.stepTransfer);
+    case "billpay_deposit":
+      return Boolean(line.stepBillpayDeposit);
+    case "pay":
+      return Boolean(line.stepPay);
+    case "withdrawal":
+      return Boolean(line.stepWithdrawal);
+  }
+}
+
+function stepsChanged(original: RegisterLine, draft: RegisterLine): boolean {
+  return (
+    Boolean(original.stepTransfer) !== Boolean(draft.stepTransfer) ||
+    Boolean(original.stepBillpayDeposit) !== Boolean(draft.stepBillpayDeposit) ||
+    Boolean(original.stepPay) !== Boolean(draft.stepPay) ||
+    Boolean(original.stepWithdrawal) !== Boolean(draft.stepWithdrawal)
+  );
+}
+
+function lineChanged(original: RegisterLine, draft: RegisterLine): boolean {
+  return fieldsChanged(original, draft) || stepsChanged(original, draft);
+}
+
+type StepKey = "transfer" | "billpay_deposit" | "pay" | "withdrawal";
+
+function applyStepToLine(
+  line: RegisterLine,
+  step: StepKey,
+  action: "mark" | "unmark",
+): RegisterLine {
+  const day = todayIso();
+  const next: RegisterLine = { ...line };
+  if (action === "mark") {
+    if (step === "transfer") {
+      next.stepTransfer = true;
+      next.stepTransferOn = (line.stepTransferOn ?? "").trim() || day;
+    }
+    if (step === "billpay_deposit") {
+      next.stepBillpayDeposit = true;
+      next.stepBillpayDepositOn = (line.stepBillpayDepositOn ?? "").trim() || day;
+      next.stepBillpay = true;
+      next.stepBillpayOn = (line.stepBillpayOn ?? "").trim() || day;
+    }
+    if (step === "pay") {
+      next.stepPay = true;
+      next.stepPayOn = (line.stepPayOn ?? "").trim() || day;
+    }
+    if (step === "withdrawal") {
+      next.stepWithdrawal = true;
+      next.stepWithdrawalOn = (line.stepWithdrawalOn ?? "").trim() || day;
+    }
+    if (
+      next.stepTransfer &&
+      next.stepBillpayDeposit &&
+      next.stepPay &&
+      next.stepWithdrawal
+    ) {
+      next.completed = true;
+      next.trueUpOn = (next.trueUpOn ?? "").trim() || day;
+    }
+  } else {
+    if (step === "transfer") {
+      next.stepTransfer = false;
+      next.stepTransferOn = null;
+    }
+    if (step === "billpay_deposit") {
+      next.stepBillpayDeposit = false;
+      next.stepBillpayDepositOn = null;
+      next.stepBillpay = false;
+      next.stepBillpayOn = null;
+    }
+    if (step === "pay") {
+      next.stepPay = false;
+      next.stepPayOn = null;
+    }
+    if (step === "withdrawal") {
+      next.stepWithdrawal = false;
+      next.stepWithdrawalOn = null;
+    }
+    next.completed = false;
+    next.trueUpOn = null;
+  }
+  return next;
+}
+
+function stepDeltas(
+  original: RegisterLine,
+  draft: RegisterLine,
+): { step: StepKey; action: "mark" | "unmark" }[] {
+  const keys: StepKey[] = ["transfer", "billpay_deposit", "pay", "withdrawal"];
+  const out: { step: StepKey; action: "mark" | "unmark" }[] = [];
+  for (const step of keys) {
+    const before = stepFlag(original, step);
+    const after = stepFlag(draft, step);
+    if (!before && after) out.push({ step, action: "mark" });
+    if (before && !after) out.push({ step, action: "unmark" });
+  }
+  return out;
 }
 
 function entryReady(entry: EntryDraft): boolean {
@@ -668,6 +864,7 @@ export function ExternalRegister({
   const [bulkField, setBulkField] = useState<BulkField>("bucket");
   const [bulkValue, setBulkValue] = useState("");
   const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [stepConfirm, setStepConfirm] = useState<StepConfirm | null>(null);
 
   const dirty =
     entryReady(entry) ||
@@ -844,6 +1041,27 @@ export function ExternalRegister({
     setStatus(null);
   };
 
+  const commitStepDeltas = async (original: RegisterLine, draft: RegisterLine) => {
+    let nextBody: RegisterBody | null = null;
+    for (const delta of stepDeltas(original, draft)) {
+      if (delta.action === "mark") {
+        const result = await client.executeCommand("ExternalRegisterMarkStep", {
+          lineIds: [draft.lineId],
+          step: delta.step,
+          tickedOn: todayIso(),
+        });
+        nextBody = await readBody(result);
+      } else {
+        const result = await client.executeCommand("ExternalRegisterUnmarkStep", {
+          lineIds: [draft.lineId],
+          step: delta.step,
+        });
+        nextBody = await readBody(result);
+      }
+    }
+    return nextBody;
+  };
+
   const saveOpenLine = async (lineId: string) => {
     const original = (body?.lines ?? []).find((line) => line.lineId === lineId);
     const draft = drafts[lineId];
@@ -859,9 +1077,17 @@ export function ExternalRegister({
     setBusy(true);
     setStatus(null);
     try {
-      const result = await client.executeCommand("ExternalRegisterSave", { lines: [draft] });
-      const next = await readBody(result);
-      setBody(next);
+      let next: RegisterBody | null = null;
+      if (fieldsChanged(original, draft)) {
+        const result = await client.executeCommand("ExternalRegisterSave", { lines: [draft] });
+        next = await readBody(result);
+        setBody(next);
+      }
+      const afterSteps = await commitStepDeltas(original, draft);
+      if (afterSteps) {
+        next = afterSteps;
+        setBody(afterSteps);
+      }
       clearOpenEdit(lineId);
       setStatus("Saved.");
     } catch (err: unknown) {
@@ -886,11 +1112,19 @@ export function ExternalRegister({
     setBusy(true);
     setStatus(null);
     try {
-      const result = await client.executeCommand("ExternalRegisterSave", {
-        lines: [{ ...draft, completed: true }],
-      });
-      const next = await readBody(result);
-      setBody(next);
+      let next: RegisterBody | null = null;
+      if (fieldsChanged(original, draft)) {
+        const result = await client.executeCommand("ExternalRegisterSave", {
+          lines: [{ ...draft, completed: true }],
+        });
+        next = await readBody(result);
+        setBody(next);
+      }
+      const afterSteps = await commitStepDeltas(original, draft);
+      if (afterSteps) {
+        next = afterSteps;
+        setBody(afterSteps);
+      }
       clearCompletedEdit(lineId);
       setStatus("Saved.");
     } catch (err: unknown) {
@@ -931,16 +1165,19 @@ export function ExternalRegister({
   };
 
   const save = async () => {
-    const lines: RegisterLine[] = (body?.lines ?? [])
+    const dirtyPairs = (body?.lines ?? [])
       .filter((line) => drafts[line.lineId] && lineChanged(line, drafts[line.lineId]))
-      .map((line) => drafts[line.lineId]);
+      .map((line) => ({ original: line, draft: drafts[line.lineId] }));
+    const fieldLines = dirtyPairs
+      .filter(({ original, draft }) => fieldsChanged(original, draft))
+      .map(({ draft }) => draft);
     if (entryReady(entry)) {
       const amountMinor = parseAmount(entry.amount);
       if (amountMinor == null) {
         setStatus("Enter the amount as dollars, for example 9.47 or -2.23.");
         return;
       }
-      lines.push({
+      fieldLines.push({
         lineId: crypto.randomUUID(),
         sourceRow: null,
         payType: entry.payType.trim(),
@@ -955,13 +1192,25 @@ export function ExternalRegister({
         trueUpOn: null,
       });
     }
-    if (lines.length === 0) return;
+    if (fieldLines.length === 0 && dirtyPairs.every(({ original, draft }) => !stepsChanged(original, draft))) {
+      return;
+    }
     setBusy(true);
     setStatus(null);
     try {
-      const result = await client.executeCommand("ExternalRegisterSave", { lines });
-      const next = await readBody(result);
-      setBody(next);
+      let next: RegisterBody | null = null;
+      if (fieldLines.length > 0) {
+        const result = await client.executeCommand("ExternalRegisterSave", { lines: fieldLines });
+        next = await readBody(result);
+        setBody(next);
+      }
+      for (const { original, draft } of dirtyPairs) {
+        const afterSteps = await commitStepDeltas(original, draft);
+        if (afterSteps) {
+          next = afterSteps;
+          setBody(afterSteps);
+        }
+      }
       setDrafts({});
       setAmountInputs({});
       setEditingId(null);
@@ -982,34 +1231,109 @@ export function ExternalRegister({
     }
   };
 
-  const markStep = async (ids: string[], step: string, label: string) => {
-    if (dirty) {
-      setStatus("Add or cancel the open edits before marking a step.");
+  /** First-mark: Mark pill commits immediately (no edit / confirm / Save). */
+  const commitMarkStepNow = async (ids: string[], step: string, label: string) => {
+    if (ids.length === 0) return;
+    if (
+      step !== "transfer" &&
+      step !== "billpay_deposit" &&
+      step !== "pay" &&
+      step !== "withdrawal"
+    ) {
       return;
     }
-    if (ids.length === 0) return;
+    const stepKey = step as StepKey;
+    const freshIds = ids.filter((id) => {
+      const line = (body?.lines ?? []).find((row) => row.lineId === id);
+      if (!line) return false;
+      return !stepFlag(viewOf(line), stepKey);
+    });
+    if (freshIds.length === 0) {
+      setStatus(`Nothing new to mark for ${label}.`);
+      return;
+    }
+    const totalMinor = freshIds.reduce((sum, id) => {
+      const line = (body?.lines ?? []).find((row) => row.lineId === id);
+      return sum + (line ? viewOf(line).amountMinor : 0);
+    }, 0);
+    const scale = freshIds.reduce((max, id) => {
+      const line = (body?.lines ?? []).find((row) => row.lineId === id);
+      return Math.max(max, line?.scale || 2);
+    }, 2);
     setBusy(true);
     setStatus(null);
     try {
       const result = await client.executeCommand("ExternalRegisterMarkStep", {
-        lineIds: ids,
-        step,
+        lineIds: freshIds,
+        step: stepKey,
         tickedOn: todayIso(),
       });
       const next = await readBody(result);
       setBody(next);
-      if (step === "transfer") setTransferIds((current) => current.filter((id) => !ids.includes(id)));
-      if (step === "billpay_deposit") {
-        setBillpayDepositIds((current) => current.filter((id) => !ids.includes(id)));
+      if (stepKey === "transfer") setTransferIds((cur) => cur.filter((id) => !freshIds.includes(id)));
+      if (stepKey === "billpay_deposit") {
+        setBillpayDepositIds((cur) => cur.filter((id) => !freshIds.includes(id)));
       }
-      if (step === "pay") setPayIds((current) => current.filter((id) => !ids.includes(id)));
-      if (step === "withdrawal") setWithdrawalIds((current) => current.filter((id) => !ids.includes(id)));
-      setStatus(`${label} marked.`);
+      if (stepKey === "pay") setPayIds((cur) => cur.filter((id) => !freshIds.includes(id)));
+      if (stepKey === "withdrawal") {
+        setWithdrawalIds((cur) => cur.filter((id) => !freshIds.includes(id)));
+      }
+      setStatus(
+        `${label} marked on ${freshIds.length} charge${freshIds.length === 1 ? "" : "s"} (${amountText(totalMinor, scale)}).`,
+      );
     } catch (err: unknown) {
       setStatus(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
+  };
+
+  /** Unmark / change: edit row → confirm → stage → Save. */
+  const requestUnmarkStep = (lineId: string, step: string, label: string) => {
+    if (editingId !== lineId && completedEditingId !== lineId) {
+      setStatus("Edit the row before unmarking a step, then Save.");
+      return;
+    }
+    setStepConfirm({ action: "unmark", step, label, lineIds: [lineId] });
+  };
+
+  /** Confirm stages unmark onto the draft; Save / Cancel / Delete finalize. */
+  const applyStepConfirm = () => {
+    if (!stepConfirm || stepConfirm.action !== "unmark") return;
+    const { step, label, lineIds: ids } = stepConfirm;
+    if (
+      step !== "transfer" &&
+      step !== "billpay_deposit" &&
+      step !== "pay" &&
+      step !== "withdrawal"
+    ) {
+      return;
+    }
+    const stepKey = step as StepKey;
+    const primaryId = ids[0] ?? null;
+    setDrafts((current) => {
+      const next = { ...current };
+      for (const id of ids) {
+        const base = next[id] ?? (body?.lines ?? []).find((line) => line.lineId === id);
+        if (!base) continue;
+        next[id] = applyStepToLine(base, stepKey, "unmark");
+        setAmountInputs((amounts) =>
+          amounts[id]
+            ? amounts
+            : { ...amounts, [id]: amountText(base.amountMinor, base.scale) },
+        );
+      }
+      return next;
+    });
+    if (primaryId) {
+      const onOpen = (body?.lines ?? []).some(
+        (line) => line.lineId === primaryId && !isComplete(line),
+      );
+      if (onOpen) setEditingId(primaryId);
+      else setCompletedEditingId(primaryId);
+    }
+    setStepConfirm(null);
+    setStatus(`${label} unmarked (staged) — Save to commit, or Cancel to discard.`);
   };
 
   const exportLinesPayload = () =>
@@ -1352,21 +1676,46 @@ export function ExternalRegister({
     ids: string[],
     setIds: (next: string[]) => void,
     label: string,
+    step: string,
     storedOn: string | null | undefined,
+    allowSelect: boolean,
+    rowEditing: boolean,
   ) => {
-    const selected = ids.includes(line.lineId);
+    // First-mark: select freely (no edit) → Mark pill total → Mark commits now.
+    // Unmark/change: edit required → confirm → stage → Save.
+    const selected = allowSelect && !done && ids.includes(line.lineId);
     const stamp = done ? monthDay(storedOn) : selected ? monthDay(todayIso()) : "";
+    const ticksEnabled = !busy && (done ? rowEditing : allowSelect);
     return (
       <td onClick={(event) => event.stopPropagation()}>
         <span className="external-step-tick">
           <input
             type="checkbox"
-            aria-label={`${label} ${view.payType} ${view.occurredOn ?? ""} ${amountText(view.amountMinor, view.scale)}${stamp ? ` ticked ${stamp}` : ""}`}
+            aria-label={
+              done
+                ? `Unmark ${label} ${view.payType} ${view.occurredOn ?? ""} ${amountText(view.amountMinor, view.scale)}${stamp ? ` ticked ${stamp}` : ""}`
+                : `Select for ${label} ${view.payType} ${view.occurredOn ?? ""} ${amountText(view.amountMinor, view.scale)}${stamp ? ` ticked ${stamp}` : ""}`
+            }
+            title={
+              done
+                ? rowEditing
+                  ? undefined
+                  : "Edit the row before unmarking a step"
+                : "Select for Mark total, then use the Mark button"
+            }
             checked={done || selected}
-            disabled={done || busy}
+            disabled={!ticksEnabled}
             onClick={(event) => event.stopPropagation()}
             onChange={() => {
-              if (!done) toggleId(line.lineId, ids, setIds);
+              if (done) {
+                if (!rowEditing) {
+                  setStatus("Edit the row before unmarking a step, then Save.");
+                  return;
+                }
+                requestUnmarkStep(line.lineId, step, label);
+                return;
+              }
+              if (allowSelect) toggleId(line.lineId, ids, setIds);
             }}
           />
           {stamp ? <span className="external-step-date">{stamp}</span> : null}
@@ -1494,17 +1843,17 @@ export function ExternalRegister({
         type="button"
         aria-label={`Mark ${label}`}
         disabled={busy || ids.length === 0}
-        onClick={() => void markStep(ids, step, label)}
+        title="Marks selected open charges now (see total at left)"
+        onClick={() => void commitMarkStepNow(ids, step, label)}
       >
         Mark
       </button>
     </span>
   );
 
-  // Account-total display only: open lines + completed credits in the open window.
-  // Cutoff per pay type = earliest open occurredOn — prior completed credits are ignored
-  // (one-time true-up against history; new payments after the window reduce the total).
-  // Does not change category, bucket, or debt-planner matching.
+  // Estimated account Balances: open lines without Pay Bill + completed credits in the
+  // open window. Cutoff per pay type = earliest open occurredOn. Pay Bill removes a line
+  // from the estimate (CAP can show 0 while the row is still Open). Not Debt planner.
   const openPayTypeTotals = (() => {
     const map = new Map<string, { amountMinor: number; scale: number; count: number }>();
     const openCutoff = new Map<string, string>();
@@ -1515,6 +1864,10 @@ export function ExternalRegister({
       if (!on) continue;
       const prev = openCutoff.get(key);
       if (!prev || on < prev) openCutoff.set(key, on);
+      // Seed pay types that still have open rows so CAP can show $0 after Pay Bill.
+      if (!map.has(key)) {
+        map.set(key, { amountMinor: 0, scale: view.scale || 2, count: 0 });
+      }
     }
     const bump = (line: RegisterLine, countOpen: boolean) => {
       const view = viewOf(line);
@@ -1529,7 +1882,12 @@ export function ExternalRegister({
       if ((view.scale || 2) > cur.scale) cur.scale = view.scale || 2;
       map.set(key, cur);
     };
-    for (const line of pending) bump(line, true);
+    for (const line of pending) {
+      const view = viewOf(line);
+      // Pay Bill checked → leave Estimated account Balances (still Open until all steps).
+      if (view.stepPay || line.stepPay) continue;
+      bump(line, true);
+    }
     for (const line of completed) {
       const view = viewOf(line);
       if (view.amountMinor >= 0) continue;
@@ -1602,8 +1960,10 @@ export function ExternalRegister({
         {stepTotal("Bill Pay Withdrawal", "withdrawal", withdrawalIds)}
         <div
           className="external-open-paytype-totals"
-          aria-label="Open totals by pay type"
+          aria-label="Estimated account Balances"
+          data-part="estimated-account-balances"
         >
+          <span className="external-open-paytype-heading">Estimated account Balances</span>
           {openPayTypeTotals.length === 0 ? (
             <span className="external-open-paytype-empty">No open accounts</span>
           ) : (
@@ -1901,25 +2261,53 @@ export function ExternalRegister({
                       <td title={view.description}>{view.description}</td>
                     </>
                   )}
-                  {stepCheck(line, view, Boolean(line.stepTransfer), transferIds, setTransferIds, "Transfer", line.stepTransferOn)}
                   {stepCheck(
                     line,
                     view,
-                    Boolean(line.stepBillpayDeposit),
+                    Boolean(view.stepTransfer),
+                    transferIds,
+                    setTransferIds,
+                    "Transfer",
+                    "transfer",
+                    view.stepTransferOn,
+                    true,
+                    editingId === line.lineId,
+                  )}
+                  {stepCheck(
+                    line,
+                    view,
+                    Boolean(view.stepBillpayDeposit),
                     billpayDepositIds,
                     setBillpayDepositIds,
                     "Bill Pay Deposit",
-                    line.stepBillpayDepositOn,
+                    "billpay_deposit",
+                    view.stepBillpayDepositOn,
+                    true,
+                    editingId === line.lineId,
                   )}
-                  {stepCheck(line, view, Boolean(line.stepPay), payIds, setPayIds, "Pay Bill", line.stepPayOn)}
                   {stepCheck(
                     line,
                     view,
-                    Boolean(line.stepWithdrawal),
+                    Boolean(view.stepPay),
+                    payIds,
+                    setPayIds,
+                    "Pay Bill",
+                    "pay",
+                    view.stepPayOn,
+                    true,
+                    editingId === line.lineId,
+                  )}
+                  {stepCheck(
+                    line,
+                    view,
+                    Boolean(view.stepWithdrawal),
                     withdrawalIds,
                     setWithdrawalIds,
                     "Bill Pay Withdrawal",
-                    line.stepWithdrawalOn,
+                    "withdrawal",
+                    view.stepWithdrawalOn,
+                    true,
+                    editingId === line.lineId,
                   )}
                 </tr>
               );
@@ -2168,6 +2556,29 @@ export function ExternalRegister({
                   )}
                 </th>
               ))}
+              <th className="open-step-head" scope="col">
+                <span className="open-step-head-label">
+                  <span className="open-step-head-line">Transfer</span>
+                </span>
+              </th>
+              <th className="open-step-head" scope="col">
+                <span className="open-step-head-label">
+                  <span className="open-step-head-line">Bill Pay</span>
+                  <span className="open-step-head-line">Deposit</span>
+                </span>
+              </th>
+              <th className="open-step-head" scope="col">
+                <span className="open-step-head-label">
+                  <span className="open-step-head-line">Pay</span>
+                  <span className="open-step-head-line">Bill</span>
+                </span>
+              </th>
+              <th className="open-step-head" scope="col">
+                <span className="open-step-head-label">
+                  <span className="open-step-head-line">Bill Pay</span>
+                  <span className="open-step-head-line">Withdrawal</span>
+                </span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -2272,12 +2683,134 @@ export function ExternalRegister({
                     </>
                   )}
                   <td className="external-green-date">{completedDateOf(view)}</td>
+                  {stepCheck(
+                    line,
+                    view,
+                    Boolean(view.stepTransfer),
+                    transferIds,
+                    setTransferIds,
+                    "Transfer",
+                    "transfer",
+                    view.stepTransferOn,
+                    false,
+                    completedEditingId === line.lineId,
+                  )}
+                  {stepCheck(
+                    line,
+                    view,
+                    Boolean(view.stepBillpayDeposit),
+                    billpayDepositIds,
+                    setBillpayDepositIds,
+                    "Bill Pay Deposit",
+                    "billpay_deposit",
+                    view.stepBillpayDepositOn,
+                    false,
+                    completedEditingId === line.lineId,
+                  )}
+                  {stepCheck(
+                    line,
+                    view,
+                    Boolean(view.stepPay),
+                    payIds,
+                    setPayIds,
+                    "Pay Bill",
+                    "pay",
+                    view.stepPayOn,
+                    false,
+                    completedEditingId === line.lineId,
+                  )}
+                  {stepCheck(
+                    line,
+                    view,
+                    Boolean(view.stepWithdrawal),
+                    withdrawalIds,
+                    setWithdrawalIds,
+                    "Bill Pay Withdrawal",
+                    "withdrawal",
+                    view.stepWithdrawalOn,
+                    false,
+                    completedEditingId === line.lineId,
+                  )}
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+      {stepConfirm ? (
+        <div
+          className="home-av-dialog-backdrop"
+          onClick={() => !busy && setStepConfirm(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Confirm unmark ${stepConfirm.label}`}
+            data-part="cct-step-confirm"
+            className="home-av-dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <h3>
+                Unmark {stepConfirm.label}
+              </h3>
+              <button
+                type="button"
+                aria-label="Cancel step confirm"
+                disabled={busy}
+                onClick={() => setStepConfirm(null)}
+              >
+                Cancel
+              </button>
+            </header>
+            {(() => {
+              const lines = (body?.lines ?? []).filter((line) =>
+                stepConfirm.lineIds.includes(line.lineId),
+              );
+              const totalMinor = lines.reduce((sum, line) => sum + line.amountMinor, 0);
+              const scale = lines.reduce((max, line) => Math.max(max, line.scale || 2), 2);
+              const sample = lines[0];
+              const impacts = stepImpactLines("unmark", stepConfirm.step, lines);
+              return (
+                <>
+                  <p>
+                    {stepConfirm.lineIds.length} line
+                    {stepConfirm.lineIds.length === 1 ? "" : "s"}
+                    {sample
+                      ? ` · ${sample.vendor || sample.payType} · ${amountText(totalMinor, scale)}`
+                      : ""}
+                    {sample && isComplete(sample) ? " · returns to Open" : ""}
+                  </p>
+                  <ul aria-label="Step data effects">
+                    {impacts.map((text) => (
+                      <li key={text}>{text}</li>
+                    ))}
+                  </ul>
+                </>
+              );
+            })()}
+            <div className="income-export-preview-actions">
+              <button
+                type="button"
+                aria-label={`Confirm unmark ${stepConfirm.label}`}
+                className="is-unsaved"
+                disabled={busy}
+                onClick={() => applyStepConfirm()}
+              >
+                Confirm Unmark
+              </button>
+              <button
+                type="button"
+                aria-label="Cancel step confirm"
+                disabled={busy}
+                onClick={() => setStepConfirm(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {bulkConfirm ? (
         <div
           className="home-av-dialog-backdrop"

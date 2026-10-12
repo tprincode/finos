@@ -6,11 +6,11 @@
                    "add_lot":  3,
                    "calculator_plan":  13,
                    "cart":  30,
-                   "cash_management":  9,
+                   "cash_management":  10,
                    "collectors":  28,
                    "core_functions":  2,
                    "data_snapshot":  16,
-                   "desktop_menu":  95,
+                   "desktop_menu":  90,
                    "dividend_slice":  null,
                    "income_plan_week":  4,
                    "invariants":  11,
@@ -19,7 +19,7 @@
                    "position_details":  3,
                    "production_seed":  null,
                    "roc_plan":  5,
-                   "ui_modules":  98,
+                   "ui_modules":  104,
                    "task_manager":  5,
                    "completed_cart_keeps_the_close_summary_on_screen":  0,
                    "cash_menu_ia":  3,
@@ -46,6 +46,7 @@
                    "financial-domain":  0,
                    "plan_cadence_guards":  3,
                    "debt_planner_our_transactions_export_to_excel_prompts_for_path":  0,
-                   "cct_register_has_bucket_column_and_completed_edit":  0
+                   "cct_register_has_bucket_column_and_completed_edit":  0,
+                   "cct_mark_and_unmark_steps_confirm_data_effects":  0
                }
 }

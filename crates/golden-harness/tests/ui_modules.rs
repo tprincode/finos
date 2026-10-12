@@ -752,13 +752,28 @@ fn catalog_golden_suite_links_point_at_real_suites() {
     );
     let install = std::fs::read_to_string(root.join("scripts/mac-install.sh")).unwrap();
     let load = std::fs::read_to_string(root.join("scripts/load-from-usb.sh")).unwrap();
+    let app_up = std::fs::read_to_string(root.join("scripts/app-up.sh")).unwrap();
+    let golden_sh = std::fs::read_to_string(root.join("scripts/golden.sh")).unwrap();
     assert!(
-        install.contains("--check") && install.contains("Ready report"),
-        "mac-install must print a Ready report and support --check"
+        install.contains("--check")
+            && install.contains("Ready report")
+            && install.contains("Next action:")
+            && install.contains("Xcode Command Line Tools:")
+            && install.contains("source \"$SCRIPT_DIR/mac-env.sh\"")
+            && app_up.contains("source \"$SCRIPT_DIR/mac-env.sh\"")
+            && golden_sh.contains("source \"$ROOT/scripts/mac-env.sh\"")
+            && root.join("scripts/mac-env.sh").is_file(),
+        "mac-install --check is a doctor; launch/golden scripts source mac-env"
     );
     assert!(
         load.contains("finos.bundle") && load.contains("install-mac.sh"),
         "load-from-usb.sh must find the kit bundle and run the installer"
+    );
+    assert!(
+        root.join("GO.command").is_file()
+            && root.join("finos.command").is_file()
+            && root.join("scripts/pack-usb.ps1").is_file(),
+        "Mac USB GO.command, daily finos.command, and pack-usb.ps1 must ship"
     );
 }
 

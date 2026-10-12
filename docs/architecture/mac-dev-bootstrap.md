@@ -11,17 +11,34 @@ Locked household paths for the MacBook Air cutover:
 
 Never put `local.sqlite` in iCloud Drive, Dropbox, or OneDrive.
 
+## Once vs every day
+
+| When | What you run | How hard |
+|------|----------------|----------|
+| **First time** (or after wiping tools) | USB: double-click `GO.command` (or `./install-mac.sh`) | Slow: Xcode CLT may force a **second** run; Homebrew may ask for password; rustup + `npm install` + `cargo check` |
+| **Every coding day** | Double-click `finos.command` (or `./finos.sh`) then `./scripts/app-up.sh` | One launch + health check — **do not** re-run the installer |
+| **Tools look broken** | `./install-mac.sh --check` | Fast Ready/doctor report; only re-run full install if it says NOT READY |
+
+First-boot gaps (rustup keg PATH, missing `cargo` in a new Terminal) are handled by `scripts/mac-env.sh` (sourced by install/launch/goldens) and by writing brew/cargo blocks once into `~/.zprofile`. You should not need manual `export PATH=…` after a successful install.
+
 ## USB Start here (preferred — almost no git)
 
-Plug in the FinOS USB stick, open Terminal, paste (replace the drive name if Finder shows another):
+1. Plug in the FinOS USB stick.
+2. In Finder, open the volume → **Finos** folder.
+3. **Double-click `GO.command`** (opens Terminal; Mac counterpart to Windows `finos.bat` / typed bash).
+
+That copies the kit into `~/Developer/finos` and runs the installer. If the Terminal asks for permission the first time: right-click → Open.
+
+Optional Terminal fallback (replace the drive name if Finder shows another):
 
 ```bash
 bash /Volumes/<VolumeName>/Finos/load-from-usb.sh
+# optional: --seed  or  --launch
 ```
 
-Optional: `--seed` or `--launch`. That script copies the kit into `~/Developer/finos` and runs the installer.
+Rebuild the stick from Windows after commit: `.\scripts\pack-usb.ps1` (writes `E:\Finos`).
 
-## Installer (after the repo is on the Mac)
+## Installer (preferred)
 
 ```bash
 cd ~/Developer/finos
@@ -33,12 +50,13 @@ chmod +x install-mac.sh scripts/mac-install.sh
 What it does (idempotent; safe to re-run):
 
 1. Confirms macOS / warns if not arm64
-2. Ensures Xcode Command Line Tools (opens Apple’s installer if missing, then exits for a re-run)
-3. Installs Homebrew when absent, then Node, `gh`, and Rust via `rustup` when missing
+2. Ensures Xcode Command Line Tools (opens Apple’s installer if missing, then exits for a re-run — expected once)
+3. Installs Homebrew when absent, then Node, `gh`, and Rust via `rustup` when missing (fails loud if brew packages fail)
 4. Creates `~/Documents/Financial` and Application Support app-data dir
 5. Symlinks `~/Developer/finos` → this clone when the locked path is free
-6. `chmod +x` on `finos.sh` / `app-up.sh` / `golden.sh`
-7. `npm install` + `cargo check`
+6. `chmod +x` on `finos.sh` / `app-up.sh` / `golden.sh` / `mac-env.sh`
+7. Persists brew + cargo PATH into `~/.zprofile` once (`# finos-mac-brew` / `# finos-mac-cargo`)
+8. `npm install` + `cargo check`
 
 Flags:
 
@@ -47,9 +65,10 @@ Flags:
 | `--seed` | `npm run data-seed` into Application Support |
 | `--launch` | start `./finos.sh` when finished |
 | `--skip-brew` | toolchain check only (no Homebrew installs) |
+| `--check` | Ready/doctor report only (dirs + CLT + toolchain; no npm/cargo work) |
 | `--repo PATH` | use that clone instead of the script’s parent |
 
-Then:
+Then (daily): in Finder open `~/Developer/finos` and **double-click `finos.command`**, or:
 
 ```bash
 ./finos.sh
@@ -73,7 +92,7 @@ cargo check
 Prerequisites if installing by hand:
 
 1. Xcode Command Line Tools: `xcode-select --install`
-2. [Tauri 2 macOS prerequisites](https://v2.tauri.app/start/prerequisites/)
+2. [Tauri 2 macOS prerequisites](https://v2.tauri.app/start/prerequisites/) (desktop needs CLT; full Xcode only for iOS)
 3. Rust via rustup (`stable` — see repo `rust-toolchain.toml`)
 4. Node.js LTS + npm
 5. GitHub CLI for HTTPS push: `brew install gh` then `gh auth login` (GitHub.com, HTTPS, browser)
@@ -113,5 +132,5 @@ Or Tools → Component Registry → **Run golden** (coding checkout with cargo o
 ## Related
 
 - [m1-macos-gate.md](m1-macos-gate.md) — full handoff matrix (still parked until recorded on Mac)
-- Installer: `install-mac.sh` → `scripts/mac-install.sh`
+- Installer: `install-mac.sh` → `scripts/mac-install.sh` (PATH helper: `scripts/mac-env.sh`)
 - Kit files under `E:\Finos\kit\` when the transfer pack is built

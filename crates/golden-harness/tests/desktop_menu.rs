@@ -726,12 +726,26 @@ fn desktop_host_uses_portable_download_dir_not_owner_path() {
         "scripts/mac-install.sh must exist"
     );
     let install = std::fs::read_to_string(root.join("scripts/mac-install.sh")).unwrap();
+    let mac_env = std::fs::read_to_string(root.join("scripts/mac-env.sh")).unwrap();
+    let finos_sh = std::fs::read_to_string(root.join("finos.sh")).unwrap();
     assert!(
-        install.contains("npm install")
+        root.join("scripts/mac-env.sh").is_file()
+            && mac_env.contains("brew shellenv")
+            && mac_env.contains(".cargo/env")
+            && install.contains("source \"$SCRIPT_DIR/mac-env.sh\"")
+            && finos_sh.contains("source \"$ROOT/scripts/mac-env.sh\"")
+            && install.contains("npm install")
             && install.contains("cargo check")
             && install.contains("--seed")
-            && install.contains("Documents/Financial"),
-        "mac-install.sh must automate bootstrap (npm, cargo check, seed flag, Financial dir)"
+            && install.contains("Documents/Financial")
+            && install.contains("# finos-mac-brew")
+            && install.contains("# finos-mac-cargo")
+            && install.contains("persist_shell_path")
+            && install.contains("Brew packages (node, gh, rustup)")
+            && install.contains("brew install node gh\n")
+            && !install.contains("brew install node gh || true")
+            && !install.contains("Tauri desktop deps"),
+        "mac-install must use mac-env, persist PATH, fail loud on brew node/gh"
     );
     assert!(
         root.join("docs/architecture/mac-dev-bootstrap.md").is_file(),
@@ -739,8 +753,29 @@ fn desktop_host_uses_portable_download_dir_not_owner_path() {
     );
     let bootstrap = std::fs::read_to_string(root.join("docs/architecture/mac-dev-bootstrap.md")).unwrap();
     assert!(
-        bootstrap.contains("install-mac.sh") && bootstrap.contains("Installer (preferred)"),
-        "mac-dev-bootstrap.md must point at the installer"
+        bootstrap.contains("install-mac.sh")
+            && bootstrap.contains("Installer (preferred)")
+            && bootstrap.contains("Once vs every day")
+            && bootstrap.contains("`--check`")
+            && bootstrap.contains("Ready/doctor report")
+            && bootstrap.contains("Double-click `GO.command`")
+            && bootstrap.contains("finos.command")
+            && bootstrap.contains("pack-usb.ps1"),
+        "mac-dev-bootstrap.md must point at the installer, GO.command, and pack-usb"
+    );
+    let go_cmd = std::fs::read_to_string(root.join("GO.command")).unwrap();
+    let finos_cmd = std::fs::read_to_string(root.join("finos.command")).unwrap();
+    let pack = std::fs::read_to_string(root.join("scripts/pack-usb.ps1")).unwrap();
+    assert!(
+        root.join("GO.command").is_file()
+            && root.join("finos.command").is_file()
+            && root.join("scripts/pack-usb.ps1").is_file()
+            && go_cmd.contains("load-from-usb.sh")
+            && finos_cmd.contains("finos.sh")
+            && pack.contains("finos.bundle")
+            && pack.contains("GO.command")
+            && pack.contains("VERIFY_OK"),
+        "USB GO.command, daily finos.command, and pack-usb.ps1 must exist"
     );
 }
 

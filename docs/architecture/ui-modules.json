@@ -1062,6 +1062,20 @@
           "export": "none"
         },
         {
+          "id": "cct-step-confirm",
+          "kind": "dialog",
+          "title": "Mark / Unmark step confirm",
+          "section": "external-open",
+          "export": "none"
+        },
+        {
+          "id": "estimated-account-balances",
+          "kind": "figures",
+          "title": "Estimated account Balances",
+          "section": "external-open",
+          "export": "none"
+        },
+        {
           "id": "external-bucket-ring",
           "kind": "chart",
           "title": "Bucket year ring",

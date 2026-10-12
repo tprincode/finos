@@ -445,6 +445,27 @@ pub fn mark_step_from_json(
     Ok((line_ids, step, ticked_on))
 }
 
+/// Unmark payload: `lineIds` + `step` (no bare `billpay`; no tickedOn).
+pub fn unmark_step_from_json(json: &Value) -> Result<(Vec<Uuid>, String), PlatformError> {
+    let (line_ids, _) = true_up_from_json(json)?;
+    let step = json
+        .get("step")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !matches!(
+        step.as_str(),
+        "transfer" | "billpay_deposit" | "pay" | "withdrawal"
+    ) {
+        return Err(PlatformError::new(
+            "bad_step",
+            "unmark step must be transfer, billpay_deposit, pay, or withdrawal",
+        ));
+    }
+    Ok((line_ids, step))
+}
+
 /// Open-row delete: same `lineIds` payload as true-up / mark step.
 pub fn delete_from_json(json: &Value) -> Result<Vec<Uuid>, PlatformError> {
     let (line_ids, _) = true_up_from_json(json)?;

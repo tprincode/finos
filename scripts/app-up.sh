@@ -4,6 +4,10 @@
 # and recent page-loaded / console log has no panic / Failed to setup / npm error.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/mac-env.sh
+source "$SCRIPT_DIR/mac-env.sh"
+
 APP_DATA="${FINOS_APP_DATA:-$HOME/Library/Application Support/com.finos.desktop}"
 CONSOLE="$APP_DATA/dev-console.log"
 PAGE="$APP_DATA/page-loaded.log"

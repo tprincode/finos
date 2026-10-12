@@ -1323,6 +1323,72 @@ fn cct_open_table_drops_duplicate_bill_pay_column() {
 }
 
 #[test]
+fn cct_mark_and_unmark_steps_confirm_data_effects() {
+    let register = std::fs::read_to_string(
+        golden_harness::repo_root().join("apps/desktop/src/features/cash/ExternalRegister.tsx"),
+    )
+    .unwrap();
+    let storage = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/storage-sqlite/src/external_register.rs"),
+    )
+    .unwrap();
+    let queries = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/queries.rs"),
+    )
+    .unwrap();
+    // First-mark: free multi-select + Mark pill total + immediate ExternalRegisterMarkStep.
+    // Unmark/change: edit row → confirm → stage → Save (protects Estimated balances / Debt planner).
+    assert!(
+        register.contains("commitMarkStepNow")
+            && register.contains("ExternalRegisterMarkStep")
+            && register.contains("Marks selected open charges now")
+            && register.contains("Select for Mark total, then use the Mark button")
+            && register.contains("Select for ${label}")
+            && register.contains("toggleId(line.lineId, ids, setIds)")
+            && register.contains("done ? rowEditing : allowSelect")
+            && register.contains("checked={done || selected}")
+            && register.contains("onClick={() => void commitMarkStepNow(ids, step, label)}")
+            && register.contains("data-part=\"cct-step-confirm\"")
+            && register.contains("requestUnmarkStep")
+            && register.contains("ExternalRegisterUnmarkStep")
+            && register.contains("Confirm Unmark")
+            && !register.contains("Confirm Mark")
+            && !register.contains("requestMarkStep")
+            && register.contains("stepImpactLines")
+            && register.contains("stepLinkageOf")
+            && register.contains("Estimated account Balances")
+            && register.contains("Reduces Estimated account Balances")
+            && register.contains("Increases Estimated account Balances")
+            && register.contains("Progress only. Does not change Estimated account Balances.")
+            && register.contains("Simple CCT charge")
+            && register.contains("Does not change Debt planner.")
+            && register.contains("Mom escrow (Debt planner)")
+            && register.contains("Linked loan (Debt planner)")
+            && register.contains("Edit the row before unmarking a step")
+            && register.contains("editingId === line.lineId")
+            && register.contains("Save the row to commit. Cancel discards.")
+            && register.contains("unmarked (staged) — Save to commit")
+            && register.contains("applyStepToLine")
+            && register.contains("commitStepDeltas")
+            && register.contains("stepsChanged")
+            && register.contains("returns to Open")
+            && register.contains("aria-label=\"Step data effects\"")
+            && register.contains("Unmark ${label}")
+            && register.contains("aria-label={`Mark ${label}`}")
+            && !register.contains("disabled={done || busy}")
+            && !register.contains("Credit / Mom:"),
+        "First-mark selects freely and Mark commits now; unmark stays edit+confirm+Save"
+    );
+    assert!(
+        storage.contains("pub async fn unmark_step")
+            && storage.contains("unapply_line_if_present")
+            && storage.contains("unapply_account_line")
+            && queries.contains("ExternalRegisterUnmarkStep"),
+        "Unmark must clear steps, reverse apply, and wire the command"
+    );
+}
+
+#[test]
 fn cct_open_shows_pay_type_subtotals_above_mark_steps() {
     let register = std::fs::read_to_string(
         golden_harness::repo_root().join("apps/desktop/src/features/cash/ExternalRegister.tsx"),
@@ -1333,17 +1399,20 @@ fn cct_open_shows_pay_type_subtotals_above_mark_steps() {
     assert!(
         register.contains("className=\"external-open-head\"")
             && register.contains("stepTotal(\"Transfer\"")
-            && register.contains("aria-label=\"Open totals by pay type\"")
+            && register.contains("aria-label=\"Estimated account Balances\"")
+            && register.contains("data-part=\"estimated-account-balances\"")
+            && register.contains("Estimated account Balances")
             && register.contains("openPayTypeTotals")
             && register.contains("external-open-paytype-totals")
-            && register.contains("Account-total display only")
+            && register.contains("Estimated account Balances: open lines without Pay Bill")
+            && register.contains("view.stepPay || line.stepPay")
             && register.contains("openCutoff")
-            && register.contains("for (const line of pending) bump(line, true)")
             && register.contains("for (const line of completed)")
             && register.contains("view.amountMinor >= 0")
             && register.contains("on < cutoff")
-            && register.contains("bump(line, false)"),
-        "Open CCT pay-type box nets open lines plus completed credits in the open window"
+            && register.contains("bump(line, false)")
+            && !register.contains("aria-label=\"Open totals by pay type\""),
+        "Estimated account Balances excludes Pay Bill lines; CAP can show 0 while still Open"
     );
     assert!(
         css.contains(".external-open-head .external-open-paytype-totals")
@@ -3647,4 +3716,200 @@ async fn mom_transfer_then_open_delete_restores_current() {
             .all(|line| line["lineId"] != line_id.to_string()),
         "deleted open line must be gone"
     );
+}
+
+/// Mom Transfer apply then Unmark Transfer restores currentMinor and clears the step.
+#[tokio::test]
+async fn mom_transfer_then_unmark_restores_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let mom_credit_id = "a1000001-0000-4000-8000-000000000008";
+    must_ok(
+        &platform,
+        "ExternalAccountManagerSave",
+        serde_json::json!({
+            "accounts": [{
+                "accountId": mom_credit_id,
+                "name": "Mom shopping",
+                "startingMinor": 100000,
+                "currentMinor": 100000,
+                "paymentMinor": null,
+                "reductionMinor": null,
+                "financeMinor": null,
+                "paidThrough": null,
+                "payProcess": "register",
+                "registerKey": "Mom"
+            }]
+        }),
+    )
+    .await;
+    let line_id = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": line_id,
+                "payType": "Checking",
+                "occurredOn": "2026-10-11",
+                "amountMinor": 2500,
+                "scale": 2,
+                "category": "Food",
+                "bucket": "Mom",
+                "vendor": "Walmart",
+                "description": "mom escrow charge unmark"
+            }]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ExternalRegisterMarkStep",
+        serde_json::json!({
+            "lineIds": [line_id],
+            "step": "transfer",
+            "tickedOn": "2026-10-11"
+        }),
+    )
+    .await;
+    let after_transfer = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let mom_after_transfer = after_transfer["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["accountId"] == mom_credit_id)
+        .expect("Mom shopping");
+    assert_eq!(mom_after_transfer["currentMinor"], 97500);
+    must_ok(
+        &platform,
+        "ExternalRegisterUnmarkStep",
+        serde_json::json!({
+            "lineIds": [line_id],
+            "step": "transfer"
+        }),
+    )
+    .await;
+    let after_unmark = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let mom_after_unmark = after_unmark["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["accountId"] == mom_credit_id)
+        .expect("Mom shopping");
+    assert_eq!(
+        mom_after_unmark["currentMinor"], 100000,
+        "Unmark Transfer must restore Mom current: {mom_after_unmark}"
+    );
+    let register = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let line = register["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["lineId"] == line_id.to_string())
+        .expect("line still open");
+    assert_eq!(line["stepTransfer"], false);
+    assert_eq!(line["completed"], false);
+}
+
+/// Debt: mark all four CCT steps → apply; Unmark Pay Bill → reopen and restore Current.
+#[tokio::test]
+async fn debt_all_steps_then_unmark_pay_reopens_and_restores() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let cat_id = "a1000001-0000-4000-8000-000000000006";
+    let before = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let cat_before = before["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == cat_id)
+        .expect("Alphaeon Cat");
+    let cat_start = cat_before["currentMinor"].as_i64().unwrap();
+    let line_id = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": line_id,
+                "payType": "Checking",
+                "occurredOn": "2026-10-12",
+                "amountMinor": 16461,
+                "scale": 2,
+                "category": "Medical",
+                "bucket": "Medical",
+                "loanName": "Alphaeon Cat",
+                "vendor": "CAP",
+                "description": "unmark pay reopen"
+            }]
+        }),
+    )
+    .await;
+    for step in ["transfer", "billpay_deposit", "pay", "withdrawal"] {
+        must_ok(
+            &platform,
+            "ExternalRegisterMarkStep",
+            serde_json::json!({
+                "lineIds": [line_id],
+                "step": step,
+                "tickedOn": "2026-10-12"
+            }),
+        )
+        .await;
+    }
+    let after_mark = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let cat_marked = after_mark["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == cat_id)
+        .expect("Alphaeon Cat");
+    assert_eq!(
+        cat_marked["currentMinor"].as_i64().unwrap(),
+        cat_start - 16461,
+        "all four steps must apply debt Current"
+    );
+    let completed = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let done_line = completed["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["lineId"] == line_id.to_string())
+        .expect("line");
+    assert_eq!(done_line["completed"], true);
+    must_ok(
+        &platform,
+        "ExternalRegisterUnmarkStep",
+        serde_json::json!({
+            "lineIds": [line_id],
+            "step": "pay"
+        }),
+    )
+    .await;
+    let after_unmark = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let cat_restored = after_unmark["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["accountId"] == cat_id)
+        .expect("Alphaeon Cat");
+    assert_eq!(
+        cat_restored["currentMinor"].as_i64().unwrap(),
+        cat_start,
+        "Unmark Pay Bill must restore debt Current: {cat_restored}"
+    );
+    let register = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let line = register["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["lineId"] == line_id.to_string())
+        .expect("line");
+    assert_eq!(line["stepPay"], false);
+    assert_eq!(line["completed"], false);
+    assert!(line["trueUpOn"].is_null() || line["trueUpOn"] == "");
 }

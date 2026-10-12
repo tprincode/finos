@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use application_core::contracts::{ExternalRegisterGetBody, ExternalRegisterLine};
+use application_core::external_account::line_applied;
 use application_core::external_register::{
     amount_to_minor, bucket_allowed, fixed_occurred_on, is_medical_mom_alias, line_matches,
     normalize_category, normalize_pay_type, normalize_vendor, project_category_bucket,
@@ -11,7 +12,7 @@ use application_core::external_register::{
 use application_core::ports::platform::PlatformError;
 use calamine::{open_workbook, Data, Reader, Xlsx};
 use chrono::{Duration, NaiveDate};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqlitePool, Transaction};
 use uuid::Uuid;
 
 fn map_sql(err: sqlx::Error) -> PlatformError {
@@ -302,6 +303,53 @@ pub async fn save(
     get(pool, None).await
 }
 
+/// Reverse escrow/debt apply for one managed account + line (restore Current).
+async fn unapply_account_line(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    account_id: &str,
+    line_id: &str,
+    amount_minor: i64,
+) -> Result<(), PlatformError> {
+    sqlx::query(
+        "UPDATE external_managed_account
+         SET current_minor = CASE
+             WHEN current_minor IS NULL THEN NULL
+             ELSE current_minor + ?1
+         END
+         WHERE account_id = ?2",
+    )
+    .bind(amount_minor)
+    .bind(account_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_sql)?;
+    sqlx::query("DELETE FROM external_managed_applied WHERE account_id = ?1 AND line_id = ?2")
+        .bind(account_id)
+        .bind(line_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_sql)?;
+    Ok(())
+}
+
+/// Reverse every apply row for a line (used by open delete).
+async fn unapply_line_if_present(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    line_id: &str,
+    amount_minor: i64,
+) -> Result<(), PlatformError> {
+    let applied = sqlx::query("SELECT account_id FROM external_managed_applied WHERE line_id = ?1")
+        .bind(line_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(map_sql)?;
+    for applied_row in applied {
+        let account_id: String = applied_row.try_get("account_id").map_err(map_sql)?;
+        unapply_account_line(tx, &account_id, line_id, amount_minor).await?;
+    }
+    Ok(())
+}
+
 /// Delete open (not completed) CCT lines. Reverses any escrow/debt apply first.
 pub async fn delete(
     pool: &SqlitePool,
@@ -337,37 +385,7 @@ pub async fn delete(
             ));
         }
         let amount_minor: i64 = row.try_get("amount_minor").map_err(map_sql)?;
-        let applied = sqlx::query(
-            "SELECT account_id FROM external_managed_applied WHERE line_id = ?1",
-        )
-        .bind(&id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(map_sql)?;
-        for applied_row in applied {
-            let account_id: String = applied_row.try_get("account_id").map_err(map_sql)?;
-            sqlx::query(
-                "UPDATE external_managed_account
-                 SET current_minor = CASE
-                     WHEN current_minor IS NULL THEN NULL
-                     ELSE current_minor + ?1
-                 END
-                 WHERE account_id = ?2",
-            )
-            .bind(amount_minor)
-            .bind(&account_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_sql)?;
-            sqlx::query(
-                "DELETE FROM external_managed_applied WHERE account_id = ?1 AND line_id = ?2",
-            )
-            .bind(&account_id)
-            .bind(&id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_sql)?;
-        }
+        unapply_line_if_present(&mut tx, &id, amount_minor).await?;
         let removed = sqlx::query(
             "DELETE FROM external_register_line WHERE line_id = ?1 AND completed = 0",
         )
@@ -495,6 +513,117 @@ pub async fn mark_step(
         .execute(&mut *tx)
         .await
         .map_err(map_sql)?;
+    }
+    tx.commit().await.map_err(map_sql)?;
+    get(pool, None).await
+}
+
+/// Clear one CCT Mark step. Reopens completed lines and reverses apply when the
+/// line no longer qualifies for `line_applied`.
+pub async fn unmark_step(
+    pool: &SqlitePool,
+    line_ids: Vec<Uuid>,
+    step: &str,
+) -> Result<ExternalRegisterGetBody, PlatformError> {
+    if !matches!(
+        step,
+        "transfer" | "billpay_deposit" | "pay" | "withdrawal"
+    ) {
+        return Err(PlatformError::new(
+            "bad_step",
+            "unmark step must be transfer, billpay_deposit, pay, or withdrawal",
+        ));
+    }
+    if line_ids.is_empty() {
+        return Err(PlatformError::new(
+            "missing_line_ids",
+            "unmark needs at least one row",
+        ));
+    }
+    let mut tx = pool.begin().await.map_err(map_sql)?;
+    for line_id in line_ids {
+        let id = line_id.to_string();
+        let row = sqlx::query(
+            "SELECT amount_minor,
+                    step_transfer, step_billpay, step_billpay_deposit, step_pay, step_withdrawal,
+                    completed
+             FROM external_register_line WHERE line_id = ?1",
+        )
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sql)?;
+        let Some(row) = row else {
+            return Err(PlatformError::new(
+                "missing_line",
+                "register line was not found",
+            ));
+        };
+        let amount_minor: i64 = row.try_get("amount_minor").map_err(map_sql)?;
+        let mut step_transfer: i64 = row.try_get("step_transfer").map_err(map_sql)?;
+        let mut step_billpay: i64 = row.try_get("step_billpay").map_err(map_sql)?;
+        let mut step_billpay_deposit: i64 = row.try_get("step_billpay_deposit").map_err(map_sql)?;
+        let mut step_pay: i64 = row.try_get("step_pay").map_err(map_sql)?;
+        let mut step_withdrawal: i64 = row.try_get("step_withdrawal").map_err(map_sql)?;
+        match step {
+            "transfer" => step_transfer = 0,
+            "billpay_deposit" => {
+                step_billpay_deposit = 0;
+                step_billpay = 0;
+            }
+            "pay" => step_pay = 0,
+            "withdrawal" => step_withdrawal = 0,
+            _ => {}
+        }
+        sqlx::query(
+            "UPDATE external_register_line
+             SET step_transfer = CASE WHEN ?1 = 'transfer' THEN 0 ELSE step_transfer END,
+                 step_transfer_on = CASE WHEN ?1 = 'transfer' THEN NULL ELSE step_transfer_on END,
+                 step_billpay = CASE WHEN ?1 = 'billpay_deposit' THEN 0 ELSE step_billpay END,
+                 step_billpay_on = CASE WHEN ?1 = 'billpay_deposit' THEN NULL ELSE step_billpay_on END,
+                 step_billpay_deposit = CASE WHEN ?1 = 'billpay_deposit' THEN 0 ELSE step_billpay_deposit END,
+                 step_billpay_deposit_on = CASE
+                     WHEN ?1 = 'billpay_deposit' THEN NULL ELSE step_billpay_deposit_on END,
+                 step_pay = CASE WHEN ?1 = 'pay' THEN 0 ELSE step_pay END,
+                 step_pay_on = CASE WHEN ?1 = 'pay' THEN NULL ELSE step_pay_on END,
+                 step_withdrawal = CASE WHEN ?1 = 'withdrawal' THEN 0 ELSE step_withdrawal END,
+                 step_withdrawal_on = CASE WHEN ?1 = 'withdrawal' THEN NULL ELSE step_withdrawal_on END,
+                 completed = 0,
+                 true_up_on = NULL
+             WHERE line_id = ?2",
+        )
+        .bind(step)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sql)?;
+
+        let applied = sqlx::query(
+            "SELECT a.account_id, m.kind
+             FROM external_managed_applied a
+             JOIN external_managed_account m ON m.account_id = a.account_id
+             WHERE a.line_id = ?1",
+        )
+        .bind(&id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(map_sql)?;
+        for applied_row in applied {
+            let account_id: String = applied_row.try_get("account_id").map_err(map_sql)?;
+            let kind: String = applied_row.try_get("kind").map_err(map_sql)?;
+            let still_applied = line_applied(
+                &kind,
+                false,
+                step_transfer != 0,
+                step_billpay != 0,
+                step_billpay_deposit != 0,
+                step_pay != 0,
+                step_withdrawal != 0,
+            );
+            if !still_applied {
+                unapply_account_line(&mut tx, &account_id, &id, amount_minor).await?;
+            }
+        }
     }
     tx.commit().await.map_err(map_sql)?;
     get(pool, None).await
