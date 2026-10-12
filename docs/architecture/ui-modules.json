@@ -847,9 +847,16 @@
           "export": "none"
         },
         {
-          "id": "external-set-bucket",
+          "id": "external-completed-year-ticks",
+          "kind": "control",
+          "title": "Active year",
+          "section": "external-completed",
+          "export": "none"
+        },
+        {
+          "id": "external-bulk-set-field",
           "kind": "dialog",
-          "title": "Set bucket",
+          "title": "Bulk set field",
           "section": "external-completed",
           "export": "none"
         },

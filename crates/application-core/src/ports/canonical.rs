@@ -1240,6 +1240,13 @@ pub trait Canonical: Send + Sync {
         let _ = (line_ids, step, ticked_on);
         ni()
     }
+    async fn external_register_delete(
+        &self,
+        line_ids: Vec<Uuid>,
+    ) -> Result<crate::contracts::ExternalRegisterGetBody, PlatformError> {
+        let _ = line_ids;
+        ni()
+    }
     async fn external_register_import(
         &self,
         path: String,

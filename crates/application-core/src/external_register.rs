@@ -445,6 +445,12 @@ pub fn mark_step_from_json(
     Ok((line_ids, step, ticked_on))
 }
 
+/// Open-row delete: same `lineIds` payload as true-up / mark step.
+pub fn delete_from_json(json: &Value) -> Result<Vec<Uuid>, PlatformError> {
+    let (line_ids, _) = true_up_from_json(json)?;
+    Ok(line_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

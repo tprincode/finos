@@ -302,6 +302,90 @@ pub async fn save(
     get(pool, None).await
 }
 
+/// Delete open (not completed) CCT lines. Reverses any escrow/debt apply first.
+pub async fn delete(
+    pool: &SqlitePool,
+    line_ids: Vec<Uuid>,
+) -> Result<ExternalRegisterGetBody, PlatformError> {
+    if line_ids.is_empty() {
+        return Err(PlatformError::new(
+            "missing_line_ids",
+            "delete needs at least one row",
+        ));
+    }
+    let mut tx = pool.begin().await.map_err(map_sql)?;
+    for line_id in &line_ids {
+        let id = line_id.to_string();
+        let row = sqlx::query(
+            "SELECT amount_minor, completed FROM external_register_line WHERE line_id = ?1",
+        )
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sql)?;
+        let Some(row) = row else {
+            return Err(PlatformError::new(
+                "missing_line",
+                "register line was not found",
+            ));
+        };
+        let completed: i64 = row.try_get("completed").map_err(map_sql)?;
+        if completed != 0 {
+            return Err(PlatformError::new(
+                "line_completed",
+                "completed charges cannot be deleted from Open",
+            ));
+        }
+        let amount_minor: i64 = row.try_get("amount_minor").map_err(map_sql)?;
+        let applied = sqlx::query(
+            "SELECT account_id FROM external_managed_applied WHERE line_id = ?1",
+        )
+        .bind(&id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(map_sql)?;
+        for applied_row in applied {
+            let account_id: String = applied_row.try_get("account_id").map_err(map_sql)?;
+            sqlx::query(
+                "UPDATE external_managed_account
+                 SET current_minor = CASE
+                     WHEN current_minor IS NULL THEN NULL
+                     ELSE current_minor + ?1
+                 END
+                 WHERE account_id = ?2",
+            )
+            .bind(amount_minor)
+            .bind(&account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sql)?;
+            sqlx::query(
+                "DELETE FROM external_managed_applied WHERE account_id = ?1 AND line_id = ?2",
+            )
+            .bind(&account_id)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sql)?;
+        }
+        let removed = sqlx::query(
+            "DELETE FROM external_register_line WHERE line_id = ?1 AND completed = 0",
+        )
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sql)?;
+        if removed.rows_affected() == 0 {
+            return Err(PlatformError::new(
+                "missing_line",
+                "register line was not found",
+            ));
+        }
+    }
+    tx.commit().await.map_err(map_sql)?;
+    get(pool, None).await
+}
+
 pub async fn true_up(
     pool: &SqlitePool,
     line_ids: Vec<Uuid>,

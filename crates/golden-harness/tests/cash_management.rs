@@ -1331,19 +1331,36 @@ fn cct_open_shows_pay_type_subtotals_above_mark_steps() {
     let css = std::fs::read_to_string(golden_harness::repo_root().join("apps/desktop/src/App.css"))
         .unwrap();
     assert!(
-        register.contains("className=\"external-steps-row\"")
+        register.contains("className=\"external-open-head\"")
+            && register.contains("stepTotal(\"Transfer\"")
             && register.contains("aria-label=\"Open totals by pay type\"")
             && register.contains("openPayTypeTotals")
-            && register.contains("external-open-paytype-totals"),
-        "Open CCT must subtotal each pay type (e.g. UCARD) beside the steps list"
+            && register.contains("external-open-paytype-totals")
+            && register.contains("Account-total display only")
+            && register.contains("openCutoff")
+            && register.contains("for (const line of pending) bump(line, true)")
+            && register.contains("for (const line of completed)")
+            && register.contains("view.amountMinor >= 0")
+            && register.contains("on < cutoff")
+            && register.contains("bump(line, false)"),
+        "Open CCT pay-type box nets open lines plus completed credits in the open window"
     );
     assert!(
-        css.contains(".external-steps-row")
-            && css.contains("display: flex")
-            && css.contains(".external-open-paytype-totals")
+        css.contains(".external-open-head .external-open-paytype-totals")
+            && css.contains("width: max-content")
             && css.contains("border:")
             && css.contains(".external-open-paytype-total"),
-        "pay-type subtotals sit in a bordered box to the right of the 1-2-3 steps"
+        "pay-type subtotals are a fit-content box after the four Mark pills"
+    );
+    let account = std::fs::read_to_string(
+        golden_harness::repo_root().join("crates/application-core/src/external_account.rs"),
+    )
+    .unwrap();
+    assert!(
+        account.contains("pub fn line_matches")
+            && account.contains("loan_name == key")
+            && !register.contains("line_matches"),
+        "pay-type account totals stay in the CCT UI; debt match/reconcile is untouched"
     );
 }
 
@@ -2462,15 +2479,24 @@ fn cct_register_has_bucket_column_and_completed_edit() {
             && register.contains("ariaLabel=\"New bucket\"")
             && register.contains("ariaLabel={`Completed bucket ${line.lineId}`}")
             && register.contains("ariaLabel={`Completed category ${line.lineId}`}")
+            && register.contains("ariaLabel={`Completed description ${line.lineId}`}")
             && register.contains("ariaLabel=\"Bulk bucket\"")
+            && register.contains("aria-label=\"Bulk field\"")
+            && register.contains("ariaLabel=\"Bulk value\"")
+            && register.contains("aria-label=\"Set field\"")
+            && register.contains("aria-label=\"Confirm bulk set field\"")
+            && register.contains("data-part=\"external-bulk-set-field\"")
+            && register.contains("data-part=\"completed-line-edit-actions\"")
+            && register.contains("saveCompletedLine")
+            && register.contains("saveCompletedEdits")
+            && register.contains("completedEditingId")
+            && register.contains("startCompletedEdit")
             && register.contains("BUCKET_OPTIONS")
             && register.contains("\"Food\", \"Cash\", \"Bills\", \"Pets\", \"Medical\", \"HSA\"")
             && register.contains("function BucketSelect")
             && register.contains("catalogBuckets")
             && register.contains("aria-label=\"Save completed edits\"")
             && register.contains("aria-label=\"Cancel completed edits\"")
-            && register.contains("aria-label=\"Set bucket\"")
-            && register.contains("aria-label=\"Confirm bulk set bucket\"")
             && register.contains("isBulkEligibleLine")
             && register.contains("Select visible dated completed")
             && register.contains("function BucketYearRing")
@@ -2478,16 +2504,54 @@ fn cct_register_has_bucket_column_and_completed_edit() {
             && register.contains("title=\"Dated lines in selected years\"")
             && register.contains("COLUMN_FILTER_BLANK")
             && register.contains(">Blank</option>")
+            && register.contains("function amountFilterHit")
+            && register.contains("\"Filter total spent\"")
+            && register.contains("name=\"cct-completed-amount-filter\"")
+            && register.contains("aria-label={aria}")
+            && register.contains("autoComplete=\"off\"")
+            && register.contains("ExternalRegisterDelete")
+            && register.contains("saveOpenLine")
+            && register.contains("deleteOpenLine")
+            && register.contains("data-part=\"open-line-edit-actions\"")
+            && register.contains("className=\"external-open-line-edit\"")
+            && register.contains("external-open-edit-actions")
+            && register.contains("Save open line")
+            && register.contains("Cancel open line")
+            && register.contains("Delete open line")
+            && register.contains("openEditDirty")
+            && register.contains("activeColumnFilter")
+            && register.contains("[bulkField]: \"\"")
+            && register.contains("data-part=\"completed-filter-empty\"")
+            && register.contains("aria-label=\"Clear column filters\"")
+            && register.contains("clearColumnFilters")
+            && register.contains("filtersHideCompleted")
+            && register.contains("data-part=\"completed-year-ticks\"")
+            && register.contains("aria-label=\"Active year\"")
+            && register.contains("useState<string[]>([\"2026\"])")
+            && register.contains("aria-label={`Include ${year}`}")
+            && !register.contains("colSpan={4}\n                        className=\"external-open-edit-actions\"")
+            && !register.contains("colSpan={4}\r\n                        className=\"external-open-edit-actions\"")
+            && !register.contains("cct-open-amount-filter")
+            && !register.contains("Filter open total spent")
+            && !register.contains("completedChoices.amount")
             && !register.contains("Dated lines in selected years</span>")
-            && !register.contains("external-bulk-hint"),
-        "CCT must show catalog Bucket dropdown, completed Save, dated bulk set bucket, and year bucket ring"
+            && !register.contains("external-bulk-hint")
+            && !register.contains("data-part=\"external-set-bucket\""),
+        "CCT must show catalog Bucket, completed per-line Save, bulk field set, and year bucket ring"
+    );
+    assert!(
+        css.contains(".external-open-wrap .external-open-edit-actions")
+            && css.contains(".external-open-wrap .external-open-line-edit")
+            && css.contains("display: inline-flex"),
+        "Open Save/Cancel/Delete sit on the edited row; step ticks stay on the row"
     );
     assert!(
         css.contains(".external-completed-band")
             && css.contains(".external-bucket-year")
+            && css.contains(".external-completed-years")
             && css.contains("width: fit-content")
             && !css.contains(".external-bulk-hint"),
-        "Completed band must host a fit-content bulk bar and bucket-year donut"
+        "Completed band must host a fit-content bulk bar, year ticks, and bucket-year donut"
     );
     assert!(
         !register.contains("Medical-mom") && !register.contains("medical-mom"),
@@ -2684,6 +2748,120 @@ async fn bulk_set_bucket_keeps_completed_and_skips_prior_year() {
     assert_eq!(b["completed"], true);
     // Prior year was omitted from the bulk save; category default Food sticks, not Cash.
     assert_eq!(old["bucket"], "Food");
+    assert_eq!(old["completed"], true);
+}
+
+#[tokio::test]
+async fn bulk_set_vendor_keeps_completed_and_skips_prior_year() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let food_a = Uuid::new_v4();
+    let food_b = Uuid::new_v4();
+    let prior = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [
+                {
+                    "lineId": food_a,
+                    "payType": "PPMC",
+                    "occurredOn": "2026-01-29",
+                    "amountMinor": 3780,
+                    "scale": 2,
+                    "category": "Medical",
+                    "bucket": "Medical",
+                    "vendor": "Delta",
+                    "description": "vision",
+                    "completed": true,
+                    "trueUpOn": "2026-01-29"
+                },
+                {
+                    "lineId": food_b,
+                    "payType": "PPMC",
+                    "occurredOn": "2026-02-27",
+                    "amountMinor": 3780,
+                    "scale": 2,
+                    "category": "Medical",
+                    "bucket": "Medical",
+                    "vendor": "Eye",
+                    "description": "vision",
+                    "completed": true,
+                    "trueUpOn": "2026-02-27"
+                },
+                {
+                    "lineId": prior,
+                    "payType": "PPMC",
+                    "occurredOn": "2025-11-01",
+                    "amountMinor": 3780,
+                    "scale": 2,
+                    "category": "Medical",
+                    "bucket": "Medical",
+                    "vendor": "Delta",
+                    "description": "prior",
+                    "completed": true,
+                    "trueUpOn": "2025-11-02"
+                }
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [
+                {
+                    "lineId": food_a,
+                    "payType": "PPMC",
+                    "occurredOn": "2026-01-29",
+                    "amountMinor": 3780,
+                    "scale": 2,
+                    "category": "Medical",
+                    "bucket": "Medical",
+                    "vendor": "Delta Vision",
+                    "description": "vision",
+                    "completed": true,
+                    "trueUpOn": "2026-01-29"
+                },
+                {
+                    "lineId": food_b,
+                    "payType": "PPMC",
+                    "occurredOn": "2026-02-27",
+                    "amountMinor": 3780,
+                    "scale": 2,
+                    "category": "Medical",
+                    "bucket": "Medical",
+                    "vendor": "Delta Vision",
+                    "description": "vision",
+                    "completed": true,
+                    "trueUpOn": "2026-02-27"
+                }
+            ]
+        }),
+    )
+    .await;
+    let body = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let lines = body["lines"].as_array().unwrap();
+    let a = lines
+        .iter()
+        .find(|row| row["lineId"] == food_a.to_string())
+        .unwrap();
+    let b = lines
+        .iter()
+        .find(|row| row["lineId"] == food_b.to_string())
+        .unwrap();
+    let old = lines
+        .iter()
+        .find(|row| row["lineId"] == prior.to_string())
+        .unwrap();
+    assert_eq!(a["vendor"], "Delta Vision");
+    assert_eq!(b["vendor"], "Delta Vision");
+    assert_eq!(a["completed"], true);
+    assert_eq!(b["completed"], true);
+    assert_eq!(old["vendor"], "Delta");
     assert_eq!(old["completed"], true);
 }
 
@@ -3175,4 +3353,298 @@ async fn loan_element_confirm_drafts_cct_settle_moves_balance() {
         .unwrap();
     assert_eq!(cat["currentMinor"].as_i64().unwrap(), cat_start - 23600);
     assert_eq!(cat["paidThrough"], "October");
+}
+
+/// Open CCT duplicate rows delete cleanly; completed rows are refused.
+#[tokio::test]
+async fn open_cct_line_deletes_and_completed_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let open_id = Uuid::new_v4();
+    let done_id = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [
+                {
+                    "lineId": open_id,
+                    "payType": "UCARD",
+                    "occurredOn": "2026-10-11",
+                    "amountMinor": 28485,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "Food",
+                    "vendor": "Weg",
+                    "description": "duplicate open"
+                },
+                {
+                    "lineId": done_id,
+                    "payType": "UCARD",
+                    "occurredOn": "2026-10-10",
+                    "amountMinor": 1000,
+                    "scale": 2,
+                    "category": "Food",
+                    "bucket": "Food",
+                    "vendor": "Weg",
+                    "description": "completed keep",
+                    "completed": true,
+                    "trueUpOn": "2026-10-10"
+                }
+            ]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ExternalRegisterDelete",
+        serde_json::json!({ "lineIds": [open_id] }),
+    )
+    .await;
+    let register = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let lines = register["lines"].as_array().unwrap();
+    assert!(
+        lines.iter().all(|line| line["lineId"] != open_id.to_string()),
+        "open duplicate must be gone"
+    );
+    assert!(
+        lines.iter().any(|line| line["lineId"] == done_id.to_string()),
+        "completed line must remain"
+    );
+    let refused = execute_command_on(
+        &platform,
+        &platform,
+        cmd(
+            "ExternalRegisterDelete",
+            serde_json::json!({ "lineIds": [done_id] }),
+        ),
+    )
+    .await;
+    assert!(!refused.ok, "completed delete must fail");
+    assert_eq!(refused.error_code.as_deref(), Some("line_completed"));
+}
+
+/// Live-clone smoke (CCT_OWNER_SMOKE=1): Add → edit Save → Transfer → Delete on a copy of live DB.
+/// Prefer CCT_OWNER_SMOKE_DB (sqlite path); else copy %LOCALAPPDATA%/com.finos.desktop/local.sqlite.
+#[tokio::test]
+async fn cct_owner_clone_smoke_add_edit_transfer_delete() {
+    if std::env::var("CCT_OWNER_SMOKE").ok().as_deref() != Some("1") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app-data");
+    std::fs::create_dir_all(&app).unwrap();
+    let dest = app.join("local.sqlite");
+    if let Ok(smoke_db) = std::env::var("CCT_OWNER_SMOKE_DB") {
+        std::fs::copy(&smoke_db, &dest).unwrap();
+    } else {
+        let live = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA"))
+            .join("com.finos.desktop")
+            .join("local.sqlite");
+        assert!(live.is_file(), "live db missing: {}", live.display());
+        std::fs::copy(&live, &dest).unwrap();
+    }
+    let platform = LocalPlatform::open(&app).await.unwrap();
+
+    let before = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let mom = before["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["registerKey"] == "Mom")
+        .expect("Mom registerKey on live clone");
+    let mom_id = mom["accountId"].as_str().unwrap().to_string();
+    let start = mom["currentMinor"].as_i64().expect("Mom currentMinor");
+
+    let line_id = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": line_id,
+                "payType": "UCARD",
+                "occurredOn": "2026-10-11",
+                "amountMinor": 1234,
+                "scale": 2,
+                "category": "Food",
+                "bucket": "Mom",
+                "vendor": "Smoke",
+                "description": "cct-owner-smoke-open"
+            }]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": line_id,
+                "payType": "UCARD",
+                "occurredOn": "2026-10-11",
+                "amountMinor": 1234,
+                "scale": 2,
+                "category": "Food",
+                "bucket": "Mom",
+                "vendor": "Smoke",
+                "description": "cct-owner-smoke-edited"
+            }]
+        }),
+    )
+    .await;
+    let edited = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    let line = edited["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["lineId"] == line_id.to_string())
+        .expect("smoke line");
+    assert_eq!(line["description"], "cct-owner-smoke-edited");
+    assert_eq!(line["bucket"], "Mom");
+
+    must_ok(
+        &platform,
+        "ExternalRegisterMarkStep",
+        serde_json::json!({
+            "lineIds": [line_id],
+            "step": "transfer",
+            "tickedOn": "2026-10-11"
+        }),
+    )
+    .await;
+    let mid = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let mom_mid = mid["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["accountId"] == mom_id)
+        .unwrap();
+    assert_eq!(
+        mom_mid["currentMinor"].as_i64().unwrap(),
+        start - 1234,
+        "Transfer must debit Mom on live clone"
+    );
+
+    must_ok(
+        &platform,
+        "ExternalRegisterDelete",
+        serde_json::json!({ "lineIds": [line_id] }),
+    )
+    .await;
+    let after = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let mom_after = after["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["accountId"] == mom_id)
+        .unwrap();
+    assert_eq!(
+        mom_after["currentMinor"].as_i64().unwrap(),
+        start,
+        "Delete must restore Mom on live clone"
+    );
+    let gone = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    assert!(gone["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["lineId"] != line_id.to_string()));
+}
+
+/// Mom Transfer apply then Open delete restores currentMinor.
+#[tokio::test]
+async fn mom_transfer_then_open_delete_restores_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = LocalPlatform::open(dir.path().join("app-data"))
+        .await
+        .unwrap();
+    let mom_credit_id = "a1000001-0000-4000-8000-000000000008";
+    must_ok(
+        &platform,
+        "ExternalAccountManagerSave",
+        serde_json::json!({
+            "accounts": [{
+                "accountId": mom_credit_id,
+                "name": "Mom shopping",
+                "startingMinor": 100000,
+                "currentMinor": 100000,
+                "paymentMinor": null,
+                "reductionMinor": null,
+                "financeMinor": null,
+                "paidThrough": null,
+                "payProcess": "register",
+                "registerKey": "Mom"
+            }]
+        }),
+    )
+    .await;
+    let line_id = Uuid::new_v4();
+    must_ok(
+        &platform,
+        "ExternalRegisterSave",
+        serde_json::json!({
+            "lines": [{
+                "lineId": line_id,
+                "payType": "Checking",
+                "occurredOn": "2026-10-11",
+                "amountMinor": 2500,
+                "scale": 2,
+                "category": "Food",
+                "bucket": "Mom",
+                "vendor": "Walmart",
+                "description": "mom escrow charge"
+            }]
+        }),
+    )
+    .await;
+    must_ok(
+        &platform,
+        "ExternalRegisterMarkStep",
+        serde_json::json!({
+            "lineIds": [line_id],
+            "step": "transfer",
+            "tickedOn": "2026-10-11"
+        }),
+    )
+    .await;
+    let after_transfer = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let mom_after_transfer = after_transfer["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["accountId"] == mom_credit_id)
+        .expect("Mom shopping");
+    assert_eq!(
+        mom_after_transfer["currentMinor"], 97500,
+        "Bucket Mom + Transfer debits escrow $25: {mom_after_transfer}"
+    );
+    must_ok(
+        &platform,
+        "ExternalRegisterDelete",
+        serde_json::json!({ "lineIds": [line_id] }),
+    )
+    .await;
+    let after_delete = query_json(&platform, "ExternalAccountManagerGet", serde_json::json!({})).await;
+    let mom_after_delete = after_delete["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["accountId"] == mom_credit_id)
+        .expect("Mom shopping");
+    assert_eq!(
+        mom_after_delete["currentMinor"], 100000,
+        "delete after Transfer must restore Mom current: {mom_after_delete}"
+    );
+    let register = query_json(&platform, "ExternalRegisterGet", serde_json::json!({})).await;
+    assert!(
+        register["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|line| line["lineId"] != line_id.to_string()),
+        "deleted open line must be gone"
+    );
 }

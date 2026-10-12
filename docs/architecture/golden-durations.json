@@ -6,7 +6,7 @@
                    "add_lot":  3,
                    "calculator_plan":  13,
                    "cart":  30,
-                   "cash_management":  10,
+                   "cash_management":  6,
                    "collectors":  28,
                    "core_functions":  2,
                    "data_snapshot":  16,
@@ -45,6 +45,7 @@
                    "interest_rate_calculator":  2,
                    "financial-domain":  0,
                    "plan_cadence_guards":  3,
-                   "debt_planner_our_transactions_export_to_excel_prompts_for_path":  0
+                   "debt_planner_our_transactions_export_to_excel_prompts_for_path":  0,
+                   "cct_register_has_bucket_column_and_completed_edit":  0
                }
 }

@@ -312,10 +312,41 @@ function parseAmount(raw: string): number | null {
 /** Column filter sentinel: empty string means All; this means value is blank. */
 const COLUMN_FILTER_BLANK = "__blank__";
 
+const EMPTY_COL_FILTERS = {
+  payType: "",
+  occurredOn: "",
+  amount: "",
+  category: "",
+  bucket: "",
+  loanName: "",
+  vendor: "",
+  description: "",
+  trueUpOn: "",
+};
+
 function columnHit(value: string, filter: string): boolean {
   if (!filter) return true;
   if (filter === COLUMN_FILTER_BLANK) return value.trim() === "";
   return value === filter;
+}
+
+/** Drop exact-match filters whose option no longer exists (e.g. after bulk rename). */
+function activeColumnFilter(filter: string, choices: string[]): string {
+  if (!filter || filter === COLUMN_FILTER_BLANK) return filter;
+  return choices.includes(filter) ? filter : "";
+}
+
+/** Typed $ filter: strip currency noise, match formatted or integer dollars. Empty = all. */
+function amountFilterHit(minor: number, scale: number, filter: string): boolean {
+  const q = filter.trim().toLowerCase().replace(/[$,]/g, "");
+  if (!q) return true;
+  const text = amountText(minor, scale).toLowerCase().replace(/[$,]/g, "");
+  if (text.includes(q)) return true;
+  return amountSearchText(minor, scale)
+    .toLowerCase()
+    .replace(/[$,]/g, "")
+    .split(/\s+/)
+    .some((part) => part.includes(q));
 }
 
 function lineYear(line: RegisterLine): string | null {
@@ -323,9 +354,23 @@ function lineYear(line: RegisterLine): string | null {
   return match ? match[1] : null;
 }
 
-/** Bulk bucket apply needs a dated line (year filter already scopes the list). */
+/** Bulk field apply needs a dated line (year filter already scopes the list). */
 function isBulkEligibleLine(line: RegisterLine): boolean {
   return lineYear(line) !== null;
+}
+
+type BulkField = "category" | "bucket" | "loanName" | "vendor" | "description";
+
+const BULK_FIELDS: { value: BulkField; label: string }[] = [
+  { value: "category", label: "Category" },
+  { value: "bucket", label: "Bucket" },
+  { value: "loanName", label: "Loan Name" },
+  { value: "vendor", label: "Vendor" },
+  { value: "description", label: "Description" },
+];
+
+function bulkFieldLabel(field: BulkField): string {
+  return BULK_FIELDS.find((row) => row.value === field)?.label ?? field;
 }
 
 const KNOWN_PAY_ACCOUNTS = new Set([
@@ -351,7 +396,7 @@ const KNOWN_PAY_ACCOUNTS = new Set([
 
 function ranked2026(
   lines: RegisterLine[],
-  field: "payType" | "category" | "bucket" | "loanName" | "vendor",
+  field: "payType" | "category" | "bucket" | "loanName" | "vendor" | "description",
   allow?: (name: string) => boolean,
 ): string[] {
   const counts = new Map<string, number>();
@@ -602,23 +647,15 @@ export function ExternalRegister({
   const [body, setBody] = useState<RegisterBody | null>(null);
   const [search, setSearch] = useState("");
   const [checkedYears, setCheckedYears] = useState<string[]>(["2026"]);
-  const [colFilters, setColFilters] = useState({
-    payType: "",
-    occurredOn: "",
-    amount: "",
-    category: "",
-    bucket: "",
-    loanName: "",
-    vendor: "",
-    description: "",
-    trueUpOn: "",
-  });
+  const [colFilters, setColFilters] = useState(() => ({ ...EMPTY_COL_FILTERS }));
   const [entry, setEntry] = useState<EntryDraft>(emptyEntry);
   const [drafts, setDrafts] = useState<Record<string, RegisterLine>>({});
   const [amountInputs, setAmountInputs] = useState<Record<string, string>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [completedEditingId, setCompletedEditingId] = useState<string | null>(null);
   const [openSort, setOpenSort] = useState<{ key: OpenSortKey; dir: "asc" | "desc" } | null>(null);
   const editRowRef = useRef<HTMLTableRowElement>(null);
+  const completedControlsRef = useRef<HTMLDivElement>(null);
   const [transferIds, setTransferIds] = useState<string[]>([]);
   const [billpayDepositIds, setBillpayDepositIds] = useState<string[]>([]);
   const [payIds, setPayIds] = useState<string[]>([]);
@@ -628,7 +665,8 @@ export function ExternalRegister({
   const [exportPreview, setExportPreview] = useState<ExportPreview | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [bulkIds, setBulkIds] = useState<string[]>([]);
-  const [bulkBucket, setBulkBucket] = useState("");
+  const [bulkField, setBulkField] = useState<BulkField>("bucket");
+  const [bulkValue, setBulkValue] = useState("");
   const [bulkConfirm, setBulkConfirm] = useState(false);
 
   const dirty =
@@ -648,9 +686,11 @@ export function ExternalRegister({
     setDrafts({});
     setAmountInputs({});
     setEditingId(null);
+    setCompletedEditingId(null);
     setEntry(emptyEntry());
     setBulkIds([]);
-    setBulkBucket("");
+    setBulkField("bucket");
+    setBulkValue("");
     setBulkConfirm(false);
   };
 
@@ -665,9 +705,11 @@ export function ExternalRegister({
           setDrafts({});
           setAmountInputs({});
           setEditingId(null);
+          setCompletedEditingId(null);
           setEntry(emptyEntry());
           setBulkIds([]);
-          setBulkBucket("");
+          setBulkField("bucket");
+          setBulkValue("");
           setBulkConfirm(false);
           setStatus(null);
         }
@@ -693,7 +735,6 @@ export function ExternalRegister({
     const counts = {
       payType: new Map<string, number>(),
       occurredOn: new Map<string, number>(),
-      amount: new Map<string, number>(),
       category: new Map<string, number>(),
       bucket: new Map<string, number>(),
       loanName: new Map<string, number>(),
@@ -704,7 +745,6 @@ export function ExternalRegister({
     for (const line of body?.lines ?? []) {
       bump(counts.payType, line.payType);
       bump(counts.occurredOn, line.occurredOn ?? "");
-      bump(counts.amount, amountText(line.amountMinor, line.scale));
       bump(counts.category, line.category);
       bump(counts.bucket, line.bucket ?? "");
       bump(counts.loanName, line.loanName ?? "");
@@ -724,6 +764,7 @@ export function ExternalRegister({
       category: ranked2026(body?.lines ?? [], "category"),
       loanName,
       vendor: ranked2026(body?.lines ?? [], "vendor"),
+      description: ranked2026(body?.lines ?? [], "description"),
     };
   }, [body]);
 
@@ -741,20 +782,7 @@ export function ExternalRegister({
     setEntry((current) => ({ ...current, ...patch }));
   };
 
-  useEffect(() => {
-    if (!editingId) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (editRowRef.current?.contains(target)) return;
-      setEditingId(null);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [editingId]);
-
-  const startEdit = (line: RegisterLine) => {
-    setEditingId(line.lineId);
+  const beginLineDraft = (line: RegisterLine) => {
     setDrafts((current) =>
       current[line.lineId] ? current : { ...current, [line.lineId]: { ...line } },
     );
@@ -763,6 +791,135 @@ export function ExternalRegister({
         ? current
         : { ...current, [line.lineId]: amountText(line.amountMinor, line.scale) },
     );
+  };
+
+  const startEdit = (line: RegisterLine) => {
+    if (editingId && editingId !== line.lineId) {
+      setStatus("Save, cancel, or delete the open line edit first.");
+      return;
+    }
+    setEditingId(line.lineId);
+    beginLineDraft(line);
+  };
+
+  const startCompletedEdit = (line: RegisterLine) => {
+    if (completedEditingId && completedEditingId !== line.lineId) {
+      setStatus("Save or cancel the completed line edit first.");
+      return;
+    }
+    setCompletedEditingId(line.lineId);
+    beginLineDraft(line);
+  };
+
+  const clearLineDraft = (lineId: string) => {
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[lineId];
+      return next;
+    });
+    setAmountInputs((current) => {
+      const next = { ...current };
+      delete next[lineId];
+      return next;
+    });
+  };
+
+  const clearOpenEdit = (lineId: string) => {
+    clearLineDraft(lineId);
+    setEditingId((current) => (current === lineId ? null : current));
+  };
+
+  const clearCompletedEdit = (lineId: string) => {
+    clearLineDraft(lineId);
+    setCompletedEditingId((current) => (current === lineId ? null : current));
+  };
+
+  const cancelOpenEdit = (lineId: string) => {
+    clearOpenEdit(lineId);
+    setStatus(null);
+  };
+
+  const cancelCompletedEdit = (lineId: string) => {
+    clearCompletedEdit(lineId);
+    setStatus(null);
+  };
+
+  const saveOpenLine = async (lineId: string) => {
+    const original = (body?.lines ?? []).find((line) => line.lineId === lineId);
+    const draft = drafts[lineId];
+    if (!original || !draft) {
+      setEditingId(null);
+      return;
+    }
+    if (!lineChanged(original, draft)) {
+      clearOpenEdit(lineId);
+      setStatus(null);
+      return;
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      const result = await client.executeCommand("ExternalRegisterSave", { lines: [draft] });
+      const next = await readBody(result);
+      setBody(next);
+      clearOpenEdit(lineId);
+      setStatus("Saved.");
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveCompletedLine = async (lineId: string) => {
+    const original = (body?.lines ?? []).find((line) => line.lineId === lineId);
+    const draft = drafts[lineId];
+    if (!original || !draft) {
+      setCompletedEditingId(null);
+      return;
+    }
+    if (!lineChanged(original, draft)) {
+      clearCompletedEdit(lineId);
+      setStatus(null);
+      return;
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      const result = await client.executeCommand("ExternalRegisterSave", {
+        lines: [{ ...draft, completed: true }],
+      });
+      const next = await readBody(result);
+      setBody(next);
+      clearCompletedEdit(lineId);
+      setStatus("Saved.");
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteOpenLine = async (lineId: string) => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const result = await client.executeCommand("ExternalRegisterDelete", {
+        lineIds: [lineId],
+      });
+      const next = await readBody(result);
+      setBody(next);
+      clearOpenEdit(lineId);
+      setTransferIds((current) => current.filter((id) => id !== lineId));
+      setBillpayDepositIds((current) => current.filter((id) => id !== lineId));
+      setPayIds((current) => current.filter((id) => id !== lineId));
+      setWithdrawalIds((current) => current.filter((id) => id !== lineId));
+      setStatus("Deleted.");
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const patchDraft = (lineId: string, patch: Partial<RegisterLine>) => {
@@ -808,6 +965,7 @@ export function ExternalRegister({
       setDrafts({});
       setAmountInputs({});
       setEditingId(null);
+      setCompletedEditingId(null);
       setEntry(emptyEntry());
       setStatus("Saved.");
     } catch (err: unknown) {
@@ -964,27 +1122,153 @@ export function ExternalRegister({
   const isComplete = (line: RegisterLine) => Boolean(line.completed || stepsDone(line));
   const pending = shown.filter((line) => !isComplete(line));
   const completed = shown.filter((line) => isComplete(line));
+  const completedChoices = {
+    payType: new Set<string>(),
+    occurredOn: new Set<string>(),
+    category: new Set<string>(),
+    bucket: new Set<string>(),
+    loanName: new Set<string>(),
+    vendor: new Set<string>(),
+    description: new Set<string>(),
+    trueUpOn: new Set<string>(),
+  };
+  for (const line of completed) {
+    const view = viewOf(line);
+    if (view.payType.trim()) completedChoices.payType.add(view.payType.trim());
+    if (view.occurredOn?.trim()) completedChoices.occurredOn.add(view.occurredOn.trim());
+    if (view.category.trim()) completedChoices.category.add(view.category.trim());
+    if ((view.bucket ?? "").trim()) completedChoices.bucket.add(view.bucket.trim());
+    if ((view.loanName ?? "").trim()) completedChoices.loanName.add(view.loanName!.trim());
+    if (view.vendor.trim()) completedChoices.vendor.add(view.vendor.trim());
+    if (view.description.trim()) completedChoices.description.add(view.description.trim());
+    if (completedDateOf(view).trim()) completedChoices.trueUpOn.add(completedDateOf(view).trim());
+  }
+  const rank = {
+    payType: byFrequency(valueFrequency.payType),
+    occurredOn: byFrequency(valueFrequency.occurredOn),
+    category: byFrequency(valueFrequency.category),
+    bucket: byFrequency(valueFrequency.bucket),
+    loanName: byFrequency(valueFrequency.loanName),
+    vendor: byFrequency(valueFrequency.vendor),
+    description: byFrequency(valueFrequency.description),
+    trueUpOn: byFrequency(valueFrequency.trueUpOn),
+  };
+  const choiceLists = {
+    payType: [...completedChoices.payType].sort(rank.payType),
+    occurredOn: [...completedChoices.occurredOn].sort(rank.occurredOn),
+    category: [...completedChoices.category].sort(rank.category),
+    bucket: [...completedChoices.bucket].sort(rank.bucket),
+    loanName: [...completedChoices.loanName].sort(rank.loanName),
+    vendor: [...completedChoices.vendor].sort(rank.vendor),
+    description: [...completedChoices.description].sort(rank.description),
+    trueUpOn: [...completedChoices.trueUpOn].sort(rank.trueUpOn),
+  };
+  const activeFilters = {
+    payType: activeColumnFilter(colFilters.payType, choiceLists.payType),
+    occurredOn: activeColumnFilter(colFilters.occurredOn, choiceLists.occurredOn),
+    amount: colFilters.amount,
+    category: activeColumnFilter(colFilters.category, choiceLists.category),
+    bucket: activeColumnFilter(colFilters.bucket, choiceLists.bucket),
+    loanName: activeColumnFilter(colFilters.loanName, choiceLists.loanName),
+    vendor: activeColumnFilter(colFilters.vendor, choiceLists.vendor),
+    description: activeColumnFilter(colFilters.description, choiceLists.description),
+    trueUpOn: activeColumnFilter(colFilters.trueUpOn, choiceLists.trueUpOn),
+  };
+  useEffect(() => {
+    setColFilters((current) => {
+      const next = { ...current };
+      let changed = false;
+      (
+        [
+          "payType",
+          "occurredOn",
+          "category",
+          "bucket",
+          "loanName",
+          "vendor",
+          "description",
+          "trueUpOn",
+        ] as const
+      ).forEach((key) => {
+        const active = activeColumnFilter(current[key], choiceLists[key]);
+        if (active !== current[key]) {
+          next[key] = active;
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [
+    choiceLists.payType,
+    choiceLists.occurredOn,
+    choiceLists.category,
+    choiceLists.bucket,
+    choiceLists.loanName,
+    choiceLists.vendor,
+    choiceLists.description,
+    choiceLists.trueUpOn,
+  ]);
   const completedVisible = completed.filter((line) => {
     const view = viewOf(line);
     return (
-      columnHit(view.payType.trim(), colFilters.payType) &&
-      columnHit((view.occurredOn ?? "").trim(), colFilters.occurredOn) &&
-      columnHit(amountText(view.amountMinor, view.scale), colFilters.amount) &&
-      columnHit(view.category.trim(), colFilters.category) &&
-      columnHit((view.bucket ?? "").trim(), colFilters.bucket) &&
-      columnHit((view.loanName ?? "").trim(), colFilters.loanName) &&
-      columnHit(view.vendor.trim(), colFilters.vendor) &&
-      columnHit(view.description.trim(), colFilters.description) &&
-      columnHit(completedDateOf(view).trim(), colFilters.trueUpOn)
+      columnHit(view.payType.trim(), activeFilters.payType) &&
+      columnHit((view.occurredOn ?? "").trim(), activeFilters.occurredOn) &&
+      amountFilterHit(view.amountMinor, view.scale ?? 2, activeFilters.amount) &&
+      columnHit(view.category.trim(), activeFilters.category) &&
+      columnHit((view.bucket ?? "").trim(), activeFilters.bucket) &&
+      columnHit((view.loanName ?? "").trim(), activeFilters.loanName) &&
+      columnHit(view.vendor.trim(), activeFilters.vendor) &&
+      columnHit(view.description.trim(), activeFilters.description) &&
+      columnHit(completedDateOf(view).trim(), activeFilters.trueUpOn)
     );
   });
   const completedDirty = completed.some(
     (line) => drafts[line.lineId] && lineChanged(line, drafts[line.lineId]),
   );
+  const filtersHideCompleted = completed.length > 0 && completedVisible.length === 0;
+  const clearColumnFilters = () => {
+    setColFilters({ ...EMPTY_COL_FILTERS });
+  };
+
+  /** Persist dirty completed drafts only — never the Open entry row. */
+  const saveCompletedEdits = async () => {
+    const lines = completed
+      .filter((line) => drafts[line.lineId] && lineChanged(line, drafts[line.lineId]))
+      .map((line) => ({ ...drafts[line.lineId], completed: true }));
+    if (lines.length === 0) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      const result = await client.executeCommand("ExternalRegisterSave", { lines });
+      const next = await readBody(result);
+      setBody(next);
+      setDrafts((current) => {
+        const nextDrafts = { ...current };
+        for (const line of lines) delete nextDrafts[line.lineId];
+        return nextDrafts;
+      });
+      setAmountInputs((current) => {
+        const nextInputs = { ...current };
+        for (const line of lines) delete nextInputs[line.lineId];
+        return nextInputs;
+      });
+      setCompletedEditingId(null);
+      setStatus("Saved.");
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const bulkEligible = completedVisible.filter(isBulkEligibleLine);
   const bulkSelectedVisible = bulkEligible.filter((line) => bulkIds.includes(line.lineId));
   const allBulkSelected =
     bulkEligible.length > 0 && bulkEligible.every((line) => bulkIds.includes(line.lineId));
+  const bulkValueReady =
+    bulkField === "bucket"
+      ? knownBuckets.has(bulkValue.trim())
+      : bulkValue.trim().length > 0;
   const setFilter = (key: keyof typeof colFilters, value: string) => {
     setColFilters((current) => ({ ...current, [key]: value }));
   };
@@ -1004,16 +1288,20 @@ export function ExternalRegister({
       setStatus("Select dated completed charges first.");
       return;
     }
-    if (!knownBuckets.has(bulkBucket.trim())) {
+    if (bulkField === "bucket" && !knownBuckets.has(bulkValue.trim())) {
       setStatus("Choose a defined bucket.");
+      return;
+    }
+    if (bulkField !== "bucket" && !bulkValue.trim()) {
+      setStatus(`Enter a ${bulkFieldLabel(bulkField).toLowerCase()}.`);
       return;
     }
     setBulkConfirm(true);
   };
-  const applyBulkBucket = async () => {
-    const bucket = bulkBucket.trim();
+  const applyBulkField = async () => {
+    const value = bulkValue.trim();
     const ids = bulkSelectedVisible.map((line) => line.lineId);
-    if (ids.length === 0 || !knownBuckets.has(bucket)) {
+    if (ids.length === 0 || !bulkValueReady) {
       setBulkConfirm(false);
       return;
     }
@@ -1021,7 +1309,7 @@ export function ExternalRegister({
       const view = viewOf(line);
       return {
         ...view,
-        bucket,
+        [bulkField]: value,
         completed: true,
       };
     });
@@ -1034,60 +1322,17 @@ export function ExternalRegister({
       setDrafts({});
       setAmountInputs({});
       setEditingId(null);
+      setCompletedEditingId(null);
       setBulkIds([]);
-      setBulkBucket("");
+      setBulkValue("");
       setBulkConfirm(false);
-      setStatus(`Bucket set on ${ids.length} charges.`);
+      setColFilters((current) => ({ ...current, [bulkField]: "" }));
+      setStatus(`${bulkFieldLabel(bulkField)} set on ${ids.length} charges.`);
     } catch (err: unknown) {
       setStatus(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  };
-  const completedChoices = {
-    payType: new Set<string>(),
-    occurredOn: new Set<string>(),
-    amount: new Set<string>(),
-    category: new Set<string>(),
-    bucket: new Set<string>(),
-    loanName: new Set<string>(),
-    vendor: new Set<string>(),
-    description: new Set<string>(),
-    trueUpOn: new Set<string>(),
-  };
-  for (const line of completed) {
-    const view = viewOf(line);
-    if (view.payType.trim()) completedChoices.payType.add(view.payType.trim());
-    if (view.occurredOn?.trim()) completedChoices.occurredOn.add(view.occurredOn.trim());
-    completedChoices.amount.add(amountText(view.amountMinor, view.scale));
-    if (view.category.trim()) completedChoices.category.add(view.category.trim());
-    if ((view.bucket ?? "").trim()) completedChoices.bucket.add(view.bucket.trim());
-    if ((view.loanName ?? "").trim()) completedChoices.loanName.add(view.loanName!.trim());
-    if (view.vendor.trim()) completedChoices.vendor.add(view.vendor.trim());
-    if (view.description.trim()) completedChoices.description.add(view.description.trim());
-    if (completedDateOf(view).trim()) completedChoices.trueUpOn.add(completedDateOf(view).trim());
-  }
-  const rank = {
-    payType: byFrequency(valueFrequency.payType),
-    occurredOn: byFrequency(valueFrequency.occurredOn),
-    amount: byFrequency(valueFrequency.amount),
-    category: byFrequency(valueFrequency.category),
-    bucket: byFrequency(valueFrequency.bucket),
-    loanName: byFrequency(valueFrequency.loanName),
-    vendor: byFrequency(valueFrequency.vendor),
-    description: byFrequency(valueFrequency.description),
-    trueUpOn: byFrequency(valueFrequency.trueUpOn),
-  };
-  const choiceLists = {
-    payType: [...completedChoices.payType].sort(rank.payType),
-    occurredOn: [...completedChoices.occurredOn].sort(rank.occurredOn),
-    amount: [...completedChoices.amount].sort(rank.amount),
-    category: [...completedChoices.category].sort(rank.category),
-    bucket: [...completedChoices.bucket].sort(rank.bucket),
-    loanName: [...completedChoices.loanName].sort(rank.loanName),
-    vendor: [...completedChoices.vendor].sort(rank.vendor),
-    description: [...completedChoices.description].sort(rank.description),
-    trueUpOn: [...completedChoices.trueUpOn].sort(rank.trueUpOn),
   };
   const sumSelected = (ids: string[]) =>
     pending
@@ -1256,9 +1501,22 @@ export function ExternalRegister({
     </span>
   );
 
+  // Account-total display only: open lines + completed credits in the open window.
+  // Cutoff per pay type = earliest open occurredOn — prior completed credits are ignored
+  // (one-time true-up against history; new payments after the window reduce the total).
+  // Does not change category, bucket, or debt-planner matching.
   const openPayTypeTotals = (() => {
     const map = new Map<string, { amountMinor: number; scale: number; count: number }>();
+    const openCutoff = new Map<string, string>();
     for (const line of pending) {
+      const view = viewOf(line);
+      const key = view.payType.trim() || "(no pay type)";
+      const on = (view.occurredOn ?? "").trim();
+      if (!on) continue;
+      const prev = openCutoff.get(key);
+      if (!prev || on < prev) openCutoff.set(key, on);
+    }
+    const bump = (line: RegisterLine, countOpen: boolean) => {
       const view = viewOf(line);
       const key = view.payType.trim() || "(no pay type)";
       const cur = map.get(key) ?? {
@@ -1267,15 +1525,45 @@ export function ExternalRegister({
         count: 0,
       };
       cur.amountMinor += view.amountMinor;
-      cur.count += 1;
+      if (countOpen) cur.count += 1;
       if ((view.scale || 2) > cur.scale) cur.scale = view.scale || 2;
       map.set(key, cur);
+    };
+    for (const line of pending) bump(line, true);
+    for (const line of completed) {
+      const view = viewOf(line);
+      if (view.amountMinor >= 0) continue;
+      const key = view.payType.trim() || "(no pay type)";
+      const cutoff = openCutoff.get(key);
+      if (!cutoff) continue;
+      const on = (view.occurredOn ?? "").trim();
+      if (!on || on < cutoff) continue;
+      bump(line, false);
     }
     return [...map.entries()].sort(([a], [b]) =>
       a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
     );
   })();
 
+  const editingOriginal = editingId
+    ? (body?.lines ?? []).find((line) => line.lineId === editingId)
+    : undefined;
+  const editingDraft = editingId ? drafts[editingId] : undefined;
+  const openEditDirty = Boolean(
+    editingOriginal &&
+      editingDraft &&
+      !isComplete(editingOriginal) &&
+      lineChanged(editingOriginal, editingDraft),
+  );
+  const completedEditingOriginal = completedEditingId
+    ? (body?.lines ?? []).find((line) => line.lineId === completedEditingId)
+    : undefined;
+  const completedEditingDraft = completedEditingId ? drafts[completedEditingId] : undefined;
+  const completedLineDirty = Boolean(
+    completedEditingOriginal &&
+      completedEditingDraft &&
+      lineChanged(completedEditingOriginal, completedEditingDraft),
+  );
   return (
     <section className="external-register" aria-label="Checking and Credit Transactions -CCT">
       <div className="external-find" id="external-find" data-section="external-find">
@@ -1296,21 +1584,6 @@ export function ExternalRegister({
           <span className="external-find-count">{pending.length}</span>
           <span className="external-find-label">Complete</span>
           <span className="external-find-count">{completed.length}</span>
-          {years.map((year) => (
-            <span key={year} className="external-year-tick">
-              <input
-                type="checkbox"
-                aria-label={`Include ${year}`}
-                checked={checkedYears.includes(year)}
-                onChange={() => {
-                  setCheckedYears((current) =>
-                    current.includes(year) ? current.filter((item) => item !== year) : [...current, year],
-                  );
-                }}
-              />
-              {year}
-            </span>
-          ))}
         </div>
       </div>
       <div className="external-steps-row">
@@ -1319,6 +1592,14 @@ export function ExternalRegister({
           <li>Tick rows to complete steps</li>
           <li>Open charges move to Completed when all steps are done</li>
         </ol>
+      </div>
+      {status ? <p role="status">{status}</p> : null}
+      <h3 className="external-open-head" id="external-open" data-section="external-open">
+        Open · {pending.length}
+        {stepTotal("Transfer", "transfer", transferIds)}
+        {stepTotal("Bill Pay Deposit", "billpay_deposit", billpayDepositIds)}
+        {stepTotal("Pay Bill", "pay", payIds)}
+        {stepTotal("Bill Pay Withdrawal", "withdrawal", withdrawalIds)}
         <div
           className="external-open-paytype-totals"
           aria-label="Open totals by pay type"
@@ -1339,14 +1620,6 @@ export function ExternalRegister({
             ))
           )}
         </div>
-      </div>
-      {status ? <p role="status">{status}</p> : null}
-      <h3 className="external-open-head" id="external-open" data-section="external-open">
-        Open · {pending.length}
-        {stepTotal("Transfer", "transfer", transferIds)}
-        {stepTotal("Bill Pay Deposit", "billpay_deposit", billpayDepositIds)}
-        {stepTotal("Pay Bill", "pay", payIds)}
-        {stepTotal("Bill Pay Withdrawal", "withdrawal", withdrawalIds)}
       </h3>
       <div
         className="table-wrap external-register-wrap external-open-wrap"
@@ -1408,6 +1681,10 @@ export function ExternalRegister({
               <td>
                 <input
                   aria-label="New total spent"
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  name="cct-new-total-spent"
                   value={entry.amount}
                   onChange={(event) => patchEntry({ amount: event.target.value })}
                   onKeyDown={addOnEnter}
@@ -1486,13 +1763,6 @@ export function ExternalRegister({
                   key={line.lineId}
                   ref={editing ? editRowRef : undefined}
                   onClick={() => startEdit(line)}
-                  onBlur={(event) => {
-                    if (!editing) return;
-                    const next = event.relatedTarget;
-                    if (next instanceof Node && editRowRef.current?.contains(next)) return;
-                    if (next == null) return;
-                    setEditingId(null);
-                  }}
                 >
                   {editing && draft ? (
                     <>
@@ -1519,6 +1789,10 @@ export function ExternalRegister({
                       <td>
                         <input
                           aria-label={`Total spent ${line.lineId}`}
+                          type="text"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          name={`cct-open-total-spent-${line.lineId}`}
                           value={amountInputs[line.lineId] ?? amountText(draft.amountMinor, draft.scale)}
                           onChange={(event) => {
                             const text = event.target.value;
@@ -1562,34 +1836,58 @@ export function ExternalRegister({
                         />
                       </td>
                       <td>
-                        <input
-                          aria-label={`Description ${line.lineId}`}
-                          value={draft.description}
-                          onChange={(event) =>
-                            patchDraft(line.lineId, { description: event.target.value })
-                          }
-                        />
+                        <div className="external-open-line-edit">
+                          <input
+                            aria-label={`Description ${line.lineId}`}
+                            value={draft.description}
+                            onChange={(event) =>
+                              patchDraft(line.lineId, { description: event.target.value })
+                            }
+                          />
+                          <span
+                            className="external-open-edit-actions"
+                            data-part="open-line-edit-actions"
+                          >
+                            <button
+                              type="button"
+                              title="Save this open line"
+                              aria-label={`Save open line ${line.lineId}`}
+                              className={openEditDirty ? "is-unsaved" : undefined}
+                              disabled={busy || !openEditDirty}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void saveOpenLine(line.lineId);
+                              }}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              title="Discard edits to this open line"
+                              aria-label={`Cancel open line ${line.lineId}`}
+                              disabled={busy}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                cancelOpenEdit(line.lineId);
+                              }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              title="Delete this open line"
+                              aria-label={`Delete open line ${line.lineId}`}
+                              disabled={busy}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void deleteOpenLine(line.lineId);
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </span>
+                        </div>
                       </td>
-                      {stepCheck(line, view, Boolean(line.stepTransfer), transferIds, setTransferIds, "Transfer", line.stepTransferOn)}
-                      {stepCheck(
-                        line,
-                        view,
-                        Boolean(line.stepBillpayDeposit),
-                        billpayDepositIds,
-                        setBillpayDepositIds,
-                        "Bill Pay Deposit",
-                        line.stepBillpayDepositOn,
-                      )}
-                      {stepCheck(line, view, Boolean(line.stepPay), payIds, setPayIds, "Pay Bill", line.stepPayOn)}
-                      {stepCheck(
-                        line,
-                        view,
-                        Boolean(line.stepWithdrawal),
-                        withdrawalIds,
-                        setWithdrawalIds,
-                        "Bill Pay Withdrawal",
-                        line.stepWithdrawalOn,
-                      )}
                     </>
                   ) : (
                     <>
@@ -1601,27 +1899,27 @@ export function ExternalRegister({
                       <td title={view.loanName}>{view.loanName ?? ""}</td>
                       <td title={view.vendor}>{view.vendor}</td>
                       <td title={view.description}>{view.description}</td>
-                      {stepCheck(line, view, Boolean(line.stepTransfer), transferIds, setTransferIds, "Transfer", line.stepTransferOn)}
-                      {stepCheck(
-                        line,
-                        view,
-                        Boolean(line.stepBillpayDeposit),
-                        billpayDepositIds,
-                        setBillpayDepositIds,
-                        "Bill Pay Deposit",
-                        line.stepBillpayDepositOn,
-                      )}
-                      {stepCheck(line, view, Boolean(line.stepPay), payIds, setPayIds, "Pay Bill", line.stepPayOn)}
-                      {stepCheck(
-                        line,
-                        view,
-                        Boolean(line.stepWithdrawal),
-                        withdrawalIds,
-                        setWithdrawalIds,
-                        "Bill Pay Withdrawal",
-                        line.stepWithdrawalOn,
-                      )}
                     </>
+                  )}
+                  {stepCheck(line, view, Boolean(line.stepTransfer), transferIds, setTransferIds, "Transfer", line.stepTransferOn)}
+                  {stepCheck(
+                    line,
+                    view,
+                    Boolean(line.stepBillpayDeposit),
+                    billpayDepositIds,
+                    setBillpayDepositIds,
+                    "Bill Pay Deposit",
+                    line.stepBillpayDepositOn,
+                  )}
+                  {stepCheck(line, view, Boolean(line.stepPay), payIds, setPayIds, "Pay Bill", line.stepPayOn)}
+                  {stepCheck(
+                    line,
+                    view,
+                    Boolean(line.stepWithdrawal),
+                    withdrawalIds,
+                    setWithdrawalIds,
+                    "Bill Pay Withdrawal",
+                    line.stepWithdrawalOn,
                   )}
                 </tr>
               );
@@ -1634,16 +1932,68 @@ export function ExternalRegister({
         id="external-completed"
         data-section="external-completed"
       >
-        <div className="external-completed-controls">
+        <div className="external-completed-controls" ref={completedControlsRef}>
           <h3 className="external-open-head">
             Completed · {completedVisible.length}
+            <span
+              className="external-completed-years"
+              data-part="completed-year-ticks"
+              role="group"
+              aria-label="Active year"
+            >
+              {years.map((year) => (
+                <span key={year} className="external-year-tick">
+                  <input
+                    type="checkbox"
+                    aria-label={`Include ${year}`}
+                    checked={checkedYears.includes(year)}
+                    onChange={() => {
+                      setCheckedYears((current) => {
+                        if (current.includes(year)) {
+                          if (current.length === 1) return current;
+                          return current.filter((item) => item !== year);
+                        }
+                        return [...current, year];
+                      });
+                    }}
+                  />
+                  {year}
+                </span>
+              ))}
+            </span>
+            {completedEditingId ? (
+              <span
+                className="external-open-edit-actions"
+                data-part="completed-line-edit-actions"
+              >
+                <button
+                  type="button"
+                  title="Save this completed line"
+                  aria-label={`Save completed line ${completedEditingId}`}
+                  className={completedLineDirty ? "is-unsaved" : undefined}
+                  disabled={busy || !completedLineDirty}
+                  onClick={() => void saveCompletedLine(completedEditingId)}
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  title="Discard edits to this completed line"
+                  aria-label={`Cancel completed line ${completedEditingId}`}
+                  disabled={busy}
+                  onClick={() => cancelCompletedEdit(completedEditingId)}
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : null}
             <button
               type="button"
               title="Save completed edits"
               aria-label="Save completed edits"
               className={completedDirty ? "is-unsaved" : undefined}
               disabled={busy || !completedDirty}
-              onClick={() => void save()}
+              onClick={() => void saveCompletedEdits()}
             >
               Save
             </button>
@@ -1666,8 +2016,21 @@ export function ExternalRegister({
               {exportLoading ? "Export…" : "Export"}
             </button>
           </h3>
+          {filtersHideCompleted ? (
+            <p className="external-filter-empty" data-part="completed-filter-empty" role="status">
+              No completed charges match the column filters — clear Vendor / Total spent.
+              <button
+                type="button"
+                aria-label="Clear column filters"
+                disabled={busy}
+                onClick={clearColumnFilters}
+              >
+                Clear column filters
+              </button>
+            </p>
+          ) : null}
           {bulkEligible.length > 0 ? (
-            <div className="external-bulk-bucket" aria-label="Bulk set bucket">
+            <div className="external-bulk-bucket" aria-label="Bulk set field">
               <span className="external-bulk-count">{bulkSelectedVisible.length} selected</span>
               <button
                 type="button"
@@ -1687,24 +2050,52 @@ export function ExternalRegister({
               >
                 Clear
               </button>
-              <BucketSelect
-                ariaLabel="Bulk bucket"
-                options={catalogBuckets}
-                value={bulkBucket}
-                onChange={setBulkBucket}
-              />
+              <select
+                aria-label="Bulk field"
+                value={bulkField}
+                disabled={busy}
+                onChange={(event) => {
+                  setBulkField(event.target.value as BulkField);
+                  setBulkValue("");
+                }}
+              >
+                {BULK_FIELDS.map((field) => (
+                  <option key={field.value} value={field.value}>
+                    {field.label}
+                  </option>
+                ))}
+              </select>
+              {bulkField === "bucket" ? (
+                <BucketSelect
+                  ariaLabel="Bulk bucket"
+                  options={catalogBuckets}
+                  value={bulkValue}
+                  onChange={setBulkValue}
+                />
+              ) : (
+                <SuggestInput
+                  ariaLabel="Bulk value"
+                  options={
+                    bulkField === "category"
+                      ? suggestions.category
+                      : bulkField === "loanName"
+                        ? suggestions.loanName
+                        : bulkField === "vendor"
+                          ? suggestions.vendor
+                          : suggestions.description
+                  }
+                  value={bulkValue}
+                  onChange={setBulkValue}
+                />
+              )}
               <button
                 type="button"
                 title="Dated lines in selected years"
-                aria-label="Set bucket"
-                disabled={
-                  busy ||
-                  bulkSelectedVisible.length === 0 ||
-                  !knownBuckets.has(bulkBucket.trim())
-                }
+                aria-label="Set field"
+                disabled={busy || bulkSelectedVisible.length === 0 || !bulkValueReady}
                 onClick={openBulkConfirm}
               >
-                Set bucket…
+                Set…
               </button>
             </div>
           ) : null}
@@ -1747,20 +2138,34 @@ export function ExternalRegister({
               ).map(([label, key, aria]) => (
                 <th key={key}>
                   <div>{label}</div>
-                  <select
-                    className="external-col-filter"
-                    aria-label={aria}
-                    value={colFilters[key]}
-                    onChange={(event) => setFilter(key, event.target.value)}
-                  >
-                    <option value="">All</option>
-                    <option value={COLUMN_FILTER_BLANK}>Blank</option>
-                    {choiceLists[key].map((value) => (
-                      <option key={value} value={value}>
-                        {value}
-                      </option>
-                    ))}
-                  </select>
+                  {key === "amount" ? (
+                    <input
+                      className="external-col-filter"
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      name="cct-completed-amount-filter"
+                      aria-label={aria}
+                      placeholder="$"
+                      value={activeFilters.amount}
+                      onChange={(event) => setFilter("amount", event.target.value)}
+                    />
+                  ) : (
+                    <select
+                      className="external-col-filter"
+                      aria-label={aria}
+                      value={activeFilters[key]}
+                      onChange={(event) => setFilter(key, event.target.value)}
+                    >
+                      <option value="">All</option>
+                      <option value={COLUMN_FILTER_BLANK}>Blank</option>
+                      {(choiceLists[key as keyof typeof choiceLists] ?? []).map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </th>
               ))}
             </tr>
@@ -1769,7 +2174,7 @@ export function ExternalRegister({
             {completedVisible.map((line) => {
               const draft = drafts[line.lineId];
               const view = draft ?? line;
-              const editing = editingId === line.lineId;
+              const editing = completedEditingId === line.lineId;
               const eligible = isBulkEligibleLine(line);
               const selected = bulkIds.includes(line.lineId);
               return (
@@ -1777,14 +2182,7 @@ export function ExternalRegister({
                   key={line.lineId}
                   className="is-complete"
                   ref={editing ? editRowRef : undefined}
-                  onClick={() => startEdit(line)}
-                  onBlur={(event) => {
-                    if (!editing) return;
-                    const next = event.relatedTarget;
-                    if (next instanceof Node && editRowRef.current?.contains(next)) return;
-                    if (next == null) return;
-                    setEditingId(null);
-                  }}
+                  onClick={() => startCompletedEdit(line)}
                 >
                   <td
                     className="external-bulk-check-col"
@@ -1807,6 +2205,10 @@ export function ExternalRegister({
                       <td onClick={(event) => event.stopPropagation()}>
                         <input
                           aria-label={`Completed total spent ${line.lineId}`}
+                          type="text"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          name={`cct-completed-total-spent-${line.lineId}`}
                           value={amountInputs[line.lineId] ?? amountText(draft.amountMinor, draft.scale)}
                           onClick={(event) => event.stopPropagation()}
                           onChange={(event) => {
@@ -1850,6 +2252,14 @@ export function ExternalRegister({
                           onChange={(vendor) => patchDraft(line.lineId, { vendor })}
                         />
                       </td>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <SuggestInput
+                          ariaLabel={`Completed description ${line.lineId}`}
+                          options={suggestions.description}
+                          value={draft.description}
+                          onChange={(description) => patchDraft(line.lineId, { description })}
+                        />
+                      </td>
                     </>
                   ) : (
                     <>
@@ -1858,9 +2268,9 @@ export function ExternalRegister({
                       <td>{view.bucket ?? ""}</td>
                       <td>{view.loanName ?? ""}</td>
                       <td>{view.vendor}</td>
+                      <td>{view.description}</td>
                     </>
                   )}
-                  <td>{view.description}</td>
                   <td className="external-green-date">{completedDateOf(view)}</td>
                 </tr>
               );
@@ -1876,38 +2286,38 @@ export function ExternalRegister({
           <div
             role="dialog"
             aria-modal="true"
-            aria-label="Confirm bulk set bucket"
-            data-part="external-set-bucket"
+            aria-label="Confirm bulk set field"
+            data-part="external-bulk-set-field"
             className="home-av-dialog"
             onClick={(event) => event.stopPropagation()}
           >
             <header>
-              <h3>Set bucket</h3>
+              <h3>Set {bulkFieldLabel(bulkField)}</h3>
               <button
                 type="button"
-                aria-label="Cancel bulk set bucket"
+                aria-label="Cancel bulk set field"
                 onClick={() => setBulkConfirm(false)}
               >
                 Cancel
               </button>
             </header>
             <p>
-              Set bucket {bulkBucket.trim()} on {bulkSelectedVisible.length} dated
-              completed charges?
+              Set {bulkFieldLabel(bulkField).toLowerCase()} {bulkValue.trim()} on{" "}
+              {bulkSelectedVisible.length} dated completed charges?
             </p>
             <div className="income-export-preview-actions">
               <button
                 type="button"
-                aria-label="Confirm bulk set bucket"
+                aria-label="Confirm bulk set field"
                 className="is-unsaved"
                 disabled={busy}
-                onClick={() => void applyBulkBucket()}
+                onClick={() => void applyBulkField()}
               >
                 Confirm
               </button>
               <button
                 type="button"
-                aria-label="Cancel bulk set bucket"
+                aria-label="Cancel bulk set field"
                 disabled={busy}
                 onClick={() => setBulkConfirm(false)}
               >

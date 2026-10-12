@@ -3776,6 +3776,14 @@ impl Canonical for LocalPlatform {
         crate::external_register::mark_step(&pool, line_ids, &step, ticked_on).await
     }
 
+    async fn external_register_delete(
+        &self,
+        line_ids: Vec<Uuid>,
+    ) -> Result<application_core::contracts::ExternalRegisterGetBody, PlatformError> {
+        let pool = self.pool.read().await;
+        crate::external_register::delete(&pool, line_ids).await
+    }
+
     async fn external_register_import(
         &self,
         path: String,
