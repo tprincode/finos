@@ -52,10 +52,10 @@ Copy-Item (Join-Path $Root "scripts\load-from-usb.sh") (Join-Path $KitRoot "load
 Copy-Item (Join-Path $Root "GO.command") (Join-Path $KitRoot "GO.command") -Force
 
 if (-not (Test-Path (Join-Path $repoDir "finos.command"))) {
-  throw "finos.command missing from bundled repo — commit it before packing"
+  throw "finos.command missing from bundled repo - commit it before packing"
 }
 if (-not (Test-Path (Join-Path $repoDir "scripts\mac-env.sh"))) {
-  throw "scripts/mac-env.sh missing from bundled repo — commit Mac harden before packing"
+  throw "scripts/mac-env.sh missing from bundled repo - commit Mac harden before packing"
 }
 
 $kitDocs = Join-Path $KitRoot "kit"
